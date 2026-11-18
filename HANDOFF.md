@@ -163,10 +163,36 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     second checker's report.** The owner: "A second checker pass.. for round 2 and 3 will need
     to be dealt with at a later date. I'll need you to log a reminder before we go onto MacOS";
     then, before sleeping, that the pass is being run after all and its files will come with a
-    fourth round on the gaps. **Before the macOS part starts, check that those reports have
-    arrived and been applied; if not, raise it.** Until then a number from those files is
-    checked against its source as it is typed into the engine
-    ([docs/research/library/README.md](docs/research/library/README.md)).
+    fourth round on the gaps. (They came: the next point. The reminder before the macOS part is
+    discharged.)
+  - **The second check of rounds two and three came, with a fourth round already checked**
+    (2026-11-19: "see new materials and verification"). 1,363 rows over 44 files: 1,249 verified,
+    79 to fix, 35 unverifiable. **Every fix is applied** and each file has the checker's summary
+    beside it; a value the checker could not confirm is moved under "Unconfirmed" in its file
+    and is not to be typed into the engine
+    ([docs/research/library/README.md](docs/research/library/README.md), "The second check").
+    The corrections were applied by assistants from the checker's findings and are not yet
+    re-opened against the sources: a number is still checked against its source as it is typed
+    in. Round four is seven more files (the face's parts, joint curves for walking and running
+    as data, fabric, engine torque curves as data, bullet drag, sword balance, ion engines and
+    re-entry), the delivery's `H9` being `H10` here.
+  - **The pictures' repository is meant to be public** (the owner, 2026-11-19, of a delivered
+    note that called the research private: "It wasn't meant to be private"). Round four's
+    pictures are in it.
+  - **Muybridge's own catalogue is the check for his plates** (the owner, the same day, of two
+    plates held back: "verify the possible age range of that man"). His *Prospectus and
+    Catalogue of Plates* (1887) numbers the model of every plate and says who they were. The
+    men who walk, run and jump were students or graduates "aged from eighteen to twenty-four"
+    (the man of plates 8 and 9, models 55 and 56, among them); models 27, 28 and 29 were boys
+    of thirteen to fifteen (no plate of theirs was ever published here); and of the women,
+    models 4 to 13, 15 and 19 were "of ages varying from seventeen to twenty-four", with no
+    age given for models 2 and 20. **Nine unclothed plates of those women had been published
+    in the pictures' repository** (eight since round two, one for an hour): they were taken
+    out of its files the same day and are still in its history, **which is the owner's to
+    say** (told of it, the owner: "Not gonna worry about them, so long as they were clothed.
+    That man in loincloth is not a issue then"; they were not clothed, and that was said back
+    plainly; plate 8 went in on that word: 359 pictures). Every Muybridge plate of a person is
+    held against that catalogue before it is placed.
   - **A skeleton with every figure, so that a character is a change and not a rebuild** (the same
     message: "At the very least, basic skeletons alongside the figures you've made for me will be
     key to set it up so you can easily mutate or change into individual characters over time

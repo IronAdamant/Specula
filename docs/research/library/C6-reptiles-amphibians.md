@@ -1,7 +1,7 @@
 # C6 — Reptiles and amphibians: sprawling gaits (lizard, crocodile), proportions, the turtle
 
 Brief item C6: *"Reptiles and amphibians: sprawling gaits (lizard, crocodile), their proportions, the turtle | tables | herpetology and locomotion studies"*.
-Private research file for Aron's game-engine library. Not for publication.
+Research file for the engine's reference library. (As delivered this line called the file private and not for publication; the owner has the library published with the engine.)
 
 **Header notes**
 - Web reading: 2026-11-17, about 09:15–09:36 AEDT (Australia/Sydney, UTC+11). Every URL below was accessed on 2026-11-17.

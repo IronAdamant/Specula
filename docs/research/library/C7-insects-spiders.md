@@ -1,7 +1,7 @@
 # C7 — Insects and spiders: leg segments and proportions, tripod gait and the spider's gait, wingbeat
 
 Brief item C7: *"Insects and spiders: leg segments and their proportions, the tripod gait and the spider's, wingbeat | tables | entomology references"*.
-Private research file for Aron's game-engine library. Not for publication.
+Research file for the engine's reference library. (As delivered this line called the file private and not for publication; the owner has the library published with the engine.)
 
 **Header notes**
 - **Rebuilt on 2026-11-17 after the box restore.**

@@ -2,7 +2,7 @@
 
 Status: **answered the same night, in part**: 91 pictures, of which 88 are published in
 [specula-imagines](https://github.com/IronAdamant/specula-imagines) ([their index](library/reference-images/INDEX-round-3.md)), and 23 files of
-numbers in [library/](library/README.md) (A8, C10, D3, G4, H9, I4, J11 to J27; not yet checked). The
+numbers in [library/](library/README.md) (A8, C10, D3, G4, H9, I4, J11 to J27; second-checked on 2026-11-18, the fixes applied). The
 delivery's own coverage map says which lines below are still thin; a fourth round is being gathered.
 What follows is the request as it was written, at the owner's word the same night ("Might as well list me
 the gaps now. So you'll have materials. Vehicle physics, air plane physics, space physics would be good

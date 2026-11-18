@@ -1,5 +1,10 @@
 # H7: Running joint angles by speed, and what part 2 adds to H1, C2, B3, H5
 
+Second check (2026-11-18): clean (24 of 24 rows verified; Table H7-1 matches Fukuchi et al. 2017, Table 4, exactly). Small additions:
+- Table H7-1 is a selection from the paper's Table 4: it leaves out the maximum ankle dorsiflexion (DF) torque, the work rows and the anterior-posterior impulses. Do not treat it as the full Table 4.
+- The pointer to J6-3 (Dorn et al. 2012) now gives the runners per speed (9, 9, 8, 7), as the second check of J6 corrected.
+- The paper's full text is also on Europe PMC (PMC5426356), where the article is CC BY. Added a Sources list. The checker's summary is in `H7-running-joint-angles-and-motion-additions.md.verify.md`.
+
 Researched 2026-11-17 (all URLs accessed 2026-11-17). Part 2 of the round-two brief ("motion as numbers"). Most of part 2 already exists in the library; this file adds only what is new and points to the rest.
 
 ## Already in the library (not repeated here)
@@ -19,7 +24,7 @@ Researched 2026-11-17 (all URLs accessed 2026-11-17). Part 2 of the round-two br
 
 ## Table H7-1. Running: peak joint angles and stride by speed (read directly)
 
-Source: Fukuchi RK, Fukuchi CA, Duarte M (2017) "A public dataset of running biomechanics and the effects of running speed on lower extremity kinematics and kinetics", *PeerJ* 5:e3298, Table 4, https://peerj.com/articles/3298/. The dataset itself (figshare DOI 10.6084/m9.figshare.4543435) is stated in the paper to be "made available under the CC-BY license (https://creativecommons.org/licenses/by/4.0/)".
+Source: Fukuchi RK, Fukuchi CA, Duarte M (2017) "A public dataset of running biomechanics and the effects of running speed on lower extremity kinematics and kinetics", *PeerJ* 5:e3298, Table 4, https://peerj.com/articles/3298/ (full text also on Europe PMC, PMC5426356, https://europepmc.org/article/PMC/PMC5426356, where the article is CC BY; read there by the second check because peerj.com refuses automated fetches). The table below is a selection from Table 4: it leaves out the maximum ankle dorsiflexion (DF) torque, the work rows and the anterior-posterior impulses. The dataset itself (figshare DOI 10.6084/m9.figshare.4543435) is stated in the paper to be "made available under the CC-BY license (https://creativecommons.org/licenses/by/4.0/)".
 
 Population and speed: 28 regular runners (weekly mileage over 20 km, 10-km race pace of 5 min/km or faster), instrumented dual-belt treadmill, standard neutral shoes, 2.5, 3.5 and 4.5 m/s. Sex and age split were not in the text read. Sign convention as in the paper: flexion and dorsiflexion positive; extension, plantarflexion and eversion negative. Values are mean ± SD.
 
@@ -46,7 +51,7 @@ Foot strike at 2.5, 3.5 and 4.5 m/s (same paper, Results): rearfoot 68%, 68%, 61
 
 ## Faster running
 
-See J6-3 (Dorn et al. 2012: 9 runners, 3.5 to 9.0 m/s; peak vertical force 2.7 to 3.6 body weights; strategy shift at about 7 m/s).
+See J6-3 (Dorn et al. 2012: 9 runners, of whom 9, 9, 8 and 7 ran the four target speeds; 3.5 to 9.0 m/s; peak vertical force 2.7 to 3.6 body weights; strategy shift at about 7 m/s).
 
 ## Not found
 
@@ -54,3 +59,10 @@ See J6-3 (Dorn et al. 2012: 9 runners, 3.5 to 9.0 m/s; peak vertical force 2.7 t
 - Joint-angle curves for sprinting (above 5 m/s) in an open dataset. Dorn 2012 has curves only as figures.
 - Open shoulder and elbow joint-angle curves through walking and running from a strong, commercially usable source: still weak (see H1).
 - Quadruped joint-angle curves (as opposed to footfall timing): not found in an open primary table in this pass.
+
+## Sources
+
+- Fukuchi RK, Fukuchi CA, Duarte M (2017), *PeerJ* 5:e3298, CC BY, https://peerj.com/articles/3298/ (accessed 2026-11-17); Europe PMC full text https://europepmc.org/article/PMC/PMC5426356 (opened by the second check, 2026-11-17).
+- The paper's dataset on figshare, CC BY 4.0 (as the paper states), https://doi.org/10.6084/m9.figshare.4543435 (returned HTTP 403 to automated fetches, 2026-11-17; not downloaded).
+- Dorn TW, Schache AG, Pandy MG (2012), *J Exp Biol* 215: 1944–1956, via J6-3, https://journals.biologists.com/jeb/article/215/11/1944/10883/Muscular-strategy-shift-in-human-running (accessed 2026-11-17).
+- Senden et al. (2024), walking gait data, OSF t72cw, via H1, https://osf.io/t72cw/ (named here; read and dated in H1).

@@ -1,10 +1,14 @@
 # J1: Friction between materials
 
+Fixed after the second check (2026-11-18):
+- Licence of OpenStax Table 6.1 corrected from CC BY 4.0 to CC BY-NC-SA 4.0 (non-commercial). Link only: use the coefficients as facts, do not copy the table into a product.
+- Added a Sources list. The checker's summary is in `J1-friction.md.verify.md`.
+
 Researched 2026-11-17 (all URLs accessed 2026-11-17). Part 3 of the round-two brief. Values a game can expose as adjustable defaults.
 
 ## Table J1-1. Static and kinetic friction coefficients (read directly)
 
-Source: OpenStax, *University Physics Volume 1*, section 6.2 Friction, Table 6.1 "Approximate Coefficients of Static and Kinetic Friction", CC BY 4.0, https://openstax.org/books/university-physics-volume-1/pages/6-2-friction (accessed 2026-11-17). The book calls these approximate; it does not state test conditions.
+Source: OpenStax, *University Physics Volume 1*, section 6.2 Friction, Table 6.1 "Approximate Coefficients of Static and Kinetic Friction", CC BY-NC-SA 4.0 (as stated on the page, accessed 2026-11-17; non-commercial: the coefficients are single facts, but the table as a compiled presentation is not to be redistributed commercially, so link only), https://openstax.org/books/university-physics-volume-1/pages/6-2-friction (accessed 2026-11-17). The book calls these approximate; it does not state test conditions.
 
 | Materials in contact | Static μs | Kinetic μk | Source |
 |---|---|---|---|
@@ -42,3 +46,7 @@ Computed as a = μ·g with g = 9.80665 m/s² (standard gravity, see J10). This a
 ## Sources disagree
 
 - None checked in this pass. OpenStax gives single values; published tyre data vary widely with tread, load and water depth, so treat the table as game defaults, not measurements.
+
+## Sources
+
+- OpenStax, *University Physics Volume 1*, section 6.2 Friction, Table 6.1, CC BY-NC-SA 4.0 (link only), https://openstax.org/books/university-physics-volume-1/pages/6-2-friction (accessed 2026-11-17).

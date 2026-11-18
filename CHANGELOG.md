@@ -335,6 +335,12 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       and on a `rect` outline. 0 is the hard shape, 1 its fully round form, and everything
       between is valid; the shape keeps its sizes whatever its roundness. With the bone chains
       of this slice it is the first of the five items of "form within an agent's reach".
+    - **The second check of the library's rounds two and three, and a fourth round**
+      (2026-11-19): an independent checker's findings on 1,363 rows applied to 44 files (79
+      fixes; 35 values it could not confirm moved under "Unconfirmed"), each file with the
+      checker's summary beside it; seven new files with two folders of data (joint curves for
+      walking and running, engine torque curves). The owner's first name, which four files of
+      the first round carried as delivered, is taken out of them.
     - **The form checks** ([docs/design/FORM.md](docs/design/FORM.md)): what a trained eye sees
       in a mesh's shape, as numbers in every asset's facts: loose pieces, razor edges, faceting,
       shading seams, creases shaded as round, and how its relief is shared between big, medium

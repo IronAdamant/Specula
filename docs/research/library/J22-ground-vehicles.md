@@ -1,10 +1,17 @@
 # J22: Ground vehicles: mass, centre of gravity, inertia, grip, suspension, stopping, lean
 
-Researched 2026-11-17 (all URLs accessed 2026-11-17). Brief section 1a. Values marked "computed by me" are arithmetic on the cited numbers. Wikipedia is used only as a pointer to its cited primary, named in each row. Car drag (Cd, CdA) is already in round-two J5 and J19; not repeated here.
+Fixed after the second check (2026-11-18):
+- J22-4: the *Racecar Engineering* 2020-11 column is by Claude Rouelle (OptimumG), not "C. Haney".
+- J22-6: the trail and head-angle ranges come from a small survey by Whitt and Wilson (*Bicycling Science*, 2nd ed., 1982, p. 188), not "Zinn and others".
+- Sources disagree: the reaction-time row rewritten; the Braking distance article gives no "1 s population average" (it quotes NHTSA's 1.5 s average); the SSF note firmed up (the listed SSFs use the mean track).
+- Spreads added: the facility's inertia error bounds; the 0.5 g front-braking limit; infobox mass ranges for the J22-7 vehicles; two more ground-pressure rows and which rows carry citations.
+- Licences stated; a Sources list added at the bottom.
+
+Researched 2026-11-17 (all URLs accessed 2026-11-17). Brief section 1a. Values marked "computed by me" are arithmetic on the cited numbers. Wikipedia is used only as a pointer to its cited primary, named in each row; values taken from Wikipedia are secondary and under CC BY-SA 4.0 (Wikipedia's text licence). Car drag (Cd, CdA) is already in round-two J5 and J19; not repeated here.
 
 ## J22-1. Measured mass, footprint, centre-of-gravity height and inertia (read directly, selection)
 
-Source: Heydinger, Bixel, Garrott, Pyne, Howe and Guenther, "Measured Vehicle Inertial Parameters: NHTSA's Data Through November 1998", SAE 1999-01-1336, doi:10.4271/1999-01-1336; copy read at https://eng.auburn.edu/~dmbevly/mech4420/vehicle_params.pdf (database listing, two table pages per vehicle: geometry, then CG and inertia). All 1998 model year, measured with S.E.A. Inc.'s Vehicle Inertia Measurement Facility, driver only, full fuel. Stated accuracy for the facility: CG height ± 0.5% (paper, IPMD version table).
+Source: Heydinger, Bixel, Garrott, Pyne, Howe and Guenther, "Measured Vehicle Inertial Parameters: NHTSA's Data Through November 1998", SAE 1999-01-1336, doi:10.4271/1999-01-1336; copy read at https://eng.auburn.edu/~dmbevly/mech4420/vehicle_params.pdf (database listing, two table pages per vehicle: geometry, then CG and inertia). All 1998 model year, measured with S.E.A. Inc.'s Vehicle Inertia Measurement Facility, driver only, full fuel. Stated accuracy for the facility: CG height ± 0.5% (paper, IPMD version table); the paper also gives inertia error bounds of 1% for pitch and yaw and 2% for roll.
 
 | Vehicle (NHTSA no.) | Weight (N) | Mass (kg, computed by me) | Wheelbase (m) | Track F / R (m) | CG behind front axle (m) | CG height (m) | Pitch / Roll / Yaw inertia (kg m²) | Static stability factor (as listed) |
 |---|---|---|---|---|---|---|---|---|
@@ -76,7 +83,7 @@ OptimumG, Part Two, https://optimumg.com/wp-content/uploads/2020/01/SpringsDampe
 
 OptimumG, Part Three, https://optimumg.com/wp-content/uploads/2020/01/SpringsDampers_Tech_Tip_3.pdf: ride damping ratio about 0.25 in passenger vehicles for comfort; 0.65-0.70 as a racecar baseline.
 
-C. Haney / OptimumG column, "Of springs and dampers", *Racecar Engineering* 2020-11, https://optimumg.com/wp-content/uploads/2021/10/racecar-2020_11.pdf: passenger cars 1.1 Hz (very soft) to 1.8 Hz (very stiff); non-aero racecars 1.5-3.0 Hz; aero racecars 3.0-7.0 Hz.
+Claude Rouelle (OptimumG) column, "Of springs and dampers", *Racecar Engineering* 2020-11, https://optimumg.com/wp-content/uploads/2021/10/racecar-2020_11.pdf: passenger cars 1.1 Hz (very soft) to 1.8 Hz (very stiff); non-aero racecars 1.5-3.0 Hz; aero racecars 3.0-7.0 Hz.
 
 ## J22-5. Stopping distances (UK Highway Code, Rule 126)
 
@@ -93,13 +100,13 @@ The Highway Code, Rule 126 and its "Typical stopping distances" diagram, https:/
 
 The thinking and braking split was checked against the AA's retyped chart (https://www.theaa.com/breakdown-cover/advice/stopping-distances), which also states the Code assumes a thinking time of just under 0.7 s on a dry road. Rule 126 also says leave at least a two-second gap, doubled on wet roads and up to ten times on icy roads.
 
-Bicycle braking (Wikipedia "Bicycle and motorcycle dynamics", citing Wilson, *Bicycling Science*, 3rd ed. 2004): rear brake alone gives about 0.25 g at best on an upright bike; front braking is limited by pitch-over, with combined CG about 60 cm behind and 120 cm above the front contact patch.
+Bicycle braking (Wikipedia "Bicycle and motorcycle dynamics", citing Wilson, *Bicycling Science*, 3rd ed. 2004): rear brake alone gives about 0.25 g at best on an upright bike; front braking is limited by pitch-over, with combined CG about 60 cm behind and 120 cm above the front contact patch; the same paragraph gives the result of that geometry, a maximum deceleration of about 0.5 g for front braking on an upright bike, and says a recumbent could reach 0.8 g if μ = 0.8.
 
 ## J22-6. Two-wheelers: lean, trail, self-stability, wobble
 
 Lean in a steady turn: tan θ = v² / (g r) (Wikipedia "Bicycle and motorcycle dynamics", citing Fajans, "Steering in bicycles and motorcycles", *Am. J. Phys.* 68 (2000) 654). The article's example: 10 m/s on a 10 m radius needs 45.6°. Computed by me: 13.9 m/s (50 km/h) on 50 m, 21.5°; 27.8 m/s (100 km/h) on 100 m, 38.2°; 5 m/s on 5 m, 27.0°. Wide motorcycle tyres need a little more lean than this (same article, citing Foale, *Motorcycle Handling and Chassis Design*, 2006).
 
-Trail and head angle (same article, citing Zinn and others): touring bicycles 72-73° head angle with 43-60 mm trail; racing 73-74° with 28-45 mm; track 75° with 23.5-37 mm.
+Trail and head angle (same article, citing a small survey by Whitt and Wilson, *Bicycling Science*, 2nd ed., 1982, p. 188): touring bicycles 72-73° head angle with 43-60 mm trail; racing 73-74° with 28-45 mm; track 75° with 23.5-37 mm.
 
 Self-stability of the benchmark bicycle (same article, citing Meijaard, Papadopoulos, Ruina and Schwab 2007, *Proc. R. Soc. A* 463:1955, and Kooijman et al. 2011, *Science* 332:339, doi:10.1126/science.1201959): oscillations begin about 1 m/s; weave speed about 5.3 m/s; capsize speed about 8 m/s; self-stable range 5.3-8.0 m/s for that design.
 
@@ -109,20 +116,20 @@ Modes (same article, citing Cossalter, *Motorcycle Dynamics*): weave 0-4 Hz, who
 
 | Vehicle | Mass | Length / width / height | Other | Source |
 |---|---|---|---|---|
-| VW Golf Mk8 hatchback | from 1,255 kg | 4,284 / 1,789 / 1,456 mm, wheelbase 2,636 mm | | https://en.wikipedia.org/wiki/Volkswagen_Golf_Mk8 infobox |
+| VW Golf Mk8 hatchback | from 1,255 kg (infobox range 1,255-1,465 kg) | 4,284 / 1,789 / 1,456 mm, wheelbase 2,636 mm | | https://en.wikipedia.org/wiki/Volkswagen_Golf_Mk8 infobox |
 | Porsche 911 (992) | 1,380-1,710 kg | 4,519-4,535 / 1,852-1,900 / 1,289-1,303 mm, wheelbase 2,450 mm | | https://en.wikipedia.org/wiki/Porsche_911_(992) infobox |
-| Tesla Model 3 | from 3,552 lb (1,611 kg, computed by me) | width 72.8 in, wheelbase 113.2 in | single-speed 9:1 reduction | https://en.wikipedia.org/wiki/Tesla_Model_3 infobox |
-| New Flyer Xcelsior bus, 40 ft | 26,000 lb (11,790 kg, computed by me) | 41 ft over bumpers, 102 in wide, 10-11 ft high, wheelbase 283.75 in | 60 ft articulated: 39,000 lb | https://en.wikipedia.org/wiki/New_Flyer_Xcelsior infobox |
-| M1A1 Abrams | 63 short tons (57.2 t, computed by me), citing Hunnicutt 2015 p. 306 | hull 26.02 ft, 12 ft wide, 8 ft high | 1,500 hp gas turbine; torsion bars with rotary dampers; road 45 mph governed, off-road 40 km/h; ground clearance 0.48 m | https://en.wikipedia.org/wiki/M1_Abrams infobox |
-| Leopard 2A6 | 62.3 t | 10.97 m gun forward, 3.75 m wide, 3 m high | 17.8 kW/t; torsion bars; 70 km/h | https://en.wikipedia.org/wiki/Leopard_2 infobox |
+| Tesla Model 3 | from 3,552 lb (1,611 kg, computed by me) (infobox range 3,552-4,048 lb) | width 72.8 in, wheelbase 113.2 in | single-speed 9:1 reduction | https://en.wikipedia.org/wiki/Tesla_Model_3 infobox |
+| New Flyer Xcelsior bus, 40 ft | 26,000 lb (11,790 kg, computed by me) (infobox range 26,000-30,500 lb) | 41 ft over bumpers, 102 in wide, 10-11 ft high, wheelbase 283.75 in | 60 ft articulated: 39,000 lb (infobox range 39,000-45,500 lb) | https://en.wikipedia.org/wiki/New_Flyer_Xcelsior infobox |
+| M1A1 Abrams | 63 short tons (57.2 t, computed by me), citing Hunnicutt 2015 p. 306 (the family runs from 60 short tons for the M1 to 73.6 short tons for the M1A2 SEPv3) | hull 26.02 ft, 12 ft wide, 8 ft high | 1,500 hp gas turbine; torsion bars with rotary dampers; road 45 mph governed, off-road 40 km/h; ground clearance 0.48 m | https://en.wikipedia.org/wiki/M1_Abrams infobox |
+| Leopard 2A6 | 62.3 t (the family runs from 55.2 t for the 2A4 to 66.5 t for the 2A7V) | 10.97 m gun forward, 3.75 m wide, 3 m high | 17.8 kW/t; torsion bars; 70 km/h | https://en.wikipedia.org/wiki/Leopard_2 infobox |
 
-Ground pressure (Wikipedia "Ground pressure" table; rows not individually cited, so treat as indicative): human on snowshoes 3.5 kPa; average human in flat shoes 17 kPa standing; M1 Abrams 103 kPa; adult horse 170 kPa; passenger car 205 kPa; adult elephant 240 kPa; road racing bicycle 620 kPa; lorry 793 kPa; stiletto heel 3,250 kPa. The article notes a walking human exerts more than double the standing pressure and that a pneumatic tyre's ground pressure roughly equals its inflation pressure.
+Ground pressure (Wikipedia "Ground pressure" table; most rows not individually cited, so treat as indicative, though several carry their own citations: Thompson, *Sustainable Landscape Construction*, p. 50 for the human, and mathscinotes for the M1): human on snowshoes 3.5 kPa; average human in flat shoes 17 kPa standing; M1 Abrams 103 kPa; adult horse 170 kPa; passenger car 205 kPa; adult elephant 240 kPa; mountain bike 245 kPa; road racing bicycle 620 kPa; lorry 793 kPa; stiletto heel 3,250 kPa; the article adds that "a galloping horse will exert up to 3.5 MPa". The article notes a walking human exerts more than double the standing pressure and that a pneumatic tyre's ground pressure roughly equals its inflation pressure.
 
 ## Sources disagree
 
 - Passenger-car ride frequency: 0.5-1.5 Hz (OptimumG Tech Tip 1) against 1.1-1.8 Hz (OptimumG *Racecar Engineering* column). Aero racecars 3.0-5.0+ Hz against 3.0-7.0 Hz.
-- Perception-reaction time: Highway Code thinking distances imply 0.67 s (computed by me), the reconstruction baseline uses 1.5 s, and the Wikipedia article reports 1 s as a population average.
-- NHTSA SSF as listed (e.g. Neon 1.435) differs slightly from T/(2H) with the front track (1.438, computed by me); the paper's value presumably uses the mean track.
+- Perception-reaction time: Highway Code thinking distances imply 0.67 s (computed by me) against 1.5 s, which Wikipedia "Braking distance" quotes as NHTSA's average reaction time and which is the reconstruction baseline (Taoka). The same article says a keen, alert driver may react "well below 1 second", and gives 2.5 s for a slow driver (AASHTO); its figure legend uses 3/4 s. It does not give 1 s as a population average.
+- NHTSA SSF as listed (e.g. Neon 1.435) differs slightly from T/(2H) with the front track (1.438, computed by me): the listed values use the mean of front and rear track (recomputed by the second checker: Tercel 1.389, S10 1.145, Caravan 1.243 all match the mean).
 
 ## Not found
 
@@ -132,3 +139,20 @@ Ground pressure (Wikipedia "Ground pressure" table; rows not individually cited,
 - Measured Magic Formula coefficient sets for a named tyre (TNO/MF-Tyre files are proprietary).
 - EU lorry size and weight limits (Directive 96/53/EC): the EUR-Lex consolidated text did not return readable text to the fetcher this session.
 - Motorcycle CG height and inertia from a measured database (the NHTSA listing covers light four-wheel vehicles only).
+
+## Sources
+
+All accessed 2026-11-17.
+
+- Heydinger, Bixel, Garrott, Pyne, Howe and Guenther, "Measured Vehicle Inertial Parameters: NHTSA's Data Through November 1998", SAE 1999-01-1336, doi:10.4271/1999-01-1336; copy at https://eng.auburn.edu/~dmbevly/mech4420/vehicle_params.pdf
+- Sommer, Penn State ME 481 notes, "Inertial Properties of American Vehicles", https://www.me.psu.edu/sommer/me481/notes_07_04.pdf
+- MathWorks Simscape documentation, "Tire-Road Interaction (Magic Formula)", https://www.mathworks.com/help/sdl/ref/tireroadinteractionmagicformula.html (citing Pacejka, *Tire and Vehicle Dynamics*, Elsevier 2005)
+- Wikipedia, "Braking distance" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Braking_distance (citing Taoka 1989, *ITE Journal* 59(3) 19-21; Virginia Code § 46.2-880; Wong, *Theory of Ground Vehicles*, 2nd ed. 1993, p. 26; NHTSA; AASHTO)
+- Wikipedia, "Bicycle and motorcycle dynamics" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Bicycle_and_motorcycle_dynamics (citing Wilson, *Bicycling Science*, 3rd ed. 2004; Whitt and Wilson, *Bicycling Science*, 2nd ed. 1982, p. 188; Fajans, *Am. J. Phys.* 68 (2000) 654; Foale, *Motorcycle Handling and Chassis Design*, 2006; Meijaard, Papadopoulos, Ruina and Schwab 2007, *Proc. R. Soc. A* 463:1955; Kooijman et al. 2011, *Science* 332:339, doi:10.1126/science.1201959; Cossalter, *Motorcycle Dynamics*)
+- Wikipedia, "Rolling resistance" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Rolling_resistance
+- OptimumG, "Tech Tip: Springs & Dampers", Parts One to Three, https://optimumg.com/wp-content/uploads/2020/01/SpringsDampers_Tech_Tip_1.pdf, https://optimumg.com/wp-content/uploads/2020/01/SpringsDampers_Tech_Tip_2.pdf, https://optimumg.com/wp-content/uploads/2020/01/SpringsDampers_Tech_Tip_3.pdf
+- Rouelle (OptimumG), "Of springs and dampers", *Racecar Engineering* 2020-11, https://optimumg.com/wp-content/uploads/2021/10/racecar-2020_11.pdf
+- The Highway Code, Rule 126, https://www.gov.uk/guidance/the-highway-code/general-rules-techniques-and-advice-for-all-drivers-and-riders-103-to-158, and "Typical stopping distances", https://assets.publishing.service.gov.uk/media/65f97642aa9b760011fbda4e/the-highway-code-stopping-distances.pdf (Crown copyright, Open Government Licence)
+- The AA, "Stopping distances", https://www.theaa.com/breakdown-cover/advice/stopping-distances
+- Wikipedia infoboxes (CC BY-SA 4.0): https://en.wikipedia.org/wiki/Volkswagen_Golf_Mk8, https://en.wikipedia.org/wiki/Porsche_911_(992), https://en.wikipedia.org/wiki/Tesla_Model_3, https://en.wikipedia.org/wiki/New_Flyer_Xcelsior, https://en.wikipedia.org/wiki/M1_Abrams (citing Hunnicutt 2015), https://en.wikipedia.org/wiki/Leopard_2
+- Wikipedia, "Ground pressure" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Ground_pressure (citing Thompson, *Sustainable Landscape Construction*, and mathscinotes, among others)

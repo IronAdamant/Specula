@@ -1,10 +1,17 @@
 # J19: Shape: drag by shape, moment of inertia, terminal speed, tumbling, buoyancy
 
-Researched 2026-11-17 (all URLs accessed 2026-11-17). Values marked "computed by me" are arithmetic. Extends round-two J4 (drag and air, with OpenStax and NASA drag values) and J8 (projectiles); those values are not repeated.
+Fixed after the second check (2026-11-18):
+- OpenStax *University Physics Volume 1* is CC BY-NC-SA 4.0 (not CC BY 4.0): link only.
+- J19-1: the Wikipedia drag table also cites Engineering ToolBox (on the ski-jumper row); added.
+- J19-4: "50% in about 3 s, 90% in about 8 s" is the Wikipedia page's own uncited example, not Huang 1998; relabelled, with the recomputed 3.1 s and 8.3 s, and Huang's spread of 53-76 m/s added (also under Sources disagree).
+- J19-5: the human-floating statement has no source; moved to Unconfirmed.
+- Licences stated; a Sources list added at the bottom.
+
+Researched 2026-11-17 (all URLs accessed 2026-11-17). Values marked "computed by me" are arithmetic. Extends round-two J4 (drag and air, with OpenStax and NASA drag values) and J8 (projectiles); those values are not repeated. Values taken from Wikipedia are secondary and under CC BY-SA 4.0 (Wikipedia's text licence).
 
 ## J19-1. Drag coefficient by shape (read directly, secondary)
 
-Wikipedia "Drag coefficient", table "General", https://en.wikipedia.org/wiki/Drag_coefficient, citing aerodyn.org "Shapes" (archived 2007) and, for the 3D plate, NASA. Reference area is the frontal area unless noted. Cd changes with Reynolds number, so these are typical values only.
+Wikipedia "Drag coefficient", table "General", https://en.wikipedia.org/wiki/Drag_coefficient (CC BY-SA 4.0), citing aerodyn.org "Shapes" (archived 2007; backs the table header), NASA (backs the 3D plate row) and Engineering ToolBox, "Drag coefficient" (http://www.engineeringtoolbox.com/drag-coefficient-d_627.html, archived 2010-12-04; placed on the ski-jumper row). Reference area is the frontal area unless noted. Cd changes with Reynolds number, so these are typical values only.
 
 | Shape | Cd |
 |---|---|
@@ -28,7 +35,7 @@ Same page: Cd = 1 would mean all the oncoming air is brought to rest over the wh
 
 ## J19-2. Moment of inertia of simple shapes (read directly)
 
-Wikipedia "List of moments of inertia", https://en.wikipedia.org/wiki/List_of_moments_of_inertia (secondary; these are standard results, also in OpenStax *University Physics Volume 1*, section 10.5, Figure 10.20, https://openstax.org/books/university-physics-volume-1/pages/10-5-calculating-moments-of-inertia, CC BY 4.0, OpenStax, Ling, Sanny, Moebs et al.).
+Wikipedia "List of moments of inertia", https://en.wikipedia.org/wiki/List_of_moments_of_inertia (secondary; these are standard results, also in OpenStax *University Physics Volume 1*, section 10.5, Figure 10.20, https://openstax.org/books/university-physics-volume-1/pages/10-5-calculating-moments-of-inertia, CC BY-NC-SA 4.0 (non-commercial: link only, do not copy its tables into a product), OpenStax, Ling, Sanny, Moebs et al.).
 
 | Shape (mass m) | Axis | I |
 |---|---|---|
@@ -61,7 +68,9 @@ Reading of the paper (not a number from it): a higher I* moves a disk toward tum
 
 ## J19-4. Terminal speed (formula read directly, values computed by me)
 
-Terminal speed v_t = √(2 m g / (ρ A Cd)) (Wikipedia "Terminal velocity", https://en.wikipedia.org/wiki/Terminal_velocity). Reference point: a skydiver belly-down falls at about 55 m/s, reaching 50% of that in about 3 s and 90% in about 8 s (same page, citing Huang 1998, *The Physics Factbook*, https://hypertextbook.com/facts/1998/JianHuang.shtml).
+Terminal speed v_t = √(2 m g / (ρ A Cd)) (Wikipedia "Terminal velocity", https://en.wikipedia.org/wiki/Terminal_velocity). Reference point: a skydiver belly-down falls at about 55 m/s (same page, citing Huang 1998, *The Physics Factbook*, https://hypertextbook.com/facts/1998/JianHuang.shtml). The page then says the diver reaches 50% of that in about 3 s and 90% in about 8 s: this is the page's own uncited example, not Huang's. The numbers do recompute for v = v_t·tanh(g t / v_t) with v_t = 55 m/s: 3.1 s and 8.3 s (second checker's arithmetic, page arithmetic, not a measurement).
+
+Spread: Huang's essay itself says terminal speed "is often reported to be approximately 60 m/s", and its bibliography table runs 53-76 m/s (Exploratorium 53, USAFA 54, Ardley 55.6, Tipler 56, Bueche 76). Wikipedia rounds to 55. Use 53-76 m/s as the spread.
 
 Values computed by me with ρ_air = 1.225 kg/m³ (ISA sea level, Wikipedia "Density of air"), g = 9.80665 m/s², and Cd from J19-1:
 
@@ -77,14 +86,38 @@ Caveat: 0.47 is the rough-sphere value at Re = 10⁶; a smooth sphere past the d
 
 ## J19-5. Buoyancy (read directly)
 
-Archimedes' principle: the upward force equals the weight of the fluid that would occupy the submerged volume (Wikipedia "Buoyancy", https://en.wikipedia.org/wiki/Buoyancy). A floating object sinks until it displaces its own weight, so the submerged fraction = ρ_object / ρ_fluid (computed by me from the principle). Using round-two J3 densities: ice in fresh water about 0.92 submerged; pine (about 500 kg/m³) about 0.5; a human (close to water's density) floats only with air in the lungs.
+Archimedes' principle: the upward force equals the weight of the fluid that would occupy the submerged volume (Wikipedia "Buoyancy", https://en.wikipedia.org/wiki/Buoyancy). A floating object sinks until it displaces its own weight, so the submerged fraction = ρ_object / ρ_fluid (computed by me from the principle). Using round-two J3 densities: ice in fresh water about 0.92 submerged; pine (about 500 kg/m³) about 0.5. (A statement about a human floating is under Unconfirmed.)
 
 ## Sources disagree
 
 - Sphere Cd: 0.47 (rough, Re = 10⁶) against 0.1 (smooth, Re = 10⁶) in the same table; round-two J4 has other sphere values. The drag crisis makes this a regime question, not a real disagreement.
+- Skydiver terminal speed: about 55 m/s (Wikipedia "Terminal velocity", citing Huang 1998) against "approximately 60 m/s" in Huang's own essay, whose bibliography table runs 53-76 m/s (Exploratorium 53, USAFA 54, Ardley 55.6, Tipler 56, Bueche 76).
 
 ## Not found
 
 - Drag coefficient of a cube (face-on and edge-on) from an open, citable source. Not used anywhere here.
 - Numeric regime boundaries for falling disks (only in Field et al. Fig. 2).
 - Drag of irregular rocks and debris.
+
+## Unconfirmed (second check, 2026-11-18)
+
+Not to be used until a source that gives the value has been opened.
+
+- "A human (close to water's density) floats only with air in the lungs" (J19-5). Checker's reason: unsourced; the file gave no source for it.
+
+## Sources
+
+All accessed 2026-11-17.
+
+- Wikipedia, "Drag coefficient" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Drag_coefficient
+- aerodyn.org, "Shapes" (archived 2007), as cited by Wikipedia "Drag coefficient"
+- NASA, as cited by Wikipedia "Drag coefficient" for the 3D flat plate
+- Engineering ToolBox, "Drag coefficient", http://www.engineeringtoolbox.com/drag-coefficient-d_627.html (archived 2010-12-04), as cited by Wikipedia "Drag coefficient"
+- Wikipedia, "List of moments of inertia" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/List_of_moments_of_inertia
+- OpenStax, *University Physics Volume 1*, section 10.5 (CC BY-NC-SA 4.0, link only), https://openstax.org/books/university-physics-volume-1/pages/10-5-calculating-moments-of-inertia
+- Wikipedia, "Tennis racket theorem" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Tennis_racket_theorem
+- Field, Klaus, Moore and Nori, "Chaotic dynamics of falling disks", *Nature* 388, 252-254 (1997), doi:10.1038/40817; author copy https://nori-physics.org/images/pub/nori/pdf/Nature_388_252_Falling_Disks.pdf; Deep Blue https://hdl.handle.net/2027.42/62793 (returned 403 to the second checker; the nori-physics.org PDF opens)
+- Wikipedia, "Terminal velocity" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Terminal_velocity
+- Huang 1998, *The Physics Factbook*, https://hypertextbook.com/facts/1998/JianHuang.shtml
+- Wikipedia, "Density of air" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Density_of_air
+- Wikipedia, "Buoyancy" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Buoyancy

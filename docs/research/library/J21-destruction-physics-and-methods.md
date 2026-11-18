@@ -1,12 +1,19 @@
 # J21: Physics of destruction, and how games model it
 
-Researched 2026-11-17 (all URLs accessed 2026-11-17). Values marked "computed by me" are arithmetic, never measurements. Extends J15 (fracture toughness, stiffness, crack energy) and J14 (blast); those values are not repeated. This file covers how things break (impact, crushing, cutting, tools, wear, losing supports, fire) and, because the engine will do this natively, how published games and research model damage. Pictures are in images/6-destruction.
+Fixed after the second check (2026-11-18):
+- J21-2: the Mott and Linfoot / Grady (2008) statement is credited to the review by Ramesh, Hogan, Kimberley, Stickle and Tonge (read directly by the checker); Drugan's limits on energy models added under Table J21-2a (its sizes are an upper bound); the Computational Materials Science 2006 abstract moved to Unconfirmed.
+- Wood Handbook pages corrected: fracture toughness text p. 5-17, Tables 5-9/5-10 p. 5-28 (not p. 5-27); lignin and cellulose p. 18-10 (char rates stay on p. 18-15).
+- J21-7: Red Faction's "structural engineers" line replaced by Dave Baranec's quote from the cited Digital Foundry article; Unreal Chaos row cut to what the Destruction Overview page supports (no Voronoi, no per-level threshold); Teardown and Müller et al. rows marked as read directly.
+- Spreads added: compression to tension 8-20 times; concrete 20-32 MPa for routine uses; the EN 1993-1-2 row at 1,100 °C; Promat's 620 °C for beams; WTC 7 stage times and the NIST draft source of the 5.4 s figure.
+- Licences stated; a Sources list added at the bottom.
+
+Researched 2026-11-17 (all URLs accessed 2026-11-17). Values marked "computed by me" are arithmetic, never measurements. Extends J15 (fracture toughness, stiffness, crack energy) and J14 (blast); those values are not repeated. This file covers how things break (impact, crushing, cutting, tools, wear, losing supports, fire) and, because the engine will do this natively, how published games and research model damage. Pictures are in images/6-destruction. Values taken from Wikipedia are secondary and under CC BY-SA 4.0 (Wikipedia's text licence).
 
 ## J21-1. Strength of building materials (read directly)
 
 | Material | Value | Source |
 |---|---|---|
-| Ordinary concrete, compressive | 40 MPa readily available; above 40 MPa for special elements; 80 MPa or more in lower columns of tall buildings; up to 130 MPa used commercially; 14 MPa or less for lightweight mixes | Wikipedia "Concrete", https://en.wikipedia.org/wiki/Concrete (secondary) |
+| Ordinary concrete, compressive | 20 to 32 MPa for most routine uses (the everyday band); 40 MPa readily available; above 40 MPa for special elements; 80 MPa or more in lower columns of tall buildings; up to 130 MPa used commercially; 14 MPa or less for lightweight mixes | Wikipedia "Concrete", https://en.wikipedia.org/wiki/Concrete (secondary) |
 | Ultra-high-performance concrete | over 150 MPa compressive (definition) | Wikipedia "Compressive strength", https://en.wikipedia.org/wiki/Compressive_strength |
 | Concrete, tensile | 2-5 MPa (density 2.7 g/cm³ as listed) | Wikipedia "Ultimate tensile strength", table, https://en.wikipedia.org/wiki/Ultimate_tensile_strength |
 | Concrete: air content | each 1% of entrained air may cut compressive strength by about 5% | Wikipedia "Concrete" |
@@ -17,7 +24,7 @@ Researched 2026-11-17 (all URLs accessed 2026-11-17). Values marked "computed by
 | Annealed glass, tensile | 41 MPa | same |
 | Pine, along the grain, tensile | 40 MPa | same |
 
-Rule of thumb from these rows (computed by me): concrete is about 10 times stronger in compression than in tension (40 against 2-5 MPa). That is why unreinforced concrete and masonry crack from bending and pulling, and why a game should store separate compression and tension limits per material, as the NVIDIA Blast stress solver does (J21-7).
+Rule of thumb from these rows (computed by me): concrete is about 8 to 20 times stronger in compression than in tension (40 against 2-5 MPa). That is why unreinforced concrete and masonry crack from bending and pulling, and why a game should store separate compression and tension limits per material, as the NVIDIA Blast stress solver does (J21-7).
 
 ## J21-2. How solids break into pieces (read directly)
 
@@ -25,7 +32,7 @@ Rule of thumb from these rows (computed by me): concrete is about 10 times stron
 
 l = 24^(1/3) · (K_Ic / (ρ c ε̇))^(2/3)
 
-with K_Ic fracture toughness, ρ density, c elastic wave speed, ε̇ strain rate. Equivalent form s = (24 G_c / (ρ ε̇²))^(1/3) with G_c fracture energy, so size falls as ε̇^(−2/3) (abstract of "Analysis of the brittle fragmentation of an expanding ring", *Computational Materials Science* 2006, https://www.sciencedirect.com/science/article/abs/pii/S0927025605003629, search extract). Both sources warn that energy models overestimate: measured and simulated fragments are often much smaller, and Drugan finds the instantaneous-fragmentation assumption holds only at very high strain rates.
+with K_Ic fracture toughness, ρ density, c elastic wave speed, ε̇ strain rate. Equivalent form s = (24 G_c / (ρ ε̇²))^(1/3) with G_c fracture energy, so size falls as ε̇^(−2/3) (abstract of "Analysis of the brittle fragmentation of an expanding ring", *Computational Materials Science* 2006, https://www.sciencedirect.com/science/article/abs/pii/S0927025605003629, search extract). Drugan warns that energy models overestimate: measured and simulated fragments are often much smaller, and the instantaneous-fragmentation assumption holds only at very high strain rates. (The same warning credited to the Computational Materials Science 2006 abstract is under Unconfirmed.)
 
 ### Table J21-2a. Grady fragment size (computed by me; K from J15, c = √(E/ρ))
 
@@ -34,12 +41,12 @@ with K_Ic fracture toughness, ρ density, c elastic wave speed, ε̇ strain rate
 | Soda-lime glass (K 0.75 MPa·m^½, ρ 2,500, E 60 GPa) | 4,900 | 97 mm | 21 mm | 4.5 mm | 1.0 mm |
 | Concrete (K 1.0, ρ 2,400, E 20 GPa) | 2,900 | 171 mm | 37 mm | 7.9 mm | 1.7 mm |
 
-Treat these as upper bounds on typical piece size. Strain rate for a game impact can be estimated as impact speed / object size (my approximation, not from a source).
+Treat these as upper bounds on typical piece size, not estimates. Drugan's abstract says the energy models agree with the dynamic models only at extremely high strain rates (about 5 × 10^7 s⁻¹ for dense alumina), and that "the regime of validity of the energy-based models is rather restricted"; at quasi-static rates the fragment size stops depending on strain rate. The rates in this table (10 to 10^4 s⁻¹) sit far below that. Strain rate for a game impact can be estimated as impact speed / object size (my approximation, not from a source).
 
 **Fragment size distributions.**
 - Oddershede, Dimon and Bohr, "Self-organized criticality in fragmenting", *Phys. Rev. Lett.* 71, 3107 (1993), doi:10.1103/PhysRevLett.71.3107 (abstract read): 26 broken objects of gypsum, soap, paraffin and potato; the probability of a fragment falls as a power of its mass; the exponent depends on the object's shape (balls, cubes, half cubes, plates, bars), not the material; scaling holds for fragments smaller than the object's smallest dimension. The individual exponents were seen only in a search summary (about 1.6 for balls and cubes, about 1.1 for bars and plates) and are not used as cited values.
 - Ching, Yiu and Lo, "Energy dependence of mass distributions in fragmentation", arXiv:cond-mat/9809172, https://arxiv.org/abs/cond-mat/9809172: molecular-dynamics model; the cumulative fragment-mass distribution has a power-law region whose exponent increases with the energy given to the object, "confirmed by experiments". Their review section also notes glass rods dropped from low heights give lognormal masses and from large heights a power-law region, and that dry-clay plates show two power-law regions separated by a mass that grows with plate thickness (Meibom and Balslev).
-- Mott and Linfoot (1943) predicted distributions by randomly cutting shapes with lines; Grady (2008) noted ductile materials fit an exponential form and brittle materials a power law ("A Review of Mechanisms and Models for Dynamic Strength, Dynamic Failure, and Fragmentation", University of Alberta repository, lines 543-552, https://ualberta.scholaris.ca/server/api/core/bitstreams/64de9741-8620-47fc-83d8-a0985a572bb9/content, search extract).
+- Mott and Linfoot (1943) predicted distributions by randomly cutting shapes with lines; Grady (2008) noted ductile materials fit an exponential form and brittle materials a power law (Ramesh, Hogan, Kimberley, Stickle and Tonge, "A Review of Mechanisms and Models for Dynamic Strength, Dynamic Failure, and Fragmentation", preprint submitted to *Planetary and Space Science*, University of Alberta repository, text lines 546-552, https://ualberta.scholaris.ca/server/api/core/bitstreams/64de9741-8620-47fc-83d8-a0985a572bb9/content; read directly by the second checker).
 
 Game use: more energy means more, smaller pieces and a steeper power law; metal tears into fewer, exponentially distributed pieces; glass and stone shatter in power-law showers; cap the smallest piece at the voxel size and turn the rest into particles and dust.
 
@@ -59,7 +66,7 @@ Game use: more energy means more, smaller pieces and a steeper power law; metal 
 
 A simple chip model: new crack area per blow ≈ (energy absorbed) / G_c, with G_c from J15-4 (about 10 J/m² for glass and stone, thousands for metals). Only a fraction of the blow goes into cracks; the rest becomes heat, sound and motion. That fraction was not found in an open source.
 
-- **Cutting and chopping wood** follows the grain: Wood Handbook p. 5-27 (J15-2) shows cracks run most easily along the grain (RL and TL systems), with mode I toughness 220-550 kPa·m^½ against 1,650-2,400 for shear. Splitting along the grain therefore needs a few times less energy than cutting across it (direction from J15; no per-cut energy found).
+- **Cutting and chopping wood** follows the grain: Wood Handbook p. 5-17 (text) and Tables 5-9 and 5-10 on p. 5-28 (J15-2) show cracks run most easily along the grain (RL and TL systems), with mode I toughness 220-550 kPa·m^½ against 1,650-2,400 for shear. Splitting along the grain therefore needs a few times less energy than cutting across it (direction from J15; no per-cut energy found).
 - **Drilling and pickaxe** energy per volume removed: not found in an open source.
 
 ## J21-4. Gradual damage, wear and fire weakening (read directly)
@@ -78,11 +85,14 @@ A simple chip model: new crack area per blow ≈ (energy absorbed) / G_c, with G
 | 800 °C | 0.11 | 0.09 |
 | 900 °C | 0.06 | 0.0675 |
 | 1,000 °C | 0.04 | 0.045 |
+| 1,100 °C | 0.02 | 0.0225 |
 | 1,200 °C | 0 | 0 |
 
-Promat notes structural steel begins to lose its design margin of safety around 550 °C.
+The 1,100 °C row is per FireSolver (added after the second check; it matters for interpolating between 1,000 and 1,200 °C).
 
-**Wood in fire.** USDA *Wood Handbook* FPL-GTR-282 (2021), chapter 18, p. 18-15, https://research.fs.usda.gov/treesearch/62200 (public domain): under the standard ASTM E119 fire, wood ignites in about 2 minutes; char then grows at about 0.8 mm/min for the next 8 minutes, after which the char layer insulates and the rate drops to about 0.6 mm/min; the average over the first hour is about 0.6 mm/min (1.5 in/h), the nominal rate generally assumed for solid wood. Moisture content is a major factor; density and species matter. Strength depends on the remaining uncharred cross-section. Same chapter: lignin breaks down with exothermic peaks between 225 and 450 °C, and cellulose depolymerises strongly between 300 and 350 °C.
+Promat notes structural steel begins to lose its design margin of safety around 550 °C, and gives conservative limiting temperatures of 550 °C for columns and 620 °C for beams.
+
+**Wood in fire.** USDA *Wood Handbook* FPL-GTR-282 (2021), chapter 18, p. 18-15, https://research.fs.usda.gov/treesearch/62200 (public domain): under the standard ASTM E119 fire, wood ignites in about 2 minutes; char then grows at about 0.8 mm/min for the next 8 minutes, after which the char layer insulates and the rate drops to about 0.6 mm/min; the average over the first hour is about 0.6 mm/min (1.5 in/h), the nominal rate generally assumed for solid wood. Moisture content is a major factor; density and species matter. Strength depends on the remaining uncharred cross-section. Same chapter, p. 18-10: lignin breaks down with exothermic peaks between 225 and 450 °C, and cellulose depolymerises strongly between 300 and 350 °C. Table 18-3 (p. 18-15) gives charring data per species, a spread not used here.
 
 Computed by me: a 100 mm square post burning on all four faces at 0.6 mm/min loses 36 mm of width (18 mm per face) in 30 minutes, leaving a 64 mm core, about 41% of the original area; after 60 minutes (36 mm per face) a 28 mm core, about 8% of the area.
 
@@ -103,7 +113,7 @@ Computed by me: a 100 mm square post burning on all four faces at 0.6 mm/min los
 **WTC 7** (NIST, "FAQs - NIST WTC 7 Investigation", https://www.nist.gov/world-trade-center-investigation/study-faqs/wtc-7-investigation, and NCSTAR 1A):
 - A single initiating event: fire damage to floors and connections failed one column (Column 79).
 - 12.9 s passed between the floor failures around Column 79 and the roofline starting to drop (measured and predicted, NCSTAR 1A Table 3-1).
-- The north-face descent had three stages: slower than gravity for 1.75 s; free fall for about 2.25 s over about 8 storeys (32 m); then slowing as it met resistance. The upper 18 storeys took about 5.4 s, about 40% longer than free fall (quotes via search extract).
+- The north-face descent had three stages: slower than gravity for 1.75 s (0-1.75 s); free fall for about 2.25 s (1.75-4.0 s) over about 8 storeys (32 m); then slowing as it met resistance (4.0-5.4 s). NCSTAR 1A p. 45 (PDF p. 87) prints the free-fall drop as "approximately 8 stories or 32.0 m (105 ft), the distance traveled between times t = 1.75 s and t = 4.0 s" (read directly by the second checker). The upper 18 storeys took about 5.4 s, about 40% longer than the 3.9 s free-fall time: this figure comes from the NIST draft report (August 2008), restated in the FAQ, which explains the extra time as Stage 1 buckling.
 
 ### Table J21-5a. Free-fall time from height (computed by me, t = √(2h/g), no air or resistance)
 
@@ -132,22 +142,22 @@ Debris field: no universal "radius = k × height" rule was found. One search sum
 
 | Source | Method | Use for this engine |
 |---|---|---|
-| Dennis Gustafsson, *Teardown* (voxel engine). Interview, Software Engineering Daily ep. 1772, Dec 2024, transcript https://softwareengineeringdaily.com/wp-content/uploads/2024/12/SED1772-Teardown.txt; 80.lv interview https://80.lv/articles/teardown-developer-breaks-down-multiplayer-and-voxel-destruction-tech; Voxagon blog "The unlikely story of Teardown Multiplayer" (13 Mar 2026), https://blog.voxagon.se/2026/03/13/teardown-multiplayer.html | Objects are voxel volumes on a regular grid, so cutting is discrete and avoids mesh-cutting precision and convexity problems. After voxels are removed the engine checks connectivity; disconnected parts become new physics objects. No load or stress model: a house hanging on one voxel stays up (a deliberate gameplay choice; he says real structural integrity over hundreds of millions of voxels is hard). Early access needed an improved connected-parts search for very large objects. Multiplayer: destruction logic rewritten in fixed-point integer maths and sent as ordered deterministic commands ("cut hole in this shape at voxel x,y,z"); transforms use state sync at about 1 Mbit/s per client. | Baseline voxel cut plus connectivity islands. Add a support/stress pass on top (Red Faction, 7 Days to Die, Blast) to fix Teardown's known gap. |
+| Dennis Gustafsson, *Teardown* (voxel engine). Interview, Software Engineering Daily ep. 1772, Dec 2024, transcript https://softwareengineeringdaily.com/wp-content/uploads/2024/12/SED1772-Teardown.txt; 80.lv interview https://80.lv/articles/teardown-developer-breaks-down-multiplayer-and-voxel-destruction-tech; Voxagon blog "The unlikely story of Teardown Multiplayer" (13 Mar 2026), https://blog.voxagon.se/2026/03/13/teardown-multiplayer.html | Objects are voxel volumes on a regular grid, so cutting is discrete and avoids mesh-cutting precision and convexity problems. After voxels are removed the engine checks connectivity; disconnected parts become new physics objects. No load or stress model: a house hanging on one voxel stays up (a deliberate gameplay choice; he says real structural integrity over hundreds of millions of voxels is hard). Early access needed an improved connected-parts search for very large objects. Multiplayer: destruction logic rewritten in fixed-point integer maths and sent as ordered deterministic commands ("cut hole in this shape at voxel x,y,z"); transforms use state sync at about 1 Mbit/s per client (the Voxagon 2026 post confirms the fixed-point rewrite, the deterministic command examples and "around one Mbit per client"; second check). | Baseline voxel cut plus connectivity islands. Add a support/stress pass on top (Red Faction, 7 Days to Die, Blast) to fix Teardown's known gap. |
 | Gustafsson, "Cracking destruction" (Smash Hit), 13 May 2014, https://blog.voxagon.se/2014/05/13/cracking-destruction.html | When a hit's impulse passes a threshold, carve a small volume at the impact point, slice it into pieces, check whether the remainder falls apart. Cap contact impulses on breakable objects inside the solver, break when the cap is hit, then re-solve so the pieces keep the motion. | Break inside the physics step, not after it, so breaking absorbs momentum naturally. |
-| Volition, *Red Faction: Guerrilla* (Geo-Mod 2.0). GDC 2009 "Blowing Up the Outside World: Destruction Done the Next Gen Way", Eric Arnold and Jeff Hanna, https://gdcvault.com/play/1672/Blowing-Up-the-Outside-World; Digital Foundry interview, 9 Sep 2009, https://www.digitalfoundry.net/articles/digitalfoundry-red-faction-guerrilla-big-bang-theory-article | Pre-broken structures with materials and weight. The stress code scans from top to bottom, adding up the force from the mass above and comparing it with each material's strength; if exceeded, the piece breaks, which can drop the whole building if it was the last connection. Creaks and groans play as stress rises. Havok handled rigid bodies, vehicles and ray casts; the destruction engine was custom on top. Developers say level artists had to learn to build like structural engineers, and memory cost is high. | The model Aron named: per-piece mass, per-connection strength, top-down load accumulation, audio cues from stress ratio. |
+| Volition, *Red Faction: Guerrilla* (Geo-Mod 2.0). GDC 2009 "Blowing Up the Outside World: Destruction Done the Next Gen Way", Eric Arnold and Jeff Hanna, https://gdcvault.com/play/1672/Blowing-Up-the-Outside-World; Digital Foundry interview, 9 Sep 2009, https://www.digitalfoundry.net/articles/digitalfoundry-red-faction-guerrilla-big-bang-theory-article | Pre-broken structures with materials and weight. The stress code scans from top to bottom, adding up the force from the mass above and comparing it with each material's strength; if exceeded, the piece breaks, which can drop the whole building if it was the last connection. Creaks and groans play as stress rises. Havok handled rigid bodies, vehicles and ray casts; the destruction engine was custom on top. Dave Baranec (Digital Foundry interview) says the system "makes level design extremely hard" and makes memory use "staggeringly high". | The model the owner named: per-piece mass, per-connection strength, top-down load accumulation, audio cues from stress ratio. |
 | *7 Days to Die* structural integrity, official wiki, https://7daystodie.wiki.gg/wiki/Structural_Integrity | Each block has mass, a yes/no vertical support, and a horizontal support limit (mass that one side face can carry). Support propagates up from bedrock; vertically supported blocks are always stable; cantilevered runs fail when the attached mass exceeds the face limit (example: wood limit 40, mass 5, so 8 blocks hold and the 9th drops all of them; concrete limit 120). Recomputed on every place or remove. | Cheap integer support rule for block worlds; good first version before a full stress solve. |
 | NVIDIA Blast SDK, "Stress Solver (NvBlastExtStress)", https://docs.omniverse.nvidia.com/kit/docs/blast-sdk/latest/docs/api/extensions/ext_stress.html, and "Introduction", https://nvidia-omniverse.github.io/PhysX/blast/docs/api/introduction.html | Support graph: chunks are nodes, bonds join them, each bond has health; damage lowers health and bonds at or below zero break; connected islands become new actors. The stress solver iteratively spreads forces across bonds with separate tension, compression and shear limits; gravity needs at least one zero-mass (fixed) node; collision impulses can be added to the nearest node so things break at their weak point, not just where hit; supports dynamic actors (spin fast enough and it tears). Update loop: add forces, update, if overstressed bonds then generate fracture commands, then notify new and destroyed actors. | Closest open reference implementation of a stress/support graph. |
-| Unreal Engine Chaos Destruction, "Destruction Overview", https://dev.epicgames.com/documentation/en-us/unreal-engine/destruction-overview; GDC 2019 "Causing Chaos", https://www.youtube.com/watch?v=6T8LzaIq3Qs | Geometry collections pre-fractured (Voronoi and other patterns) into a cluster hierarchy; each level has a damage threshold (strain); a connection graph joins neighbouring pieces and breaks when strain exceeds the limit. | Hierarchical clusters: break big chunks first, small ones later. |
+| Unreal Engine Chaos Destruction, "Destruction Overview", https://dev.epicgames.com/documentation/en-us/unreal-engine/destruction-overview; GDC 2019 "Causing Chaos", https://www.youtube.com/watch?v=6T8LzaIq3Qs | Pre-fractured geometry collections; a connection graph built from nearest neighbours, with initial strain values; a connection breaks when an impulse exceeds its limit. (Voronoi patterns and a per-level damage threshold are not on the Destruction Overview page; they would need the Fracture Mode docs or the GDC talk, not checked.) | Hierarchical clusters: break big chunks first, small ones later. |
 | DICE, Frostbite 2 (Battlefield). Robert Kihl, "Destruction Masking in Frostbite 2 using Volume Distance Fields", SIGGRAPH 2010 Advances in Real-Time Rendering, https://advances.realtimerendering.com/s2010/Kihl-Destruction%20in%20Frostbite(SIGGRAPH%202010%20Advanced%20RealTime%20Rendering%20Course).pdf | Rendering side: artist-placed spheres and signed volume distance fields mask damage on surfaces, replacing the per-part UV masks of Bad Company 2 and 1943. | How to show damage on surfaces without new geometry. |
 | O'Brien and Hodgins, "Graphical Modeling and Animation of Brittle Fracture", SIGGRAPH 1999, pp. 137-146, doi:10.1145/311535.311550, https://graphics.berkeley.edu/papers/Obrien-GMA-1999-08/Obrien-GMA-1999-08.pdf | Finite-element stress analysis decides where cracks start and which way they run. | Physically based reference; too slow for whole buildings in real time. |
 | Parker and O'Brien, "Real-time deformation and fracture in a game environment", SCA 2009, doi:10.1145/1599470.1599492 | Corotational tetrahedral finite elements made robust and controllable for a shipped game (search summary). | Real-time FEM fracture for hero objects. |
-| Müller, Chentanez and Kim, "Real Time Dynamic Fracture with Volumetric Approximate Convex Decompositions", SIGGRAPH 2013, doi:10.1145/2461912.2461934, https://matthias-research.github.io/pages/publications/fractureSG2013.pdf | Meshes are split into convex pieces; a fracture pattern (for example Voronoi cells) is placed at the impact point at run time, giving impact-aligned, partial fracture without pre-baking (search summary). | Pattern-at-impact fracture, artist controllable and fast. |
+| Müller, Chentanez and Kim, "Real Time Dynamic Fracture with Volumetric Approximate Convex Decompositions", SIGGRAPH 2013, doi:10.1145/2461912.2461934, https://matthias-research.github.io/pages/publications/fractureSG2013.pdf (Crossref lists it in *ACM Transactions on Graphics*, SIGGRAPH 2013) | Meshes are split into convex pieces (volumetric approximate convex decompositions, VACD); a fracture pattern (Voronoi cells) is placed by impact location at run time, giving impact-aligned, partial fracture without pre-baking (PDF read directly by the second checker). | Pattern-at-impact fracture, artist controllable and fast. |
 
 ## Sources disagree
 
 - Brick strength: about 7-103 MPa (US range) against 20-40 MPa for a common English house brick (same Wikipedia page, different scopes).
 - Structural stability in games: Teardown has connectivity only; Red Faction and Blast accumulate load and compare it with strength; 7 Days to Die uses a per-face mass limit. These are design choices, not factual disagreements.
-- Energy-based fragment sizes (Grady) against measurements: measured fragments are often much smaller (Drugan 2001; Computational Materials Science 2006 abstract).
+- Energy-based fragment sizes (Grady) against measurements: measured fragments are often much smaller (Drugan 2001; the Computational Materials Science 2006 abstract to the same effect is under Unconfirmed).
 
 ## Not found
 
@@ -155,5 +165,50 @@ Debris field: no universal "radius = k × height" rule was found. One search sum
 - Energy per cut for axes, saws, pickaxes and drills on wood, stone and concrete.
 - Measured sledgehammer head speeds (a seismic-survey report surfaced but the figures could not be checked).
 - Concrete strength against temperature (EN 1992-1-2 is paid; no open retyping read).
-- Oddershede et al. exponents from the paper body (paywalled); the Red Faction GDC 2009 slides themselves (GDC Vault, members only).
+- Oddershede et al. exponents from the paper body (paywalled); the Red Faction GDC 2009 slides themselves (GDC Vault, members only; the second check found the GDC Vault page marks the session "free content", so recheck).
 - Open measured data on concrete, brick or stone wear rates.
+- Where the line "level artists had to learn to build like structural engineers" (formerly in the Red Faction row) comes from: it is not in the Digital Foundry article.
+
+## Unconfirmed (second check, 2026-11-18)
+
+Not to be used until a source that gives the value has been opened.
+
+- "Measured fragments much smaller" than energy-model sizes, credited to the abstract of "Analysis of the brittle fragmentation of an expanding ring", *Computational Materials Science* 2006, https://www.sciencedirect.com/science/article/abs/pii/S0927025605003629 (J21-2). Checker's reason: still a search extract only; the primary was not found. Drugan 2001 supports the gist on its own.
+
+## Sources
+
+All accessed 2026-11-17 unless the row says otherwise.
+
+- Wikipedia, "Concrete" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Concrete
+- Wikipedia, "Compressive strength" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Compressive_strength
+- Wikipedia, "Ultimate tensile strength" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Ultimate_tensile_strength
+- Wikipedia, "Brick" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Brick
+- Wikipedia, "Masonry" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Masonry
+- Drugan, *Dynamic Fragmentation of Brittle Materials: Analytical Mechanics-Based Models*, UWFDM-1149, University of Wisconsin Fusion Technology Institute, January 2001, https://fti.neep.wisc.edu/fti.neep.wisc.edu/pdf/fdm1149.pdf
+- "Analysis of the brittle fragmentation of an expanding ring", *Computational Materials Science* 2006, https://www.sciencedirect.com/science/article/abs/pii/S0927025605003629 (search extract only; see Unconfirmed)
+- Oddershede, Dimon and Bohr, "Self-organized criticality in fragmenting", *Phys. Rev. Lett.* 71, 3107 (1993), doi:10.1103/PhysRevLett.71.3107
+- Ching, Yiu and Lo, "Energy dependence of mass distributions in fragmentation", arXiv:cond-mat/9809172, https://arxiv.org/abs/cond-mat/9809172
+- Ramesh, Hogan, Kimberley, Stickle and Tonge, "A Review of Mechanisms and Models for Dynamic Strength, Dynamic Failure, and Fragmentation", preprint submitted to *Planetary and Space Science*, https://ualberta.scholaris.ca/server/api/core/bitstreams/64de9741-8620-47fc-83d8-a0985a572bb9/content
+- Wikipedia, "Sledgehammer" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Sledgehammer
+- FireSolver, "Reduction factors for steel in fire", https://firesolver.net/en/guides/steel-reduction-factors-fire.html (retyping EN 1993-1-2 Table 3.1)
+- Promat structural steel manual, https://media.promat.com/pi10301/original/288272370/promat-paph-02-steelwork-en.pdf
+- USDA Forest Products Laboratory, *Wood Handbook*, FPL-GTR-282 (2021), https://research.fs.usda.gov/treesearch/62200 (public domain; PDF https://research.fs.usda.gov/download/treesearch/62200.pdf)
+- Wikipedia, "Progressive collapse" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Progressive_collapse
+- Wikipedia, "Ronan Point" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Ronan_Point
+- NIST, "FAQs - NIST WTC Towers Investigation", https://www.nist.gov/world-trade-center-investigation/study-faqs/wtc-towers-investigation
+- NIST NCSTAR 1, https://nvlpubs.nist.gov/nistpubs/Legacy/NCSTAR/ncstar1.pdf
+- NIST, "FAQs - NIST WTC 7 Investigation", https://www.nist.gov/world-trade-center-investigation/study-faqs/wtc-7-investigation, and NCSTAR 1A
+- Wikipedia, "Building implosion" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Building_implosion
+- Software Engineering Daily ep. 1772 (Teardown), transcript https://softwareengineeringdaily.com/wp-content/uploads/2024/12/SED1772-Teardown.txt
+- 80.lv, Teardown interview, https://80.lv/articles/teardown-developer-breaks-down-multiplayer-and-voxel-destruction-tech
+- Voxagon blog, "The unlikely story of Teardown Multiplayer" (13 Mar 2026), https://blog.voxagon.se/2026/03/13/teardown-multiplayer.html
+- Voxagon blog, "Cracking destruction" (13 May 2014), https://blog.voxagon.se/2014/05/13/cracking-destruction.html
+- Arnold and Hanna, "Blowing Up the Outside World: Destruction Done the Next Gen Way", GDC 2009, https://gdcvault.com/play/1672/Blowing-Up-the-Outside-World
+- Digital Foundry, Red Faction: Guerrilla interview (9 Sep 2009), https://www.digitalfoundry.net/articles/digitalfoundry-red-faction-guerrilla-big-bang-theory-article
+- *7 Days to Die* wiki, "Structural Integrity", https://7daystodie.wiki.gg/wiki/Structural_Integrity
+- NVIDIA Blast SDK, "Stress Solver (NvBlastExtStress)", https://docs.omniverse.nvidia.com/kit/docs/blast-sdk/latest/docs/api/extensions/ext_stress.html, and "Introduction", https://nvidia-omniverse.github.io/PhysX/blast/docs/api/introduction.html
+- Epic Games, Unreal Engine "Destruction Overview", https://dev.epicgames.com/documentation/en-us/unreal-engine/destruction-overview; GDC 2019 "Causing Chaos", https://www.youtube.com/watch?v=6T8LzaIq3Qs
+- Kihl, "Destruction Masking in Frostbite 2 using Volume Distance Fields", SIGGRAPH 2010, https://advances.realtimerendering.com/s2010/Kihl-Destruction%20in%20Frostbite(SIGGRAPH%202010%20Advanced%20RealTime%20Rendering%20Course).pdf
+- O'Brien and Hodgins, "Graphical Modeling and Animation of Brittle Fracture", SIGGRAPH 1999, doi:10.1145/311535.311550, https://graphics.berkeley.edu/papers/Obrien-GMA-1999-08/Obrien-GMA-1999-08.pdf
+- Parker and O'Brien, "Real-time deformation and fracture in a game environment", SCA 2009, doi:10.1145/1599470.1599492
+- Müller, Chentanez and Kim, "Real Time Dynamic Fracture with Volumetric Approximate Convex Decompositions", SIGGRAPH 2013, doi:10.1145/2461912.2461934, https://matthias-research.github.io/pages/publications/fractureSG2013.pdf

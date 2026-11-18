@@ -2,7 +2,7 @@
 
 Status: **answered the same evening** (parts 1 to 4): 161 pictures, of which 159 are published in
 [specula-imagines](https://github.com/IronAdamant/specula-imagines) ([their index](library/reference-images/INDEX-round-2.md)), and twelve files
-of numbers in [library/](library/README.md) (H7, H8, J1 to J10; not yet checked). What follows is the
+of numbers in [library/](library/README.md) (H7, H8, J1 to J10; second-checked on 2026-11-18, the fixes applied). What follows is the
 request as it was written, in answer to the owner's offer the same evening: "Want me to
 also find images for certain things, and publicly attributable links you can easily reference, both for
 looks and animations as well as potential physics that you could adjust in any games? I can create

@@ -1,6 +1,13 @@
 # J25: Bullets, arrows and thrown things: speeds, masses, energies, recoil, drop
 
-Researched 2026-11-17 (all URLs accessed 2026-11-17). Brief section 1d. Values marked "computed by me" are arithmetic. Firearm figures are for animation, sound and hit effects in a game; nothing here is handloading advice.
+Fixed after the second check (2026-11-18):
+- J25-1: the .22 LR page's hidden editor note is about the 32 gr / 1,640 ft/s load, not the 40 gr one; the 40 gr comparison is now labelled "computed by me". The M118 row's source named (U.S. Armament), and the 9 mm infobox's Norma barrel length noted.
+- J25-3: the Mary Rose draw weights are cited by Wikipedia to Strickland and Hardy 2005 (*The Great Warbow*), p. 17, not Hardy's *Longbow*.
+- J25-4: the atlatl statement reworded to what the abstract says, with the pages (161-181); the sling figures corrected (adults averaged 70 m, males 78 m; Vega and Craig 2009: 1267; Finney on p. 69), and Korfmann 1973's 45 m/s (via Skov) replaces a forum post as the high side.
+- Spreads added: longbow replicas tested at 445-823 N (with Kooi's 450 N kept apart from the destruction-test figure), Aston and Spencer details, compound-bow draw weights and arrow speeds.
+- Licences stated; a Sources list added at the bottom.
+
+Researched 2026-11-17 (all URLs accessed 2026-11-17). Brief section 1d. Values marked "computed by me" are arithmetic. Firearm figures are for animation, sound and hit effects in a game; nothing here is handloading advice. Values taken from Wikipedia are secondary and under CC BY-SA 4.0 (Wikipedia's text licence).
 
 ## J25-1. Cartridges (Wikipedia "Ballistic performance" infoboxes; each infobox names maker or test sources)
 
@@ -14,10 +21,12 @@ Researched 2026-11-17 (all URLs accessed 2026-11-17). Brief section 1d. Values m
 | 5.56×45mm NATO, XM193 | 3.56 g (55 gr) | 993 m/s | 1,755 J | 508 mm | NATO EPVAT, SAAMI, CIP | https://en.wikipedia.org/wiki/5.56×45mm_NATO |
 | 5.56×45mm NATO, SS109 | 4 g (62 gr) | 948 m/s | 1,797 J | 508 mm | same | same |
 | 7.62×51mm NATO, M80 ball | 147 gr (9.53 g) | 853 m/s | 3,469 J | 22 in | US Army TM 9-1005-298-12 (1969), TM 9-1005-224-10 (1985) | https://en.wikipedia.org/wiki/7.62×51mm_NATO |
-| 7.62×51mm NATO, M118 long range | 175 gr | 792 m/s | 3,561 J | 24 in | same | same |
+| 7.62×51mm NATO, M118 long range | 175 gr | 792 m/s | 3,561 J | 24 in | U.S. Armament (the infobox's source for M118; the TMs above are for M80) | same |
 | .50 BMG, Speer 647 gr | 647 gr (41.9 g) | 3,044 ft/s (928 m/s) | 13,310 ft·lbf (18,046 J) | 45 in | Ammoguide.com | https://en.wikipedia.org/wiki/.50_BMG |
 
-The .22 LR page itself carries an editor note that its energies look low against ½mv² (e.g. 191 J computed for 40 gr at 1,260 ft/s, against 131 ft·lbf = 178 J listed).
+The .22 LR page carries a hidden editor note that its energies look low against ½mv²; the note is about the 32 gr / 1,640 ft/s load (listed energy 191), which works out about 203 J by ½mv². For the 40 gr load in this table: 191 J by ½mv² at 1,260 ft/s, against 131 ft·lbf = 178 J listed (computed by me; not from the page note).
+
+The 9×19mm infobox's Norma figures use a 431 mm (17 in) barrel, not the 118 mm of the rows above.
 
 ## J25-2. Derived game numbers (computed by me from J25-1)
 
@@ -36,22 +45,22 @@ Recoil speed is for a 4 kg gun, bullet momentum only (propellant gas adds more, 
 ## J25-3. Bows and crossbows
 
 - Mary Rose replica longbow (Roy King, bowyer to the Mary Rose Trust): measured draw weight 465 N at 0.746 m draw, bow mass 0.794 kg, length 1.874 m; Kooi's model predicted it within 1% (B. W. Kooi, "An approach to the study of ancient archery using mathematical modelling", 1997, table of bows, https://www.bio.vu.nl/thb/users/kooi/kobe97.pdf, citing Hardy 1992). Same table: Turkish flight bow 690 N, 0.35 kg, 1.14 m; modern bow 126 N.
-- Original Mary Rose bow draw weights estimated at 150-160 lbf at 30 in, full range 100-185 lbf (Hardy, *Longbow*, via Wikipedia "English longbow").
-- Approximation bows of Mary Rose bow X1-3 shooting replica arrows (Aston and Spencer, "The Deane brothers' Mary Rose Bow X1-3", https://keskustelu.primitiivijousi.fi/uploads/short-url/jbxr7WWexChfC3RBxRL26IK9gxF.pdf): 101-141 lbf at 30 in; Westminster-type arrow (about 50 g) 227-255 yd; 61 g Mary Rose livery arrow 209-228 yd; AZ472/19 replica 203-241 yd.
+- Original Mary Rose bow draw weights estimated at 150-160 lbf at 30 in, full range 100-185 lbf (Strickland and Hardy 2005, *The Great Warbow*, p. 17, via Wikipedia "English longbow"). The same article gives replicas tested at 445-823 N.
+- Approximation bows of Mary Rose bow X1-3 shooting replica arrows (Aston and Spencer, "The Deane brothers' Mary Rose Bow X1-3", https://keskustelu.primitiivijousi.fi/uploads/short-url/jbxr7WWexChfC3RBxRL26IK9gxF.pdf): 101-141 lbf at 30 in; Westminster-type arrow (about 50 g) 227-255 yd (the 255 yd figure was "recorded with MR X1-3/S1 in favourable atmospheric conditions", not the S3 row of the table); 61 g Mary Rose livery arrow 209-228 yd; AZ472/19 replica (62.5 g, with an M2 Tudor bodkin) 203-241 yd.
 - Mark Stretton's test (Wikipedia "English longbow", citing Soar, Gibbs, Jury and Stretton, *Secrets of the English War Bow*, Westholme 2010, pp. 127-151): 102 g quarrel-like arrow from a 144 lbf yew self bow at 32 in, 47.23 m/s, 113.76 J. Bane's and Williams' tests gave 73 and 80 J; a 160 lbf bow at short range gave 160 J.
-- Compound bow efficiency: 70-85% of stored energy goes to the arrow (Wikipedia "Compound bow", citing its listed sources).
+- Compound bow efficiency: 70-85% of stored energy goes to the arrow (Wikipedia "Compound bow", citing its listed sources). The same page gives adult draw weights of 40-80 lb and arrow speeds of 250-370 ft/s; its Design section carries a "More citations needed" tag.
 
 ## J25-4. Thrown and slung things
 
-- Atlatl darts: well-practised throwers rarely exceed about 35 m/s (Whittaker, Pettigrew and Grohsmeyer, "Atlatl Dart Velocity: Accurate Measurements and Implications for Paleoindian and Archaic Archaeology", *PaleoAmerica* 3(2), 2017, doi:10.1080/20555563.2017.1301133, abstract).
-- Slings: Finney (2006) mean initial velocity 25.38 m/s, maximum 36.96 m/s; Vega and Craig (2009) mean range 66 m, adult males 78 m, one slinger over 100 m consistently and 130 m best; the reviewing author concludes experienced slingers throw beyond 100 m at 30-35 m/s (Eric Skov, "Sling Technology: Towards an understanding of capabilities", *The Nebraska Anthropologist* 26 (2011) 112-126, https://digitalcommons.unl.edu/cgi/viewcontent.cgi?article=1168&context=nebanthro).
+- Atlatl darts: "the atlatls used in hunting and warfare probably did not accelerate darts much beyond 35 m/s (78 mph)", a claim about the weapon systems, not a limit on throwers (Whittaker, Pettigrew and Grohsmeyer, "Atlatl Dart Velocity: Accurate Measurements and Implications for Paleoindian and Archaic Archaeology", *PaleoAmerica* 3(2): 161-181, 2017, doi:10.1080/20555563.2017.1301133, abstract).
+- Slings: Finney (2006) mean initial velocity 25.38 m/s, maximum 36.96 m/s (p. 69); Vega and Craig (2009) mean range 66 m, "adults averaged 70 meters and males averaged 78 meters" (Vega and Craig 2009: 1267), one slinger over 100 m consistently and 130 m best; Korfmann (1973, an informal experiment) published 45 m/s, and Skov says "a throw can exceed 200 m" at about 45 m/s; the reviewing author concludes experienced slingers throw beyond 100 m at 30-35 m/s (Eric Skov, "Sling Technology: Towards an understanding of capabilities", *The Nebraska Anthropologist* 26 (2011) 112-126, https://digitalcommons.unl.edu/cgi/viewcontent.cgi?article=1168&context=nebanthro).
 - Trajectory check (computed by me, no drag): 35 m/s at 45° reaches 125 m; 25 m/s reaches 64 m.
 
 ## Sources disagree
 
 - .22 LR energies: infobox values against ½mv² (see J25-1 note).
-- Longbow draw weights: 450 N average from bows tested to destruction (degraded wood), 465 N measured replica, 670-710 N estimated originals (all as reported in Kooi 1997 and Wikipedia "English longbow").
-- Sling speeds: 25-37 m/s (Finney) against chronograph tests by a hobbyist of 45-77 m/s seen in a forum post (not used as a source).
+- Longbow draw weights: 450 N average from bows tested to destruction (degraded wood), 445-823 N for replicas tested (Wikipedia "English longbow"), 465 N measured replica, 670-710 N estimated originals (all as reported in Kooi 1997 and Wikipedia "English longbow"). Kooi's separate 450 N is Rees 1993's calculation for a 60 g Agincourt arrow, not the destruction-test figure: keep the two apart.
+- Sling speeds: 25-37 m/s (Finney) against a published 45 m/s from Korfmann 1973, an informal experiment (via Skov 2011), the high-side source. (A hobbyist's chronograph tests of 45-77 m/s seen in a forum post are not used as a source.)
 
 ## Not found
 
@@ -61,3 +70,15 @@ Recoil speed is for a 4 kg gun, bullet momentum only (propellant gas adds more, 
 - Musket and cannon muzzle velocities from a primary source (Robins 1742 is cited in Wikipedia "Brown Bess" only in passing).
 - Bullet penetration depths in wood, brick, steel and water from an open primary test (FBI ballistic gel protocols are summaries only).
 - Javelin release speeds (World Athletics records give distances only).
+
+## Sources
+
+All accessed 2026-11-17.
+
+- Wikipedia cartridge infoboxes (CC BY-SA 4.0), each naming maker or test sources: https://en.wikipedia.org/wiki/.22_Long_Rifle, https://en.wikipedia.org/wiki/9×19mm_Parabellum, https://en.wikipedia.org/wiki/.45_ACP, https://en.wikipedia.org/wiki/7.62×39mm, https://en.wikipedia.org/wiki/5.56×45mm_NATO, https://en.wikipedia.org/wiki/7.62×51mm_NATO, https://en.wikipedia.org/wiki/.50_BMG
+- Kooi, "An approach to the study of ancient archery using mathematical modelling", 1997, https://www.bio.vu.nl/thb/users/kooi/kobe97.pdf (citing Hardy 1992 and Rees 1993)
+- Wikipedia, "English longbow" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/English_longbow (citing Strickland and Hardy 2005, *The Great Warbow*, p. 17; Soar, Gibbs, Jury and Stretton, *Secrets of the English War Bow*, Westholme 2010, pp. 127-151)
+- Aston and Spencer, "The Deane brothers' Mary Rose Bow X1-3", https://keskustelu.primitiivijousi.fi/uploads/short-url/jbxr7WWexChfC3RBxRL26IK9gxF.pdf
+- Wikipedia, "Compound bow" (CC BY-SA 4.0), https://en.wikipedia.org/wiki/Compound_bow
+- Whittaker, Pettigrew and Grohsmeyer, "Atlatl Dart Velocity: Accurate Measurements and Implications for Paleoindian and Archaic Archaeology", *PaleoAmerica* 3(2): 161-181 (2017), https://doi.org/10.1080/20555563.2017.1301133
+- Skov, "Sling Technology: Towards an understanding of capabilities", *The Nebraska Anthropologist* 26 (2011) 112-126, https://digitalcommons.unl.edu/cgi/viewcontent.cgi?article=1168&context=nebanthro (reporting Finney 2006, Vega and Craig 2009 and Korfmann 1973)

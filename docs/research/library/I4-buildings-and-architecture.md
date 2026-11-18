@@ -1,10 +1,14 @@
 # I4: Buildings and architecture: stairs, handrails, guarding, ramps, bricks, roof pitch, storey height
 
+Fixed after the second check (2026-11-18):
+- ADK Table 1.1 ("Rise and going") is on p. 5, not p. 4; Diagram 3.1 ("Guarding design") is on p. 24, not p. 23. Every value matched the text.
+- Licences stated: ADK is Crown copyright, published under the Open Government Licence (the PDF's own text does not print the notice); Wikipedia is CC BY-SA 4.0. A "Sources" list added at the end.
+
 Researched 2026-11-17 (all URLs accessed 2026-11-17). Brief section 3, "Prior art and materials" (architecture). Values marked "computed by me" are arithmetic. Material properties are in the main library's I3.
 
-Main source: HM Government, *Approved Document K: Protection from falling, collision and impact*, 2013 edition (England), Open Government Licence. https://assets.publishing.service.gov.uk/government/uploads/system/uploads/attachment_data/file/996860/Approved_Document_K.pdf (read as text on the box). Page numbers are the document's own.
+Main source: HM Government, *Approved Document K: Protection from falling, collision and impact*, 2013 edition (England), Crown copyright, Open Government Licence (the standard licence for gov.uk Approved Documents; the PDF's text layer prints no OGL notice, so this rests on that standard term). https://assets.publishing.service.gov.uk/government/uploads/system/uploads/attachment_data/file/996860/Approved_Document_K.pdf (read as text on the box). Page numbers are the document's own.
 
-## I4-1. Stair rise and going (ADK Table 1.1, p. 4)
+## I4-1. Stair rise and going (ADK Table 1.1, p. 5)
 
 | Stair category | Rise min-max (mm) | Going min-max (mm) | Steepest pitch from the limits (computed by me, max rise over min going) |
 |---|---|---|---|
@@ -29,7 +33,7 @@ Check (computed by me): a 175 mm rise with a 250 mm going gives 2R+G = 600 mm an
 | Open risers | a 100 mm sphere must not pass through | para 1.9 b |
 | Handrail top height | 900-1,000 mm above the pitch line or floor | para 1.34 a |
 
-## I4-3. Guarding heights (ADK Diagram 3.1, p. 23)
+## I4-3. Guarding heights (ADK Diagram 3.1, p. 24)
 
 | Building and location | Guarding height |
 |---|---|
@@ -40,7 +44,7 @@ Check (computed by me): a 175 mm rise with a 250 mm going gives 2R+G = 600 mm an
 | Assembly: within 530 mm in front of fixed seating / elsewhere | 800 mm / 900 mm on flights, else 1,100 mm |
 | Opening windows (all buildings, except roof windows in loft extensions) | 800 mm |
 
-## I4-4. Ramps (ADK para 2.3, Diagram 2.1)
+## I4-4. Ramps (ADK para 2.3, Diagram 2.1, p. 18)
 
 | Going of a ramp flight | Maximum gradient | Rise (from the diagram) | Angle (computed by me) |
 |---|---|---|---|
@@ -85,3 +89,14 @@ Storey height: Wikipedia "Storey" gives about 10 ft (3.0 m) floor to floor, mark
 - Ceiling height minimums from a building code (ADK does not set them; other national codes not read).
 - Door and window standard sizes from a primary standard (Wikipedia "Door" and "Window" gave no cited dimensions).
 - Historic castle and cathedral dimensions (wall thickness, vault spans) from a primary source.
+
+## Sources
+
+- HM Government, *Approved Document K: Protection from falling, collision and impact*, 2013 edition (England). https://assets.publishing.service.gov.uk/government/uploads/system/uploads/attachment_data/file/996860/Approved_Document_K.pdf . Crown copyright, Open Government Licence. Accessed 2026-11-17.
+- Wikipedia, "Brick". https://en.wikipedia.org/wiki/Brick . CC BY-SA 4.0. Accessed 2026-11-17.
+- Scottish Brick History, "Brick sizes, variations and standardisation". https://www.scottishbrickhistory.co.uk/brick-sizes-variations-and-standardisation/ . Accessed 2026-11-17.
+- *Encyclopaedia Britannica* (1911), "Brick", vol. 4 p. 518 (as cited by Wikipedia "Brick"). No link. Not opened.
+- Fiala (2019), IOP Conf. Ser., doi:10.1088/1757-899x/603/3/032097 (as cited by Wikipedia "Brick"). https://doi.org/10.1088/1757-899x/603/3/032097 . Not opened.
+- Wikipedia, "Roof pitch" (citing Knight, *Knight's American Mechanical Dictionary*, "Pitch" def. 2, and Canada's National Building Code; neither opened). https://en.wikipedia.org/wiki/Roof_pitch . CC BY-SA 4.0. Accessed 2026-11-17.
+- Wikipedia, "Storey". https://en.wikipedia.org/wiki/Storey . CC BY-SA 4.0. Accessed 2026-11-17.
+- Wikipedia, "Door" and "Window" (named under "Not found"). https://en.wikipedia.org/wiki/Door ; https://en.wikipedia.org/wiki/Window . CC BY-SA 4.0. Accessed 2026-11-17.

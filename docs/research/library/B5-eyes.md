@@ -162,7 +162,7 @@ Cross-references:
 ## Verification note
 
 - **grok CLI:** I ran it, but every run failed with "Not signed in" (`~/.grok/bin/grok`; XAI_API_KEY unset). **No value
-  in this file came from grok.** Aron needs to run `grok login` (device code) before a grok cross-check is possible.
+  in this file came from grok.** The owner needs to run `grok login` (device code) before a grok cross-check is possible.
 - **I confirmed these on the primary text myself (2026-11-16):**
   - Bentivoglio Table 1, checked against the rendered page image, and the −55.08% / +99.70% and 74% / 100% figures.
   - Kwon 2013: every Table 2 value, via the PDF text.

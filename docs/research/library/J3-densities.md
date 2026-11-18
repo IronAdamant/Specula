@@ -1,10 +1,15 @@
 # J3: Densities of materials
 
+Fixed after the second check (2026-11-18):
+- Licence of OpenStax Table 14.1 corrected from CC BY 4.0 to CC BY-NC-SA 4.0 (non-commercial). Link only: use the densities as facts, do not copy the table into a product.
+- Conditions corrected: the table states all values at 0 °C (solids, liquids and gases), with gases also at 101.3 kPa. "Solids and liquids as printed" lost that.
+- Added a Sources list. The checker's summary is in `J3-densities.md.verify.md`.
+
 Researched 2026-11-17 (all URLs accessed 2026-11-17). For mass from volume (buoyancy, breakable props, thrown objects).
 
-Source for every row: OpenStax, *University Physics Volume 1*, section 14.1 Fluids, Density, and Pressure, Table 14.1 "Densities of Some Common Substances", CC BY 4.0, https://openstax.org/books/university-physics-volume-1/pages/14-1-fluids-density-and-pressure (accessed 2026-11-17). Solids and liquids as printed; gases at 0 °C and 101.3 kPa as the table states.
+Source for every row: OpenStax, *University Physics Volume 1*, section 14.1 Fluids, Density, and Pressure, Table 14.1 "Densities of Some Common Substances", CC BY-NC-SA 4.0 (non-commercial: link only, do not copy the table into a product), https://openstax.org/books/university-physics-volume-1/pages/14-1-fluids-density-and-pressure (accessed 2026-11-17). All at 0 °C; gases also at 101.3 kPa, as the table's headers state. The table gives a single textbook value per substance and no spread: these are defaults, not measurements. Names as printed in the book: "Ethanol" here is the book's "Ethyl alcohol", and "Aluminium" the book's "Aluminum".
 
-## Table J3-1. Solids (kg/m³)
+## Table J3-1. Solids at 0 °C (kg/m³)
 
 | Substance | ρ | | Substance | ρ |
 |---|---|---|---|---|
@@ -18,7 +23,7 @@ Source for every row: OpenStax, *University Physics Volume 1*, section 14.1 Flui
 | Glass | 2,600 | | Polystyrene | 100 |
 | Tungsten | 19,300 | | Uranium | 18,700 |
 
-## Table J3-2. Liquids (kg/m³)
+## Table J3-2. Liquids at 0 °C (kg/m³)
 
 | Substance | ρ |
 |---|---|
@@ -44,3 +49,7 @@ Source for every row: OpenStax, *University Physics Volume 1*, section 14.1 Flui
 ## Not found
 
 - Densities by wood species beyond oak and pine, and for soil, sand, snow and flesh. The USDA *Wood Handbook* (public domain) has species tables but was not read in this pass. Human whole-body and segment densities: see the existing library file A4 (segment masses).
+
+## Sources
+
+- OpenStax, *University Physics Volume 1*, section 14.1 Fluids, Density, and Pressure, Table 14.1, CC BY-NC-SA 4.0 (link only), https://openstax.org/books/university-physics-volume-1/pages/14-1-fluids-density-and-pressure (accessed 2026-11-17).

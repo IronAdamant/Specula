@@ -1,12 +1,17 @@
 # J4: Drag, reference area and air density
 
+Fixed after the second check (2026-11-18):
+- Licence of OpenStax section 6.4 (Table 6.2 and the worked examples) corrected from CC BY 4.0 to CC BY-NC-SA 4.0 (non-commercial). Link only: use the values as facts, do not copy the tables into a product.
+- Added a note that NASA's model rocket value (0.75) is based on the cross-sectional area, not the frontal area the other NASA values use.
+- Added a Sources list. The checker's summary is in `J4-drag-and-air.md.verify.md`.
+
 Researched 2026-11-17 (all URLs accessed 2026-11-17).
 
-Drag force F_D = ½ ρ C A v² (OpenStax UP1 section 6.4, https://openstax.org/books/university-physics-volume-1/pages/6-4-drag-force-and-terminal-speed). **Reference area A is the projected frontal area**, the area of the object facing the flow (OpenStax: "A is the area of the object facing the fluid"; NASA Glenn: drag coefficients are quoted against the frontal area, https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/shape-effects-on-drag/). Terminal speed v_T = √(2mg / (ρ C A)).
+Drag force F_D = ½ ρ C A v² (OpenStax UP1 section 6.4, CC BY-NC-SA 4.0, link only, https://openstax.org/books/university-physics-volume-1/pages/6-4-drag-force-and-terminal-speed). **Reference area A is the projected frontal area**, the area of the object facing the flow (OpenStax: "A is the area of the object facing the fluid"; NASA Glenn: drag coefficients are quoted against the frontal area, https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/shape-effects-on-drag/). Terminal speed v_T = √(2mg / (ρ C A)).
 
 ## Table J4-1. Drag coefficients, OpenStax (read directly)
 
-Source: OpenStax UP1 Table 6.2 "Typical Values of Drag Coefficient C", CC BY 4.0, https://openstax.org/books/university-physics-volume-1/pages/6-4-drag-force-and-terminal-speed.
+Source: OpenStax UP1 Table 6.2 "Typical Values of Drag Coefficient C", CC BY-NC-SA 4.0 (non-commercial: link only, do not copy the table into a product), https://openstax.org/books/university-physics-volume-1/pages/6-4-drag-force-and-terminal-speed.
 
 | Object | C |
 |---|---|
@@ -25,7 +30,7 @@ Source: OpenStax UP1 Table 6.2 "Typical Values of Drag Coefficient C", CC BY 4.0
 
 ## Table J4-2. Drag coefficients by shape, NASA Glenn (read directly)
 
-Source: NASA Glenn Research Center, Beginner's Guide to Aeronautics, "Shape Effects on Drag", https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/shape-effects-on-drag/. US government work.
+Source: NASA Glenn Research Center, Beginner's Guide to Aeronautics, "Shape Effects on Drag", https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/shape-effects-on-drag/. US government work. NASA says "the projected frontal area of each object was used as the reference area"; the model rocket value is the exception (see its row).
 
 | Shape | C |
 |---|---|
@@ -34,14 +39,14 @@ Source: NASA Glenn Research Center, Beginner's Guide to Aeronautics, "Shape Effe
 | Sphere | 0.07 to 0.5 (depends on Reynolds number) |
 | Bullet | 0.295 |
 | Airfoil | 0.045 |
-| Model rocket | 0.75 |
+| Model rocket | 0.75 (NASA: "based on the cross-sectional area", a different reference area from the frontal area used for the other shapes) |
 
 ## Table J4-3. Worked human examples with area (read directly)
 
 | Case | m | A | C | ρ | v_T | Source |
 |---|---|---|---|---|---|---|
-| Skydiver, head first | 75 kg | 0.18 m² | 0.70 | 1.21 kg/m³ | 98 m/s (350 km/h) | OpenStax UP1 section 6.4, worked example in the text, https://openstax.org/books/university-physics-volume-1/pages/6-4-drag-force-and-terminal-speed |
-| Skydiver, spread-eagle | 85 kg | 0.70 m² | 1.0 | 1.21 kg/m³ | 44 m/s | same section, worked example |
+| Skydiver, head first | 75 kg | 0.18 m² | 0.70 | 1.21 kg/m³ | 98 m/s (350 km/h) | OpenStax UP1 section 6.4, worked example in the text (CC BY-NC-SA 4.0), https://openstax.org/books/university-physics-volume-1/pages/6-4-drag-force-and-terminal-speed |
+| Skydiver, spread-eagle | 85 kg | 0.70 m² | 1.0 | 1.21 kg/m³ | 44 m/s | same section, worked example (Example 6.17) |
 
 ## Table J4-4. Air temperature, pressure and density with altitude (formula read directly; values computed by me)
 
@@ -66,8 +71,15 @@ Computed by me from the NASA fits; rounded. NASA's Earth fact sheet gives surfac
 
 - Sphere: OpenStax gives a single 0.45; NASA gives 0.07 to 0.5 depending on Reynolds number. Use 0.45 for everyday balls in flight only as a default.
 - Flat plate: OpenStax 1.12 (circular), NASA 1.28 (flat plate, shape not further specified).
-- OpenStax is inconsistent about the skydiver: Table 6.2 labels C = 0.70 "feet first", while the worked example uses 0.70 for "head first" and later calls the same case "feet first".
+- OpenStax is inconsistent about the skydiver: Table 6.2 labels C = 0.70 "feet first", while the worked example uses 0.70 for "head first" ("descending head first") and later calls the same case "The 75-kg skydiver going feet first" (confirmed by the second check).
+- NASA Glenn's own page mixes reference areas: the frontal area for most shapes, the cross-sectional area for the model rocket.
 
 ## Not found
 
 - Drag area for animals, or for a running human (as opposed to a skydiver). Not found in an open primary source in this pass.
+
+## Sources
+
+- OpenStax, *University Physics Volume 1*, section 6.4 Drag Force and Terminal Speed (Table 6.2 and worked examples), CC BY-NC-SA 4.0 (link only), https://openstax.org/books/university-physics-volume-1/pages/6-4-drag-force-and-terminal-speed (accessed 2026-11-17).
+- NASA Glenn Research Center, Beginner's Guide to Aeronautics, "Shape Effects on Drag", US government work, https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/shape-effects-on-drag/ (accessed 2026-11-17).
+- NASA Glenn Research Center, "Earth Atmosphere Model, Metric Units", US government work, https://www.grc.nasa.gov/WWW/K-12/airplane/atmosmet.html (accessed 2026-11-17).

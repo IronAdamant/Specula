@@ -142,7 +142,7 @@ The paper notes that sex differences at most landmarks are typically under 1 mm,
 
 - **ANSUR II**: US Government work, unlimited distribution, so public domain.
 - **Kolesova & Vētra 2011**: free to read on the journal's OJS site. No licence statement was found on the article page, so treat the numbers as citable facts with attribution and do not redistribute the PDF.
-- **Mohd Ali et al. 2020**: **CC BY-NC 4.0** (stated in the article's licence block). This is **non-commercial**. The numbers are facts, but if Aron's library is commercial, cite them; do not bundle the article's tables or text.
+- **Mohd Ali et al. 2020**: **CC BY-NC 4.0** (stated in the article's licence block). This is **non-commercial**. The numbers are facts, but if the engine's library is commercial, cite them; do not bundle the article's tables or text.
 - **Hona & Stephan 2023**: **CC BY 4.0** (Crossref licence metadata, https://api.crossref.org/works/10.1007/s00414-023-03087-x (accessed 2026-11-17); Springer “Open access”, CAUL-funded).
 - **Weaver et al. 2014**: only the abstract was used. **No CC licence**: bronze open access, © 2014 Anatomical Society / Wiley terms (Unpaywall and Crossref).
 
