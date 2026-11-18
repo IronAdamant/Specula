@@ -29,9 +29,9 @@ lit that way cannot show form, however long it is looked at.
 
 | View | What it shows | What to look for |
 |---|---|---|
-| `clay` | every lit surface as the same matte clay, under a studio's light that comes with the camera: a key from the upper left, a fill from the right, the glow of a pale ceiling and a dim floor, a soft shine | the first look at any shape: it reads the same from every side and under any world's light; flat where it should be round shows as an even tone |
-| `normals` | where each surface faces, as colour: world x, y, z as red, green, blue (128 is 0) | faces that point the wrong way; a seam, where two neighbours differ in colour by a step; shading that does not follow the shape |
-| `curvature` | how fast a surface turns: mid grey where it is flat, lighter where it turns away (a ridge, a ball), darker where it turns in (a groove) | ledges and creases as thin light or dark lines; faceting as a pattern of grey tiles with pale borders; where a form that should swell is flat |
+| `clay` | every lit surface as the same matte clay, under a studio's light that comes with the camera whichever way it looks: a key from the upper left, a fill from the right, the glow of a pale ceiling and a dim floor, a soft shine. A surface whose normal points away from the viewer is stained red | the first look at any shape: it reads the same from every side and under any world's light; flat where it should be round shows as an even tone; **red is an inside-out face** (or the inside of an open shape) |
+| `normals` | each surface's own normal as colour: world x, y, z as red, green, blue (128 is 0). Not turned toward the viewer, as the lit frame turns it | normals that point the wrong way; **hard edges and flat-shaded faces, as steps of colour**; a seam, where two neighbours differ by a step; shading that does not follow the shape |
+| `curvature` | how fast a **smooth-shaded** surface's normal turns: mid grey where it is flat, lighter where it turns away (a ridge, a ball), darker where it turns in (a groove) | where a form that should swell is flat; a ledge or a soft crease as a light or dark band. **A hard edge does not show here**, and a flat-shaded shape reads flat however coarse it is: the normal does not turn within a face. Look for those in `normals`, and in the asset's form facts (`crease_m`, `razor_share`, `facet_deg`) |
 | `stripes` | the level bands a mirror of this shape would show of a striped room | bands that run evenly on an even surface, and kink, pinch or break where the surface has a dent, a ridge or a seam too slight to see otherwise (how a car's body is checked) |
 
 - **The curvature view's scale** (`form_scale`, metres, 0.001 to 1000): the radius of the ball that
@@ -46,20 +46,34 @@ lit that way cannot show form, however long it is looked at.
   wall reads 128 in `curvature`, on every adapter (held by a test on each).
 - **Meshes and the ground take them** (terrain's shader calls the same views). **What is not a lit
   surface is drawn as ever** or not at all: water and glass are drawn as water and glass, under a
-  plain light; sprites, tiles and in-world text are drawn as they are; particles and decals are left
-  out, and the packet's effects say they were not drawn. The ID buffer is the world's, so
+  plain light; sprites, tiles and in-world text are drawn as they are; a shadow's disc, particles and
+  decals are left out, and the packet says so (its `effects` say they were not drawn, its `lights`
+  count none, and its `gi` says no baked light was drawn and why). The ID buffer is the world's, so
   `visible_px` and the boxes are the same as in the world's frame (a test).
+- **Not with the views of baked light.** `gi: "irradiance"` or `"probes"` with a `form` is refused:
+  the one shows light and the other none.
 - **A form view is for one capture.** The window is never drawn as one, and the capture after it is
   the world's again, to the byte (a test).
 - **Normals are the shading normals**: a normal map shows in `normals`, `curvature` and `stripes`,
   since it is what a light would follow.
-- **Cost:** one branch on a value of the frame in the lit fragment shader. The world's frame pays
-  that and no more.
+- **Cost to the world's frame: none.** The views are compiled only into pipelines made for a form
+  view (a specialisation bit, `FEAT_FORM`, as shadows and fog have), built the first time one is
+  asked for. (They were first a branch on a value of the frame in every lit pipeline: a reviewer
+  measured the world's scene pass 2 to 5% slower for it on the reference iGPU.)
 
 How they are made: the frame carries the view and the scale in two spare slots of its uniform
 (`FrameData::sky_params.z` and `.w`); the views are in `shaders/form.glsl`, and `mesh_frag.glsl`'s
-`shade_lit` and `terrain.frag` return `form_view` before any light is gathered; `sight::form_frame`
-turns a capture's frame into the plain one a view is drawn in.
+`shade_lit` and `terrain.frag` return `form_view` before any light is gathered, in pipelines
+specialised with `FEAT_FORM`; `sight::form_frame` turns a capture's frame into the plain one a view
+is drawn in. Clay's light takes the camera's own right and up from the frame's inverse projection.
+
+**The review of the form views** (a model that did not write them, 2026-11-19) said not to merge
+them: clay's light was built from the world's up and each pixel's own direction, so four balls seen
+from above were lit from four sides; `gi: "probes"` with a form drew the probes' markers as clay
+balls and every form capture in a world with baked light said its light "was not ready"; an
+inside-out ball was the same picture as a right one, and the description promised hard edges in
+curvature, which cannot show them; and the world's frame was slower. Each is mended and is a test;
+shadows' discs are left out and the packet's lights count what was drawn.
 
 What the first looks through them taught (the figure, 2026-11-18; an independent check of each):
 curvature cut off at white lost limbs and fingers alike, so the turn is eased; clay under an even

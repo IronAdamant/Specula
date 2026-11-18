@@ -135,6 +135,72 @@ fn on_adapter(adapter: AdapterPreference, label: &str) {
     let row: Vec<u8> = (mid - 20..mid + 20).map(|x| grey(&rgba, x, mid - 12)).collect();
     assert!(row.iter().all(|v| *v < 60) || row.iter().all(|v| *v > 200) || row.windows(2).filter(|w| (w[0] > 128) != (w[1] > 128)).count() <= 2, "{test}: bands run level");
 
+    // What the review of the form views found, each as it should be:
+    // Clay's light comes with the camera whichever way it looks. Two balls seen from straight
+    // above are lit alike (taken from the world's up and each pixel's own direction, each was
+    // lit from another side): each is lighter toward the picture's upper left than its lower right.
+    let ball_mesh = gpu.upload_mesh(&ball.0, &ball.1).unwrap();
+    let target = gpu.create_target(SIZE, SIZE).unwrap();
+    let down = mul(&perspective_vk(40f32.to_radians(), 1.0, 0.1, 30.0), &look_at_rh([0.0, 9.0, 0.0], [0.0; 3], [0.0, 0.0, -1.0]));
+    let pair = [DrawItem::new(ball_mesh, common::translation([-1.6, 0.0, 0.0]), [1.0; 4]), DrawItem::new(ball_mesh, common::translation([1.6, 0.0, 0.0]), [1.0; 4])];
+    gpu.render(target, &FrameDesc { view_proj: down, draws: &pair, form: FormView::Clay, ..Default::default() }).unwrap();
+    let rgba = gpu.read_rgba8(target).unwrap();
+    write_png(&format!("form_clay_down_{label}.png"), &rgba, SIZE, SIZE);
+    for x in [-1.6f32, 1.6] {
+        let (cx, cy) = project(&down, [x, 0.0, 0.0], SIZE, SIZE);
+        let (cx, cy) = (cx.round() as u32, cy.round() as u32);
+        let (lit, shade) = (grey_ish(&rgba, cx - 8, cy - 8), grey_ish(&rgba, cx + 8, cy + 8));
+        assert!(lit > shade + 40, "{test}: the ball at x = {x}, seen from above, is lit from the upper left: {lit} against {shade}");
+    }
+    // A ball turned inside out (every normal pointing in) is not the same picture as the right
+    // one: clay stains it red, and its normals are the opposite colours.
+    let inside_out: Vec<Vertex> = ball.0.iter().map(|v| Vertex::with_color(v.position, [-v.normal[0], -v.normal[1], -v.normal[2]], [255; 4])).collect();
+    let wrong = (inside_out, ball.1.clone());
+    let rgba = shoot(&mut gpu, &shot(FormView::Clay, 0.05, &wrong));
+    let [r, g, b, _] = pixel(&rgba, SIZE, mid - 10, mid - 10);
+    assert!(r > 90 && r > g.saturating_add(50) && r > b.saturating_add(50), "{test}: an inside-out ball is stained red in clay: {r},{g},{b}");
+    let [r, g, b, _] = pixel(&shoot(&mut gpu, &shot(FormView::Clay, 0.05, &ball)), SIZE, mid - 10, mid - 10);
+    assert!(r < g.saturating_add(30), "{test}: and a right one is not: {r},{g},{b}");
+    let right = shoot(&mut gpu, &shot(FormView::Normals, 0.05, &ball));
+    let turned = shoot(&mut gpu, &shot(FormView::Normals, 0.05, &wrong));
+    let (a, b) = (pixel(&right, SIZE, mid + 30, mid), pixel(&turned, SIZE, mid + 30, mid));
+    assert!(a[0] > 175 && b[0] < 80, "{test}: its normals show as its own, pointing in: {a:?} against {b:?}");
+    // Curvature is of smooth shading: the same ball shaded flat (each face its own normal)
+    // reads flat, and normals shows its faces as steps of colour. (Said so in the views'
+    // description: a hard edge is looked for in normals and in the asset's form facts.)
+    let coarse = self::ball(6);
+    let mut faces = (Vec::new(), Vec::new());
+    for t in coarse.1.chunks(3) {
+        let p = [coarse.0[t[0] as usize].position, coarse.0[t[1] as usize].position, coarse.0[t[2] as usize].position];
+        let n = normalize(cross(sub(p[1], p[0]), sub(p[2], p[0])));
+        // (The ball's triangles wind inward-facing first: take the normal that points out.)
+        let n = if dot(n, p[0]) + dot(n, p[1]) + dot(n, p[2]) < 0.0 { [-n[0], -n[1], -n[2]] } else { n };
+        for q in p {
+            faces.1.push(faces.0.len() as u32);
+            faces.0.push(Vertex::with_color(q, n, [255; 4]));
+        }
+    }
+    let rgba = shoot(&mut gpu, &shot(FormView::Curvature, 1.0, &faces));
+    assert!(grey(&rgba, mid + 4, mid + 3).abs_diff(128) <= 1, "{test}: a flat-shaded ball reads flat in curvature");
+    let rgba = shoot(&mut gpu, &shot(FormView::Normals, 1.0, &faces));
+    let row: Vec<[u8; 4]> = (mid - 30..mid + 30).map(|x| pixel(&rgba, SIZE, x, mid + 3)).collect();
+    let steps = row.windows(2).filter(|w| w[0][0].abs_diff(w[1][0]) > 12).count();
+    let flats = row.windows(2).filter(|w| w[0] == w[1]).count();
+    assert!((2..=8).contains(&steps) && flats > 40, "{test}: its faces are steps of colour in normals: {steps} steps, {flats} of 59 neighbours alike");
+    // A shadow's disc is no surface: a form view leaves it out.
+    let quad = (vec![[-1.0f32, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 0.0, -1.0], [-1.0, 0.0, -1.0]].into_iter().map(|p| Vertex::with_color(p, [0.0, 1.0, 0.0], [255; 4])).collect::<Vec<_>>(), vec![0u32, 1, 2, 0, 2, 3]);
+    let quad_mesh = gpu.upload_mesh(&quad.0, &quad.1).unwrap();
+    let mut disc = DrawItem::new(quad_mesh, common::translation([0.0; 3]), [0.0, 0.0, 0.0, 0.8]);
+    disc.material = specula_gpu::Material::BlobShadow;
+    let clear = [0.2f32, 0.4, 0.6, 1.0];
+    for (form, drawn) in [(FormView::World, true), (FormView::Normals, false)] {
+        gpu.render(target, &FrameDesc { view_proj: down, draws: std::slice::from_ref(&disc), clear_color: clear, form, ..Default::default() }).unwrap();
+        let rgba = gpu.read_rgba8(target).unwrap();
+        let (centre, corner) = (pixel(&rgba, SIZE, mid, mid), pixel(&rgba, SIZE, 2, 2));
+        assert_eq!(centre != corner, drawn, "{test}: a shadow's disc in {}: {centre:?} against {corner:?}", form.name());
+    }
+    gpu.destroy_target(target);
+
     let errors = validation_errors(&test, gpu);
     assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
 }

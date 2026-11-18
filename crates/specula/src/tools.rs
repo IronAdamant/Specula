@@ -2024,6 +2024,10 @@ pub(crate) fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
     })
     .and_then(|mut spec| {
         crate::sight_tools::frame_extras(args, &mut spec)?;
+        // A form view draws no light at all: the views of baked light cannot be given with it.
+        if !spec.form.is_world() && matches!(spec.gi, crate::gi::CaptureView::Irradiance | crate::gi::CaptureView::Probes) {
+            return Err(format!("'gi': \"{}\" shows baked light and 'form' shows none: give one or the other", spec.gi.name()));
+        }
         Ok(spec)
     })
 }

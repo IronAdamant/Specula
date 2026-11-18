@@ -159,7 +159,7 @@ void main() {
     // normal faces away from the camera while the triangle faces it, and a flipped normal paints
     // the ridge black.
     vec3 v = normalize(camera_pos() - v_world);
-    if (pc.frame.sky_params.z > 0.5) {
+    if (FORM) {
         // A form view (sight_frame form): the ground as shape alone, as meshes show theirs.
         out_color = form_view(pc.frame.sky_params.z, n, v, v_world);
         return;

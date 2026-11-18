@@ -787,7 +787,13 @@ impl Engine {
             packet.set("form", spec.form.packet_json(spec.form.scale_for(&view.camera)));
         }
         if let Some(mut g) = taken.gi {
-            crate::gi::drawn_json(&mut g, spec.gi, r.gi_drawn, r.gi_error.as_deref());
+            if spec.form.is_world() {
+                crate::gi::drawn_json(&mut g, spec.gi, r.gi_drawn, r.gi_error.as_deref());
+            } else {
+                // (Not "its pipelines were not ready": nothing failed.)
+                g.set("drawn", Json::from(false));
+                g.set("not_drawn", Json::from("a form view shows shape alone: no baked light is drawn"));
+            }
             if let Some((scale, start)) = r.gi_stretch {
                 // The irradiance view's own stretch: shown luminance = 0.03 + (irradiance
                 // luminance - start) x scale before the tone curve (the probes' 5th to 95th
@@ -1270,6 +1276,8 @@ mod tests {
             assert_eq!(form.get("view").and_then(Json::as_str), Some(name));
             assert!(form.get("not_drawn").and_then(Json::as_str).is_some_and(|t| t.contains("light")), "{name}: {form:?}");
             assert_eq!(form.get("scale_m").is_some(), name == "curvature", "{name}: only curvature has a scale");
+            // None of the world's lights is drawn, and the packet does not count any.
+            assert_eq!(p.get("lights").and_then(Json::as_u64), Some(0), "{name}: {:?}", p.get("lights"));
             let corner = px(&i, 2, 2);
             assert!(corner.iter().zip(&ground).all(|(a, b)| a.abs_diff(*b) <= 1), "{name}: the ground behind is neutral: {corner:?}");
             assert!(i.rgba != world.rgba, "{name}: not the world's frame");

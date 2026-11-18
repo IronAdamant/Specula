@@ -22,6 +22,8 @@ const bool BLENDED = (FEATURES & 16u) != 0u;
 const bool SSAO = (FEATURES & 32u) != 0u;
 // Skinned meshes are never lava lamps: their pipelines leave the ray marcher out.
 const bool SKINNED = (FEATURES & 64u) != 0u;
+// A form view (form.glsl): only a pipeline specialized with this holds the views' code.
+const bool FORM = (FEATURES & 4096u) != 0u;
 
 // The sun's shadow map: one layer per cascade, compared bilinearly (2x2 PCF per tap).
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
@@ -315,6 +317,11 @@ vec4 shade_lit() {
         }
     }
 #endif
+    if (FORM) {
+        // A form view shows the surface's own normal: not turned toward the viewer, as the lit
+        // path turns it below, so that a face whose normal points away shows as one.
+        return form_view(pc.frame.sky_params.z, n, v, v_world);
+    }
     if (dot(n, v) < 0.0) {
         n = -n; // the inside of an open shape
     }
@@ -326,10 +333,6 @@ vec4 shade_lit() {
         n = normalize(n + vec3(0.0, 2.0, 0.0));
     }
 #endif
-    float form = pc.frame.sky_params.z;
-    if (form > 0.5) {
-        return form_view(form, n, v, v_world);
-    }
     // The ambient term: the flat ambient, or the baked GI's irradiance here (per draw or per
     // pixel, by the tier: gi.glsl).
     vec3 amb = gi_ambient_draw(v_draw, v_world, n, v);
@@ -661,6 +664,9 @@ void main() {
     } else if (pc.material == MAT_GLASS) {
         out_color = shade_glass();
     } else if (pc.material == MAT_BLOB_SHADOW) {
+        if (FORM) {
+            discard; // a shadow's disc is no surface: a form view leaves it out
+        }
         out_color = shade_blob_shadow();
     } else if (SKINNED) {
         out_color = vec4(0.0); // a skinned lava lamp: not supported (its pipeline has no ray marcher)

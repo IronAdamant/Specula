@@ -1,8 +1,11 @@
 // The form views (sight_frame form; frame.sky_params.z): 1 clay, 2 normals, 3 curvature, 4 stripes.
-// Included by the shaders of lit surfaces (meshes, terrain) after `pc.frame` and `display` are
-// declared; each returns `form_view` before it gathers any light.
+// Included by the shaders of lit surfaces (meshes, terrain) after `pc.frame`, `FORM` and `display`
+// are declared; each returns `form_view` before it gathers any light, in a pipeline specialized
+// with FORM only (render.rs FEAT_FORM): the world's pipelines hold none of this.
 // A surface shows nothing but its shape: its own colour, texture, metal and glow are put aside,
 // and so is the world's light. What they write is meant for a frame with no tone mapping.
+// `n` is the surface's own normal, not turned toward the viewer: a face whose normal points away
+// (an inside-out part) is shown as one.
 
 // A colour meant for the eye (sRGB) as the linear light the target encodes back into it.
 vec3 form_linear(vec3 srgb) {
@@ -16,17 +19,25 @@ vec4 form_view(float form, vec3 n, vec3 v, vec3 world) {
         // Clay under a studio's light that comes with the camera: a key from the upper left, a
         // fill from the right and a little below, the glow of a pale ceiling and a dim floor,
         // and a soft shine, so that a surface shows which way it turns from every side.
-        vec3 right = cross(vec3(0.0, 1.0, 0.0), v);
-        float rl = dot(right, right);
-        right = rl > 1e-6 ? right * inversesqrt(rl) : vec3(1.0, 0.0, 0.0);
-        vec3 up = cross(v, right);
+        // The light's axes are the camera's own right and up (the same for every pixel of the
+        // frame, whichever way the camera looks: taken from the world's up and each pixel's
+        // own direction, four balls seen from above were lit from four sides). A direction
+        // across the picture, taken back through the projection, is the camera's right (and
+        // down, the picture's y running down) by a scale.
+        vec3 right = normalize((pc.frame.inv_view_proj * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
+        vec3 up = -normalize((pc.frame.inv_view_proj * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+        vec3 back = cross(right, up); // toward the camera
         // (The key rakes across more than it faces, and the fill is weak: a first look under
         // an even light showed form faintly.)
-        vec3 key = normalize(v * 0.38 - right * 0.68 + up * 0.62);
-        vec3 fill = normalize(v * 0.45 + right * 0.85 - up * 0.25);
-        float light = mix(0.05, 0.20, dot(n, up) * 0.5 + 0.5) + 0.95 * max(dot(n, key), 0.0) + 0.10 * max(dot(n, fill), 0.0);
-        float shine = pow(max(dot(n, normalize(key + v)), 0.0), 24.0) * 0.10;
-        c = vec3(0.52, 0.46, 0.39) * light + shine;
+        vec3 key = normalize(back * 0.38 - right * 0.68 + up * 0.62);
+        vec3 fill = normalize(back * 0.45 + right * 0.85 - up * 0.25);
+        // A face whose normal points away from the viewer is lit as its other side would be,
+        // and stained red: it is inside out, or the inside of an open shape.
+        bool away = dot(n, v) < 0.0;
+        vec3 m = away ? -n : n;
+        float light = mix(0.05, 0.20, dot(m, up) * 0.5 + 0.5) + 0.95 * max(dot(m, key), 0.0) + 0.10 * max(dot(m, fill), 0.0);
+        float shine = pow(max(dot(m, normalize(key + v)), 0.0), 24.0) * 0.10;
+        c = (away ? vec3(0.62, 0.16, 0.12) : vec3(0.52, 0.46, 0.39)) * light + shine;
     } else if (form < 2.5) {
         // Normals: where the surface faces, world x, y, z as red, green, blue.
         c = form_linear(n * 0.5 + 0.5);

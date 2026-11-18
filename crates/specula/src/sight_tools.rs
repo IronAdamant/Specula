@@ -97,9 +97,9 @@ impl Form {
                 "shows",
                 Json::from(match self.view {
                     specula_gpu::FormView::World => "the world as it is",
-                    specula_gpu::FormView::Clay => "every lit surface as the same matte clay under a studio light that comes with the camera (key from the upper left): no colour, texture or light of the world's",
-                    specula_gpu::FormView::Normals => "each surface's facing as colour: world x, y, z as red, green, blue (128 is 0)",
-                    specula_gpu::FormView::Curvature => "how fast each surface turns: mid grey flat, lighter turning away (a ridge), darker turning in (a groove); a ball of scale_m's radius is halfway to white (191), never cut off",
+                    specula_gpu::FormView::Clay => "every lit surface as the same matte clay under a studio light that comes with the camera (key from the upper left): no colour, texture or light of the world's; a surface stained red has its normal pointing away from the viewer (inside out, or the inside of an open shape)",
+                    specula_gpu::FormView::Normals => "each surface's own normal as colour: world x, y, z as red, green, blue (128 is 0); flat-shaded faces and hard edges show as steps of colour",
+                    specula_gpu::FormView::Curvature => "how fast each smooth-shaded surface's normal turns: mid grey flat, lighter turning away (a ridge), darker turning in (a groove); a ball of scale_m's radius is halfway to white (191). It shows smooth turning only: a hard edge or a flat-shaded facet reads flat here (see normals, and the asset's form facts)",
                     specula_gpu::FormView::Stripes => "the level bands a mirror of this shape would show: even on an even surface, kinked where the surface is",
                 }),
             ),
@@ -137,11 +137,14 @@ pub fn form_schema() -> Vec<(&'static str, Json)> {
                     "description",
                     Json::from(
                         "Show shape alone (default world: the frame as it is). clay: every lit surface the same matte clay \
-                         under a studio light that comes with the camera, whatever the world's light; normals: facing as \
-                         colour (x, y, z as r, g, b); curvature: grey where flat, lighter on ridges, darker in grooves; \
-                         stripes: the level bands a mirror of the shape would show, which kink where the surface does. \
-                         Use these to judge form: roundness, faceting, seams, ledges. No sky, fog, post effects, particles \
-                         or decals are drawn, and the packet's form says so",
+                         under a studio light that comes with the camera, whatever the world's light (red: the normal \
+                         points away from you, an inside-out face); normals: each surface's own normal as colour (x, y, z \
+                         as r, g, b), where flat-shaded faces and hard edges are steps of colour; curvature: how fast \
+                         smooth shading turns, grey where flat, lighter on ridges, darker in grooves (hard edges do not \
+                         show in it); stripes: the level bands a mirror of the shape would show, which kink where the \
+                         surface does. Use these to judge form: roundness, seams, ledges, inside-out parts. No light, sky, \
+                         fog, post effects, shadows' discs, particles or decals are drawn (so not with gi: irradiance or \
+                         probes), and the packet's form says so",
                     ),
                 ),
             ]),
@@ -700,6 +703,12 @@ mod tests {
         for bad in [r#"{"form":"wireframe"}"#, r#"{"form":3}"#, r#"{"form":"clay","form_scale":0.2}"#, r#"{"form_scale":0.2}"#, r#"{"form":"curvature","form_scale":0}"#, r#"{"form":"curvature","form_scale":5000}"#] {
             assert!(frame(bad).is_err(), "{bad}");
         }
+        // A form view draws no light: the views of baked light are refused with it, by name.
+        for gi in ["irradiance", "probes"] {
+            let e = frame(&format!(r#"{{"form":"clay","gi":"{gi}"}}"#)).unwrap_err();
+            assert!(e.contains(gi) && e.contains("form"), "{e}");
+        }
+        assert!(frame(r#"{"form":"clay","gi":"off"}"#).is_ok() && frame(r#"{"form":"clay","gi":"lit"}"#).is_ok() && frame(r#"{"gi":"probes"}"#).is_ok());
         let SightCall::Orbit(o) = call("sight_orbit", r#"{"point":[0,0,0],"form":"stripes"}"#).unwrap() else { panic!("an orbit") };
         assert_eq!(o.form.view, FormView::Stripes);
         assert!(call("sight_orbit", r#"{"point":[0,0,0],"form":"mesh"}"#).is_err());

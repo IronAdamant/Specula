@@ -194,6 +194,12 @@ pub const FEAT_GI: u32 = 512;
 /// Without it (tier low) GI comes from an ambient cube per draw and the lean probe sampler on wide
 /// draws and terrain, whose registers the iGPU affords.
 pub const FEAT_GI_PIXEL: u32 = 1024;
+/// A form view (`FrameDesc::form`, `shaders/form.glsl`): the mesh and terrain pipelines draw
+/// their lit surfaces as shape alone. A bit of its own, so that a pipeline without it holds
+/// none of the views' code (with a branch on a value of the frame in every pipeline, the
+/// world's scene pass was 2 to 5% slower on the reference iGPU: review of the form views).
+/// Built the first time a frame is drawn as a form view.
+pub const FEAT_FORM: u32 = 4096;
 /// Vertex stream variants of the scene pipelines: (skinned, textured). Blended materials are
 /// never textured (a textured mesh drawn blended uses the untextured variant). Shadow casters
 /// come in the same four: (skinned, alpha-masked).
@@ -2012,9 +2018,9 @@ impl Pipelines {
             flash_cells: get(flash, PipelineKey::FlashCells)?,
             overlay: get(overlay, PipelineKey::Overlay { format: final_format, depth: mode.direct() })?,
             // Prebuilt with the scene's: a lookup, never a creation.
-            sprite_cutout: get(true, PipelineKey::Sprite { format: scene_format, cutout: true, features: features & !(FEAT_GI | FEAT_GI_PIXEL) })?,
-            sprite_blended: get(true, PipelineKey::Sprite { format: scene_format, cutout: false, features: features & !(FEAT_GI | FEAT_GI_PIXEL) })?,
-            glyph: get(true, PipelineKey::Sprite { format: scene_format, cutout: false, features: (features & !(FEAT_GI | FEAT_GI_PIXEL)) | FEAT_GLYPH })?,
+            sprite_cutout: get(true, PipelineKey::Sprite { format: scene_format, cutout: true, features: features & !(FEAT_GI | FEAT_GI_PIXEL | FEAT_FORM) })?,
+            sprite_blended: get(true, PipelineKey::Sprite { format: scene_format, cutout: false, features: features & !(FEAT_GI | FEAT_GI_PIXEL | FEAT_FORM) })?,
+            glyph: get(true, PipelineKey::Sprite { format: scene_format, cutout: false, features: (features & !(FEAT_GI | FEAT_GI_PIXEL | FEAT_FORM)) | FEAT_GLYPH })?,
             shape: get(true, PipelineKey::Shape { format: scene_format, fog: features & FEAT_FOG != 0, ssao: features & FEAT_SSAO != 0 })?,
             sprite_shadow: get(features & FEAT_SHADOWS != 0, PipelineKey::SpriteShadow)?,
             ssao: get(features & FEAT_SSAO != 0, PipelineKey::Ssao)?,
@@ -2028,7 +2034,7 @@ impl Pipelines {
             // Built with the terrain variant (in the background): lookups.
             terrain: get(built.terrain, PipelineKey::Terrain { format: scene_format, features })?,
             terrain_shadow: get(built.terrain && shadows, PipelineKey::TerrainShadow)?,
-            water: get(built.terrain, PipelineKey::Water { format: scene_format, features })?,
+            water: get(built.terrain, PipelineKey::Water { format: scene_format, features: features & !FEAT_FORM })?,
         })
     }
 
@@ -2804,6 +2810,9 @@ pub fn frame_features(frame: &FrameDesc, scratch: &FrameScratch, have_shadow_map
         if scratch.gi.quality.per_pixel() {
             f |= FEAT_GI_PIXEL;
         }
+    }
+    if frame.form != crate::FormView::World {
+        f |= FEAT_FORM;
     }
     f
 }

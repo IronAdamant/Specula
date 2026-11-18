@@ -1004,8 +1004,9 @@ impl Engine {
             proxies,
             kinds,
             stats,
-            lights: lights.len(),
-            dropped_lights,
+            // (A form view is drawn with none of the world's lights: the packet says what was drawn.)
+            lights: if form.is_some() { 0 } else { lights.len() },
+            dropped_lights: if form.is_some() { 0 } else { dropped_lights },
             overlays: overlays.take(),
             two_d_problems,
             streaming,
