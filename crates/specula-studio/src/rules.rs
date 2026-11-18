@@ -182,6 +182,11 @@ pub struct TasteRules {
     pub ring_px: u32,
     /// Lightness spread (90th - 10th percentile) inside the silhouette under the game light.
     pub flat_min_range: f32,
+    /// The shape language the style asks of an outline ([`crate::shape`]): round, square or
+    /// pointed. `None`: measured and reported, not checked.
+    pub shape_language: Option<crate::shape::Kind>,
+    /// The share of an outline's turning that must be of that kind.
+    pub shape_min_share: f32,
     /// Deliberate style: subject glob → checks it is exempt from (with the reason in comments).
     pub allow: Vec<(String, Vec<String>)>,
 }
@@ -198,6 +203,8 @@ impl Default for TasteRules {
             value_contrast_worst_min: 0.03,
             ring_px: 3,
             flat_min_range: 0.06,
+            shape_language: None,
+            shape_min_share: 0.5,
             allow: Vec::new(),
         }
     }
@@ -572,7 +579,7 @@ impl StyleRules {
                     }
                 }
                 "taste" => {
-                    keys(v, "taste", &["thumb_px", "silhouette_max_iou", "thumb_min_solidity", "min_px_gameplay", "min_px_phone", "value_contrast_min", "value_contrast_worst_min", "ring_px", "flat_min_range", "allow"])?;
+                    keys(v, "taste", &["thumb_px", "silhouette_max_iou", "thumb_min_solidity", "min_px_gameplay", "min_px_phone", "value_contrast_min", "value_contrast_worst_min", "ring_px", "flat_min_range", "shape_language", "shape_min_share", "allow"])?;
                     let t = &mut r.taste;
                     if let Some(x) = v.get("thumb_px") {
                         t.thumb_px = int(x, "taste.thumb_px", 32, 256)?;
@@ -585,6 +592,7 @@ impl StyleRules {
                         ("value_contrast_min", &mut t.value_contrast_min, 1.0),
                         ("value_contrast_worst_min", &mut t.value_contrast_worst_min, 1.0),
                         ("flat_min_range", &mut t.flat_min_range, 1.0),
+                        ("shape_min_share", &mut t.shape_min_share, 1.0),
                     ] {
                         if let Some(x) = v.get(key) {
                             *slot = num(x, &format!("taste.{key}"), 0.0, hi)? as f32;
@@ -592,6 +600,10 @@ impl StyleRules {
                     }
                     if let Some(x) = v.get("ring_px") {
                         t.ring_px = int(x, "taste.ring_px", 1, 32)?;
+                    }
+                    if let Some(x) = v.get("shape_language") {
+                        let kind = x.as_str().and_then(crate::shape::Kind::parse);
+                        t.shape_language = Some(kind.ok_or_else(|| err("taste.shape_language", "unknown_value", "one of \"round\", \"square\", \"pointed\""))?);
                     }
                     if let Some(x) = v.get("allow") {
                         for (subject, list) in x.as_object().ok_or_else(|| err("taste.allow", "wrong_type", "a table of \"subject glob\" = [checks]"))? {
@@ -798,6 +810,8 @@ impl StyleRules {
                     ("value_contrast_min", Json::from(t.value_contrast_min)),
                     ("value_contrast_worst_min", Json::from(t.value_contrast_worst_min)),
                     ("flat_min_range", Json::from(t.flat_min_range)),
+                    ("shape_language", t.shape_language.map_or(Json::Null, |k| Json::from(k.name()))),
+                    ("shape_min_share", Json::from(t.shape_min_share)),
                 ]),
             ),
             (
@@ -882,6 +896,15 @@ max_triangles = 3000
         assert!(e.line == Some(1), "{e:?}");
         let e = StyleRules::parse("[[scale]]\nheight_m = [2, 1]\n", "s", &pal).unwrap_err();
         assert_eq!(e.path, "scale[0].height_m[1]");
+        // A shape language is one of three, and its share a share.
+        let r = StyleRules::parse("[taste]\nshape_language = \"pointed\"\nshape_min_share = 0.3\n", "s", &pal).unwrap();
+        assert_eq!((r.taste.shape_language, r.taste.shape_min_share), (Some(crate::shape::Kind::Pointed), 0.3));
+        assert_eq!(StyleRules::defaults().taste.shape_language, None);
+        let e = StyleRules::parse("[taste]\nshape_language = \"spiky\"\n", "s", &pal).unwrap_err();
+        assert_eq!((e.code, e.path.as_str()), ("unknown_value", "taste.shape_language"));
+        let e = StyleRules::parse("[taste]\nshape_language = 3\n", "s", &pal).unwrap_err();
+        assert_eq!(e.path, "taste.shape_language");
+        assert!(StyleRules::parse("[taste]\nshape_min_share = 1.5\n", "s", &pal).is_err());
     }
 
     #[test]

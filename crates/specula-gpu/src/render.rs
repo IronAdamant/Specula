@@ -1299,6 +1299,11 @@ struct PipelineDesc {
 }
 
 impl PipelineKey {
+    /// Whether this is one of the form views' own pipelines ([`FEAT_FORM`]).
+    fn of_form(self) -> bool {
+        matches!(self, PipelineKey::Mesh { features, .. } | PipelineKey::Terrain { features, .. } if features & FEAT_FORM != 0)
+    }
+
     fn desc(self) -> PipelineDesc {
         match self {
             PipelineKey::Mesh { format, blended, features, skinned, textured } => PipelineDesc {
@@ -1697,6 +1702,9 @@ pub enum BackgroundFault {
     Error,
     /// The worker panics after creating its first pipeline.
     Panic,
+    /// The worker's first pipeline of a form view fails (the others are made): a form
+    /// pipeline that fails in a build asked for something else.
+    FormError,
 }
 
 #[derive(Default)]
@@ -2006,7 +2014,20 @@ impl Pipelines {
         };
         let layout = self.layout;
         let built = self.variants;
-        let mut get = |want: bool, key: PipelineKey| if want { self.get(dev, key) } else { Ok(VK_NULL_HANDLE) };
+        // A form view's own pipelines are looked up, never asked for by `get`, which makes what
+        // is missing: whatever the set's bookkeeping says, a form view's frame cannot compile
+        // its pipelines.
+        let form_frame = features & FEAT_FORM != 0;
+        let looked: Vec<(PipelineKey, VkPipeline)> = if form_frame { self.by_key.iter().filter(|(k, _)| k.of_form()).copied().collect() } else { Vec::new() };
+        let mut get = |want: bool, key: PipelineKey| {
+            if !want {
+                Ok(VK_NULL_HANDLE)
+            } else if form_frame && key.of_form() {
+                Ok(looked.iter().find(|(k, _)| *k == key).map_or(VK_NULL_HANDLE, |(_, p)| *p))
+            } else {
+                self.get(dev, key)
+            }
+        };
         let composite_format = if mode.fxaa { LDR_FORMAT } else { final_format };
         let shadows = features & FEAT_SHADOWS != 0;
         // Only the variants built: a frame never compiles one (meshes needing the others don't
@@ -2128,9 +2149,10 @@ impl Pipelines {
             keys.extend(terrain_keys(formats, self.ids_counting, want));
         }
         if want.form {
-            // A form view is drawn with no tone mapping, so never into the HDR image; with no
-            // shadows, fog, SSAO or baked light, so with this one feature set.
-            for &format in formats.iter().filter(|f| **f != HDR_FORMAT) {
+            // A form view is drawn into an offscreen target with no tone mapping: so never
+            // into the HDR image, nor a window's format (the window is never drawn as one);
+            // with no shadows, fog, SSAO or baked light, so with this one feature set.
+            for &format in formats.iter().filter(|f| **f == LDR_FORMAT) {
                 for blended in [false, true] {
                     let variants: &[(bool, bool)] = if blended { &BLENDED_VARIANTS } else { &OPAQUE_VARIANTS };
                     for &(skinned, textured) in variants.iter().filter(|(s, t)| new(*s, *t)) {
@@ -2203,12 +2225,17 @@ impl Pipelines {
         let out = std::sync::Arc::clone(&results);
         let fault = self.background.inject.take();
         let spawned = std::thread::Builder::new().name("specula-pipelines".into()).spawn(move || {
+            let mut form_failed = false;
             for (n, k) in keys.into_iter().enumerate() {
                 let r = match fault {
                     Some(BackgroundFault::Error) if n == 0 => {
                         Err(GpuError::vk(&format!("vkCreateGraphicsPipelines ({k:?})"), VK_ERROR_OUT_OF_DEVICE_MEMORY))
                     }
                     Some(BackgroundFault::Panic) if n == 1 => panic!("injected background pipeline build panic"),
+                    Some(BackgroundFault::FormError) if !form_failed && k.of_form() => {
+                        form_failed = true;
+                        Err(GpuError::vk(&format!("vkCreateGraphicsPipelines ({k:?})"), VK_ERROR_OUT_OF_DEVICE_MEMORY))
+                    }
                     _ => Pipelines::create_with(&ctx, k),
                 };
                 out.lock().unwrap_or_else(|e| e.into_inner()).push((k, r));
@@ -2245,6 +2272,10 @@ impl Pipelines {
             form: p.want.form && !self.variants.form,
         };
         let mut lost = if panicked { new } else { Variants::default() };
+        // A build of anything carries the form views' pipelines of what it adds once the form
+        // set is asked for (a stream variant's, the ground's): a worker that died may have left
+        // any of them unmade, so the set is lost with it and a retry makes what is missing.
+        lost.form |= panicked && p.want.form;
         let mut failure = panicked.then(|| (String::from("worker thread panicked"), GpuError::new("background pipeline build: the worker thread panicked")));
         for (key, r) in results {
             match r {
@@ -2256,9 +2287,13 @@ impl Pipelines {
                 }
                 Err(e) => {
                     self.background.failed += 1;
-                    // (A form view's pipeline that failed loses the form views, and nothing of
-                    // the world's.)
-                    let form = matches!(key, PipelineKey::Mesh { features, .. } | PipelineKey::Terrain { features, .. } if features & FEAT_FORM != 0);
+                    // A form view's pipeline that failed loses the form views, and nothing of
+                    // the world's: **whether or not the set was new to this build**. (A later
+                    // build carries the form pipelines of what it adds; one that failed there
+                    // was counted as nothing lost, the set stayed "built", and the next form
+                    // frame compiled the missing pipeline itself: third review.)
+                    let form = key.of_form();
+                    lost.form |= form && p.want.form;
                     lost.form |= new.form && (form || !matches!(key, PipelineKey::Mesh { .. } | PipelineKey::Shadow { .. } | PipelineKey::Ids { .. } | PipelineKey::Particle { .. } | PipelineKey::Decal { .. } | PipelineKey::Terrain { .. } | PipelineKey::TerrainShadow | PipelineKey::IdsTerrain { .. } | PipelineKey::Water { .. }));
                     let (skinned, textured, gi, gi_pixel, terrain) = match key {
                         _ if form => (false, false, false, false, false),

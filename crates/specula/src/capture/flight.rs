@@ -144,6 +144,8 @@ pub struct CaptureQueue {
     warming: bool,
     /// Passes a form view waited for the form views' pipelines, built on a worker (tests).
     pub(crate) form_waits: u32,
+    /// A form view was put behind the other captures this pass, to wait for those pipelines.
+    form_held: bool,
 }
 
 /// Why a capture pass ended. A pass may end because something outside the engine thread isn't
@@ -407,10 +409,17 @@ impl Engine {
                 return;
             }
             if !v.form {
+                // It waits behind the captures that came after it (they go on this pass and the
+                // next: put back at the front it held every other session's captures for the
+                // half second the set takes to build: third review).
                 self.gpu.request_form_pipelines();
                 self.captures.form_waits += 1;
-                self.captures.end_pass = true;
-                self.captures.waiting.push_front(Waiting::Next(Box::new(p)));
+                self.captures.waiting.push_back(Waiting::Next(Box::new(p)));
+                // (The pass ends when nothing else waits, or when a form view comes round a
+                // second time: the next pass looks again.)
+                if std::mem::replace(&mut self.captures.form_held, true) || self.captures.waiting.len() == 1 {
+                    self.captures.end_pass = true;
+                }
                 return;
             }
         }
@@ -495,6 +504,7 @@ impl Engine {
         let (share, most) = if self.windowed { (WINDOW_PASS, WINDOW_WAIT) } else { (HEADLESS_PASS, HEADLESS_WAIT) };
         let end = Instant::now() + share;
         self.captures.last_pass = PassEnd::Idle;
+        self.captures.form_held = false;
         loop {
             if let Some(f) = self.captures.flight.take() {
                 let wait = end.saturating_duration_since(Instant::now()).min(most);
@@ -1271,6 +1281,34 @@ mod tests {
     fn image(out: &ToolOutput) -> specula_core::png::Image {
         let data = out.content.iter().find_map(|c| if let Content::Image { data_base64, .. } = c { Some(data_base64.as_str()) } else { None }).unwrap();
         specula_core::png::decode(&base64::decode(data).unwrap()).unwrap()
+    }
+
+    /// A form view that waits for its pipelines waits behind the captures that came after it:
+    /// after the pass in which it first waited, it is not at the front of the queue with
+    /// another capture behind it. (Put back at the front, it held every other session's
+    /// captures for the half second the set takes to build: third review of the form views.)
+    /// Both are answered, each as what it asked for.
+    #[test]
+    fn a_form_view_waits_behind_the_other_captures() {
+        let Some(mut e) = engine("form_queue") else { return };
+        let view = r#""eye": [2, 0, 9], "target": [2, 0, 3], "width": 96, "height": 96, "fov_y_deg": 30"#;
+        let formed = ask(&mut e, "sight_frame", &format!(r#"{{{view}, "form": "clay"}}"#), 1, soon());
+        let world = ask(&mut e, "sight_frame", &format!("{{{view}}}"), 2, soon());
+        // (Passes until it first waits: its size's target and the subject cache come first.)
+        for _ in 0..500 {
+            e.pump_captures();
+            if e.captures.form_waits > 0 {
+                break;
+            }
+            e.pump_workers(None);
+        }
+        // (Once, or twice when it came round again in that pass after the other went ahead.)
+        assert!((1..=2).contains(&e.captures.form_waits), "the form view waited for its pipelines: {} times", e.captures.form_waits);
+        let front_waits_for_form = matches!(e.captures.waiting.front(), Some(Waiting::Next(p)) if matches!(&p.job, Job::Frame(spec) if !spec.form.is_world()));
+        assert!(!front_waits_for_form || e.captures.waiting.len() == 1, "the form view is at the front of {} waiting captures", e.captures.waiting.len());
+        let (_, out) = run(&mut e, &[&formed, &world], |_| {});
+        assert_eq!(packet(&out[0]).get("form").and_then(|f| f.get("view")).and_then(Json::as_str), Some("clay"));
+        assert!(packet(&out[1]).get("form").is_none());
     }
 
     /// A form view (`sight_frame form`, `sight_orbit form`) draws the same surfaces as shape

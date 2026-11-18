@@ -448,7 +448,13 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       is now the distance itself** (the nearest point of the surface is solved for; held
       against a distance found by search to a few parts in a hundred thousand), at a cost said
       as what builds: a cube of roundness 0.3 at resolution 64, refused at 96; at roundness 1
-      and 0.5 a third and a half of the work limit at 96. **This is not reviewed yet.** Two
+      and 0.5 a third and a half of the work limit at 96. **A fourth reviewer said not to
+      merge that**: the maths held, and a sample far from the shape cost five times its work
+      weight (a box with a rounded plate cut out of it ran 3.8 s inside the 1.5 s budget),
+      and at roundness 0.05 the solve could stop early with a step in the field. The solve
+      now goes by Newton's steps on everything at once, in double precision, with the sure
+      way as its fallback: that cut runs at a seventh of the time, a test holds a far sample
+      to under twenty steps, and scans to 100 m find no step. **This is not reviewed yet.** Two
       limits of the same kind are written down and not mended: inside a rounded shape the
       field is a bound, so a `shell` or a shrinking of one is thinner than asked beside its
       corners; and a column's field is in units of its narrower half size, so `round` and a
@@ -486,8 +492,12 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       are in shaders of their own (the world's four compiled shaders are byte for byte what
       they were before the feature, and the world's frame times the same: 1.5211 ms against
       1.5208 ms on `cubes_10k`, twelve alternating rounds), their pipelines are built on a
-      worker with the capture waiting, and an orthographic camera is told. **These mends are
-      not reviewed yet.**
+      worker with the capture waiting, and an orthographic camera is told. **A third reviewer
+      said not to merge those**: a form pipeline that failed in a later build was counted as
+      nothing lost (the next form frame compiled it), a sheet's form tile was framed without
+      the reference figure's room, and a waiting form capture held the others. Mended, each a
+      test shown to fail on its fault; a frame now only looks a form pipeline up; the sheets
+      have a live check in Rust (`form_sheet_check`). **These mends are not reviewed yet.**
     - **The form checks: built** (2026-11-18; FORM.md): loose pieces, razor edges, faceting,
       shading seams, smeared creases and relief by size, measured from the mesh alone and in
       every asset's facts; `style.toml`'s `[form]` gives limits (only loose pieces are checked
@@ -498,10 +508,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       owner's to say.** **Its reviewer said not to merge**: the shape's size was taken from
       every vertex, used or not (one stray vertex hid a loose piece, and one at infinity made
       the check pass on nothing), and a dome on a flat slab read as perfectly smooth; five
-      minor findings beside. All mended, each case a test; relief is said plainly to be a
-      coarse measure (a turned shape moves a share by up to 0.15). **The mends are not
-      reviewed yet.**
-    - **Then:** shape language in the style presets; the light report; the same in 2D; `form`
+      minor findings beside. All mended, each case a test. **A second reviewer said not to
+      merge the mends**: faceting left out every edge that turns more than 30 degrees (a
+      ten-sided smooth cylinder read 0), a far triangle still voided the loose check, one
+      floating piece was never loose, a mesh too large to measure passed. Mended: faceting is
+      measured over edges shaded as one surface, however far they turn; relief is said plainly
+      to be a coarse measure (a turned shape moves a share by up to a quarter). **These mends
+      are not reviewed yet.**
+    - **Shape language: built** (2026-11-19; FORM.md, "Shape language"): how round, square
+      or pointed an asset's outline is, in every asset's taste measures; a style may ask for
+      one (`[taste] shape_language`), and the `storybook` preset asks for round. With it the
+      five items of "form within an agent's reach" are all built. Sepulcra's recipes lead
+      square (41 of 56), pointed (13) and round (2): no check is asked of it. Not reviewed.
+    - **Then:** the light report; the same in 2D; `form`
       on `sight_compare` and the line-up. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.

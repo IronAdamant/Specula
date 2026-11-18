@@ -9,6 +9,9 @@
 //!   it (median lightness difference across the silhouette's edge, [`crate::image::Edge`]), in
 //!   the gameplay shot and under the worst-case light.
 //! - `flat_lighting`: the lightness spread inside the silhouette under the game light.
+//! - `shape_language`: the share of the outline's turning that is of the kind the style asks
+//!   for (round, square, pointed: [`crate::shape`]), the mean over the thumbnail angles.
+//!   Checked only when `[taste] shape_language` is given.
 //!
 //! Scale against the reference figure and palette measures come from [`crate::check`].
 
@@ -18,7 +21,7 @@ use crate::{Bound, Finding};
 use specula_core::Json;
 
 /// The taste checks `[taste.allow]` may exempt.
-pub const CHECKS: [&str; 7] = ["silhouette_distinct", "thumb_solidity", "px_gameplay", "px_phone", "value_contrast", "value_contrast_worst", "flat_lighting"];
+pub const CHECKS: [&str; 8] = ["silhouette_distinct", "thumb_solidity", "px_gameplay", "px_phone", "value_contrast", "value_contrast_worst", "flat_lighting", "shape_language"];
 
 /// One shot's measures of a subject.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -104,6 +107,26 @@ pub fn check_subject(m: &Measured, rules: &StyleRules) -> Vec<Finding> {
     if let Some(thumb) = m.silhouettes.last() {
         let v = thumb.solidity();
         out.push(finding(rules, "thumb_solidity", s, v, t.thumb_min_solidity, Bound::Min, "share", "thumb_min_solidity", format!("only {:.0}% of the {}-px silhouette is thicker than a few pixels: thin parts vanish at thumbnail size", v * 100.0, t.thumb_px), "thicken the thin parts or drop them; read it as a silhouette at 64 px first"));
+    }
+    if let (Some(kind), Some(shape)) = (t.shape_language, crate::shape::of_masks(&m.silhouettes)) {
+        let pc = |x: f32| (x * 100.0).round();
+        let fix = match kind {
+            crate::shape::Kind::Round => "round its corners with a radius of a tenth of its size or more (a roundness, a larger corner or round), and build it from balls, capsules and chains rather than boxes",
+            crate::shape::Kind::Square => "square it off: flat sides meeting at right angles, bevels kept under a tenth of its size, fewer curves and spikes in the outline",
+            crate::shape::Kind::Pointed => "give the outline points: tapers that end in a tip, wedges and spikes whose corners are under 75 degrees, in place of rounded and squared ends",
+        };
+        out.push(finding(
+            rules,
+            "shape_language",
+            s,
+            shape.share(kind),
+            t.shape_min_share,
+            Bound::Min,
+            "share",
+            "shape_min_share",
+            format!("{:.0}% of its outline's turning is {} (round {:.0}%, square {:.0}%, pointed {:.0}%), where the style asks for a {} shape", pc(shape.share(kind)), kind.name(), pc(shape.round), pc(shape.square), pc(shape.pointed), kind.name()),
+            fix,
+        ));
     }
     if let Some(g) = &m.gameplay {
         out.push(finding(rules, "px_gameplay", s, g.px_height, t.min_px_gameplay, Bound::Min, "px", "min_px_gameplay", format!("{:.0} px tall from the game camera", g.px_height), "scale it up (gameplay pieces are oversized on purpose) or give it a taller silhouette"));
@@ -192,5 +215,24 @@ mod tests {
         let failed: Vec<&str> = f.iter().filter(|x| x.is_error()).map(|x| x.check).collect();
         assert_eq!(failed, vec!["px_gameplay", "value_contrast", "px_phone", "value_contrast_worst", "flat_lighting"]);
         assert!(f.iter().any(|x| x.check == "thumb_solidity" && x.exempt));
+        // (No style asked for a shape: none is checked.)
+        assert!(!f.iter().any(|x| x.check == "shape_language"));
+    }
+
+    /// A style that asks for a shape language holds an outline to it: a box fails "round" and
+    /// passes "square" with the shares in its message; an exemption exempts; a silhouette with
+    /// no shape (empty) is not checked.
+    #[test]
+    fn a_style_can_ask_for_a_shape() {
+        let boxy = Measured { subject: "crate_a".into(), silhouettes: vec![rect([8, 14, 48, 36])], ..Measured::default() };
+        let of = |toml: &str, m: &Measured| check_subject(m, &StyleRules::parse(toml, "style.toml", &|_| None).unwrap()).into_iter().find(|f| f.check == "shape_language");
+        let f = of("[taste]\nshape_language = \"round\"\n", &boxy).unwrap();
+        assert!(f.is_error() && f.value < 0.1 && f.limit == 0.5 && f.message.contains("square 100%") && f.fix.contains("round its corners"), "{f:?}");
+        let f = of("[taste]\nshape_language = \"square\"\nshape_min_share = 0.8\n", &boxy).unwrap();
+        assert!(f.passed && f.value > 0.9 && (f.limit - 0.8).abs() < 1e-6, "{f:?}");
+        let f = of("[taste]\nshape_language = \"pointed\"\nallow = { \"crate*\" = [\"shape_language\"] }\n", &boxy).unwrap();
+        assert!(!f.passed && f.exempt && !f.is_error(), "{f:?}");
+        let nothing = Measured { subject: "ghost".into(), silhouettes: vec![Mask::empty(64, 64)], ..Measured::default() };
+        assert!(of("[taste]\nshape_language = \"round\"\n", &nothing).is_none());
     }
 }

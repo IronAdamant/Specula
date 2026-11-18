@@ -26,6 +26,7 @@ pub mod form;
 pub mod image;
 pub mod palette;
 pub mod rules;
+pub mod shape;
 pub mod taste;
 
 use specula_core::Json;

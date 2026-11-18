@@ -21,6 +21,7 @@ use specula_core::Json;
 
 use crate::run::{said, stop_tree};
 
+mod form;
 mod launch;
 
 /// One native check.
@@ -43,6 +44,11 @@ pub const CHECKS: &[Check] = &[
         name: "launcher_check",
         about: "the launcher: projects listed and resumed, engines found, called and stopped from a terminal, the start screen in its window (docs/design/LAUNCH.md)",
         run: launch::launch,
+    },
+    Check {
+        name: "form_sheet_check",
+        about: "the form views on a contact sheet: each form tile framed as its colour tile, the subject alone on the neutral ground, no pipeline compiled by a frame (docs/design/FORM.md)",
+        run: form::form_sheet,
     },
 ];
 

@@ -39,7 +39,26 @@ pub fn check_with(facts: &AssetFacts, rules: &StyleRules, palette: &Palette, sto
 /// given: not checked). A failure `[form.allow]` names for this subject is exempt.
 fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
     let (m, limits, s) = (&f.form, &rules.form, f.subject.as_str());
-    if m.skipped.is_some() || m.triangles == 0 {
+    if m.triangles == 0 {
+        return;
+    }
+    if let (Some(why), Some(_)) = (m.skipped, limits.max_loose_pieces) {
+        // Not measured at all (too many triangles): the loose check fails saying so. It never
+        // passes on what it did not look at.
+        let mut finding = Finding::flag(
+            "loose_pieces",
+            s,
+            true,
+            at(rules, "form.max_loose_pieces"),
+            format!("its form was not measured ({why}: {} triangles), so loose pieces could not be ruled out", m.triangles),
+            "give it a coarser finest level, or fewer triangles; if it is right as it is, exempt the asset in [form.allow]".to_string(),
+        );
+        if limits.allows(s, "loose_pieces") {
+            finding.exempt = true;
+        }
+        r.findings.push(finding);
+    }
+    if m.skipped.is_some() {
         return;
     }
     if let (Some(_), None) = (limits.max_loose_pieces, m.loose_count) {
@@ -477,8 +496,10 @@ categories = ["stone", "enemy"]
         assert!(by("shading_seams").is_error() && (by("shading_seams").value - 0.25).abs() < 1e-6);
         assert!(!by("small_relief").passed && by("small_relief").exempt && !by("small_relief").is_error());
 
+        // A mesh too large to measure: nothing but the loose check, which fails saying so.
         f.form = FormFacts { triangles: 9_000_000, skipped: Some("more triangles than the form measures take"), ..FormFacts::default() };
-        assert!(of_form(&check(&f, &r, &palette(&r))).is_empty());
+        let found = of_form(&check(&f, &r, &palette(&r)));
+        assert!(found.len() == 1 && found[0].check == "loose_pieces" && found[0].is_error() && found[0].message.contains("9000000 triangles"), "{found:?}");
 
         // Too many floating pieces to compare: a failure that says so, not a pass.
         f.form = FormFacts { triangles: 30_000, pieces: 10_000, clear_of_ground: 9_000, loose_count: None, ..FormFacts::default() };

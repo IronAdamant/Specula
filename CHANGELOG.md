@@ -345,6 +345,22 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       shape's size was taken from every vertex, used or not (a stray one hid a loose piece),
       and a dome on a flat slab read as perfectly smooth; five smaller findings beside. All
       mended, each case a test.
+    - **Shape language** ([docs/design/FORM.md](docs/design/FORM.md)): how round, square or
+      pointed an asset's outline is, measured on its thumbnail silhouettes and reported with
+      its taste measures; a style may ask for one (`[taste] shape_language`), and the
+      `storybook` preset asks for round. The last of the five items of "form within an
+      agent's reach". Sepulcra's 56 recipes lead square (41), pointed (13) and round (2).
+    - **A third round of reviews** (2026-11-19, later still). *The form views:* a form
+      pipeline that failed in a later build was counted as nothing lost and the next form
+      frame compiled it; a sheet's form tile was framed without the reference figure's room;
+      a waiting form capture held the others. *The form checks:* faceting left out every
+      edge that turns more than 30 degrees, so a ten-sided smooth cylinder read as perfectly
+      smooth; a far triangle voided the loose check; one floating piece was never loose; a
+      mesh too large to measure passed. All mended, each a test shown to fail on its fault;
+      the sheets' form passes have a live check of their own, in Rust (`form_sheet_check`).
+      *Roundness (its fourth review):* the nearest-point solve cost a far sample five times
+      its work weight and could stop early at the lowest roundness; it now solves everything
+      at once in double precision, with the sure way as its fallback.
     - **A third review of roundness said not to merge it, and its field outside the shape is
       now the distance itself** (2026-11-19). Three touching planes were still up to 4.7 times
       out beside a thin, fully round board's corners, with a step in the field where they were

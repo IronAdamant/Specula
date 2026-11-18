@@ -13,7 +13,7 @@ three things: **handles** whose plain result is round, **views** in which a flaw
 | The engine's own figure from a skeleton | built, and not yet right to look at | [FIGURE.md](FIGURE.md), [CORPUS.md](CORPUS.md) |
 | The form views | built (this page) | `sight_frame`, `sight_orbit` |
 | The form checks | built (this page) | `style.toml` `[form]`; every asset's facts |
-| Shape language in the presets | not built | |
+| Shape language in the presets | built (this page) | `[taste] shape_language`; every asset's taste measures |
 
 ## The form views
 
@@ -96,7 +96,20 @@ no overlap; isolated to the branch in `shade_lit`); and clay stained outlines un
 orthographic camera. All three are mended as said above; the orthographic case is a test that was
 shown to fail on the fault. It found sound: the camera's axes in every projection and roll,
 terrain (no stain along ridges), frames to the byte after form frames, the pipeline keys, the
-packet. **These mends are not reviewed yet.**
+packet.
+
+**A third review, of the second mends and the sheets** (another model, 2026-11-19), said not to
+merge: a form pipeline that failed in a later build (the ground's, asked for after the form set
+was built) was counted as nothing lost, so the set stayed "built" and the next form frame
+compiled the missing pipeline itself; with `references` a sheet's form tile was framed without
+the reference figure's room while its box was the colour tile's; and a form capture that waited
+for its pipelines held every other capture behind it. Mended: a failed form pipeline loses the
+set whether or not the set was new to that build, and a retry makes what is missing; a frame only
+ever **looks up** a form pipeline, so no bookkeeping can make it compile one; a form tile is
+framed as its colour tile is; a waiting form capture stands behind the others. Each is a test
+that was shown to fail on the fault, and the sheets have a live check of their own
+(`form_sheet_check`). It found sound: the shaders' bytes, the variant set on both adapters, the
+orthographic rule, the waits' bounds. **These mends are not reviewed yet.**
 
 What the first looks through them taught (the figure, 2026-11-18; an independent check of each):
 curvature cut off at white lost limbs and fingers alike, so the turn is eased; clay under an even
@@ -122,8 +135,9 @@ for it):
 
 **On the studio's sheets** (2026-11-19): `studio_sheet` and `studio_compare` take the four views as
 `passes` beside `colour`, `value` and `silhouette` (`"passes": ["colour", "clay", "curvature"]`):
-a row a pass, the same camera as the colour tile, the subject alone on the neutral ground (no
-floor, no reference figure). Each form pass is a render of its own for every view; a standard
+a row a pass, the same camera as the colour tile (with `references` the room the reference figure
+takes is kept, so a form tile's box is its colour tile's), the subject alone on the neutral ground
+(no floor, no reference figure). Each form pass is a render of its own for every view; a standard
 shot is shown at the shot's own size and level. Not measured: the taste checks read the colour and
 silhouette passes as before.
 
@@ -141,7 +155,7 @@ they run wherever the studio's other rules do, CI included, and they are in **ev
 |---|---|---|
 | `loose_pieces` | pieces of the mesh (triangles joined through shared corners) whose bounds touch no other piece's and do not reach the ground, each with where it is, how large and how far from anything | `max_loose_pieces` (0 unless given: checked in any style) |
 | `razor_share` | of the creases (edges whose faces turn more than 30°), the share by length that turn more than 75° with nothing to soften them. A bevel splits a right angle into two of 45°, which pass | `max_razor_share` |
-| `facet_deg` | how coarsely round surfaces are faceted: the turn that 95% of the length of the **curved** edges stays under (not creases, and turning more than 1°: flat ground and the diagonals of flat quads are left out, or a dome on a slab reads as smooth). 0 with no curved edge | `max_facet_deg` |
+| `facet_deg` | how coarsely round surfaces are faceted: the turn that 95% of the length of the **curved** edges stays under. A curved edge is one **shaded as one surface** (its two faces share their normals along it, so it is meant to read as round) whose faces turn more than 1°, however far: a smooth-shaded cylinder of six sides is faceted by 60°, of 64 sides by 5.6°. Flat ground and the diagonals of flat quads are left out; an edge shaded as two faces is a hard edge, not a facet. 0 with fewer than three curved edges; `curved_edge_m` says how much of the shape it speaks for | `max_facet_deg` |
 | `seam_m` | length of the edges that are not creases across which the two sides are shaded more than 15° apart: a line in the light where the surface has none | `max_seam_share` (of the shape's size) |
 | `smeared_crease_m` | length of the creases shaded as if they were round (one normal for both faces): the dark smear along a hard edge | `max_smeared_share` (of the creases) |
 | `relief` | how the shape's relief is shared between `big`, `medium` and `small` form: how much the surface's facing varies within a box a quarter, a sixteenth and a sixty-fourth of its size, sheet by sheet | `max_small_relief` |
@@ -153,31 +167,37 @@ measured"` in place of the two measures of shading.
 
 - **Only loose pieces are checked unless the style says more.** A piece that hangs in the air and
   touches nothing is a fault in any style; how sharp, how faceted and how busy a shape may be is the
-  style's to say (Sepulcra's assets have a median razor share of 0.18 and facets up to 28°: its look,
-  not a fault). `[form.allow]` exempts a subject from a check, with the reason in a comment, like
+  style's to say (Sepulcra's assets have a median razor share of 0.18, and their smooth-shaded
+  surfaces are faceted by 0 to 45°, 23° at the median: its look, not a fault). `[form.allow]` exempts a subject from a check, with the reason in a comment, like
   `[taste.allow]`.
 - **Loose means beyond doubt.** Two pieces touch when their bounds come within a hundredth of the
-  shape's size of each other, so a ring round a post it never touches counts as touching; a piece
-  whose bounds reach the ground (y = 0, give or take that much) rests on it (a coffin's lid lying
-  beside it, rubble). What is left hangs in the air, or lies wholly under the ground.
+  shape's size of each other (and never more than 5 cm, however large the shape), so a ring round a
+  post it never touches counts as touching; a piece whose bounds reach the ground (y = 0, give or
+  take that much) rests on it (a coffin's lid lying beside it, rubble). What is left hangs in the
+  air, or lies wholly under the ground. A shape of one piece that hangs clear of the ground is
+  loose too.
 - **The shape is its triangles.** Its size is taken from the corners of the triangles that are
   measured: a vertex no triangle uses (an importer keeps every vertex of a file) and a corner at
-  infinity are no part of it.
-- **Slivers are left out.** A triangle with next to no area has a facing that is noise, and the
-  edges it would make razors of are edges nobody sees.
+  infinity, or past a million kilometres, are no part of it.
+- **Slivers are left out.** A triangle a thousand times longer than it is broad has a facing that
+  is noise, and the edges it would make razors of are edges nobody sees. By its own sides, not the
+  shape's size: one far triangle made slivers of every other.
 - **Relief is by boxes, sheet by sheet.** A triangle is in every box a point of it is in; what is
   in a box is taken sheet by sheet (triangles joined through edges in it), so the two sides of a
   thin plate are not taken for one surface that turns right round. A ball's relief is all big; bumps
   a thirtieth of its size across put most of it in the small; a ribbed sheet nearly all. **It is a
   coarse measure:** the boxes lie along the axes and are sized by the bounds, so the same shape
-  turned 37° about a slanted axis moves a share by up to 0.15 (a ball on a block: 0.88 big upright,
-  0.73 turned). Set `max_small_relief` with that in mind.
-- **Bounds:** a mesh of more than 600,000 triangles is not measured (the facts say `skipped`). Only
-  pieces clear of the ground are compared with the others, and when that would be more than 50
-  million comparisons the pieces are counted, the facts say `not compared`, and **the loose check
-  fails saying so** (it never passes on what it did not look at). The relief is sampled at 200,000
-  points at most for each of its three sizes. A 600,000-triangle ball takes 1.4 s (release, this
-  laptop); the studio hands the measure its call's deadline, and a measure given up says `skipped`.
+  turned moves a share by up to a quarter (a ball on a block turned 37° about a slanted axis: 0.88
+  big upright, 0.73 turned; a reviewer found 0.26 for two boxes turned 15° and 0.25 for a plank
+  turned 45°). Set `max_small_relief` with that in mind.
+- **Bounds:** a mesh of more than 600,000 triangles is not measured (the facts say `skipped`), and
+  only pieces clear of the ground are compared with the others: over 50 million comparisons the
+  pieces are counted and the facts say `not compared`. In both cases **the loose check fails
+  saying so**: it never passes on what it did not look at. The relief has a budget of 200,000
+  points for each of its three sizes, and every triangle keeps one, so a mesh of 600,000 triangles
+  takes 600,000. A 600,000-triangle ball takes 1.4 to 1.6 s (release, this laptop); the studio
+  hands the measure its call's deadline, and a measure given up says `skipped` (the call answers
+  `timed_out`).
 
 **What the first run found** (2026-11-18, on assets that had passed every earlier check):
 
@@ -204,9 +224,58 @@ two major findings and five minor, all mended, each case now a test
 - It found sound: the measures under a turn and a move, a ball's facets by its bands, equal facts
   bit for bit over two runs, pathological meshes, the three halo exemptions (each hides the halo and
   nothing else), and `pediment_fallen`'s fault (a 0.19 m block, its bottom 5.5 cm off the ground).
-- **The mends are not reviewed yet.**
+
+**A second review, of those mends** (another model, 2026-11-19), said not to merge: `facet_deg`
+left out every edge that turns more than 30° as a crease, so a smooth cylinder of ten sides read 0
+and passed a limit that one of 64 sides failed, and one folded diagonal in a flat sheet set it;
+one far corner of a real triangle still voided the loose check (the sliver's floor and "near"
+both went by the shape's size); a shape of one floating piece was never loose; a mesh too large
+to measure passed the loose check; the relief's turn was understated (0.15, where 0.26 was
+found); and the sample budget was called a cap. Each is mended as said above and is a test
+(`the_second_review_of_the_form_checks`). It found sound: the relief's sampling (inside each
+triangle, shares summing to 1, three times faster, bit for bit over two runs), the comparison's
+boundary, stopping, and the first review's other findings closed.
+- **These mends are not reviewed yet.**
 
 **Not built:** faceting at the size seen (the measure is the mesh's own turn, not what the gameplay
 shot shows of it: a facet under a pixel is no fault); pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so
-`seam_m` does not see them: the form views do); shape language.
+`seam_m` does not see them: the form views do).
+
+## Shape language
+
+How round, square or pointed an asset's outline is, as numbers (`specula-studio`, `shape`). Round
+reads as friendly, square as sturdy, pointed as dangerous: a convention of character and prop
+design, not a law. So it is **reported for every asset** (`studio_check`: `measures.thumbnails.shape`)
+and **checked only when a style asks** for one.
+
+- **The measure.** On each thumbnail silhouette (the three the taste checks take: front, side,
+  three-quarter): the outline of the largest piece is traced and straightened to a polygon that
+  stays within a fortieth of the shape's size of it; each corner is told by how far the outline
+  turns there. Under 60° it is part of a curve; 60° to 105° is a square corner; sharper is a
+  point (the corner's own angle is then 75° or less). Corners within a tenth of the size of each
+  other are one corner, so a small bevel or a tight rounding does not make a square corner round;
+  two sharp corners stay two unless they are a pixel or two apart, so the cut end of a bar is two
+  square corners and the tip of a spike one point. The shares (`round`, `square`, `pointed`) are
+  of the outline's whole turning and sum to 1; `leading` names the largest; `convexity` is the
+  outline's area over its hull's; `corners` counts the corners of 60° or more. The three
+  silhouettes' means are the asset's.
+- **Known shapes** (a test, at a thumbnail's size and four times it, upright and turned 17° and
+  45°): a disc and an ellipse are round, a box and an L square, a triangle and a star pointed; a
+  box rounded by a twentieth of its side is still square and one rounded by a third is round; a
+  thin bar is square at its ends and a spike is pointed.
+- **The rule.** `style.toml`: `[taste] shape_language = "round"` (or `"square"`, `"pointed"`) and
+  `shape_min_share` (0.5 unless given): the check `shape_language` fails an asset whose share of
+  that kind is under it, with the three shares in its message and what to do in its fix;
+  `[taste.allow]` exempts as for the other taste checks.
+- **In the presets.** A base style may carry the ask (`Preset::shape`), and the style configurator
+  writes it with the rest: `storybook` asks for round (half of an outline's turning). The other
+  four ask for nothing: a moonlit graveyard, a muted or a noir game and the neutral stage are not
+  one shape.
+- **What it says of Sepulcra** (2026-11-19, its 56 recipes through `studio_check`): 41 lead
+  square, 13 pointed and 2 round (`grave_rock` 0.83 round, `mausoleum_domed` 0.70); the coffin is
+  0.77 square, the wraith 0.58 pointed, the iron fences and the brazier's fire pointed. A graveyard
+  of cut stone and iron: no check is asked of it.
+- **Limits.** It reads outlines, not surfaces: a ball with a square plinth seen from the front is
+  both. Holes are not traced. At 64 pixels a part under about three pixels across is read as a
+  point whatever its end. It is not reviewed yet.

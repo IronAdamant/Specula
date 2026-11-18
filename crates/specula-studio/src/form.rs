@@ -22,14 +22,24 @@ pub const RAZOR_DEG: f32 = 75.0;
 pub const SEAM_DEG: f32 = 15.0;
 /// A mesh of more triangles than this is not measured (the facts say so).
 pub const MAX_TRIANGLES: usize = 600_000;
-/// Points the relief is sampled at, at most, at each of its three sizes (a mesh of large
-/// triangles is sampled within each, finer than that size's boxes; one of many small ones
-/// once a triangle).
+/// The budget of points the relief is sampled at, at each of its three sizes: a mesh of large
+/// triangles is sampled within each, finer than that size's boxes, and more thinly all round
+/// when that would be more than this. Not a cap: every triangle keeps one point, so a mesh of
+/// 600,000 triangles takes 600,000.
 pub const MAX_SAMPLES: f64 = 200_000.0;
-/// An edge that is not a crease counts toward the faceting of round surfaces when its faces
+/// An edge shaded as one surface counts toward the faceting of round surfaces when its faces
 /// turn more than this: the diagonals of flat quads, and flat ground, turn nothing and say
 /// nothing of how coarse a dome beside them is.
 pub const CURVED_DEG: f32 = 1.0;
+/// Fewer curved edges than this are no round surface (one stray fold in a flat sheet is not
+/// faceting): `facet_deg` is then 0.
+pub const MIN_CURVED: usize = 3;
+/// Two pieces touch when their bounds come within a hundredth of the shape's size of each
+/// other, and never further apart than this (m): on a large shape a hundredth is metres.
+pub const NEAR_MAX_M: f32 = 0.05;
+/// A coordinate past this (m) is no place of a shape: a triangle with one is left out, as one
+/// with a corner at infinity is.
+pub const FAR_M: f32 = 1.0e9;
 /// Pairs of pieces compared to find the loose ones, at most (each piece clear of the ground
 /// against every other): beyond it the pieces are counted and not compared.
 pub const MAX_COMPARES: u64 = 50_000_000;
@@ -76,11 +86,16 @@ pub struct FormFacts {
     /// Length of the razors (creases turning more than [`RAZOR_DEG`]), metres.
     pub razor_m: f32,
     /// How coarsely round surfaces are faceted: the turn, in degrees, that 95% of the length
-    /// of the curved edges stays under (those that are not creases and turn more than
-    /// [`CURVED_DEG`]: flat ground and the diagonals of flat quads are left out, or a dome on
-    /// a slab would read as smooth). 0 with no curved edge. Above a few degrees an outline
-    /// reads as a polygon.
+    /// of the curved edges stays under. A curved edge is one **shaded as one surface** (its
+    /// two faces share their normals along it, so it is meant to read as round) whose faces
+    /// turn more than [`CURVED_DEG`], however far: a smooth-shaded cylinder of six sides is
+    /// faceted by 60°. Flat ground and the diagonals of flat quads are left out, or a dome on
+    /// a slab would read as smooth; an edge shaded as two faces is a hard edge, not a facet.
+    /// (Without normals: the edges that are not creases.) 0 with fewer than [`MIN_CURVED`]
+    /// curved edges. Above a few degrees an outline reads as a polygon.
     pub facet_deg: f32,
+    /// The length of those curved edges (m): how much of the shape `facet_deg` speaks for.
+    pub curved_m: f32,
     /// Every vertex has a normal: without them the two measures of shading below are not
     /// taken (and say nothing).
     pub shaded: bool,
@@ -140,6 +155,7 @@ impl FormFacts {
         j.set("razor_m", r3(self.razor_m));
         j.set("razor_share", r3(self.razor_share()));
         j.set("facet_deg", r3(self.facet_deg));
+        j.set("curved_edge_m", r3(self.curved_m));
         if self.shaded {
             j.set("seam_m", r3(self.seam_m));
             j.set("smeared_crease_m", r3(self.smeared_m));
@@ -228,7 +244,7 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
     // Triangles with three places, each a finite one. The shape's size is theirs: a vertex no
     // triangle uses (an importer keeps every vertex of a file) or one at infinity is no part
     // of the shape, and one stray vertex a kilometre off made every piece "near" every other.
-    let finite = |i: u32| points[i as usize].iter().all(|x| x.is_finite());
+    let finite = |i: u32| points[i as usize].iter().all(|x| x.abs() <= FAR_M);
     let mut corners: Vec<([u32; 3], [u32; 3])> = Vec::with_capacity(triangles);
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for t in m.indices.as_chunks::<3>().0 {
@@ -251,16 +267,19 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
         return f;
     }
     let size = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(hi[2] - lo[2]).max(1e-6);
-    // A sliver (an area under a millionth of a millionth of the square of the shape's size:
-    // three corners nearly in a line, or nearly one place) is left out: its facing is noise,
-    // and the edges it would make razors of are no edges anyone sees.
-    let least = 2.0e-12 * size * size;
+    // A sliver (three corners nearly in a line: an area under a millionth of the square of
+    // its own longest side) is left out: its facing is noise, and the edges it would make
+    // razors of are no edges anyone sees. By its own sides, not the shape's size: one far
+    // triangle made slivers of every other (second review).
     let mut tris: Vec<([u32; 3], [u32; 3], V3)> = Vec::with_capacity(corners.len());
     for (w, raw) in corners {
         let face = cross(sub(points[w[1] as usize], points[w[0] as usize]), sub(points[w[2] as usize], points[w[0] as usize]));
         // (A cross product is twice the area.)
         let twice = length(face);
-        if twice.is_nan() || twice <= least {
+        let p = [points[w[0] as usize], points[w[1] as usize], points[w[2] as usize]];
+        let longest = length(sub(p[1], p[0])).max(length(sub(p[2], p[1]))).max(length(sub(p[0], p[2])));
+        // (NaN, or nothing: left out too.)
+        if twice.is_nan() || twice <= 0.0 || twice <= 2.0e-6 * longest * longest {
             continue;
         }
         tris.push((w, raw, face));
@@ -301,13 +320,11 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
     // reach the ground (they span y = 0, where an asset stands, give or take that much) rests
     // on it and is not loose: a coffin's lid lying beside it, rubble round a fallen stone.
     // One wholly under the ground does not rest on it.
-    let near = (0.01 * size).max(0.001);
+    let near = (0.01 * size).clamp(0.001, NEAR_MAX_M);
     let list: Vec<(usize, V3, V3)> = pieces.values().copied().collect();
     let clear: Vec<usize> = (0..list.len()).filter(|i| !(list[*i].1[1] <= near && list[*i].2[1] >= -near)).collect();
     f.clear_of_ground = clear.len();
-    if list.len() < 2 {
-        f.loose_count = Some(0);
-    } else if clear.len() as u64 * list.len() as u64 <= MAX_COMPARES {
+    if clear.len() as u64 * list.len() as u64 <= MAX_COMPARES {
         let mut loose = Vec::new();
         for i in clear {
             let (count, a_lo, a_hi) = list[i];
@@ -318,9 +335,12 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
                     gap = gap.min(length(d));
                 }
             }
+            // (A piece alone, clear of the ground, touches nothing either.)
             if gap > near {
                 let mid = [0, 1, 2].map(|k| 0.5 * (a_lo[k] + a_hi[k]));
-                loose.push(Loose { triangles: count, at: mid, size_m: (a_hi[0] - a_lo[0]).max(a_hi[1] - a_lo[1]).max(a_hi[2] - a_lo[2]), gap_m: gap });
+                // How far it is from anything: another piece, or the ground.
+                let ground = if a_lo[1] > 0.0 { a_lo[1] } else { -a_hi[1] };
+                loose.push(Loose { triangles: count, at: mid, size_m: (a_hi[0] - a_lo[0]).max(a_hi[1] - a_lo[1]).max(a_hi[2] - a_lo[2]), gap_m: gap.min(ground) });
             }
         }
         f.loose_count = Some(loose.len());
@@ -368,13 +388,14 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
                     if f.shaded && jump < 1.0 {
                         smeared += long;
                     }
-                } else {
-                    if turn > CURVED_DEG {
-                        turns.push((turn, len));
-                    }
-                    if f.shaded && jump > SEAM_DEG {
-                        seam += long;
-                    }
+                } else if f.shaded && jump > SEAM_DEG {
+                    seam += long;
+                }
+                // A curved edge: shaded as one surface (so meant to read as round), however
+                // far its faces turn; without normals, one that is not a crease.
+                let as_one = if f.shaded { jump < 1.0 } else { turn <= CREASE_DEG };
+                if as_one && turn > CURVED_DEG {
+                    turns.push((turn, len));
                 }
             }
             _ => tangled += long,
@@ -383,8 +404,10 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
     (f.edge_m, f.open_m, f.tangled_m, f.crease_m, f.razor_m, f.smeared_m, f.seam_m) = (edge as f32, open as f32, tangled as f32, crease as f32, razor as f32, smeared as f32, seam as f32);
     turns.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     let total: f64 = turns.iter().map(|t| f64::from(t.1)).sum();
+    // (An empty sum is minus nothing.)
+    f.curved_m = total as f32 + 0.0;
     let mut run = 0.0f64;
-    for (turn, len) in &turns {
+    for (turn, len) in turns.iter().filter(|_| turns.len() >= MIN_CURVED) {
         run += f64::from(*len);
         if run >= 0.95 * total {
             f.facet_deg = *turn;
@@ -428,7 +451,7 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
         // (triangle, box) -> the share of the triangle that is in the box, by its points.
         let mut within: BTreeMap<(u32, [i32; 3]), f32> = BTreeMap::new();
         for (i, (base, short, long)) in axes.iter().copied().enumerate() {
-            let (nu, nv) = (((f64::from(want(length(short))) * thin).floor() as u32).max(1), ((f64::from(want(length(long))) * thin).floor() as u32).max(1));
+            let (nu, nv) = (((f64::from(want(length(short))) * thin).round() as u32).max(1), ((f64::from(want(length(long))) * thin).round() as u32).max(1));
             // nv steps along the long side, and at each nu points across what is left of the
             // triangle's width there; a point's share of the triangle goes by that width.
             let each = 2.0 / (nu * nv) as f32;
@@ -781,6 +804,107 @@ mod tests {
         // (Stopped before it began: nothing is measured, and it says why.)
         let got = measure_with(&adrift, &|| true);
         assert!(got.skipped.is_some_and(|w| w.contains("out of time")) && got.pieces == 0 && got.loose_count.is_none());
+    }
+
+    /// What the second review of the form checks found, each as it should be.
+    ///
+    /// Faceting goes up with coarseness, whatever the turn: a cylinder shaded as one round
+    /// surface is faceted by a whole turn over its sides, at 6 sides as at 64 (edges turning
+    /// more than 30 degrees were left out as creases: a 10-sided cylinder read 0 and passed a
+    /// limit a 64-sided one failed). The same cylinder shaded as flat faces has hard edges and
+    /// no facets. One fold in a flat sheet is not faceting.
+    ///
+    /// A far triangle is part of the shape and does not void the loose check (the sliver's
+    /// floor and "near" both went by the shape's size: with one corner a kilometre off, a
+    /// block floating beside a box was no longer loose; with one a thousand kilometres off,
+    /// the box itself was a sliver). A corner past a million kilometres is no place at all.
+    /// And one piece alone, clear of the ground, is loose.
+    #[test]
+    fn the_second_review_of_the_form_checks() {
+        // A cylinder's side, of `n` faces: shaded round (each corner's normal points out from
+        // the axis) or flat (each face's own).
+        let side = |n: u32, round: bool| -> MeshData {
+            let mut m = MeshData::default();
+            let at = |i: u32| {
+                let a = std::f32::consts::TAU * (i % n) as f32 / n as f32;
+                [specula_core::dmath::cos(a), specula_core::dmath::sin(a)]
+            };
+            for i in 0..n {
+                let (a, b) = (at(i), at(i + 1));
+                let face = {
+                    let mid = [a[0] + b[0], a[1] + b[1]];
+                    let l = (mid[0] * mid[0] + mid[1] * mid[1]).sqrt();
+                    [mid[0] / l, 0.0, mid[1] / l]
+                };
+                let first = m.positions.len() as u32;
+                for (p, y) in [(a, 0.0f32), (b, 0.0), (b, 1.0), (a, 1.0)] {
+                    m.positions.push([p[0], y, p[1]]);
+                    m.normals.push(if round { [p[0], 0.0, p[1]] } else { face });
+                }
+                m.indices.extend_from_slice(&[first, first + 2, first + 1, first, first + 3, first + 2]);
+            }
+            m
+        };
+        for n in [6u32, 8, 10, 11, 12, 16, 64] {
+            let (round, flat_faced) = (measure(&side(n, true)), measure(&side(n, false)));
+            let turn = 360.0 / n as f32;
+            assert!((round.facet_deg - turn).abs() < 0.05 && (round.curved_m - n as f32).abs() < 1e-3, "{n} sides, shaded round: {round:?}");
+            assert_eq!((flat_faced.facet_deg, flat_faced.curved_m), (0.0, 0.0), "{n} sides, shaded flat: hard edges, no facets");
+            // (What turns more than 30 degrees is a crease too, and shaded round a smeared one.)
+            if n != 12 {
+                assert_eq!(round.crease_m > 0.0, turn > CREASE_DEG, "{n} sides: {round:?}");
+            }
+            let all: f32 = round.relief.iter().sum();
+            assert!((all - 1.0).abs() < 1e-4 || all == 0.0, "{n} sides: relief {:?}", round.relief);
+        }
+        // A flat sheet of 20 by 20 squares with one diagonal folded up by 25 degrees.
+        let mut sheet = MeshData::default();
+        for j in 0..=20u32 {
+            for i in 0..=20u32 {
+                sheet.positions.push([i as f32 * 0.05, 0.0, j as f32 * 0.05]);
+                sheet.normals.push([0.0, 1.0, 0.0]);
+            }
+        }
+        for j in 0..20u32 {
+            for i in 0..20u32 {
+                let a = j * 21 + i;
+                sheet.indices.extend_from_slice(&[a, a + 21, a + 1, a + 1, a + 21, a + 22]);
+            }
+        }
+        // (The corner at (10, 10) lifted: the edges round it fold, two of them by the most.)
+        let flat_sheet = measure(&sheet);
+        assert_eq!((flat_sheet.facet_deg, flat_sheet.curved_m), (0.0, 0.0));
+        let mut folded = sheet.clone();
+        let corner = folded.indices[0] as usize;
+        folded.positions[corner][1] = 0.05 * 25.0f32.to_radians().tan();
+        let f = measure(&folded);
+        assert!(f.curved_m > 0.0 && f.curved_m < 0.2 && f.facet_deg == 0.0, "one fold at a sheet's corner is not faceting: {f:?}");
+
+        let body = flat(&box_quads([0.0; 3], [1.0; 3]));
+        let adrift = joined(&body, &flat(&box_quads([0.2, 1.5, 0.2], [0.4, 1.7, 0.4])));
+        for far in [1.0e3f32, 1.0e6] {
+            let mut with = adrift.clone();
+            let first = with.positions.len() as u32;
+            // (A triangle of that size, and one a thousand times longer than broad: the second
+            // is a sliver by its own sides and is left out, and changes nothing.)
+            with.positions.extend_from_slice(&[[0.0, 5.0, 0.0], [far, 5.0, 0.0], [far * 0.5, 5.0, far], [0.0, 6.0, 0.0], [1.0, 6.0, 0.0], [far, 6.0, 1.0]]);
+            with.normals.extend_from_slice(&[[0.0, 1.0, 0.0]; 6]);
+            with.indices.extend_from_slice(&[first, first + 1, first + 2, first + 3, first + 4, first + 5]);
+            let got = measure(&with);
+            assert_eq!((got.pieces, got.loose_count), (3, Some(2)), "a corner {far} m off: the block and the far triangle are loose, the box is not: {got:?}");
+        }
+        let mut with = adrift.clone();
+        let first = with.positions.len() as u32;
+        with.positions.extend_from_slice(&[[0.0, 5.0, 0.0], [1.0, 5.0, 0.0], [1.0e30, 5.0, 1.0]]);
+        with.normals.extend_from_slice(&[[0.0, 1.0, 0.0]; 3]);
+        with.indices.extend_from_slice(&[first, first + 1, first + 2]);
+        let got = measure(&with);
+        assert_eq!((got.pieces, got.loose_count), (2, Some(1)), "a corner past any place is left out with its triangle: {got:?}");
+
+        let alone = measure(&flat(&box_quads([0.0, 2.0, 0.0], [1.0, 3.0, 1.0])));
+        assert_eq!((alone.pieces, alone.clear_of_ground, alone.loose_count), (1, 1, Some(1)));
+        assert!((alone.loose[0].gap_m - 2.0).abs() < 1e-5, "it is 2 m from anything: the ground: {:?}", alone.loose);
+        assert_eq!(measure(&body).loose_count, Some(0), "one piece standing on the ground is not loose");
     }
 
     /// A piece that touches nothing and hangs in the air is loose, with where it is and how

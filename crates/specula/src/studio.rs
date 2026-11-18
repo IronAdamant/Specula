@@ -1636,7 +1636,8 @@ impl Ctx<'_> {
     }
 
     /// An angle tile: colour under `rig` (with the references when `refs`), a silhouette, or a
-    /// form view (`form`: shape alone, no references).
+    /// form view (`form`: shape alone; with `refs` it is framed as the colour tile is, the
+    /// references' room kept and the references left out).
     #[allow(clippy::too_many_arguments)]
     fn studio_angle(&mut self, s: &Staged, az: f32, el: f32, rig: &Rig, tile: u32, refs: bool, silhouette: bool, form: Option<specula_gpu::FormView>) -> Result<(Vec<u8>, Option<[u32; 4]>), ToolOutput> {
         // The subject turns by -az in front of a camera at azimuth 0: the same view as a camera at
@@ -1645,7 +1646,7 @@ impl Ctx<'_> {
         let at = Vec3::new(-(slo.x + shi.x) * 0.5, 0.0, -(slo.z + shi.z) * 0.5);
         let (slo, shi) = (slo + at, shi + at);
         let (mut lo, mut hi) = (slo, shi);
-        let fig = (refs && !silhouette && form.is_none()).then(|| {
+        let fig = (refs && !silhouette).then(|| {
             let f = Vec3::new(slo.x - 0.6 - 0.35, 0.0, 0.0);
             let (a, b) = reference_box(f);
             lo = lo.min(a);
@@ -1659,7 +1660,9 @@ impl Ctx<'_> {
             None if silhouette => Light::Silhouette,
             None => Light::Rig(rig, false),
         };
-        let rgba = self.stage_render(&placed, fig, &cam, tile, tile, light)?;
+        // (A form view keeps the room the references take, so that its tile is framed as the
+        // colour tile beside it is, and leaves them out: it shows the subject's shape alone.)
+        let rgba = self.stage_render(&placed, fig.filter(|_| form.is_none()), &cam, tile, tile, light)?;
         let bbox = project_box(&cam.view_proj(1.0), slo, shi, tile, tile);
         Ok((rgba, bbox))
     }
@@ -1894,10 +1897,9 @@ impl Ctx<'_> {
                     let Pass::Form(view) = p else { continue };
                     let px = match v {
                         View::Angle { az, el, .. } => {
-                            let (px, at) = self.studio_angle(s, *az, *el, &rig, tile, false, false, Some(*view))?;
-                            // (A sheet of form views alone has its subject's box from them. With
-                            // a colour pass and references the framing differs, and the box is
-                            // the colour's.)
+                            // (The colour tile's camera, so its box: a sheet of form views
+                            // alone has its subject's box from them.)
+                            let (px, at) = self.studio_angle(s, *az, *el, &rig, tile, sheet.references, false, Some(*view))?;
                             bbox = bbox.or(at);
                             px
                         }
@@ -2288,6 +2290,9 @@ impl Ctx<'_> {
                 ("px", Json::from(rules.taste.thumb_px)),
                 ("angles", Json::arr(THUMB_ANGLES.map(|(az, el)| Json::arr([Json::from(az), Json::from(el)])))),
                 ("solidity", Json::arr(measured.silhouettes.iter().map(|m| r3(m.solidity())))),
+                // How round, square or pointed the outline is (the mean over the angles):
+                // reported for every subject, checked when the style asks for one.
+                ("shape", specula_studio::shape::of_masks(&measured.silhouettes).map_or(Json::Null, |s| s.to_json())),
             ]),
         );
         let mut packet = Json::obj([

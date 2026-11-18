@@ -35,6 +35,10 @@ pub struct Preset {
     pub danger: &'static str,
     pub cant_afford: &'static str,
     pub neutral_max_chroma: f64,
+    /// The shape language the style asks of an asset's outline, and the share of the
+    /// outline's turning that must be of it (`[taste] shape_language`, `shape_min_share`:
+    /// docs/design/FORM.md). `None`: the style does not say, and shapes are only reported.
+    pub shape: Option<(&'static str, f64)>,
 }
 
 pub const PRESETS: [Preset; 5] = [
@@ -61,6 +65,7 @@ pub const PRESETS: [Preset; 5] = [
         danger: "#9cff4f",
         cant_afford: "#8e897d",
         neutral_max_chroma: 0.05,
+        shape: None,
     },
     Preset {
         name: "storybook",
@@ -85,6 +90,8 @@ pub const PRESETS: [Preset; 5] = [
         danger: "#e5484d",
         cant_afford: "#9a8f99",
         neutral_max_chroma: 0.08,
+        // (Friendly reads as round: most of an outline's turning in curves.)
+        shape: Some(("round", 0.5)),
     },
     Preset {
         name: "muted",
@@ -109,6 +116,7 @@ pub const PRESETS: [Preset; 5] = [
         danger: "#c0504d",
         cant_afford: "#7d7a74",
         neutral_max_chroma: 0.035,
+        shape: None,
     },
     Preset {
         name: "noir",
@@ -133,6 +141,7 @@ pub const PRESETS: [Preset; 5] = [
         danger: "#dd3333",
         cant_afford: "#6b6b6b",
         neutral_max_chroma: 0.02,
+        shape: None,
     },
     Preset {
         name: "clean",
@@ -157,6 +166,7 @@ pub const PRESETS: [Preset; 5] = [
         danger: "#d64545",
         cant_afford: "#9aa1ab",
         neutral_max_chroma: 0.05,
+        shape: None,
     },
 ];
 
@@ -190,6 +200,7 @@ impl Preset {
             ("fog_color", Json::from(self.fog_color)),
             ("ui", Json::obj([("panel", Json::from(self.panel)), ("text", Json::from(self.text)), ("accent", Json::from(self.accent)), ("danger", Json::from(self.danger)), ("cant_afford", Json::from(self.cant_afford))])),
             ("neutral_max_chroma", Json::from(self.neutral_max_chroma)),
+            ("shape", self.shape.map_or(Json::Null, |(kind, share)| Json::obj([("language", Json::from(kind)), ("min_share", Json::from(share))]))),
         ])
     }
 
@@ -197,7 +208,7 @@ impl Preset {
     pub fn toml_keys(&self) -> Vec<(String, String)> {
         let q = |s: &str| format!("\"{s}\"");
         let n = |v: f64| Value::Num(v).toml_literal();
-        vec![
+        let mut keys = vec![
             ("stage.game.key_color".into(), q(self.key_color)),
             ("stage.game.key_intensity".into(), n(self.key_intensity)),
             ("stage.game.key_elevation_deg".into(), n(self.key_elevation_deg)),
@@ -217,7 +228,12 @@ impl Preset {
             ("ui.accent".into(), q(self.accent)),
             ("ui.danger".into(), q(self.danger)),
             ("ui.cant_afford".into(), q(self.cant_afford)),
-        ]
+        ];
+        if let Some((kind, share)) = self.shape {
+            keys.push(("taste.shape_language".into(), q(kind)));
+            keys.push(("taste.shape_min_share".into(), n(share)));
+        }
+        keys
     }
 }
 
@@ -467,6 +483,14 @@ mod tests {
         // A new project gets the whole preset.
         let (fresh, _) = compose(&PRESETS[3], None, &[], "Noir game", false).unwrap();
         assert!(specula_core::toml::parse(&fresh).unwrap().get("look").and_then(|l| l.get("preset")).and_then(Json::as_str) == Some("noir"));
+        // A preset that asks for a shape language writes it as a taste rule; one that does not
+        // writes none (the existing file above, of a moonlit game, got none).
+        assert!(!toml.contains("shape_language") && !fresh.contains("shape_language"));
+        let (story, _) = compose(find("storybook").unwrap(), None, &[], "A friendly game", false).unwrap();
+        let taste = specula_core::toml::parse(&story).unwrap().get("taste").cloned().unwrap();
+        assert_eq!((taste.get("shape_language").and_then(Json::as_str), taste.get("shape_min_share").and_then(Json::as_f64)), (Some("round"), Some(0.5)));
+        assert_eq!(find("storybook").unwrap().to_json().get("shape").and_then(|s| s.get("language")).and_then(Json::as_str), Some("round"));
+        assert!(find("clean").unwrap().to_json().get("shape").is_some_and(Json::is_null));
         let o = Onboarding::new(Json::Null, "muted", "lead").unwrap();
         assert_eq!(Onboarding::parse(&o.to_text()).unwrap(), o);
         assert_eq!(Onboarding::new(Json::Null, "neon", "x").unwrap_err().code, "bad_preset");

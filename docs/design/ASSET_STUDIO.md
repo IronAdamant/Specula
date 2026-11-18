@@ -132,6 +132,9 @@ Each is a measured number against a `[taste]` threshold. Failures are errors in 
   A mean over the whole subject was tried first and rejected: a backlit stone with a bright rim over a dark body
   averages to the ground's value while it plainly reads (the rune pillar measured 0.017 that way, 0.062 by its edge).
   The mean contrast is still reported (`mean_contrast`).
+- **Shape language:** how round, square or pointed the thumbnail silhouettes' outline is
+  ([FORM.md](FORM.md), "Shape language"): reported for every subject (`measures.thumbnails.shape`), and checked
+  (`shape_language`) only when the style gives `[taste] shape_language`.
 - **Palette distance and neutral saturation:** from the asset's surface colours, as above.
 - **Scale against reference figures:** the build's extents (lowest to highest point) against `[[scale]]`, reported
   also as a ratio to the 1.8 m figure. How far the lowest point floats above the ground is checked on its own

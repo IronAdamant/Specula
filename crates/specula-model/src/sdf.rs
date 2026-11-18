@@ -505,11 +505,14 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
 }
 
 /// What a rounded box or cylinder costs a sample over a plain primitive, by its power: 2 (an
-/// ellipsoid's own shares, no power to take), 4 (multiplications), and any other (some forty
-/// powers a sample outside the shape, where the nearest point is solved for). Set from what
-/// meshing a cube, a cylinder and a thin board at resolution 96 took a sample (2026-11-19:
-/// 111 to 145 ns, 175 to 236 ns, 540 to 930 ns), at this table's 2.4 units a nanosecond.
-const ROUNDED_COST: [u64; 3] = [300, 520, 1800];
+/// ellipsoid's own shares, no power to take), 4 (multiplications), and any other (a dozen to
+/// thirty powers a sample outside the shape, where the nearest point is solved for). Set so
+/// that the dearest case found takes under the work limit's 1.5 s at the limit (2026-11-19,
+/// release, meshing at resolution 96 and 64): a cube, a cylinder and a thin board alone run
+/// at 0.2 to 0.45 ns a unit; a 2 m box with a small rounded plate cut out of it, whose every
+/// sample is outside the plate and far from it, at 0.5 to 0.85 (a fourth review found that
+/// case at 4.7 under a weight set from the shapes alone).
+const ROUNDED_COST: [u64; 3] = [300, 520, 1300];
 
 /// A rounded box's or cylinder's field ([`Prim::Rounded`]), in metres.
 ///
@@ -517,7 +520,7 @@ const ROUNDED_COST: [u64; 3] = [300, 520, 1800];
 /// is convex.
 ///
 /// **Outside it the field is the distance itself**, to the nearest point of the surface
-/// ([`rounded_distance`]): so a swelling (`round`), a shell or a blend of any size is measured
+/// ([`rounded_solve`]): so a swelling (`round`), a shell or a blend of any size is measured
 /// from the rounded surface, on every side. (It was first `k - 1` times a size, then the
 /// distance to one touching plane, then to three: each was right along the axes and wrong
 /// beside a thin shape's edge, where a swelling by a centimetre came out up to five, and three
@@ -534,6 +537,11 @@ const ROUNDED_COST: [u64; 3] = [300, 520, 1800];
 /// Each share is taken of the largest (`u_i / m`), so no power overflows far away or
 /// underflows near the middle.
 fn rounded(q: V3, half: V3, power: f32, disc: bool) -> f32 {
+    rounded_counted(q, half, power, disc).0
+}
+
+/// [`rounded`], and the steps the nearest point's solve took (none inside the shape).
+fn rounded_counted(q: V3, half: V3, power: f32, disc: bool) -> (f32, u32) {
     // A cylinder is the same in two: out from its axis, and along it.
     let (p, h, n) = if disc { ([len2(q[0], q[2]), q[1].abs(), 0.0], [half[0], half[1], 1.0], 2) } else { ([q[0].abs(), q[1].abs(), q[2].abs()], half, 3) };
     // The hard shape's own distance (a box's, or a cylinder's).
@@ -542,11 +550,11 @@ fn rounded(q: V3, half: V3, power: f32, disc: bool) -> f32 {
     // (One over each half size, taken once: the steps below multiply by them.)
     let inv = [1.0 / h[0], 1.0 / h[1], if n == 3 { 1.0 / h[2] } else { 0.0 }];
     // The first touching plane: the one whose normal is the gradient where the point is.
-    let Some((g, len)) = rounded_gradient(p, inv, power) else { return hard };
+    let Some((g, len)) = rounded_gradient(p, inv, power) else { return (hard, 0) };
     let mut plane = (math3::dot(g, p) - 1.0) / len;
     if plane > 0.0 {
         // Outside (`grad k . p` is `k`): the distance, which both bounds are below.
-        return rounded_distance(p, h, inv, power, (g, len, plane), plane.max(hard));
+        return rounded_solve(p, h, inv, power, (g, len, plane), plane.max(hard));
     }
     // Inside, steps toward the nearest point: the plane touching where the last plane's foot
     // lies. Each is a touching plane of a convex shape, so each is still never less than the
@@ -565,12 +573,13 @@ fn rounded(q: V3, half: V3, power: f32, disc: bool) -> f32 {
         }
         plane = at;
     }
-    plane.max(hard).min(0.0)
+    (plane.max(hard).min(0.0), 0)
 }
 
 /// How far `p` (outside, its coordinates made positive) is from a rounded shape: the distance
-/// to the nearest point of its surface, never more than it and within a few parts in a hundred
-/// thousand of it.
+/// to the nearest point of its surface, to within a few parts in ten thousand of it (short of
+/// it far more often than over, and over by no more than the stopping rule lets a step land
+/// past the answer).
 ///
 /// The nearest point `x` is where the line to `p` leaves the surface squarely: `p - x = mu *
 /// grad k(x)` with `k(x) = 1`. For each `mu` every coordinate has one answer, `u + c *
@@ -582,30 +591,123 @@ fn rounded(q: V3, half: V3, power: f32, disc: bool) -> f32 {
 /// onto the surface, and are never let below `floor`, what a known lower bound of the
 /// distance makes of `mu`. An answer from below is a point a little outside the surface, so
 /// its distance is a little short, never long.
-fn rounded_distance(p: V3, h: V3, inv: V3, power: f32, (g, len, plane): (V3, f32, f32), lower: f32) -> f32 {
+/// The answer, and how many steps it took on the coordinates' own equations (each a power:
+/// what a sample costs, which a test holds to what its work weight was set by).
+fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, (g, len, plane): (V3, f32, f32), lower: f32) -> (f32, u32) {
+    let mut steps = 0u32;
     let n = if inv[2] == 0.0 { 2 } else { 3 };
-    let least = if n == 3 { h[0].min(h[1]).min(h[2]) } else { h[0].min(h[1]) };
+    let (least, most) = if n == 3 { (h[0].min(h[1]).min(h[2]), h[0].max(h[1]).max(h[2])) } else { (h[0].min(h[1]), h[0].max(h[1])) };
     // (`mu` is the distance over the length of the gradient at the nearest point, which is no
     // more than one over the least half size.)
     let floor = lower.max(0.0) * least;
-    let foot = math3::sub(p, math3::scale(g, plane / len));
+    let (e, quartic) = (power - 1.0, power == 4.0);
+    // Where `mu` starts. Near the shape: from the first touching plane's foot, brought onto
+    // the surface. Far from it (more than twice its largest half size away) the nearest point
+    // is nearly the one the shape reaches furthest toward the sample, whose normal points at
+    // it: there `mu` is the distance times how far the shape reaches that way, `s = (sum of
+    // (half_i * n_i)^q)^(1/q)` with `q = power / (power - 1)`. (From the foot, a far sample
+    // took all of the steps below and came out short: a cut by a rounded plate cost five
+    // times its weight. Fourth review.)
     let mut mu = floor;
-    // Each coordinate's share and its power less two, at `mu`: from where the last `mu` left it.
-    let mut u = [f32::NAN; 3];
-    let mut w = [1.0f32; 3];
-    if let Some((at, at_len)) = rounded_gradient(foot, inv, power) {
-        // (`k` at the foot: the foot over it is on the surface, and the gradient is the same.)
-        let k = math3::dot(at, foot);
-        if k > 0.0 && k.is_finite() {
-            mu = (math3::length(math3::sub(p, math3::scale(foot, 1.0 / k))) / at_len).max(floor);
+    // (And where each coordinate's share starts: at that point of the surface.)
+    let mut start = [0.0f32; 3];
+    if lower > 2.0 * most {
+        let from = math3::length(p);
+        let toward = [p[0] * h[0] / from, p[1] * h[1] / from, if n == 3 { p[2] * h[2] / from } else { 0.0 }];
+        let q = power / e;
+        let term = |x: f32| if x <= 0.0 { 0.0 } else if power == 2.0 { x * x } else { power_of(x, q) };
+        let sum = term(toward[0]) + term(toward[1]) + term(toward[2]);
+        if sum > 0.0 && sum.is_finite() {
+            let reach = if power == 2.0 { sum.sqrt() } else { power_of(sum, 1.0 / q) };
+            mu = ((from - reach) * reach).max(floor);
+            if power != 2.0 {
+                // (Its share to the power less one is how far the shape reaches along it.)
+                start = toward.map(|x| if x <= 0.0 { 0.0 } else { power_of(x / reach, 1.0 / e) });
+            }
+        }
+    } else {
+        let foot = math3::sub(p, math3::scale(g, plane / len));
+        if let Some((at, at_len)) = rounded_gradient(foot, inv, power) {
+            // (`k` at the foot: the foot over it is on the surface, and the gradient is the same.)
+            let k = math3::dot(at, foot);
+            if k > 0.0 && k.is_finite() {
+                let on = math3::scale(foot, 1.0 / k);
+                mu = (math3::length(math3::sub(p, on)) / at_len).max(floor);
+                start = [on[0].abs() * inv[0], on[1].abs() * inv[1], on[2].abs() * inv[2]];
+            }
         }
     }
-    let big = [p[0] * inv[0], p[1] * inv[1], p[2] * inv[2]];
-    let (e, quartic) = (power - 1.0, power == 4.0);
+    // From here in double precision: far from the shape `p / half` is hundreds and a share
+    // is under one, so in single precision a coordinate's equation was only known to a part
+    // in ten thousand, the sum never came within its tolerance, and every sample took all of
+    // the steps (fourth review: a cut by a rounded plate cost five times its weight).
+    let (power, e) = (f64::from(power), f64::from(e));
+    let to = |x: f64, y: f64| crate::dmath::exp_f64(y * crate::dmath::ln_f64(x));
+    let inv2 = [f64::from(inv[0]) * f64::from(inv[0]), f64::from(inv[1]) * f64::from(inv[1]), f64::from(inv[2]) * f64::from(inv[2])];
+    let big = [f64::from(p[0]) * f64::from(inv[0]), f64::from(p[1]) * f64::from(inv[1]), f64::from(p[2]) * f64::from(inv[2])];
+    let (floor, mut mu) = (f64::from(floor), f64::from(mu));
+    // Each coordinate's share and its power less two, at the last `mu`.
+    let mut u = start.map(f64::from);
+    let mut w = [1.0f64; 3];
+    let mut began_again = false;
+    // First, Newton's steps on the shares and `mu` together: one power a coordinate a step,
+    // and the error squared each time from a start as near as these. (Each `mu`'s shares
+    // solved for in full, as below, took three times the powers: a trace of the solve showed
+    // four or five values of `mu`, each with three or four steps a coordinate.) It is not
+    // sure to arrive, so it is only believed when it has: the shares on their equations to a
+    // ten-millionth and on the surface to a millionth of the power. Otherwise the sure way
+    // below takes over from where `mu` started.
+    let mut arrived = false;
+    if power != 2.0 {
+        let (first_mu, first_u) = (mu, u);
+        for _ in 0..8 {
+            // (On the surface less one; and the two sums the step on `mu` is made of.)
+            let (mut value, mut pull, mut give, mut worst) = (-1.0f64, 0.0f64, 0.0f64, 0.0f64);
+            let (mut off, mut stiff, mut lean) = ([0.0f64; 3], [1.0f64; 3], [0.0f64; 3]);
+            for i in 0..n {
+                if big[i] <= 0.0 {
+                    u[i] = 0.0;
+                    continue;
+                }
+                steps += 1;
+                let x = u[i].max(1e-12 * big[i]);
+                let xw = if quartic { x * x } else { to(x, power - 2.0) };
+                let (share, c) = (xw * x, mu * inv2[i]);
+                off[i] = x + c * share - big[i];
+                stiff[i] = 1.0 + c * e * xw;
+                lean[i] = inv2[i] * share;
+                value += share * x;
+                pull += power * share * off[i] / stiff[i];
+                give += power * share * lean[i] / stiff[i];
+                worst = worst.max(off[i].abs() / big[i]);
+                (u[i], w[i]) = (x, xw);
+            }
+            if !(value.is_finite() && pull.is_finite() && give.is_finite() && give > 0.0) {
+                break;
+            }
+            if value.abs() <= 1e-6 * power && worst <= 1e-7 {
+                arrived = true;
+                break;
+            }
+            let next = (mu + (value - pull) / give).max(floor);
+            for i in 0..n {
+                if big[i] > 0.0 {
+                    u[i] = (u[i] - (off[i] + lean[i] * (next - mu)) / stiff[i]).clamp(0.0, big[i]);
+                }
+            }
+            mu = next;
+        }
+        if !arrived {
+            (mu, u) = (first_mu, first_u);
+        }
+    }
     for step in 0..12 {
-        let (mut value, mut slope) = (-1.0f32, 0.0f32);
+        if arrived {
+            break;
+        }
+        let (mut value, mut slope) = (-1.0f64, 0.0f64);
         for i in 0..n {
-            let (c, want) = (mu * inv[i] * inv[i], big[i]);
+            let (c, want) = (mu * inv2[i], big[i]);
             if want <= 0.0 {
                 (u[i], w[i]) = (0.0, 0.0);
                 continue;
@@ -613,28 +715,35 @@ fn rounded_distance(p: V3, h: V3, inv: V3, power: f32, (g, len, plane): (V3, f32
             if power == 2.0 {
                 (u[i], w[i]) = (want / (1.0 + c), 1.0);
             } else {
-                // From the right of the answer at first (the lesser of what each term alone
-                // allows), from the last answer after.
-                // From the right of the answer at first, and close to it: the lesser of what
-                // each term alone allows. From the last answer after.
+                // From the last answer (at first, from the start above): a step from the right
+                // of the answer comes down toward it; one from the left lands to its right,
+                // and is never let past the lesser of what each term alone allows, which the
+                // answer is under (so no step throws a share out to where its power
+                // overflows: fourth review).
+                let most_x = |want: f64, c: f64| if c > 0.0 { want.min(to(want / c, 1.0 / e)) } else { want };
+                let mut over = f64::INFINITY;
                 let mut x = if u[i] > 0.0 {
                     u[i]
-                } else if c > 0.0 {
-                    want.min(power_of(want / c, 1.0 / e))
                 } else {
-                    want
+                    steps += 1;
+                    over = most_x(want, c);
+                    over
                 };
                 let mut xw = 1.0;
                 for _ in 0..10 {
-                    xw = if quartic { x * x } else { power_of(x, power - 2.0) };
+                    steps += 1;
+                    xw = if quartic { x * x } else { to(x, power - 2.0) };
                     let off = x + c * xw * x - want;
-                    if off.abs() <= 2e-6 * want {
-                        break;
+                    let mut next = (x - off / (1.0 + c * e * xw)).max(0.0);
+                    if off < 0.0 {
+                        if over.is_infinite() {
+                            steps += 1;
+                            over = most_x(want, c);
+                        }
+                        next = next.min(over);
                     }
-                    let next = (x - off / (1.0 + c * e * xw)).max(0.0);
-                    if (next - x).abs() <= 1e-6 * x {
-                        x = next;
-                        xw = if quartic { x * x } else { power_of(x, power - 2.0) };
+                    // (A step that moves it by under a ten-millionth is the last.)
+                    if (x - next).abs() <= 1e-7 * x {
                         break;
                     }
                     x = next;
@@ -643,21 +752,29 @@ fn rounded_distance(p: V3, h: V3, inv: V3, power: f32, (g, len, plane): (V3, f32
             }
             let share = w[i] * u[i];
             value += share * u[i];
-            slope -= power * share * share * inv[i] * inv[i] / (1.0 + c * e * w[i]);
+            slope -= power * share * share * inv2[i] / (1.0 + c * e * w[i]);
         }
-        // (On the surface as nearly as the shares are known: each to a few parts in a million,
-        // and the sum takes them to the power. Five times looser was no faster.)
-        if value.abs() <= 4e-6 * power || slope >= 0.0 || step == 11 {
+        if !(value.is_finite() && slope.is_finite()) {
+            // (Past what the numbers hold: once more from the floor, which is below the
+            // answer, so the steps come up to it; then as it stands.)
+            if began_again || mu <= floor {
+                break;
+            }
+            (mu, began_again, u) = (floor, true, [0.0; 3]);
+            continue;
+        }
+        // (On the surface to a millionth of the power: a share is then right to a millionth.)
+        if value.abs() <= 1e-6 * power || slope >= 0.0 || step == 11 {
             break;
         }
         let next = (mu - value / slope).max(floor);
-        if (next - mu).abs() <= 1e-6 * mu {
+        if (next - mu).abs() <= 1e-7 * mu {
             break;
         }
         mu = next;
     }
-    let off = [p[0] - u[0] * h[0], p[1] - u[1] * h[1], if n == 3 { p[2] - u[2] * h[2] } else { 0.0 }];
-    math3::length(off).max(lower)
+    let off = [f64::from(p[0]) - u[0] * f64::from(h[0]), f64::from(p[1]) - u[1] * f64::from(h[1]), if n == 3 { f64::from(p[2]) - u[2] * f64::from(h[2]) } else { 0.0 }];
+    (((off[0] * off[0] + off[1] * off[1] + off[2] * off[2]).sqrt() as f32).max(lower), steps)
 }
 
 /// `x` (more than nothing) to the power `y`, for a rounded shape's shares: the exponential of
@@ -2198,20 +2315,20 @@ mod tests {
         }
         assert!(last > 8.0 * 0.3 * 0.2 * 0.1 * 0.93, "at a power of 40 it is nearly the box: {last}");
         let cost = |power: f32| eval_cost(&prim(Prim::Rounded { half, power, disc: false }));
-        assert!(cost(2.0) < cost(4.0) && cost(3.0) > cost(4.0) * 3);
+        assert!(cost(2.0) < cost(4.0) && cost(3.0) > cost(4.0) * 2);
     }
 
     /// What a rounded shape costs to build, said as what builds (third review: the weights
     /// had shrunk it unsaid). The nearest point is solved for at every sample outside a shape
-    /// of a roundness other than 1 and 0.5, some forty powers each: a cube of roundness 0.3
-    /// builds at resolution 64 and is refused at 96, by its work, with the limit in the error.
-    /// At roundness 1 and 0.5 (powers 2 and 4: no power to take) the same cube's work at 96
-    /// is a third and a half of the limit.
+    /// of a roundness other than 1 and 0.5, a dozen to thirty powers each: a cube of roundness
+    /// 0.3 builds at resolution 64 on under half of the work limit and is refused at 96, by
+    /// its work, with the limit in the error. At roundness 1 and 0.5 (powers 2 and 4: no
+    /// power to take) the same cube's work at 96 is a third and a half of the limit.
     #[test]
     fn what_a_rounded_shape_costs_to_build() {
         let cube = |power: f32| prim(Prim::Rounded { half: [0.5; 3], power, disc: false });
         let (_, stats) = mesh(&cube(6.67), &opts(64)).unwrap();
-        assert!(stats.work > MAX_WORK / 2 && stats.work < MAX_WORK, "roundness 0.3 at 64: {} of {MAX_WORK}", stats.work);
+        assert!(stats.work > MAX_WORK / 3 && stats.work < MAX_WORK / 2, "roundness 0.3 at 64: {} of {MAX_WORK}", stats.work);
         let refused = mesh(&cube(6.67), &opts(96)).unwrap_err();
         assert!(refused.limit && refused.message.contains("work") && refused.max == Some(MAX_WORK as f64), "{refused:?}");
         for (power, most) in [(2.0f32, MAX_WORK * 2 / 5), (4.0, MAX_WORK * 3 / 5)] {
@@ -2376,6 +2493,81 @@ mod tests {
     /// How far short of the distance the field outside a rounded shape may be, as a share of
     /// it: the test's own reference is good to a few parts in ten thousand.
     const EXACT: f64 = 5e-4;
+
+    /// What the fourth review of roundness found, each as it should be.
+    ///
+    /// Far from a rounded shape a sample costs what its work weight allows (the weight was
+    /// set near the surface; solved one way only, a far sample took as many steps as the
+    /// dearest near one, and a box cut by a rounded plate ran 3.8 s on a little over half of
+    /// the work limit): round a small plate, the samples of a 2 m box take under twenty steps
+    /// each on average, and those just off the plate's own surface under thirty-five.
+    ///
+    /// And it is the distance there too, with no step in it: at the points the review named
+    /// (a first guess above the answer threw a share out to where its power overflowed, the
+    /// solve stopped as if done and fell back on the hard shape's distance: 1.1% short at
+    /// power 40, and a step of 12.9 mm between samples 0.28 mm apart along a plate's diagonal).
+    #[test]
+    fn a_rounded_shape_is_solved_as_well_far_away() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let half = [0.2f32, 0.004, 0.2];
+        for power in [2.5f32, 4.0, 6.67, 40.0] {
+            let (mut near, mut far, mut most_far) = ((0u64, 0u64), (0u64, 0u64), 0u32);
+            for _ in 0..4000 {
+                // Just off the surface: a point of the box, pushed out a few thicknesses.
+                let on = [0, 1, 2].map(|i| (next() * 2.0 - 1.0) * half[i]);
+                let out = 1.0 + next() * 0.2;
+                let (f, steps) = rounded_counted([on[0] * out, on[1] * out + 0.002 + next() * 0.01, on[2] * out], half, power, false);
+                if f > 0.0 {
+                    near = (near.0 + u64::from(steps), near.1 + 1);
+                }
+                // In a 2 m box round it, away from it.
+                let q = [next() * 2.0 - 1.0, next() * 2.0 - 1.0, next() * 2.0 - 1.0];
+                if q[0].abs().max(q[1].abs()).max(q[2].abs()) > 0.5 {
+                    let (_, steps) = rounded_counted(q, half, power, false);
+                    far = (far.0 + u64::from(steps), far.1 + 1);
+                    most_far = most_far.max(steps);
+                }
+            }
+            let (near, far) = (near.0 as f64 / near.1 as f64, far.0 as f64 / far.1 as f64);
+            // (Under twenty far away and under thirty-five near, at every roundness: it was
+            // thirty-six to forty-five both ways. The most any one sample can take is bounded
+            // by the solve's own limits.)
+            assert!(far < 20.0 && near < 35.0 && most_far <= 8 * 3 + 12 * 3 * 12, "power {power}: {far:.1} steps a sample far away (at most {most_far}), {near:.1} near the surface");
+        }
+
+        let plate = [1.0f32, 0.005, 1.0];
+        for (power, q) in [(40.0f32, [-1.24f32, 0.80, -1.20]), (20.0, [2.58, 4.06, 2.56]), (40.0, [1.654, 1.654, 1.654]), (2.0, [150.0, 90.0, -120.0])] {
+            let f = f64::from(rounded(q, plate, power, false));
+            let truth = rounded_nearest(q.map(f64::from), plate, power, false);
+            assert!((f - truth).abs() <= truth * EXACT, "power {power} at {q:?}: {f}, the surface {truth} away");
+        }
+        // Along the plate's diagonal, from just off its corner to 60 m away: samples a quarter
+        // of a millimetre apart near it, then a few centimetres apart.
+        for power in [2.0f32, 2.5, 20.0, 40.0] {
+            let p = Prim::Rounded { half: plate, power, disc: false };
+            let dir = math3::normalize([1.0, 1.0, 1.0]);
+            for (from, to, steps) in [(1.2f32, 4.2f32, 12_000u32), (4.0, 104.0, 4_000)] {
+                let step = (to - from) / steps as f32;
+                let (mut last, mut over) = (f32::NAN, 0.0f32);
+                for i in 0..=steps {
+                    let t = from + step * i as f32;
+                    let f = prim_distance(&p, [dir[0] * t, dir[1] * t, dir[2] * t]);
+                    if last.is_finite() {
+                        over = over.max((f - last).abs() - step);
+                    }
+                    last = f;
+                }
+                // (A ten-thousandth of how far out the scan is, where the step was 13 mm.)
+                assert!(over <= 1e-4 * to, "power {power}, {from} to {to} m along the diagonal: between two samples a step apart the field changes by {over} m more than the step");
+            }
+        }
+    }
 
     /// Outside a rounded shape the field changes no faster than distance, with no step in it:
     /// along fine lines out from thin shapes, through twice and five times the least half size

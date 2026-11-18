@@ -272,6 +272,83 @@ fn terrain_is_shape_alone_in_a_form_view() {
     });
 }
 
+/// A form view's pipeline that fails in a build asked for something else loses the form set,
+/// and is said (third review of the form views: the set was built, then the ground's
+/// pipelines were asked for and the ground's form pipeline failed with them; the failure was
+/// counted as nothing lost, the set stayed "built", and the next form frame compiled the
+/// missing pipeline on its own thread). The world's frame is untouched; a form frame draws no
+/// ground and compiles nothing; a retry makes what is missing, and the ground is drawn.
+#[test]
+fn a_form_pipeline_that_fails_later_loses_the_set_and_comes_back() {
+    every_adapter("terrain_form_fault", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        // The form set first, with no ground yet; then the ground's, on a worker, with the
+        // ground's form pipeline failing.
+        gpu.prepare_form_pipelines().unwrap();
+        assert!(gpu.pipeline_variants().form && !gpu.pipeline_variants().terrain);
+        gpu.mark_warm();
+        gpu.inject_background_fault(specula_gpu::BackgroundFault::FormError);
+        gpu.request_terrain_pipelines();
+        let settle = |gpu: &mut Gpu, done: &dyn Fn(&specula_gpu::PipelineVariants) -> bool| {
+            let asked = std::time::Instant::now();
+            loop {
+                let v = gpu.pipeline_variants();
+                if done(&v) {
+                    return v;
+                }
+                assert!(asked.elapsed() < std::time::Duration::from_secs(120), "{test}: the build did not end in two minutes: {v:?}");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        let v = settle(&mut gpu, &|v| v.failed.is_some());
+        let failed = v.failed.clone().unwrap();
+        assert!(v.terrain && !v.form, "{test}: the ground's set is built and the form set lost: {v:?}");
+        assert!(failed.form && !failed.terrain && !failed.skinned && !failed.textured && failed.pipeline.contains("Terrain"), "{test}: {failed:?}");
+        let made = gpu.last_frame_stats().pipelines.created;
+
+        let t = upload_terrain(&mut gpu);
+        let n = [0.0, 1.0, 0.0];
+        let quad_v = [[-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [-0.5, 0.0, -0.5]].map(|p| Vertex::new(p, n));
+        let quad = gpu.upload_mesh(&quad_v, &[0, 1, 2, 0, 2, 3]).unwrap();
+        let draws = draws(&t, quad, true, None);
+        let terrains = [t.material];
+        let shoot = |gpu: &mut Gpu, form: specula_gpu::FormView| {
+            let target = gpu.create_target(W, H).unwrap();
+            let plain = Environment { tonemap: false, ..Default::default() };
+            let frame = FrameDesc {
+                view_proj: view_proj(),
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                draws: &draws,
+                reverse_z: true,
+                environment: if form == specula_gpu::FormView::World { env() } else { plain },
+                terrains: &terrains,
+                form,
+                ..Default::default()
+            };
+            gpu.render(target, &frame).unwrap();
+            let rgba = gpu.read_rgba8(target).unwrap();
+            gpu.destroy_target(target);
+            let drawn = rgba.as_chunks::<4>().0.iter().filter(|p| p[..3] != [0, 0, 0]).count();
+            (drawn, gpu.last_frame_stats().pipelines)
+        };
+        let (world, _) = shoot(&mut gpu, specula_gpu::FormView::World);
+        assert!(world > (W * H / 4) as usize, "{test}: the world's frame draws the ground: {world} pixels");
+        let (formed, stats) = shoot(&mut gpu, specula_gpu::FormView::Normals);
+        assert_eq!((formed, stats.created, stats.created_after_warm), (0, made, 0), "{test}: a form frame without its set draws no ground and compiles nothing");
+
+        // Asking again does nothing while the failure stands; a retry makes what is missing.
+        gpu.request_form_pipelines();
+        assert!(gpu.pipeline_variants().failed.is_some());
+        assert!(gpu.retry_failed_variants(), "{test}: there is a failure to retry");
+        let v = settle(&mut gpu, &|v| v.form || v.failed.is_some());
+        assert!(v.form && v.terrain && v.failed.is_none(), "{test}: {v:?}");
+        let (formed, stats) = shoot(&mut gpu, specula_gpu::FormView::Normals);
+        assert!(formed > (W * H / 4) as usize && (stats.created, stats.created_after_warm) == (made, 0), "{test}: the ground in a form view after the retry: {formed} pixels, {stats:?}");
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}
+
 #[test]
 fn terrain_and_water_draw_lit_counted_and_reproducibly() {
     every_adapter("terrain", |test, adapter| {
