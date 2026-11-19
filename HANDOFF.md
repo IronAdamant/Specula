@@ -284,6 +284,35 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     you're making the right decisions"). So the silhouette measure is mended and reviewed
     for as many rounds as it takes; no round is declared the last. The shape library is
     the work that must be finished.
+  - **What the shape library is for, and two things added to it** (the owner, the same
+    morning): "My logic for that shape recipe library and having all these shapes be built
+    in Rust and in code is so you can easily get them and sculpt the shapes accordingly, to
+    the needed models, alongside the model libraries you'll already have like humans and
+    creatures as examples. This will reduce the amount of time and tokens needing to keep
+    generating new code every time." Told plainly what it saves and its three limits (most
+    props are assemblies; a library shape is a mesh and not a sculpt primitive; an agent
+    saves only if it finds the library cheaply), and that none of it is measured:
+    - **A path by which an agent finds the library cheaply**: "Yes, and I'll want you to
+      build a path so that agent finds that library cheaply." *Claude's reading:* what
+      the first-hour passes showed works: a line in the guide every new project gets
+      (`notes/how.md`), in the brief an agent is given at its first call, and in the
+      modelling tools' own descriptions, each pointing at one catalogue call
+      (`formae_list`) whose rows are ready to paste; then the same measured comparison as
+      before (props built by a cold agent with and without the library: tokens, requests,
+      checks passed).
+    - **The forms as sculpt primitives, cheap for an agent**: "And as for meshes, that's
+      fine. For sculpt primitives. Think you [can] build it in? But from agent side?
+      Humans can build it, yes, but I want to see if you can make it cheap and easy for
+      agent to build a good looking sculpt primitives. Will this require another recipe?"
+      *Claude's answer:* no other recipe. The sculpt modeller is part of the same recipe
+      (`{"op": "sdf", "tree": ...}`); a form becomes one more node of that tree, blended
+      with the others by the radius the tree already has. What it needs is each form's
+      distance field: exact and cheap for a plane figure raised or turned (the library
+      already holds every figure as exact lines, arcs and curves) and for the solids that
+      are a profile turned on a ring; by nearest face for the flat-faced convex solids;
+      and for the rest either a bounded search of the mesh or a plain refusal. It is a
+      stage of the library of its own, after the engine's side, and the field's
+      correctness is what reviews have been hardest on (the rounded box took nine).
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
