@@ -423,7 +423,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       drawn backwards, with the answer saying when the machine was too busy to advise
       (`light_noise.rs`; LIGHT.md, "What was mended, second round"). Its review said not to
       merge for one missing test, and found the tool sound in every run on both adapters
-      (LIGHT.md, "Its third review").
+      (LIGHT.md, "Its third review"). Mended (2026-11-20): the test; a round's variants
+      drawn in an order that changes from pair to pair by a fixed sequence, so that a load
+      in step with the rounds cannot pass for a cost; the job waits while its render is
+      on the graphics card, where it had spun; a 2D picture that failed to load is warned
+      of (LIGHT.md, "What was mended, third round"). A short review of that is running.
     - **The rounded shape's levelled weights, reviewed** (2026-11-20): not to merge. A large
       thin rounded cutter set past the corner of what it cuts costs four times its charge
       by count, so the work limit does not bound such a build's time; other roundnesses

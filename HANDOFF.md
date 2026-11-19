@@ -278,6 +278,12 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       nobody listed, or a rule no test holds. A shape outside its set of common assets that
       it misreads steadily counts in the rate it states, and is not a refusal. The rate is
       said with the measure wherever it is used.
+  - **The silhouette's rounds go on, and the library gets built** (the owner, 2026-11-20,
+    awake again, shown Claude's recommendation that the seventh silhouette version be the
+    last round that chases the reading: "Rounds continue. I want that library built. So
+    you're making the right decisions"). So the silhouette measure is mended and reviewed
+    for as many rounds as it takes; no round is declared the last. The shape library is
+    the work that must be finished.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
@@ -719,12 +725,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       document calls steady, and size still moves a few assets. **A seventh version is
       being made for those causes only** (the overhang; every rule held by a default
       test; the document true), with both corpora joined (162 assets) and the rate
-      stated on the half it was not tuned on. **Claude's recommendation, for the owner to
-      confirm ("Open owner decisions"): the seventh is the last round that chases the
-      reading. If its reviewer finds it held and its sentences true, it is offered to a
-      style that asks by name with its rate said beside it, whatever that rate is; if
-      not, the check answers by the recipe measure alone and the silhouette's shares stay
-      in the facts as numbers.** Sepulcra is not counted again by it. No preset asks for it, and
+      stated on the half it was not tuned on. Claude recommended that the seventh be the
+      last round that chases the reading; **the owner's word (2026-11-20): "Rounds
+      continue."** So it is mended and reviewed until a reviewer says merge. Sepulcra is
+      not counted again by it. No preset asks for it, and
       the check exists only for a style that asks by name. Sepulcra's recipes
       by the fourth version: 29 lead pointed, 14 round, 13 square. **The measure from the recipe is built too** (the modeller records
       each named shape's own outlines and its surface; the studio reads them by the same
@@ -962,8 +966,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       the call's time is held by no test; a load that keeps step with the rounds under
       the line for a late frame would make a third of costless features look like costs
       (simulated; no real source of one found); a merely uneven machine is called busy
-      and told another program was running; a few sentences. **A fresh agent is mending
-      those; Claude reads that narrow change itself.**
+      and told another program was running; a few sentences. **A fresh agent mended
+      those** (2026-11-20, merged; LIGHT.md, "What was mended, third round"), and went
+      further than asked in two places, so a short review by another model is running
+      on that change: **every place of a round is drawn in an order that changes from
+      pair to pair by a fixed sequence** (the middle alone, which Claude had asked for,
+      made a load in step with the rounds worse by the author's table; with all shuffled
+      such a load makes 1% to 4% of costless features look like costs where it was a
+      third), and **the job waits while its render is on the graphics card** (it had been
+      asking to be stepped again, spinning for up to 12 ms of every pass; with a window
+      at most one render now lands a pass). Also: the missing test; the late line held by
+      a default test; true words for uneven frames; a 2D picture that failed to load is
+      warned of; a session closing while the job waits, and a model still building, each
+      a test. The timeline's preview job has the same spin and was left as it is.
     - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
       PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
       builds: a large thin rounded cutter set a metre past the corner of what it cuts
@@ -1887,19 +1902,14 @@ Not decisions of this kind, and also with the owner: the seven items of
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-- **How long the silhouette measure of shape language is chased** (2026-11-20). Six versions,
-  six reviews, six "do not merge"; the recipe measure passed its third review. The sixth
-  silhouette version is well held and reads no better than the fifth on assets it was not
-  tuned on (71% of a reviewer's own 59; FORM.md, "Its sixth review"). A seventh is being
-  made for the one traced cause (overhangs) and the tests. Claude recommends that it be the
-  last round that chases the reading: accepted with its rate said beside it if its reviewer
-  finds it held and true, and otherwise left in the facts as numbers while the check
-  answers by the recipe measure alone. The owner said before "I don't care if it takes
-  longer", so the rounds go on unless they say to stop.
-- **An empty folder to remove**: `C:\sr-k2t`, made by a reviewer by mistake. It was refused
-  the permission to remove it and asked the lead to; the lead does not do for an agent what
-  the agent was refused, so it waits for the owner's word or hand.
+Nothing is open (2026-11-20).
 
+(An empty folder a reviewer made by mistake, `C:\sr-k2t`, was removed on 2026-11-20 at the
+owner's word. The reviewer had been refused the permission and asked the lead to do it; the
+lead does not do for an agent what the agent was refused, so it waited for the owner.)
+
+(How long the silhouette measure of shape language is chased was decided on 2026-11-20: the
+rounds go on, recorded at the top of this page.)
 (Whether the two reviews an interrupt stopped are run again was decided on 2026-11-20: they
 are, recorded at the top of this page with the owner's word on removals.)
 (What shape language should become was decided on 2026-11-19: both a fourth silhouette
