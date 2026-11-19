@@ -193,7 +193,7 @@ fn outlines(mine: &[usize], slots: &[Slot], area: &[f64]) -> Views {
     let mut unread = 0.0f64;
     for &i in &order {
         let total: f64 = slots[i].views.iter().map(|v| f64::from(v.1)).sum();
-        if !(total > 0.0) {
+        if total.is_nan() || total <= 0.0 {
             continue;
         }
         for (j, (points, w)) in slots[i].views.iter().enumerate() {

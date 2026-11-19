@@ -77,7 +77,7 @@ impl Seq {
     }
     fn within(&mut self, lo: f32, hi: f32) -> f32 {
         let v = lo + (hi - lo) * self.next();
-        (v * 1000.0).round() / 1000.0
+        specula_model::dmath::round(v * 1000.0) / 1000.0
     }
     fn pick(&mut self, n: usize) -> usize {
         ((self.next() * n as f32) as usize).min(n - 1)
