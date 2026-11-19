@@ -14,6 +14,14 @@
 //!
 //! The default run draws a few sets a word; the `_full` tests (ignored: minutes) draw 24 (12 for
 //! the operators), as the review did, and `FORMAE_CORNER_SETS` draws another number.
+//!
+//! The lead's review probe of stage 1c is kept whole as the module `review_1c` (its own checkers
+//! and its arms: the vertical line through a raised solid, the retry of a named inset, the ray
+//! cast for drawings, the named views, the parity for cuts, the exact cuts).
+
+/// The lead's probe of stage 1c, as its arms of this test.
+#[path = "corners/review_1c.rs"]
+mod review_1c;
 
 use specula_core::dmath;
 use specula_formae::{aliases, find, forms, ops, params_of, raise, Built, Error, Family, Found, Kind, Mesh, Param, Spec, Unit};

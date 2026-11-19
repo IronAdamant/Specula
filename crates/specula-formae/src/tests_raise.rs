@@ -113,6 +113,117 @@ fn an_inset_too_deep_names_one_that_holds() {
     assert!(named > 20, "only {named}");
 }
 
+/// Review 1c, finding 1: a slab asks for no inset. A needle triangle that builds as a figure at a
+/// detail builds as a slab at that detail (it was refused as `inset_too_deep` with inset 0: the
+/// miters, which a slab never uses, were found undefined at the needle's tip).
+#[test]
+fn a_slab_of_a_needle_builds_where_its_figure_does() {
+    for (base, height) in [(1e-4, 1e4), (1e-4, 413.0)] {
+        let f = Spec::new("triangle", Some(Kind::Plane), &[("base", base), ("height", height)]).unwrap();
+        for d in [8u32, 9, 30, 101] {
+            if f.build(d).is_err() {
+                continue;
+            }
+            let s = slab(&f, 0.5).unwrap();
+            match s.build(d) {
+                Ok(m) => m.validate(0).unwrap(),
+                Err(e) => panic!("a slab of the needle {base} by {height} at {d}: {e}"),
+            }
+        }
+    }
+}
+
+/// Review 1c, findings 2 and 3: what a refusal names as holding holds (built at it, the same form
+/// is not refused for its inset), and a refusal that can name no inset a caller may ask for (none
+/// at or over the least length) names none.
+#[test]
+fn a_named_inset_holds_and_none_is_named_under_the_least() {
+    let f = Spec::new("kite", Some(Kind::Plane), &[("width", 9990.00999000999), ("top", 0.0001001), ("bottom", 0.8)]).unwrap();
+    let t = 499.50049950049953;
+    let s = pillow(&f, t, t, 99.9000999000999).unwrap();
+    for d in [8u32, 9, 30] {
+        match s.build(d) {
+            Err(Error::Constraint { rule: "inset_too_deep", values, .. }) => {
+                if let Some(&(_, holds)) = values.iter().find(|v| v.0 == "deepest_inset_that_holds") {
+                    assert!(holds >= crate::table::LEN_MIN, "at {d} it names {holds}, under the least length");
+                    if let Err(Error::Constraint { rule, values, .. }) = pillow(&f, t, t, holds).unwrap().build(d) {
+                        assert_ne!(rule, "inset_too_deep", "at {d} the named inset {holds} is refused as too deep: {values:?}");
+                    }
+                }
+            }
+            other => panic!("at {d}: {:?}", other.map(|_| ())),
+        }
+    }
+    // A needle whose inscribed circle is under the least length: no inset may be asked for that
+    // holds, and none is named.
+    let needle = Spec::new("triangle", Some(Kind::Plane), &[("base", 1e-4), ("height", 50.0)]).unwrap();
+    for d in [8u32, 30] {
+        match pillow(&needle, 1.0, 1.0, 1.0).unwrap().build(d) {
+            Err(Error::Constraint { rule: "inset_too_deep", values, .. }) => {
+                assert!(values.iter().all(|v| v.0 != "deepest_inset_that_holds"), "the needle at {d} names an inset: {values:?}");
+                assert!(values.iter().any(|v| v.0 == "least_length"), "{values:?}");
+            }
+            other => panic!("the needle at {d}: {:?}", other.map(|_| ())),
+        }
+    }
+    // Every figure, pillowed past its middle: a named inset is never under the least length.
+    for f in figures() {
+        let w = size(&f);
+        for d in [8u32, 30] {
+            if let Err(Error::Constraint { rule: "inset_too_deep", values, .. }) = pillow(&f, 0.1, 0.1, 0.6 * w).unwrap().build(d) {
+                if let Some(&(_, holds)) = values.iter().find(|v| v.0 == "deepest_inset_that_holds") {
+                    assert!(holds >= crate::table::LEN_MIN, "{} at {d} names {holds}", f.name());
+                }
+            }
+        }
+    }
+}
+
+/// A miter `m` is what it is defined to be, `m · n₀ = m · n₁ = 1` for the two edges' inward unit
+/// normals, to rounding (`16 ε (1 + |m|)`: a dot product of numbers no larger than `|m|`), at
+/// needles' tips turned to many angles, where the first form of it (`(n₀ + n₁) / (1 + n₀ · n₁)`)
+/// lost all but `ε / α²` of its digits; and an outline inset near its collapse keeps every edge
+/// parallel to its figure's, to the rounding of its points (`64 ε (R + s |m|)` over the edge's
+/// length, `R` the figure's reach).
+#[test]
+fn miters_keep_their_digits_at_a_needles_tip() {
+    use crate::raise::{collapse, inset, miters};
+    let mut tips = 0;
+    for (w, top, bottom) in [(9990.00999000999, 0.0001001, 0.8), (1e4, 1e-4, 1e-4), (2.0, 1e-4, 3e-4)] {
+        for turn in [0.0, 0.3, 37.0, 90.0, 135.0, 211.0] {
+            let (s, c) = sin_cos(turn * PI / 180.0);
+            let rot = |p: Pt| [c * p[0] - s * p[1], s * p[0] + c * p[1]];
+            // The kite of the review's finding 2, and its like: counter-clockwise.
+            let q: Vec<Pt> = [[0.0, -bottom], [0.5 * w, 0.0], [0.0, top], [-0.5 * w, 0.0]].into_iter().map(rot).collect();
+            let ranges: Vec<std::ops::Range<usize>> = std::iter::once(0..4).collect();
+            let m = miters(&q, &ranges).expect("a kite has miters");
+            for i in 0..4 {
+                let (a, b, cc) = (q[(i + 3) % 4], q[i], q[(i + 1) % 4]);
+                for (p0, p1) in [(a, b), (b, cc)] {
+                    let d = sub(p1, p0);
+                    let n = [-d[1] / len(d), d[0] / len(d)];
+                    let dotn = m[i][0] * n[0] + m[i][1] * n[1];
+                    assert!((dotn - 1.0).abs() <= 16.0 * f64::EPSILON * (1.0 + len(m[i])), "kite {w} {top} {bottom} turned {turn}: corner {i}'s miter {:?} meets a normal at {dotn}", m[i]);
+                }
+                tips += usize::from(len(m[i]) > 100.0);
+            }
+            let reach = q.iter().map(|p| len(*p)).fold(0.0f64, f64::max);
+            let most = m.iter().map(|v| len(*v)).fold(0.0f64, f64::max);
+            let at = collapse(&q, &m, &ranges);
+            for share in [0.5, 0.99, 0.999_999] {
+                let s = share * at;
+                let p = inset(&q, &m, s);
+                for i in 0..4 {
+                    let (e, f) = (sub(q[(i + 1) % 4], q[i]), sub(p[(i + 1) % 4], p[i]));
+                    let off = (e[0] * f[1] - e[1] * f[0]).abs() / len(e);
+                    assert!(off <= 64.0 * f64::EPSILON * (reach + s * most), "kite {w} {top} {bottom} turned {turn}, inset {share} of its collapse: edge {i} turned by {} m over its {} m", off, len(f));
+                }
+            }
+        }
+    }
+    assert!(tips >= 24, "only {tips} sharp tips");
+}
+
 /// A slab of a figure with holes is of their genus, and its caps are cut into the number of
 /// triangles Euler's formula gives; the raised forms' names name nothing in the table.
 #[test]
@@ -187,3 +298,4 @@ fn the_views_draw_their_axes_as_the_rules_say() {
     assert_eq!(axis("top", z), [0.0, -1.0]);
     assert_eq!(axis("side", z), [-1.0, 0.0]);
 }
+

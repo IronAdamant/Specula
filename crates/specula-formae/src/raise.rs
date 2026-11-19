@@ -124,6 +124,84 @@ pub(crate) struct Terrace {
     pub polygon: bool,
     /// For a slab: its closed measures are the figure's raised (any figure).
     pub slab: bool,
+    /// The raised form and its numbers, so that a refusal can build the same form at another
+    /// inset before it names one.
+    pub depth: Depth,
+}
+
+/// Which raised form a terrace is, with the numbers it was asked for: what sets its deepest inset
+/// is one of them (`Bevel`'s width, `Pillow`'s inset, `Stepped`'s run).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Depth {
+    /// A slab: no inset.
+    Slab { t: f64 },
+    /// [`bevelled`].
+    Bevel { t: f64, w: f64, round: bool, both: bool },
+    /// [`pillow`].
+    Pillow { t: f64, r: f64, i: f64 },
+    /// [`stepped`].
+    Stepped { steps: u32, rise: f64, run: f64 },
+}
+
+impl Depth {
+    /// The profile's start and steps.
+    fn profile(self) -> (Pt, Vec<Step>) {
+        match self {
+            Depth::Slab { t } => ([0.0, 0.0], vec![Step::Line([0.0, t])]),
+            Depth::Bevel { t, w, round, both } => {
+                let mut steps = Vec::new();
+                let start = if both { [w, 0.0] } else { [0.0, 0.0] };
+                if both {
+                    steps.push(if round { Step::Quarter { c: [w, w], rs: w, ry: w, t0: 1.5 * PI, t1: PI } } else { Step::Line([0.0, w]) });
+                }
+                let wall_top = t - w;
+                let wall_from = if both { w } else { 0.0 };
+                if wall_top > wall_from {
+                    steps.push(Step::Line([0.0, wall_top]));
+                }
+                steps.push(if round { Step::Quarter { c: [w, t - w], rs: w, ry: w, t0: PI, t1: 0.5 * PI } } else { Step::Line([w, t]) });
+                (start, steps)
+            }
+            Depth::Pillow { t, r, i } => ([0.0, 0.0], vec![Step::Line([0.0, t]), Step::Quarter { c: [i, t], rs: i, ry: r, t0: PI, t1: 0.5 * PI }]),
+            Depth::Stepped { steps, rise, run } => {
+                let mut st = Vec::new();
+                for j in 0..steps {
+                    let s = j as f64 * run;
+                    st.push(Step::Line([s, (j + 1) as f64 * rise]));
+                    if j + 1 < steps {
+                        st.push(Step::Line([(j + 1) as f64 * run, (j + 1) as f64 * rise]));
+                    }
+                }
+                ([0.0, 0.0], st)
+            }
+        }
+    }
+    /// The parameter that sets the inset: its name and value (`None` for a slab).
+    fn param(self) -> Option<(&'static str, f64)> {
+        match self {
+            Depth::Slab { .. } => None,
+            Depth::Bevel { w, .. } => Some(("width", w)),
+            Depth::Pillow { i, .. } => Some(("inset", i)),
+            Depth::Stepped { run, .. } => Some(("run", run)),
+        }
+    }
+    /// The same form with that parameter `p`.
+    fn with(self, p: f64) -> Depth {
+        match self {
+            Depth::Slab { .. } => self,
+            Depth::Bevel { t, round, both, .. } => Depth::Bevel { t, w: p, round, both },
+            Depth::Pillow { t, r, .. } => Depth::Pillow { t, r, i: p },
+            Depth::Stepped { steps, rise, .. } => Depth::Stepped { steps, rise, run: p },
+        }
+    }
+}
+
+/// What a terrace's own checks find (beside the figure's): an inset too deep, or a cap at no
+/// inset that could not be cut.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Trouble {
+    Deep,
+    CapNotCut,
 }
 
 /// The sampled figure: its points (rings one after another), each ring's range, each sample's
@@ -156,26 +234,42 @@ fn sample(rings: &[Vec<Seg>], detail: u32) -> Sampled {
     Sampled { q, ranges, curved, piece, err }
 }
 
-/// The miter of each corner: `(n₀ + n₁) / (1 + n₀ · n₁)` for the inward (left) unit normals of
-/// the edges before and after it; `None` where the outline turns back on itself.
-fn miters(q: &[Pt], ranges: &[std::ops::Range<usize>]) -> Option<Vec<Pt>> {
+/// The miter of each corner: the vector `m` with `m · n₀ = m · n₁ = 1` for the inward (left) unit
+/// normals of the edges before and after it (`u₀`, `u₁` their unit directions); `None` where the
+/// outline turns straight back on itself (no such vector).
+///
+/// Written two ways so that nothing cancels (review 1c, finding 2): where the corner turns by a
+/// right angle or less (`u₀ · u₁ >= 0`), `(n₀ + n₁) / (1 + u₀ · u₁)`, whose divisor is at least 1;
+/// where it turns by more, `(u₁ − u₀) / (u₀ × u₁)`, whose numerator is at least √2 long (the same
+/// vector: both solve the two equations). The first form at a needle's tip divides by
+/// `1 + u₀ · u₁ ≈ α²/2`, a sum of numbers near ±1 that keeps only `ε / α²` of its digits: at a
+/// tip of 1.6e-4 radians a miter 1.25e4 long was off by a part in 1e8, so an inset edge near its
+/// collapse was no longer parallel to its figure's and a band between them folded.
+pub(crate) fn miters(q: &[Pt], ranges: &[std::ops::Range<usize>]) -> Option<Vec<Pt>> {
     let mut m = vec![[0.0; 2]; q.len()];
     for r in ranges {
         let n = r.len();
         let at = |i: usize| q[r.start + (i % n)];
-        let normal = |a: Pt, b: Pt| {
+        let unit = |a: Pt, b: Pt| {
             let d = sub(b, a);
             let l = len(d);
-            [-d[1] / l, d[0] / l]
+            [d[0] / l, d[1] / l]
         };
         for i in 0..n {
-            let n0 = normal(at(i + n - 1), at(i));
-            let n1 = normal(at(i), at(i + 1));
-            let d = 1.0 + n0[0] * n1[0] + n0[1] * n1[1];
-            if d.is_nan() || d <= 1e-12 {
+            let u0 = unit(at(i + n - 1), at(i));
+            let u1 = unit(at(i), at(i + 1));
+            let dot = u0[0] * u1[0] + u0[1] * u1[1];
+            let v = if dot >= 0.0 {
+                let d = 1.0 + dot;
+                [(-u0[1] - u1[1]) / d, (u0[0] + u1[0]) / d]
+            } else {
+                let cr = u0[0] * u1[1] - u0[1] * u1[0];
+                [(u1[0] - u0[0]) / cr, (u1[1] - u0[1]) / cr]
+            };
+            if !(v[0].is_finite() && v[1].is_finite()) {
                 return None;
             }
-            m[r.start + i] = [(n0[0] + n1[0]) / d, (n0[1] + n1[1]) / d];
+            m[r.start + i] = v;
         }
     }
     Some(m)
@@ -183,7 +277,7 @@ fn miters(q: &[Pt], ranges: &[std::ops::Range<usize>]) -> Option<Vec<Pt>> {
 
 /// The inset at which the first edge collapses (its length `L + s (m₁ − m₀) · ê` reaches 0), or
 /// infinity.
-fn collapse(q: &[Pt], m: &[Pt], ranges: &[std::ops::Range<usize>]) -> f64 {
+pub(crate) fn collapse(q: &[Pt], m: &[Pt], ranges: &[std::ops::Range<usize>]) -> f64 {
     let mut least = f64::INFINITY;
     for r in ranges {
         let n = r.len();
@@ -200,7 +294,7 @@ fn collapse(q: &[Pt], m: &[Pt], ranges: &[std::ops::Range<usize>]) -> f64 {
     least
 }
 
-fn inset(q: &[Pt], m: &[Pt], s: f64) -> Vec<Pt> {
+pub(crate) fn inset(q: &[Pt], m: &[Pt], s: f64) -> Vec<Pt> {
     if s == 0.0 {
         return q.to_vec();
     }
@@ -226,21 +320,6 @@ fn inset_holds(q: &[Pt], m: &[Pt], ranges: &[std::ops::Range<usize>], s: f64, co
     let floor = 4.0 * crate::outline::EDGE_FLOOR * dist(lo, hi);
     let short = ranges.iter().any(|r| (0..r.len()).any(|i| dist(p[r.start + i], p[r.start + (i + 1) % r.len()]) <= floor));
     !short && Outline { rings: ranges.iter().map(|r| p[r.clone()].to_vec()).collect(), chord_error: 0.0 }.validate().is_ok()
-}
-
-/// The deepest inset under `s` that holds, by halving (the predicate need not be monotone in
-/// general; what is named is checked).
-fn deepest(q: &[Pt], m: &[Pt], ranges: &[std::ops::Range<usize>], s: f64, collapse_at: f64) -> f64 {
-    let (mut lo, mut hi) = (0.0f64, s.min(collapse_at));
-    for _ in 0..40 {
-        let mid = 0.5 * (lo + hi);
-        if inset_holds(q, m, ranges, mid, collapse_at) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
 }
 
 fn turn2(a: Pt, b: Pt, c: Pt) -> (f64, f64) {
@@ -356,28 +435,104 @@ impl Make for Terrace {
     fn build(&self, detail: u32) -> (Mesh, Option<SolidFault>) {
         let sm = sample(&self.rings, detail);
         let outline = Outline { rings: sm.ranges.iter().map(|r| sm.q[r.clone()].to_vec()).collect(), chord_error: sm.err };
-        let mut fault = outline.validate().err().map(crate::solid::section_fault);
+        let figure = outline.validate().err().map(crate::solid::section_fault);
+        let n = sm.q.len();
+        let s_max = self.s_max(detail);
+        // A slab insets nothing and needs no miters (review 1c, finding 1: a needle's tip, whose
+        // miter was taken for undefined, refused its slab as an inset too deep).
+        let m = if s_max > 0.0 { miters(&sm.q, &sm.ranges) } else { Some(vec![[0.0; 2]; n]) };
+        let (mesh, trouble) = self.raise(&sm, m.as_deref().unwrap_or(&vec![[0.0; 2]; n]), detail);
+        let fault = match (figure, &m, trouble) {
+            (Some(f), _, _) => Some(f),
+            // No inset of an outline that turns straight back on itself is defined.
+            (None, None, _) => Some(SolidFault::InsetTooDeep { inset: s_max, param: self.depth.param().map_or("inset", |p| p.0), holds: None }),
+            (None, Some(m), Some(Trouble::Deep)) => Some(SolidFault::InsetTooDeep { inset: s_max, param: self.depth.param().map_or("inset", |p| p.0), holds: self.deepest(&sm, m, detail) }),
+            (None, Some(_), Some(Trouble::CapNotCut)) => Some(SolidFault::CapNotCut),
+            (None, Some(_), None) => None,
+        };
+        (mesh, fault)
+    }
+
+    fn exact(&self) -> Measures {
+        self.exact_measures()
+    }
+
+    fn error(&self, detail: u32) -> Option<f64> {
+        self.error_at(detail)
+    }
+
+    fn genus(&self) -> u32 {
+        (self.rings.len() - 1) as u32
+    }
+
+    fn curved(&self) -> bool {
+        self.rings.iter().flatten().any(|s| !matches!(s, Seg::Line { .. })) || self.steps.iter().any(|s| matches!(s, Step::Quarter { .. }))
+    }
+
+    fn pieces(&self) -> Vec<Seg> {
+        self.rings.iter().flatten().cloned().collect()
+    }
+}
+
+impl Terrace {
+    /// The deepest inset of the profile at `detail`.
+    fn s_max(&self, detail: u32) -> f64 {
+        self.profile(detail).iter().map(|p| p.0[0]).fold(0.0f64, f64::max)
+    }
+
+    /// The same raised form with its inset's parameter `p`.
+    fn with(&self, p: f64) -> Terrace {
+        let depth = self.depth.with(p);
+        let (start, steps) = depth.profile();
+        Terrace { rings: self.rings.clone(), start, steps, plane: self.plane, polygon: self.polygon, slab: self.slab, depth }
+    }
+
+    /// The deepest inset that holds at `detail`, and the parameter's value that gives it: the
+    /// greatest value from the least length up to the one asked for, by halving, at which the
+    /// same form **is built** and its own checks find nothing (review 1c, finding 2: a search on
+    /// a narrower predicate than the build's named an inset whose bands folded). The halving
+    /// keeps a value only after building at it, so what is named was built and held, whether or
+    /// not holding is monotone in the inset. `None` where the least length does not hold
+    /// (finding 3: an inset under it cannot be asked for). At most 41 builds of the same size as
+    /// this one.
+    fn deepest(&self, sm: &Sampled, m: &[Pt], detail: u32) -> Option<(f64, f64)> {
+        let (_, asked) = self.depth.param()?;
+        let holds = |p: f64| self.with(p).raise(sm, m, detail).1.is_none();
+        let mut lo = LEN_MIN;
+        if !(lo < asked && holds(lo)) {
+            return None;
+        }
+        let mut hi = asked;
+        for _ in 0..40 {
+            let mid = 0.5 * (lo + hi);
+            if mid <= lo || mid >= hi {
+                break;
+            }
+            if holds(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        Some((self.with(lo).s_max(detail), lo))
+    }
+
+    /// The mesh at `detail` from the sampled figure and its miters, and what the terrace's own
+    /// checks find (an inset too deep, or a cap at no inset not cut).
+    fn raise(&self, sm: &Sampled, m: &[Pt], detail: u32) -> (Mesh, Option<Trouble>) {
         let n = sm.q.len();
         let prof = self.profile(detail);
         let s_max = prof.iter().map(|p| p.0[0]).fold(0.0f64, f64::max);
-        let m = miters(&sm.q, &sm.ranges);
-        let m = match (m, fault.is_some()) {
-            (Some(m), _) => m,
-            (None, true) => vec![[0.0; 2]; n],
-            (None, false) => {
-                fault = Some(SolidFault::InsetTooDeep { inset: s_max, holds: 0.0 });
-                vec![[0.0; 2]; n]
-            }
-        };
-        let collapse_at = if s_max > 0.0 { collapse(&sm.q, &m, &sm.ranges) } else { f64::INFINITY };
-        if fault.is_none() && s_max > 0.0 && !inset_holds(&sm.q, &m, &sm.ranges, s_max, collapse_at) {
-            fault = Some(SolidFault::InsetTooDeep { inset: s_max, holds: deepest(&sm.q, &m, &sm.ranges, s_max, collapse_at) });
+        let mut fault: Option<Trouble> = None;
+        let collapse_at = if s_max > 0.0 { collapse(&sm.q, m, &sm.ranges) } else { f64::INFINITY };
+        if s_max > 0.0 && !inset_holds(&sm.q, m, &sm.ranges, s_max, collapse_at) {
+            fault = Some(Trouble::Deep);
         }
         // Points: a ring set for each of the profile's points.
         let mut points: Vec<P3> = Vec::with_capacity(n * prof.len());
         let mut plans: Vec<Vec<Pt>> = Vec::with_capacity(prof.len());
         for (p, _) in &prof {
-            let plan = inset(&sm.q, &m, p[0]);
+            let plan = inset(&sm.q, m, p[0]);
             points.extend(plan.iter().map(|q| [q[0], p[1], -q[1]]));
             plans.push(plan);
         }
@@ -413,7 +568,7 @@ impl Make for Terrace {
                         // A cap of rings that are not a well-made region: deeper than holds (or,
                         // at no inset, the figure's own fault, found above).
                         let s = prof[lev].0[0];
-                        fault = fault.or(Some(if s > 0.0 { SolidFault::InsetTooDeep { inset: s, holds: deepest(&sm.q, &m, &sm.ranges, s, collapse_at) } } else { SolidFault::CapNotCut }));
+                        fault = fault.or(Some(if s > 0.0 { Trouble::Deep } else { Trouble::CapNotCut }));
                         // Still a closed count of faces: the right number of placeholder fans.
                         let want = cap::triangles_of(n as u64, sm.ranges.len() as u64);
                         for _ in 0..want {
@@ -473,7 +628,7 @@ impl Make for Terrace {
                     for c in 0..4 {
                         let (t, e) = turn2(quad[c], quad[(c + 1) % 4], quad[(c + 2) % 4]);
                         if (sign * t).is_nan() || sign * t <= e {
-                            fault = Some(SolidFault::InsetTooDeep { inset: s_max, holds: deepest(&sm.q, &m, &sm.ranges, s_max, collapse_at) });
+                            fault = Some(Trouble::Deep);
                             break;
                         }
                     }
@@ -496,7 +651,7 @@ impl Make for Terrace {
         (mesh, fault)
     }
 
-    fn exact(&self) -> Measures {
+    fn exact_measures(&self) -> Measures {
         let p = &self.plane;
         let top = self.top();
         let h = top[1];
@@ -528,14 +683,16 @@ impl Make for Terrace {
         Measures { size: Some(volume), boundary, centroid: None, bounds, series: None }
     }
 
-    fn error(&self, detail: u32) -> Option<f64> {
+    fn error_at(&self, detail: u32) -> Option<f64> {
         if self.polygon {
             let round = self.steps.iter().filter_map(|s| if let Step::Quarter { rs, ry, .. } = s { Some(rs.max(*ry)) } else { None }).fold(0.0f64, f64::max);
             if round == 0.0 {
                 return Some(0.0);
             }
             // The profile's sag times the greatest miter: known from the samples.
-            return Some(self.build(detail).0.chord_error);
+            let sm = sample(&self.rings, detail);
+            let m = miters(&sm.q, &sm.ranges).unwrap_or_else(|| vec![[0.0; 2]; sm.q.len()]);
+            return Some(self.raise(&sm, &m, detail).0.chord_error);
         }
         if self.slab {
             return Geom::Rings(self.rings.clone()).sag(detail);
@@ -543,20 +700,6 @@ impl Make for Terrace {
         None
     }
 
-    fn genus(&self) -> u32 {
-        (self.rings.len() - 1) as u32
-    }
-
-    fn curved(&self) -> bool {
-        self.rings.iter().flatten().any(|s| !matches!(s, Seg::Line { .. })) || self.steps.iter().any(|s| matches!(s, Step::Quarter { .. }))
-    }
-
-    fn pieces(&self) -> Vec<Seg> {
-        self.rings.iter().flatten().cloned().collect()
-    }
-}
-
-impl Terrace {
     /// The step the profile's segment `j` (at `detail`) belongs to.
     fn step_of(&self, j: usize, detail: u32) -> Option<Step> {
         let mut at = 0usize;
@@ -773,9 +916,11 @@ fn polygon(rings: &[Vec<Seg>]) -> bool {
     rings.iter().flatten().all(|s| matches!(s, Seg::Line { .. }))
 }
 
-fn terrace(figure: &Spec, operator: &'static str, rings: Vec<Vec<Seg>>, plane: Measures, start: Pt, steps: Vec<Step>, slab: bool) -> Solid {
+fn terrace(figure: &Spec, operator: &'static str, rings: Vec<Vec<Seg>>, plane: Measures, depth: Depth) -> Solid {
     let polygon = polygon(&rings);
-    Solid::new(operator, figure.form.name, Rc::new(Terrace { rings, start, steps, plane, polygon, slab }))
+    let (start, steps) = depth.profile();
+    let slab = matches!(depth, Depth::Slab { .. });
+    Solid::new(operator, figure.form.name, Rc::new(Terrace { rings, start, steps, plane, polygon, slab, depth }))
 }
 
 /// The figure with straight sides `thickness` metres tall (holes go through it: a slab of an
@@ -783,7 +928,7 @@ fn terrace(figure: &Spec, operator: &'static str, rings: Vec<Vec<Seg>>, plane: M
 pub fn slab(figure: &Spec, thickness: f64) -> Result<Solid, Error> {
     let (rings, plane) = rings_of(figure, "slab")?;
     let t = length("slab", "thickness", thickness)?;
-    Ok(terrace(figure, "slab", rings, plane, [0.0, 0.0], vec![Step::Line([0.0, t])], true))
+    Ok(terrace(figure, "slab", rings, plane, Depth::Slab { t }))
 }
 
 /// A slab `thickness` tall whose top edge is cut back by `width`, flat (a chamfer at 45 degrees)
@@ -797,18 +942,7 @@ pub fn bevelled(figure: &Spec, thickness: f64, width: f64, round: bool, both: bo
     if w > most {
         return Err(Error::Constraint { form: "bevelled", rule: "bevel_over_thickness", message: "the bevel's width is at most the thickness (half of it when both edges are cut)".into(), values: vec![("thickness", t), ("width", w), ("greatest_width", most)] });
     }
-    let mut steps = Vec::new();
-    let start = if both { [w, 0.0] } else { [0.0, 0.0] };
-    if both {
-        steps.push(if round { Step::Quarter { c: [w, w], rs: w, ry: w, t0: 1.5 * PI, t1: PI } } else { Step::Line([0.0, w]) });
-    }
-    let wall_top = t - w;
-    let wall_from = if both { w } else { 0.0 };
-    if wall_top > wall_from {
-        steps.push(Step::Line([0.0, wall_top]));
-    }
-    steps.push(if round { Step::Quarter { c: [w, t - w], rs: w, ry: w, t0: PI, t1: 0.5 * PI } } else { Step::Line([w, t]) });
-    Ok(terrace(figure, "bevelled", rings, plane, start, steps, false))
+    Ok(terrace(figure, "bevelled", rings, plane, Depth::Bevel { t, w, round, both }))
 }
 
 /// A slab `thickness` tall whose top rises by `rise` more, along a quarter ellipse, from its rim
@@ -818,8 +952,7 @@ pub fn pillow(figure: &Spec, thickness: f64, rise: f64, inset: f64) -> Result<So
     let t = length("pillow", "thickness", thickness)?;
     let r = length("pillow", "rise", rise)?;
     let i = length("pillow", "inset", inset)?;
-    let steps = vec![Step::Line([0.0, t]), Step::Quarter { c: [i, t], rs: i, ry: r, t0: PI, t1: 0.5 * PI }];
-    Ok(terrace(figure, "pillow", rings, plane, [0.0, 0.0], steps, false))
+    Ok(terrace(figure, "pillow", rings, plane, Depth::Pillow { t, r, i }))
 }
 
 /// `steps` terraces (1 to [`MAX_STEPS`]), each `rise` metres above the one before and its
@@ -829,17 +962,9 @@ pub fn stepped(figure: &Spec, steps: u32, rise: f64, run: f64) -> Result<Solid, 
     if !(1..=MAX_STEPS).contains(&steps) {
         return Err(Error::OutOfRange { form: "stepped", param: "steps", value: steps as f64, min: 1.0, max: MAX_STEPS as f64 });
     }
-    let h = length("stepped", "rise", rise)?;
-    let r = length("stepped", "run", run)?;
-    let mut st = Vec::new();
-    for j in 0..steps {
-        let s = j as f64 * r;
-        st.push(Step::Line([s, (j + 1) as f64 * h]));
-        if j + 1 < steps {
-            st.push(Step::Line([(j + 1) as f64 * r, (j + 1) as f64 * h]));
-        }
-    }
-    Ok(terrace(figure, "stepped", rings, plane, [0.0, 0.0], st, false))
+    let rise = length("stepped", "rise", rise)?;
+    let run = length("stepped", "run", run)?;
+    Ok(terrace(figure, "stepped", rings, plane, Depth::Stepped { steps, rise, run }))
 }
 
 /// The figure raised by `height` on a plate `plate` thick that reaches `margin` past the

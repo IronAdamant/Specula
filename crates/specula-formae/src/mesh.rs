@@ -198,8 +198,12 @@ pub enum SolidFault {
     InsetTooDeep {
         /// The inset asked for, metres.
         inset: f64,
-        /// The deepest inset found to hold at this detail (0 if none).
-        holds: f64,
+        /// The parameter of the raised form that sets the inset (`width`, `inset` or `run`).
+        param: &'static str,
+        /// The deepest inset found to hold at this detail and the parameter's value that gives it
+        /// (the same form built with that value has been built and does not fail for its inset);
+        /// `None` where no value a caller may give (none from the least length up) holds.
+        holds: Option<(f64, f64)>,
     },
     /// A flat cap with holes could not be cut into triangles that tile it (a mistake: the
     /// outline was checked first).

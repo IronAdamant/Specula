@@ -326,7 +326,17 @@ pub(crate) fn solid_refusal(form: &'static str, m: &dyn Make, detail: u32, b: &M
                 v.push(("searched_to", last as f64));
                 constraint("normal_behind_face", "a normal the build gives at a face's corner lies on the face's inner side (a right angle or more from the face's own): the faces are too coarse for how fast the surface turns there (a finer detail is named where one holds under the ceiling)", v)
             }
-            SolidFault::InsetTooDeep { inset, holds } => constraint("inset_too_deep", "the figure's outline, inset this far, collapses an edge or stops being simple (its parts would meet): a raised form is not built past that; the deepest inset that holds at this detail is named", vec![("inset", inset), ("deepest_inset_that_holds", holds), ("detail", d)]),
+            SolidFault::InsetTooDeep { inset, param, holds } => match holds {
+                Some((s, p)) => {
+                    let named = match param {
+                        "width" => "width_that_holds",
+                        "run" => "run_that_holds",
+                        _ => "inset_that_holds",
+                    };
+                    constraint("inset_too_deep", &format!("the figure's outline, inset this far, collapses an edge or stops being simple (its parts would meet): a raised form is not built past that; the deepest inset that holds at this detail is named, with the {param} that gives it (the same form built with it was built, and holds)"), vec![("inset", inset), ("deepest_inset_that_holds", s), (named, p), ("detail", d)])
+                }
+                None => constraint("inset_too_deep", &format!("the figure's outline, inset this far, collapses an edge or stops being simple (its parts would meet), and so does every inset that may be asked for: no {param} from the least length up holds at this detail (a corner too sharp, or parts too near, for any inset); raise it as a slab, or at another detail"), vec![("inset", inset), ("least_length", crate::table::LEN_MIN), ("detail", d)]),
+            },
             SolidFault::ApexOutside { edge } => constraint("apex_not_over_the_figure", "the apex must see every edge of the figure from inside it (each edge turning counter-clockwise about the origin under the apex), or the faces fold through each other: move the figure so that its origin is inside it and sees all of it", vec![("edge", edge as f64), ("detail", d)]),
             SolidFault::ZeroArea { face, area } => {
                 // A face thinner than the floor (its area over its longest edge): a needle's, whose
