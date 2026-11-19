@@ -1,27 +1,29 @@
 //! Shape language (docs/design/FORM.md): how round, square or pointed a silhouette is, as
 //! numbers. Round reads as friendly, square as sturdy, pointed as dangerous: a convention of
 //! character and prop design, not a law, so it is in every asset's taste measures and is
-//! checked only when a style asks for one (`[taste] shape_language`).
+//! checked only when a style asks for one (`[taste] shape_language`). **It is a heuristic**: on
+//! a held-out corpus of 103 common game assets it leads as a person would in every mask for
+//! 90 of them (FORM.md names the others).
 //!
 //! Measured on a silhouette mask, **each part at its own scale and weighed by its thickness**
-//! (since its fourth version; its fifth, after the fourth review, finds the parts and the
-//! sides from the shape and not from where the outline's walk happens to pass).
+//! (since its fourth version). Every threshold is an angle, a share of a part's thickness or of
+//! the shape's size, or a floor of the pixel grid said as one (since its sixth: a test holds the
+//! same shapes drawn at 256 to 512 pixels to the same reading). Every step is linear in the
+//! picture's pixels and the outline's length ([`of_mask_counted`] counts the work).
 //!
 //! 1. **The parts.** The outline is smoothed by the shape's scale and its **joints** found:
 //!    where it turns inward by [`JOINT_DEG`] in one place (the foot of a stalk, an armpit, the
 //!    gap between teeth, a bottle's neck). Under each point of the outline the piece is as
 //!    thick as the largest disc inside it that touches it there ([`distances`], [`spine`],
 //!    [`thickness`]). A point's part is as thick as **the most thickness about it once that
-//!    has been level** for [`PLATEAU`] times itself along the outline ([`plateaus`]):
-//!    from a box's corner the thickness rises to the box's and stays (the corner is the
-//!    box's); from the end of a limb it is level at once (the end is the limb's, whether or
-//!    not the outline turns inward where the limb meets the body); along a taper it keeps
-//!    rising, to the taper's foot (a spike's tip is the spike's). It is not followed across a
-//!    joint.
-//! 2. **The turning**, each part smoothed and its direction taken along a chord at its own
-//!    thickness ([`SPAN`]), and the net turn taken within a window [`WINDOW`] of the part's
-//!    thickness long. A box's window is three tenths of its side; a plank's, three tenths of
-//!    its width.
+//!    has been level** for [`PLATEAU`] times itself along the outline ([`plateaus`]): from a
+//!    box's corner the thickness rises to the box's and stays (the corner is the box's); from
+//!    the end of a limb it is level at once (the end is the limb's, whether or not the outline
+//!    turns inward where the limb meets the body); along a taper it keeps rising, to the
+//!    taper's foot (a spike's tip is the spike's). It is not followed across a joint.
+//! 2. **The turning**, the outline's long straight runs straightened first ([`runs`]), each part
+//!    smoothed and its direction taken along a chord at its own thickness ([`SPAN`]), and the
+//!    net turn taken within a window [`WINDOW`] of the part's thickness long.
 //! 3. **A corner or a curve**: a corner is turning in one place ([`KINK`], [`KINK_DEG`]); a
 //!    curve is turning spread out, and is round however far it turns in all.
 //! 4. **A corner's angle** is its window's net turn less the window's lopsidedness (what the
@@ -29,45 +31,45 @@
 //!    disc is a right angle, the rim's own turn being on one side of it only.
 //! 5. **Its class**: gentle up to [`ROUND_DEG`] (part of a curve: an octagon's corners),
 //!    square, or from [`POINTED_DEG`] a point. **A corner between two curves** (the end of an
-//!    oval, the horn of a crescent) is never square: a curve, or from [`SOFT_DEG`] a point.
-//!    Between two curves is two pieces of positive evidence, both from the smoothed outline: no
-//!    straight run near it ([`STRAIGHT_DEG`], [`SIDED`]) and the two sides of its window
-//!    bending ([`CURVING_DEG`]). A corner with neither is read by its angle, so a side that
-//!    was not found never makes a right angle a point.
+//!    oval, the horn of a crescent, the tip of a leaf) is not square: a curve, or from
+//!    [`SOFT_DEG`] a point. Between two curves is two pieces of positive evidence, both from the
+//!    smoothed outline: no straight run near it ([`STRAIGHT_DEG`], [`SIDED`]) and the two sides
+//!    of its window bending ([`CURVING_DEG`], degrees over each side). A corner with neither is
+//!    read by its angle, so a side that was not found never makes a right angle a point.
 //! 6. **Its weight**: only outward turning counts (a notch, a slot, the inside corner of an L
 //!    count for nothing); a step's turn is the turn within its own window, and the window is
 //!    as long as the part is thick, so that **a part's turning counts by its thickness**. A
-//!    step takes its class from the corners near it of its own part (not across a joint): an
-//!    apple's stalk is not its rim's corner. A point counts
+//!    step takes its class from the corners near it of its own part, and only of parts at least
+//!    half as thick ([`THINNER`]): an apple's stalk is not its rim's corner. A point counts
 //!    double ([`POINT_WEIGHT`]).
 //!
 //! So: a disc, an egg, a capsule, an oval up to three times as long as wide and a box rounded
 //! by a third of its shorter side are round, and so is a balloon on a string, an apple with its
-//! stalk, a snowman with stick arms, a figure of a ball, a box and capsule limbs, and a disc
-//! with a slot cut in it; a box is square, and so is one rounded by a tenth of its side or with
-//! its corners cut off by a seventh of it, a bar however thin, a table on thin legs, a comb
-//! whose teeth are twelve pixels or more, a bottle and a box whose edges wobble by two pixels;
-//! a triangle, a spike, a star, a crescent, a mace and an oval five times as long as wide or
-//! more are pointed.
+//! stalk, a snowman with stick arms, a figure of a ball, a box and capsule limbs, a leaf, and a
+//! disc with a slot cut in it; a box is square, and so is one rounded by a tenth of its side or
+//! with its corners cut off by a seventh of it, a bar however thin, a table on thin legs, a comb
+//! whose teeth are twelve pixels or more, a bottle and a box whose edges wobble by up to four
+//! pixels; a triangle, a spike, a star, a crescent, a mace and an oval five times as long as
+//! wide or more are pointed.
 //!
 //! **What it cannot say steadily** (measured at every degree, mirrored and shifted: the tests
-//! in `tests/shape_families.rs` hold the numbers, FORM.md has the table):
+//! in `tests/shape_families.rs` hold the numbers, FORM.md has them):
 //! - A corner rounded by between a sixth and a quarter of the box's shorter side is between
 //!   square and round, by degrees, and so is one cut off flat by a fifth. The share moves by
-//!   up to a quarter as a box of 0.8 by 0.4 or squarer is turned, by up to two fifths on a
-//!   plank a quarter as thick as long (0.8 by 0.2), and **by up to two thirds on one an eighth
-//!   as thick** (0.8 by 0.1: its corner is a few pixels round at 512, and the pixels decide).
+//!   up to a quarter as a box of 0.8 by 0.4 or squarer is turned, by up to a third on a plank
+//!   a quarter as thick as long (0.8 by 0.2), and **by up to a half on one an eighth as thick**
+//!   (0.8 by 0.1: its corner is a few pixels round at 512, and the pixels decide).
 //! - An oval four times as long as wide is on the line between round and pointed, and its
-//!   lead goes by the angle it is turned to.
+//!   lead goes by the angle it is turned to; so is a lens whose tips are right angles.
 //! - **A part under about six pixels thick** (a comb's tooth under twelve pixels across) has
 //!   its two corners smoothed into one end, and is read as a point.
-//! - A body bristling with more than about a dozen hair-thin parts is read by its hairs or not
-//!   at all. A part under four pixels thick is not read ([`MIN_THICK`]). Holes are not traced.
-//!   It reads outlines, not surfaces.
+//! - A body bristling with more than about a dozen hair-thin parts is not read. Holes are not
+//!   traced. It reads outlines, not surfaces.
 //! - Shapes near half and half stay there and their lead says nothing: a half disc is half
-//!   round and half square (its two right angles are as real as its arc: a tombstone, a
-//!   mushroom, a dome on a flat base), and so are a dagger, an axe and a figure with its arms
-//!   at its sides.
+//!   round and half square (a tombstone, a mushroom, a dome on a flat base, a heater shield),
+//!   and so are a dagger, an axe and a figure with its arms at its sides.
+//! - FORM.md lists the shapes it reads unsteadily (a T, a gear of eight triangular teeth, a
+//!   disc with a notch) and the common assets it reads otherwise than a person would.
 //!
 //! It needs pixels: the studio measures it on silhouettes of [`PIXELS`], and a piece under
 //! [`MIN_SIZE`] pixels across is not read at all (a thumbnail never is).
@@ -1058,7 +1060,6 @@ fn read(m: &Mask, work: &mut u64) -> Option<ShapeLanguage> {
     // the same of a clean outline, and the opposite of one that a straightened run has made
     // loop on itself at a sharp tip, where the whole outline then read inside out.)
     let way = if area(&outline_points) >= 0.0 { 1.0f32 } else { -1.0 };
-    // (A smoothed outline that turns other than once round, its own way, has looped on itself    // somewhere: what it would say is not to be trusted, and it says nothing.)    if (turn_g.iter().map(|t| f64::from(*t)).sum::<f64>() - f64::from(way) * std::f64::consts::TAU).abs() > std::f64::consts::PI {        return None;    }
     let raw_g = median5(&thickness(&spine, &coarse.even, w, h, work));
     let reach_g = (2.0 * sigma_g).ceil() as usize + chord_g;
     let joint_g = joints(&turn_g, way, reach_g);

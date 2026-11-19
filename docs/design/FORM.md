@@ -366,7 +366,7 @@ reads as friendly, square as sturdy, pointed as dangerous: a convention of chara
 design, not a law. So it is **reported for every asset** (`studio_check`: `measures.thumbnails.shape`)
 and **checked only when a style asks** for one.
 
-- **The measure** (its fifth version, 2026-11-20: the fourth's **each part at its own scale,
+- **The measure** (its sixth version, 2026-11-20, below: the fourth's **each part at its own scale,
   weighed by its thickness**, with the parts and the sides found from the shape). On three
   silhouettes of the asset (the taste checks' angles: front, side, three-quarter), each **512
   pixels** a side, the outline of the largest piece:
@@ -379,10 +379,15 @@ and **checked only when a style asks** for one.
      from a box's corner the thickness rises to the box's and stays, so the corner is the
      box's; from the end of a limb it is level at once, so the end is the limb's, whether or
      not the outline turns inward where the limb meets the body; along a taper it keeps
-     rising, to the taper's foot. It is not followed across a joint.
+     rising, to the taper's foot. It is not followed across a joint. (The level is tried on a
+     ladder of thicknesses, each 1.05 times the last, with a table of range maxima: a pass over
+     the part for each rung. Under four pixels a part is level only over 24 steps, with no half
+     pixel to spare.)
   2. **The turning**: each part smoothed, and its direction taken along a chord, at its own
      thickness (a comb's tooth by the tooth, its back by the back), long straight runs
-     straightened to within a pixel and a half first, and the net turn taken within a window
+     straightened to within a pixel and a half first (a run that does not bow to one side,
+     found in one walk round; its end is pulled back out of a corner's rounding where the next
+     run turns from it by under 120°), and the net turn taken within a window
      **six tenths of the part's thickness** long. A box's window is three tenths of its
      shorter side; a plank's, three tenths of its width.
   3. **A corner or a curve.** A corner is turning in one place (15° to 45° within a window a
@@ -397,95 +402,105 @@ and **checked only when a style asks** for one.
      curves is never square**: the end of an oval or the horn of a crescent is part of a
      curve up to 70° and a point from 110°. "Between two curves" is two pieces of positive
      evidence, both read from the smoothed outline: no straight run near the corner (a
-     window that turns under 4° to 8°), and the two sides of its window bending (by 0.4° to
-     1° a step, out to twice the window). A corner with neither is read by its angle, so a
+     window that turns under 3° to 6°), and the two sides of its window bending (by 3° to 7°
+     over each side, out to twice the window). A corner with neither is read by its angle, so a
      side that was not found never makes a right angle a point.
   6. **Its weight.** Only outward turning counts (a notch, a slot, the inside corner of an L,
      the cusp between two bumps of a cloud count for nothing). A step's turn is the turn
      within its own window, and the window is as long as the part is thick: **a part's
      turning counts by its thickness.** A step takes its class from the corners near it of
-     its own part, not across a joint: a stalk's tip is not its rim's corner. A point
+     its own part, not across a joint, and only of parts at least half as thick as its own: a
+     stalk's tip is not its rim's corner. A point
      counts double.
 
   The shares (`round`, `square`, `pointed`) sum to 1; `leading` names the largest; `convexity`
   is the outline's area over its hull's; `corners` counts its corners of 60° or more (an L has
   five). The three silhouettes' means are the asset's.
-- **Held at every degree.** `crates/specula-studio/tests/shape_families.rs` turns some 150
+- **Held at every degree.** `crates/specula-studio/tests/shape_families.rs` turns some 340
   shapes through a quarter turn, every degree, plain, mirrored and shifted by part of a pixel
-  (360 masks each), and holds what is said here (every nine degrees in the default run; every
-  degree in its ignored test, and `table` writes the numbers). The 42 known shapes of the
-  module's own test are turned every ten degrees. What they read, by the least and most at
-  every degree:
-  - **Round:** a disc, an egg, an oval of 2 or 3 to 1 (76% at the least), an octagon,
-    capsules, a box rounded by a third of its shorter side or more (99% to 100%), a cloud, a
+  (360 masks each), and holds what is said here (every fifteen degrees in the default run; every
+  degree in its ignored test, and `table` writes the numbers); among them every probe shape of
+  the fourth and fifth reviews. Beside them, a held-out corpus of 103 common assets says how
+  often it reads as a person would (below, "Its sixth version"). What the families read, by
+  the least and most at every degree (the sixth version):
+  - **Round:** a disc, an egg, an oval of 2 or 3 to 1 (87% at the least), an octagon,
+    capsules, a box rounded by a third of its shorter side or more (86% to 100%), a cloud, a
     disc with a slot (100%) or a notch (60%), a balloon on a string, a lollipop, a snowman with
-    stick arms or thick ones, a disc with four whiskers (90%), **an apple with a short stalk
-    and a disc with a whisker of 30 pixels (100%)**, **a figure of a ball head, a box body
-    and capsule limbs (69% to 85%), in a T-pose (100%), with a round body (100%), a sheep
-    (98%)**, a flask and a vase (80%), a tree of a ball on a trunk, a heart (69%), **a disc
-    with ten smooth lobes (98%)**, a star with rounded tips. A hexagon is between round and
+    stick arms or thick ones, a disc with one to four whiskers, an apple with a stalk 6 to 16
+    pixels wide and a disc with a whisker of 30 pixels (97% to 100%), a figure of a ball head,
+    a box body and capsule limbs (70% to 81%; with diagonal arms 6 to 24 pixels wide, 82% to
+    100%), in a T-pose (100%), with a round body (100%), a sheep (99%), a flask and a vase
+    (80%), a tree of a ball on a trunk, a heart (69%), a disc with ten smooth lobes (98%), a
+    star with rounded tips, lenses with tips of 110° and 130°. A hexagon is between round and
     square and stays there (61% round).
   - **Square:** a box, an L, a cross, bars to a fourteenth as thick as long, a table on thin
-    legs, a box rounded by a tenth of its shorter side or less or cut off by a seventh of it
-    or less (95% to 100% on boxes of 0.6 by 0.6 to 0.8 by 0.2), a pentagon (86%), a house
-    (75%), **a box whose edges wobble by half a pixel to two (95% to 100%)**, a plank whose
-    edges wobble (59% at the least), **combs whose teeth are 20 pixels or more (79% at the
-    least) and 12 pixels (leading)**, a box with a thick limb, a hammer, a barrel (82%), a gear
-    with square teeth, **bottles (with a square shoulder 91%, a curved one 64%, a long neck
-    50%)**, a heater shield (57%), a fence (46%), a mushroom (47%) and a dome on a flat base
-    (44%).
-  - **Pointed:** a triangle, a five-pointed star, a spike of 15° (63%), a crescent (72%), a
-    mace (97%), a pine of three tiers, ovals of five to one and more, a sword (in 348 masks of
-    360) and a ghost with a wavy hem (in 358).
+    legs (90%), a box rounded by a tenth of its shorter side or less or cut off by a seventh of
+    it or less (87% to 100% on boxes of 0.6 by 0.6 to 0.8 by 0.2), a pentagon (86%), a house
+    (75%), **a box whose edges wobble by half a pixel to three (93% to 100%)** and by four
+    (leading, 55% at the least), a plank whose edges wobble (64% at the least), **combs whose
+    teeth are 20 pixels or more (81% at the least)**, a box with a thick limb, a hammer, a barrel
+    (83%), gears with square teeth, **bottles (with a square shoulder 90%, a curved one 66%, a
+    long neck 53%)**, a mushroom (53%), a dome on a flat base (49%).
+  - **Pointed:** a triangle, stars of three to sixteen points, a spike of 15° (63%), crescents
+    (70% to 74%), a mace (95%), a pine of three tiers, ovals of five to one and more, lenses with
+    tips of 50° and 70°, a figure with tapered limbs.
   - **Between, and steady there** (no share moves by more than a quarter; which leads says
-    nothing): a tombstone (50% round, 50% square), a dagger (50% square, 50% pointed), an axe
-    (42% to 50% round, 35% to 52% square), a figure with its arms at its sides (48% round,
-    52% square), a key (51% round).
-- **Corners rounded and cut, on five proportions** (every degree):
+    nothing): a tombstone and a heater shield (50% round, 50% square), a dagger (47% to 52%
+    square, the rest pointed), an axe (46% to 50% round, 46% to 52% square), a figure with its
+    arms at its sides (48% round, 52% square), a key (49% to 55% round), a fence, a sword with a
+    square guard (half square, half pointed), a sword with a ball pommel (a third of each).
+- **Corners rounded and cut, on five proportions** (every degree, the sixth version):
 
-  | box | rounded by a tenth of its shorter side | a sixth | a fifth | a quarter | a third | swing in the band |
-  |---|---|---|---|---|---|---|
-  | 0.6 by 0.6, 0.8 by 0.6 | square 99% to 100% | round 17% to 29% | 57% to 69% | 84% to 91% | 99% to 100% | 0.11 at the most |
-  | 0.8 by 0.4 | square 99% to 100% | round 12% to 33% | 48% to 71% | 76% to 93% | 98% to 100% | 0.23 |
-  | 0.8 by 0.2 | square 98% to 100% | round 1% to 19% | 22% to 53% | 58% to 92% | 85% to 100% | 0.34 |
-  | 0.8 by 0.1 | round 0% to 28% | 10% to 60% | 16% to 82% | 46% to 93% | 79% to 100% | **0.66** |
+  | box | rounded by a tenth of its shorter side | a sixth | a fifth | a quarter | a third |
+  |---|---|---|---|---|---|
+  | 0.6 by 0.6, 0.8 by 0.6 | square 99% to 100% | round 16% to 30% | 57% to 70% | 85% to 96% | 100% |
+  | 0.8 by 0.4 | square 99% to 100% | round 12% to 26% | 51% to 67% | 81% to 92% | 99% to 100% |
+  | 0.8 by 0.2 | square 98% to 100% | round 3% to 27% | 33% to 67% | 63% to 91% | 98% to 100% |
+  | 0.8 by 0.1 | square 93% to 100% | round 1% to 46% | 20% to 61% | 46% to 92% | 86% to 100% |
 
-  Cut off flat by a twentieth to a seventh of the shorter side, every box but the thinnest
-  is 95% to 100% square (0.8 by 0.1: 78% at a twentieth, 46% at a tenth); by a fifth, round
-  (55% to 100%); by a third, eight-sided and round. A more rounded box is never the less
-  round, a larger cut never the squarer, and no rounded or cut box has anything of a point.
-- **Ovals:** round to three times as long as wide; **four to one is on the line** (round
-  41% to 78%, leading round in 322 masks of 360, pointed in 38); pointed from five; **at no
-  length and no angle more than a quarter square** (25%, an oval of four to one turned 18°).
+  Cut off flat by a twentieth to a seventh of the shorter side, every box but the thinnest is
+  87% to 100% square (0.8 by 0.1: 92% at a twentieth, 52% to 97% at a seventh); by a fifth,
+  round (49% to 95%); by a third, eight-sided and round. A more rounded box is never the less
+  round, a larger cut never the squarer. The thinnest, 25 pixels thick, rounded or cut by a
+  pixel or so, reads up to 7% pointed at a few angles; no other rounded or cut box has
+  anything of a point.
+- **Ovals:** round to three times as long as wide (87% at the least); **four to one is on the
+  line** (round 47% to 62%, leading round in 332 masks of 360, pointed in 28); pointed from five;
+  **at no length and no angle more than a tenth square** (9%, an oval of five to one).
 - **What it cannot say steadily**, measured:
   - In the bands above (a rounding of a sixth to a quarter of the side, a cut of a fifth) the
-    share moves with the angle by up to a quarter on a box of 0.8 by 0.4 or squarer, by up to
-    a third on a plank a quarter as thick as long, and **by up to two thirds on one an eighth
-    as thick** (0.8 by 0.1, about 25 pixels thick at 512: its corner is a few pixels round,
-    and the pixels decide). The thinner the part, the sooner a rounding or a cut takes it
-    round.
+    share moves with the angle by up to a fifth on a box of 0.8 by 0.4 or squarer, by up to a
+    third on a plank a quarter as thick as long, and **by up to a half on one an eighth as
+    thick** (0.8 by 0.1, about 25 pixels thick at 512: its corner is a few pixels round, and the
+    pixels decide). The thinner the part, the sooner a rounding or a cut takes it round.
   - **A part under about six pixels thick** (a comb's tooth under twelve pixels across, a
     fortieth of the silhouette) has its two corners smoothed into one end, and is read as a
-    point (combs of teeth 6 to 10 pixels wide: 60% to 92% pointed). Teeth of twelve lead
-    square, of twenty and more are square.
-  - **Shapes near half and half stay there**, and their lead says nothing: a half disc's two
-    right angles are as real as its arc (a tombstone, and a mushroom or a dome on a flat base
-    are about as square as round), a dagger's blade is as pointed as its guard and grip are
-    square, and an axe is a little of each.
+    point (combs of teeth 6 and 8 pixels wide: 79% to 91% pointed). Teeth of twelve lead square
+    in 355 masks of 360 with short teeth, of twenty and more are square.
+  - **Shapes near half and half stay there**, and their lead says nothing (above).
   - **A body bristling with more than about a dozen hair-thin parts** (a disc with sixteen
-    whiskers of one pixel) is read by its hairs or not at all. Two to eight hairs change
-    nothing.
-  - A corner on a curve reads a few degrees over its own angle; a part under four pixels
-    thick is not read; holes are not traced. It reads outlines, not surfaces: a ball on a
-    square plinth seen from the front is both.
-- **It needs pixels.** A piece under 110 pixels across is not read at all (a thumbnail never
-  is), so the studio renders the three silhouettes again at 512 for it. A shape in one of the
-  bands above swings further the smaller it is drawn; out of them a square, a disc, a triangle
-  and a star read the same from 512 down to 140 (by the measure before; for the fifth version
-  a test holds a disc and a box on 256 pixels to within a tenth of 512). A silhouette of 512
-  takes 17 to 40 ms to read for ordinary shapes (on a busy machine, in release), and twelve
-  times a disc at the worst found (a comb of one-pixel teeth: below, "Its fifth version"), on
-  the caller's own thread, and is read anew at each call.
+    whiskers of one pixel) is not read at all. One to four hairs change nothing.
+  - **Unsteady, and held as they read** (the most a share moves): a T, its stem on a bar,
+    leads square or pointed by the angle (0.81); a star of sixteen shallow points (0.91), and
+    one of twenty-four is wholly square, steadily (a person would say pointed); a
+    lens with tips of 90°, between curve and point (0.64); a cumulus base of 3 to 1 (0.44); a
+    club tapering to a third of its foot (0.26) or a fifth (0.39); a box whose edges wobble by
+    six pixels (0.54); a gear of eight triangular teeth (0.37); a disc with a notch, whose
+    mouth's corners go between square and point (0.40: steady until its sixth version).
+  - A corner on a curve reads a few degrees over its own angle; holes are not traced. It reads
+    outlines, not surfaces: a ball on a square plinth seen from the front is both.
+- **It needs pixels.** A piece under 192 pixels across is not read at all (a thumbnail never
+  is; it was 110 until the sixth version, and an oval on 160 to 200 pixels read up to 62%
+  square), so the studio renders the three silhouettes again at 512 for it. From 192 up the
+  sized shapes of the families test (24 of them) read within 0.12 of 512 at pictures of 256,
+  320 and 384, and lead the same, but for a lens whose tips are right angles. Thin parts are a
+  limit of their own, in pixels and not in the shape's size: a comb's teeth under twelve
+  pixels wide read as points at any size. Its cost is linear in the picture's pixels and the
+  outline's length (below, "Its sixth version": at most 48 steps a pixel and 256 an edge pixel,
+  counted); a silhouette of 512 takes about as long as a disc for ordinary shapes, and fifteen
+  times a disc at the worst found (a comb of one-pixel teeth, on a busy machine), on the
+  caller's own thread, and is read anew
+  at each call.
 - **The rule.** `style.toml`: `[taste] shape_language = "round"` (or `"square"`, `"pointed"`),
   `shape_min_share` (0.5 unless given) and `shape_by` (`"outline"` unless given, or `"recipe"`:
   below, "From what the recipe is built of"): the check `shape_language` fails an asset whose
@@ -691,7 +706,7 @@ and **checked only when a style asks** for one.
 - **Its fifth review** (another model, 2026-11-20, of `cf54bb37`) **said not to merge the fifth
   version**: four major findings, each from a sweep of a quarter turn at 512 pixels, plain,
   mirrored and shifted; two are worse than the fourth version, which it ran beside. None is
-  mended yet. **What "Its fifth version" above gets wrong:**
+  mended in that version (its sixth, below, mends them). **What "Its fifth version" above gets wrong:**
   1. **The cost is not twelve times a disc: a coiled shape takes seconds.** The search for
      where a part's thickness levels off runs to the part's end for every step where it never
      does: a coiled wire three pixels wide takes 9.8 s, 303 times a disc (33 ms in the fourth
@@ -722,6 +737,124 @@ and **checked only when a style asks** for one.
   square, cut and pointed advice; snowmen, pears, rings, lobes, crescents, stars, gears and
   combs of 12 to 16 pixels; about 28 of 38 common assets read as a person would; every edge
   case; no panic and the same answer twice. **Five reviews, five "do not merge".**
+- **Its sixth version: the fifth review's findings, and how the measure is held** (2026-11-20,
+  by an agent that wrote neither the fourth nor the fifth; each finding reproduced first with
+  the review's own probe; every number here at every degree of a quarter turn, plain, mirrored
+  and shifted, on a busy machine). **Not reviewed yet.** What changed in how it is held, not
+  only in what it does:
+  - **A held-out corpus, and a rate.** 103 common game assets as silhouettes (the fifth
+    review's 39, the fourth's 24 not among the families, and 40 more across weapons, tools,
+    containers, plants, animals, characters, vehicles, buildings, pickups and effects), each
+    with the lead a person would give it, written down and committed before the measure was
+    run on them (two letters where a person could say either: a chest, a barrel, a kite
+    shield). **90 of 103 lead as a person would in every mask of every degree (87%), and 91 in
+    most.** The fifth version, on the same corpus: 89 and 90. The misread
+    ones are held as they read today (`MISREAD` in `tests/shape_families.rs`), so that a change
+    to them is seen: a sword with a round guard and a ball pommel (leads round), a cumulus
+    cloud, a fish, a cat sitting, a ghost with a scalloped hem, a bell, a club, a cauldron and
+    an igloo and a castle tower (lead pointed), a tank (pointed in some masks), an aeroplane
+    from above (square), and a disc with sixteen hairs (not read). Most are one convention: **a rounded end between two curves
+    whose window turns 70° to 110° is half a point** (the soft band), and a cloud's, a fish's,
+    a bell's, a club's and an igloo's ends are such. This is a heuristic: it is right about
+    so often, not always.
+  - **Every probe shape of the fourth and fifth reviews is a test** (183 more families, held at
+    every fifteen degrees and in the ignored run at every degree, each to what leads, the least
+    share and the most any share moves; the bounds are what this version measured at every
+    degree, less 0.03 and plus 0.05).
+  - **Thresholds free of scale, and a test of it.** The sized shapes (24 across the families)
+    drawn at pictures of 256, 320, 384 and 512 read within 0.12 of 512 and lead the same
+    (`a_shape_reads_the_same_at_every_size_it_is_read_at`), but for the lens with tips of 90°,
+    unsteady at any size. The audit, a line a constant:
+    - `ROUND_DEG`, `POINTED_DEG`, `SOFT_DEG`, `KINK_DEG`, `STRAIGHT_DEG`, `JOINT_DEG`,
+      `CORNER_DEG`, `TRIM_TURN`: turns, within windows that are shares of a part's thickness:
+      free of scale.
+    - `WINDOW`, `KINK`, `SPAN`, `PLATEAU`, `PLATEAU_RISE`, `SIDED`, `THINNER`, `LADDER`,
+      `POINT_WEIGHT`: shares and ratios: free of scale.
+    - `CURVING_DEG`: was 0.4° to 1° **a step** (an arc of over 140 pixels never bent); now 3° to
+      7° over each side of the window, which is a share of the thickness: free of scale.
+    - `JOINT_EDGE`: was half a degree a step over the first look's reach (a share of the size),
+      so the same neck needed 18° drawn large and 9° drawn small; now 15° over the reach.
+    - `JOINT_MARGIN`: was six steps; now a third of the first look's reach.
+    - `CHORD`, `SMOOTH`, `STRAIGHT_RUN`: shares of the shape's scale, with floors of the pixel
+      grid (one step, two pixels of smoothing, eight pixels of run) for the pixels' steps.
+    - The small window (`KINK`) was rounded to whole steps, at least two (a capsule's end
+      read as a corner drawn small and a curve drawn large: the figure moved by 0.22 at 256);
+      now read between steps, and at least `KINK_SMOOTH` (0.6) of the smoothing's deviation:
+      as far as the smoothing spreads a corner, a floor of the pixel grid.
+    - `STRAIGHTEN_PX` (1.5), `TRIM_PX` (0.5), `BOW_PX` (0.2): pixels, floors of the grid (a
+      slanted side's pixels step by under a pixel).
+    - `MIN_THICK` (4), `LEVEL_FROM` (1), `THIN_LEVEL` (24 steps): pixels and steps, floors of
+      the grid: under four pixels the distances are too coarse to call a stretch level
+      unless it is long. `PLATEAU_MIN` is gone (never bound: six times four is 24).
+    - `MIN_SIZE`: 192 pixels across, measured (above, "It needs pixels").
+  - **Every rule has a test that fails without it**, or it is gone. Seeded one at a time, the
+    default test run: the median of five off, one smoothing for all parts, a point
+    counting 1.5, straight windows of 4° to 8°, no rule of thinner parts, a level only from
+    four pixels, no least length under four pixels, no bow test, no pulled-back ends, ends
+    pulled back at sharp tips too (caught only by a test written after a first seeded run
+    passed without it: `a_blades_tip_is_kept_at_every_degree`), no smoothing floor in the
+    small window, a bend of 12° to
+    30°, a joint's edge of 5°, no joint margin, the way round from the turning, a ladder of
+    1.3 and kinks of 20° to 60° each fail at least one test (`seeds.txt` in the notes lists
+    which). A guard meant to say nothing of an outline whose smoothing loops was never in
+    force (a mistake of the fourth commit, said here because its message claims it) and is
+    gone.
+  - **Before and after**: the families' and the corpus's every-degree tables of the fifth
+    version and of this one are compared, and every reading that moved by more than a tenth is
+    listed in the version's notes: 48 families and 9 of the corpus moved by more than a tenth or changed which kinds lead (the largest are in the findings below and in "What it cannot say steadily" above).
+  The findings:
+  1. **The cost: mended, and shown linear.** The cause was as the review read it: the search for
+     where a part's thickness levels off walked to the part's end from every step. It is now
+     tried on a ladder of thicknesses (each 1.05 times the last), each rung a pass over the part
+     with a table of range maxima: linear in the outline's length times the rungs. A second
+     quadratic step the review did not name was found by counting work: **the straightening was
+     Douglas and Peucker's rule**, which on a comb of one-pixel teeth peels one tooth at a time
+     (63 million steps of 96). It is one walk round now (a run narrows the directions that keep
+     every point within a pixel and a half, and goes on along its line). Every loop counts its
+     steps (`of_mask_counted`), and a test holds the count under 48 a pixel of the picture and
+     256 an edge pixel of the piece, on the coils, combs, spirals and fine branches of the
+     reviews and since, the whole picture, and every family; and a coil of wire 2.5 pixels wide
+     reads within a budget of half a second. On a busy machine a coil of wire takes 5.6 times a disc (303 before), a comb of one-pixel teeth as tall as the picture 15 times (34 before), the whole picture 2.6 times; counted, the most work found is 127 steps a pixel of the picture (that comb).
+  2. **A corner between two gentle curves: mended.** The cause was as the review read it. The
+     flanks' bend is now the turn in degrees over each flank (3° to 7°), which is free of the
+     size, where it was degrees a step. A leaf is 0% to 17% square (35% before), a smooth
+     teardrop 0%, lenses with tips of 110° and 130° round; **a lens with tips of 90° is not
+     mended**: it is between point and curve and its square share moves from 0 to 0.58 with the
+     angle, at every size (its flanks' windows turn by about 10°, the edge of "straight").
+  3. **A short stalk 9 to 11 pixels wide: mended, and the cause found.** A stalk's own level is
+     reached, or not, according as it is longer than six times its thickness, which a stalk of
+     about ten pixels sticking out 31 just is; where it was, the stalk's tip was a corner of
+     its own window, and the rim beside it, of the same part, took that corner's class at the
+     rim's weight. A step now takes its class only from parts at least half as thick as its own
+     (the rule the fifth version had removed as needed by no test: the stalks of every width by
+     length are its test now). Stalks 6 to 16 pixels wide, 0.02 to 0.1 long: 97% to 100% round,
+     at most 3% pointed, in every mask.
+  4. **The round advice on a plank: mended** (by the other mends; the advice text is unchanged):
+     a plank of 0.8 by 0.05 rounded by a third of its width passes a round style in every mask,
+     and the advice is tried on boxes and planks from a square to sixteen to one, standing and
+     lying, three crosses and an L, at a third, two fifths and a half of the width.
+  5. **Thin limbs: mended.** A capsule arm 6 to 24 pixels wide on a figure: 82% to 100% round in
+     every mask. The cause: an arm under four pixels thick could never be "level", so it took
+     its body's thickness and window. A part may now be level from one pixel, over 24 steps at
+     the least and with no half pixel to spare under four.
+  6. **Common assets**: see the corpus above. Mended among the review's: a leaf, a teardrop, a
+     mushroom with an oval cap (steady), a sword with a square guard (between, steady). Not:
+     the cloud, the dog with tapered legs, the bell, the sunburst of 24 shallow points (wholly
+     square), the kite shield and the chest with a round lid (steady leads now flip only at
+     half and half).
+  7. **Rules held by no test**: see "Every rule has a test" above. The least length of a level
+     stretch (`PLATEAU_MIN`) is gone: six times the least thickness read was already its 24.
+  8. **Smaller sizes: mended by not reading them.** A shape under 192 pixels across is not read
+     (it was 110); from 192 the sized shapes hold. Thin parts are a limit of their own, by
+     pixels and not by the shape's size (a comb's teeth under twelve pixels wide are points).
+  9. **The documents**: this section and the module's header. The median of five is kept, and is needed: without it the families test fails.
+  **Known and not mended** (held by the tests as they read, so that a change is seen): a T
+  (its stem on a bar) leads square or pointed by the angle (a share moves by 0.81); a lens
+  with tips of 90°; a cumulus base of 3 to 1 (moves by 0.44); a club tapering to a fifth of
+  its foot (0.39); a box whose edges wobble by six pixels (0.54); a star of sixteen shallow
+  points (0.47); a gear of eight triangular teeth (0.37); a disc with a notch, whose mouth's
+  corners are now between square and point by the angle (0.40; it was steady: a regression of
+  this version); a heater shield is half and half (it was 57% square).
 - **From what the recipe is built of: the second measure, built** (2026-11-19;
   `specula-model` `made`, `specula-studio` `built`). The modeller records, for every shape a
   recipe names, **that shape's own outlines along its own axes and the surface it has in the
