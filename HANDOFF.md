@@ -716,7 +716,25 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       model is 59% round); and a long outline with a point in its middle is pressed flat
       at both ends (a spear's shaft and a sword's blade read square). Smaller: a recipe of
       52 sculpts that built before is refused for work. What it found sound: no mesh
-      changed, booleans, includes and scatters. **Not mended yet.**
+      changed, booleans, includes and scatters. **A third agent has mended them**
+      (2026-11-20, merged; FORM.md, "What was mended, second round"): nothing is scaled by
+      a ratio any more. **Every triangle knows which record it was made as** (one number a
+      triangle, kept through merges, mirrors, welds, subdivisions, copies and booleans,
+      and absent where nothing asks), and a record's surface is summed from its own
+      triangles in the finished model, once, at the end. A long outline is turned to its
+      long axis and loses length only where its two sides run straight and level, both
+      ends kept as they are. The record never refuses a build (its asking has a limit of
+      its own, and what is past it goes to the rest). A test holds each record against
+      the same shape built alone, for 28 recipes from a fixed sequence, and every cap is
+      held by a test that fails when it moves. By its own account every fault seeded back
+      was caught, four of them only after it added a test; no mesh changed; Sepulcra's
+      counts did not move (42 square, 11 round, 1 pointed, 2 unread). **Its limits, as its
+      author states them:** inside one boolean operand that holds several shapes, pieces
+      on one plane go to the first of them; a bevel's strips and a cut's walls belong to
+      no record; a long taper's middle gets steeper when shortened; a crescent and a
+      strongly squared oval past 8 to 1 read differently at the two picture sizes; the
+      reading of Sepulcra's slowest asset went from 223 to 309 ms, unexplained on a busy
+      machine. **Not reviewed yet: a third review is running.**
     - **Where its verification stands** (2026-11-19, night): the full gate passed on
       `bec48409` (everything of part 4 up to the form views in a before and after and in
       the line-up: 3,298 tests, the repeats, the slow-worker run, the speed budgets, clippy

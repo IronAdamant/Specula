@@ -366,7 +366,12 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       their triangles (`sdf::surface_by_primitive`), includes and scatters record truly, thin
       outlines are read, a column's outline has its caps. Their review said not to merge them
       (one ratio for every record under an operation; long outlines pressed flat: FORM.md,
-      "Its second review").
+      "Its second review"). A third agent mended those (2026-11-20): every triangle knows
+      the record it was made as (`Shape::owners`) through every operation, and a record's
+      surface is measured on its own triangles in the finished model; a long outline keeps
+      both ends and loses length only where its sides run straight; the record never
+      refuses a build; each record is held against the same shape built alone (FORM.md,
+      "What was mended, second round"). Not reviewed yet.
     - **Shape language, a fifth version** (2026-11-20, by an agent that did not write the
       fourth, on its review's findings): sides from the smoothed outline, a part's thickness
       where it levels off, joints where the outline turns inward, each part smoothed at its
