@@ -190,7 +190,7 @@ pub(crate) fn polar(c: Pt, r: f64, t: f64) -> Pt {
 }
 /// `(sin t, cos t)` exactly when `t` is a whole number of quarter turns as floating point
 /// writes them (`0.5 · π · q` for a whole `q`, as `0.5 * PI`, `PI`, `-0.5 * PI` and `TAU` are).
-fn quarter_exact(t: f64) -> Option<(f64, f64)> {
+pub(crate) fn quarter_exact(t: f64) -> Option<(f64, f64)> {
     let q = t / (0.5 * PI);
     let w = dmath::round_f64(q);
     if w.abs() > 64.0 || 0.5 * PI * w != t {

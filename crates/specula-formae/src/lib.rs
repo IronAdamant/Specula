@@ -23,6 +23,11 @@
 //!   characteristic of its genus, and stands on `y = 0` with its middle on the Y axis (as the
 //!   modeller's solids do). [`ops`] makes prisms, pyramids and solids of revolution of any
 //!   plane figure of one ring.
+//! - **Two and a half dimensions**, in the three senses of games: [`raise`] makes any closed
+//!   plane figure a solid (a slab, a bevelled token, a pillow, terraces, a relief; holes go
+//!   through, their caps cut into triangles proved to tile them); [`draw`] draws any built solid
+//!   flat in a named view with its hidden faces removed (as convex polygons with depth, shade and
+//!   surface, and its silhouette); [`slice`] cuts it by a plane, and into layers.
 //! - Each form's origin is said in its `origin` (its natural centre: a circle's centre, a
 //!   triangle's centroid, an arch's base).
 //! - Angles are given in degrees. Detail is the number of segments in a full turn
@@ -53,6 +58,10 @@ mod geom;
 pub mod maths;
 pub mod mesh;
 pub mod ops;
+pub mod raise;
+pub mod draw;
+pub mod slice;
+mod cap;
 pub mod outline;
 pub mod spec;
 pub(crate) mod solid;
@@ -61,6 +70,8 @@ pub mod table;
 mod tests;
 #[cfg(test)]
 mod tests_solid;
+#[cfg(test)]
+mod tests_raise;
 
 pub use anchor::{Anchor, On};
 pub use detail::{detail_for, sag, segments, DETAIL_DEFAULT, DETAIL_MAX, DETAIL_MIN};

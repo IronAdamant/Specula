@@ -271,7 +271,8 @@ pub struct Form {
     /// Whether it has curved parts (so that `detail` changes it).
     pub curved: bool,
     /// Its relatives of the other kinds, by name (a circle's are the cylinder, the cone and the
-    /// sphere).
+    /// sphere). A plane figure whose only solid is a raised one names that form ([`crate::raise::RAISED`]:
+    /// a frame's is the slab).
     pub kin: &'static [&'static str],
     /// For a curve, the plane form that is the curve given a width, if there is one.
     pub band: Option<&'static str>,

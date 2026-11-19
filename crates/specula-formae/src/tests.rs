@@ -772,6 +772,10 @@ fn kin_resolve_and_are_mutual() {
             assert!(k.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'), "{}: kin {k}", f.name);
             // A solid's kin is a plane figure or a curve: looked for as each (a word may name
             // a solid as well, as `lens` does).
+            // A plane figure may name a raised form: every figure has it, so nothing names it back.
+            if f.kind == Kind::Plane && crate::raise::RAISED.contains(k) {
+                continue;
+            }
             let found = if f.kind == Kind::Solid { find(k, Some(Kind::Plane)).or_else(|_| find(k, Some(Kind::Curve))) } else { find(k, Some(Kind::Solid)) };
             match found {
                 Ok(g) => {

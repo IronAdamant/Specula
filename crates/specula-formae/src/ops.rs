@@ -19,7 +19,8 @@
 //! error at a detail.
 //!
 //! A figure with holes is refused (`one_ring_only`): its caps would be faces with holes, which
-//! this library's faces are not.
+//! this library's faces are not. [`crate::raise::slab`] raises one with holes (its caps cut into
+//! triangles proved to tile them).
 
 use crate::error::Error;
 use crate::geom::{Geom, Seg};
@@ -34,7 +35,7 @@ use std::rc::Rc;
 /// A solid an operator made from a plane figure.
 #[derive(Clone)]
 pub struct Solid {
-    /// What made it: `prism_of`, `pyramid_of` or `revolve_of`.
+    /// What made it: `prism_of`, `pyramid_of`, `revolve_of`, or a raised form ([`crate::raise`]).
     pub operator: &'static str,
     /// The plane figure's name.
     pub figure: &'static str,
@@ -48,6 +49,10 @@ impl std::fmt::Debug for Solid {
 }
 
 impl Solid {
+    /// A solid made by `operator` from the figure `figure`.
+    pub(crate) fn new(operator: &'static str, figure: &'static str, make: Rc<dyn Make>) -> Solid {
+        Solid { operator, figure, make }
+    }
     fn check_detail(detail: u32) -> Result<(), Error> {
         if (DETAIL_MIN..=DETAIL_MAX).contains(&detail) {
             Ok(())

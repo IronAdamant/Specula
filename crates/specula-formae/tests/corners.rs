@@ -16,7 +16,7 @@
 //! the operators), as the review did, and `FORMAE_CORNER_SETS` draws another number.
 
 use specula_core::dmath;
-use specula_formae::{aliases, find, forms, ops, params_of, Built, Error, Family, Found, Kind, Mesh, Param, Spec, Unit};
+use specula_formae::{aliases, find, forms, ops, params_of, raise, Built, Error, Family, Found, Kind, Mesh, Param, Spec, Unit};
 use std::collections::BTreeMap;
 
 type P3 = [f64; 3];
@@ -844,6 +844,17 @@ const TIGHT: f64 = 1e-12;
 /// is small (an arc's sag that rounded to nothing failed here).
 #[test]
 fn shallow_arcs_land_on_their_ends() {
+    shallow(&[9], 400);
+}
+
+/// The full run: details 8, 9 and 30.
+#[test]
+#[ignore = "the shallow-arc corners at three details: a minute and more in the gate's build"]
+fn shallow_full() {
+    shallow(&[8, 9, 30], 1_000);
+}
+
+fn shallow(details: &[u32], least: usize) {
     let mut faults: Vec<String> = Vec::new();
     let (mut built, mut refused) = (0usize, 0usize);
     let mut ws = words(Kind::Solid);
@@ -876,7 +887,7 @@ fn shallow_arcs_land_on_their_ends() {
             continue;
         };
         let Ok(closed) = s.closed() else { continue };
-        for detail in [8u32, 9, 30] {
+        for &detail in details {
             let what = format!("{what} at detail {detail}");
             let b = match s.build(detail) {
                 Ok(b) => b,
@@ -936,5 +947,606 @@ fn shallow_arcs_land_on_their_ends() {
         }
     }
     assert!(faults.is_empty(), "{} faults ({built} built, {refused} refused):\n{}", faults.len(), faults.join("\n"));
-    assert!(built > 1_000, "only {built} builds ({refused} refused)");
+    assert!(built > least, "only {built} builds ({refused} refused)");
+}
+
+// ---------------------------------------------------------------- raised figures
+
+/// Whether a solid stands over its plan as a graph: over each of a few points of its plan, the
+/// faces that are not walls are met by a vertical line once going up (a face whose normal points
+/// up: the top) and once going down (the bottom), or not at all. Points within a hair of a face's
+/// edge in plan are passed over. From the points alone; `Err` says where it does not hold.
+fn graph_over_plan(mesh: &Mesh, seq: &mut Seq) -> Result<(), String> {
+    let tris: Vec<[P3; 3]> = mesh.triangles().iter().map(|(_, t)| t.map(|v| mesh.points[v as usize])).collect();
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in &mesh.points {
+        for (k, c) in [p[0], -p[2]].into_iter().enumerate() {
+            lo[k] = lo[k].min(c);
+            hi[k] = hi[k].max(c);
+        }
+    }
+    let size = ((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1])).sqrt();
+    let plan = |p: P3| [p[0], -p[2]];
+    for _ in 0..24 {
+        let q = [lo[0] + (hi[0] - lo[0]) * seq.next(), lo[1] + (hi[1] - lo[1]) * seq.next()];
+        let (mut up, mut down, mut near) = (0, 0, false);
+        for t in &tris {
+            let [a, b, c] = t.map(plan);
+            let area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            if area.abs() <= 1e-24 * size * size {
+                continue;
+            }
+            let sides = [(a, b), (b, c), (c, a)].map(|(u, v)| {
+                let l = ((v[0] - u[0]) * (v[0] - u[0]) + (v[1] - u[1]) * (v[1] - u[1])).sqrt();
+                ((v[0] - u[0]) * (q[1] - u[1]) - (v[1] - u[1]) * (q[0] - u[0])) / l.max(f64::MIN_POSITIVE)
+            });
+            let inside = if area > 0.0 { sides.iter().all(|s| *s > 0.0) } else { sides.iter().all(|s| *s < 0.0) };
+            let close = sides.iter().any(|s| s.abs() <= 1e-9 * size);
+            if close {
+                near = true;
+            }
+            if inside {
+                if area > 0.0 {
+                    up += 1;
+                } else {
+                    down += 1;
+                }
+            }
+        }
+        if near {
+            continue;
+        }
+        if up != down || up > 1 {
+            return Err(format!("over the plan point {q:?} a vertical line meets {up} faces going up and {down} going down"));
+        }
+    }
+    Ok(())
+}
+
+/// Every closed plane figure's word raised by each of the five raised forms, the figure's
+/// arguments and the raised form's drawn at their corners together (lengths at the least or
+/// the greatest, or drawn against the figure's own size), at details 8, 9, 30 and 101: each is
+/// refused as data or is closed and wound outward by my own check, of the genus its holes give
+/// (none for a relief), a graph over its plan (not tangled), standing on y = 0, within its closed
+/// bounds and reaching them within twice its error, of its count, the same built twice, and its
+/// closed volume (where there is one: the slab's and the relief's for any figure, every raised
+/// form's for a figure of straight sides) within its error times its surface.
+#[test]
+fn raised_by_checks_of_my_own() {
+    raised(sets(1), &[8, 30], 150);
+}
+
+/// The full run: eight sets a figure.
+#[test]
+#[ignore = "the full corner draw of the raised forms on every plane figure (8 sets): minutes in the gate's build"]
+fn raised_full() {
+    raised(sets(8), &DETAILS, 1_500);
+}
+
+fn raised(n_sets: usize, details: &[u32], least: usize) {
+    let mut faults: Vec<String> = Vec::new();
+    let (mut built, mut refused) = (0usize, 0usize);
+    let lp = Param { name: "length", about: "", unit: Unit::Metres, default: 0.1, min: 1e-4, max: 1e4, integer: false };
+    for w in words(Kind::Plane) {
+        let params = params_of(&w);
+        let mut seq = Seq(seed(w.name()) ^ 0x7777);
+        for set in 0..n_sets {
+            let given: Vec<(&str, f64)> = if set == 0 { Vec::new() } else { params.iter().map(|p| (p.name, draw(p, &mut seq, set))).collect() };
+            let Ok(fig) = Spec::of(w, &given) else { continue };
+            let Ok(plane) = fig.closed() else { continue };
+            let holes = match fig.build(64) {
+                Ok(Built::Outline(o)) => o.rings.len() as u32 - 1,
+                _ => continue,
+            };
+            let size = plane.bounds.map_or(1.0, |(lo, hi)| (hi[0] - lo[0]).max(hi[1] - lo[1]));
+            // A length: at the ranges' ends, or against the figure's size.
+            let l = |seq: &mut Seq| if seq.next() < 0.4 { draw(&lp, seq, set) } else { (size * dmath::exp_f64(dmath::ln_f64(1e-3) + seq.next() * dmath::ln_f64(1e3))).clamp(1e-4, 1e4) };
+            let (t, a, b) = (l(&mut seq), l(&mut seq), l(&mut seq));
+            let steps = 1 + (seq.next() * 6.0) as u32;
+            let (round, both) = (seq.next() < 0.5, seq.next() < 0.5);
+            let made = [
+                ("slab", raise::slab(&fig, t), holes),
+                ("bevelled", raise::bevelled(&fig, t, a.min(t), round, both), holes),
+                ("pillow", raise::pillow(&fig, t, a, b), holes),
+                ("stepped", raise::stepped(&fig, steps, a, b), holes),
+                ("relief", raise::relief(&fig, t, a, b), 0),
+            ];
+            for (op, solid, genus) in made {
+                let what = format!("{op} of {} {given:?} (t {t}, a {a}, b {b}, steps {steps}, round {round}, both {both})", w.name());
+                let solid = match solid {
+                    Ok(s) => s,
+                    Err(Error::Constraint { .. }) => {
+                        refused += 1;
+                        continue;
+                    }
+                    Err(e) => {
+                        gather(&mut faults, op, format!("{what}: {e}"));
+                        continue;
+                    }
+                };
+                if solid.genus() != genus {
+                    gather(&mut faults, op, format!("{what}: genus {} for {holes} holes", solid.genus()));
+                }
+                for &detail in details {
+                    let what = format!("{what} at detail {detail}");
+                    let mesh = match solid.build(detail) {
+                        Ok(m) => m,
+                        Err(Error::Constraint { rule, .. }) if rule == "not_well_made" || rule == "normal_behind_face" => {
+                            gather(&mut faults, op, format!("{what}: refused as {rule}"));
+                            continue;
+                        }
+                        Err(Error::Constraint { .. } | Error::TooManyPoints { .. }) => {
+                            refused += 1;
+                            continue;
+                        }
+                        Err(e) => {
+                            gather(&mut faults, op, format!("{what}: {e}"));
+                            continue;
+                        }
+                    };
+                    built += 1;
+                    let o = match own(&mesh, genus) {
+                        Ok(o) => o,
+                        Err(e) => {
+                            gather(&mut faults, op, format!("{what}: {e}"));
+                            continue;
+                        }
+                    };
+                    if mesh.faces.len() <= 20_000 {
+                        if let Err(e) = graph_over_plan(&mesh, &mut seq) {
+                            gather(&mut faults, op, format!("{what}: {e}"));
+                        }
+                    }
+                    match solid.count(detail) {
+                        Ok(c) if (c.points, c.parts) == (mesh.points.len() as u64, mesh.faces.len() as u64) => {}
+                        other => gather(&mut faults, op, format!("{what}: counted {other:?}, built {} and {}", mesh.points.len(), mesh.faces.len())),
+                    }
+                    if detail == 9 && solid.build(detail).ok().as_ref() != Some(&mesh) {
+                        gather(&mut faults, op, format!("{what}: built twice, not the same"));
+                    }
+                    let h = mesh.chord_error;
+                    let hair = 1e-9 * o.reach + 64.0 * mesh.points.len() as f64 * f64::EPSILON * o.reach;
+                    let closed = solid.closed();
+                    if let Some(c) = closed.size {
+                        let allowed = 2.0 * h * o.area + 1e-9 * c.abs() + hair * o.reach * o.reach;
+                        if over((c - o.volume).abs(), allowed) {
+                            gather(&mut faults, op, format!("{what}: volume closed {c}, built {} (allowed {allowed})", o.volume));
+                        }
+                    }
+                    if let (Some(c), true) = (closed.boundary, h == 0.0) {
+                        if over((c - o.area).abs(), 1e-9 * c.abs() + hair * o.reach) {
+                            gather(&mut faults, op, format!("{what}: area closed {c}, built {}", o.area));
+                        }
+                    }
+                    if let Some((lo, hi)) = closed.bounds {
+                        for k in 0..3 {
+                            if o.lo[k] < lo[k] - hair - 2.0 * h || o.hi[k] > hi[k] + hair + 2.0 * h || o.lo[k] - lo[k] > 2.0 * h + hair || hi[k] - o.hi[k] > 2.0 * h + hair {
+                                gather(&mut faults, op, format!("{what}: axis {k}: built {}..{}, closed {}..{}, error {h}", o.lo[k], o.hi[k], lo[k], hi[k]));
+                            }
+                        }
+                    }
+                    if o.lo[1].abs() > hair {
+                        gather(&mut faults, op, format!("{what}: its lowest point is at y = {}", o.lo[1]));
+                    }
+                }
+            }
+        }
+    }
+    faults.truncate(120);
+    assert!(faults.is_empty(), "{} faults ({built} built, {refused} refused):\n{}", faults.len(), faults.join("\n"));
+    assert!(built > least, "only {built} builds ({refused} refused)");
+}
+
+// ---------------------------------------------------------------- drawings
+
+/// A drawing checked from the mesh's points and the view's rows alone: its polygons convex,
+/// counter-clockwise and finite, farthest first, shades in 0..1; their areas summing to the
+/// silhouette's; and at points of the picture drawn from `seq`, the face a ray cast from the
+/// viewer meets first (by my own barycentric test over every triangle) is the face of the one
+/// polygon that holds the point, no polygon holding a point the ray misses, and the silhouette
+/// holding a point exactly when the ray meets the solid. Points within a hair of an edge (of a
+/// triangle or a polygon) or of the silhouette are passed over.
+fn check_drawing(mesh: &Mesh, d: &specula_formae::draw::Drawing, rows: [P3; 3], seq: &mut Seq, samples: usize) -> Result<(), String> {
+    let proj = |p: P3| -> (Pt, f64) { ([dot(rows[0], p), dot(rows[1], p)], dot(rows[2], p)) };
+    let tris: Vec<(u32, [(Pt, f64); 3])> = mesh.triangles().iter().map(|(f, t)| (*f, t.map(|v| proj(mesh.points[v as usize])))).collect();
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for (_, t) in &tris {
+        for (p, _) in t {
+            for k in 0..2 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+    }
+    let size = ((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1])).sqrt();
+    let hair = 1e-9 * size;
+    let len2 = |a: Pt, b: Pt| ((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1])).sqrt();
+    let mut sum = 0.0;
+    for (i, p) in d.polygons.iter().enumerate() {
+        let k = p.points.len();
+        if k < 3 || !p.points.iter().all(|q| q[0].is_finite() && q[1].is_finite()) {
+            return Err(format!("polygon {i} has {k} points, or one not finite"));
+        }
+        for c in 0..k {
+            let (a, b, e) = (p.points[c], p.points[(c + 1) % k], p.points[(c + 2) % k]);
+            let t = (b[0] - a[0]) * (e[1] - a[1]) - (b[1] - a[1]) * (e[0] - a[0]);
+            if t < -1e-12 * size * size {
+                return Err(format!("polygon {i} turns clockwise at its corner {c}"));
+            }
+        }
+        if !(0.0..=1.0).contains(&p.shade) {
+            return Err(format!("polygon {i} has the shade {}", p.shade));
+        }
+        if i > 0 && p.depth > d.polygons[i - 1].depth {
+            return Err(format!("polygon {i} is farther than the one before it"));
+        }
+        sum += 0.5 * shoelace(&p.points);
+    }
+    let has_outline = d.silhouette_refused.is_none();
+    let sil: f64 = d.silhouette.iter().map(|r| 0.5 * shoelace(r)).sum();
+    if has_outline && (sum - sil).abs() > 1e-8 * size * size {
+        return Err(format!("the polygons' areas sum to {sum} and the silhouette's to {sil}"));
+    }
+    // Inside the rings (even-odd over all of them), and how near they come.
+    let in_rings = |q: Pt, rings: &[Vec<Pt>]| -> (bool, f64) {
+        let mut inside = false;
+        let mut near = f64::MAX;
+        for r in rings {
+            for i in 0..r.len() {
+                let (a, b) = (r[i], r[(i + 1) % r.len()]);
+                if (a[1] > q[1]) != (b[1] > q[1]) && q[0] < a[0] + (q[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+                    inside = !inside;
+                }
+                let e = [b[0] - a[0], b[1] - a[1]];
+                let l2 = e[0] * e[0] + e[1] * e[1];
+                let t = (((q[0] - a[0]) * e[0] + (q[1] - a[1]) * e[1]) / l2).clamp(0.0, 1.0);
+                let (dx, dy) = (a[0] + e[0] * t - q[0], a[1] + e[1] * t - q[1]);
+                near = near.min((dx * dx + dy * dy).sqrt());
+            }
+        }
+        (inside, near)
+    };
+    for _ in 0..samples {
+        let q = [lo[0] + (hi[0] - lo[0]) * seq.next(), lo[1] + (hi[1] - lo[1]) * seq.next()];
+        // The ray: the nearest triangle over q.
+        let mut best: Option<(f64, u32)> = None;
+        let mut ambiguous = false;
+        for (f, t) in &tris {
+            let [(a, za), (b, zb), (c, zc)] = *t;
+            let den = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            if den.abs() <= 1e-20 * size * size {
+                continue;
+            }
+            let l1 = ((b[0] - q[0]) * (c[1] - q[1]) - (b[1] - q[1]) * (c[0] - q[0])) / den;
+            let l2 = ((c[0] - q[0]) * (a[1] - q[1]) - (c[1] - q[1]) * (a[0] - q[0])) / den;
+            let l3 = 1.0 - l1 - l2;
+            // Distances to the triangle's sides: each λ times its corner's height over the side.
+            let ds = [l1 * den.abs() / len2(b, c), l2 * den.abs() / len2(c, a), l3 * den.abs() / len2(a, b)];
+            if ds.iter().all(|x| *x > -hair) && ds.iter().any(|x| x.abs() <= hair) {
+                ambiguous = true;
+            }
+            if ds.iter().all(|x| *x > hair) {
+                let z = l1 * za + l2 * zb + l3 * zc;
+                if best.is_none_or(|(bz, _)| z < bz) {
+                    best = Some((z, *f));
+                }
+            }
+        }
+        if ambiguous {
+            continue;
+        }
+        let mut holders: Vec<u32> = Vec::new();
+        let mut near_piece = false;
+        for p in &d.polygons {
+            let k = p.points.len();
+            let dists: Vec<f64> = (0..k)
+                .map(|c| {
+                    let (a, b) = (p.points[c], p.points[(c + 1) % k]);
+                    ((b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0])) / len2(a, b).max(f64::MIN_POSITIVE)
+                })
+                .collect();
+            if dists.iter().all(|x| *x > -hair) {
+                if dists.iter().any(|x| *x <= hair) {
+                    near_piece = true;
+                }
+                holders.push(p.face);
+            }
+        }
+        if near_piece {
+            continue;
+        }
+        let (in_sil, near_sil) = in_rings(q, &d.silhouette);
+        match best {
+            Some((_, f)) => {
+                if holders != [f] {
+                    return Err(format!("at {q:?} the ray meets face {f} first, and the drawing holds the point in the polygons of faces {holders:?}"));
+                }
+                if has_outline && !in_sil && near_sil > hair {
+                    return Err(format!("at {q:?} the ray meets the solid, and the silhouette does not hold the point"));
+                }
+            }
+            None => {
+                if !holders.is_empty() {
+                    return Err(format!("at {q:?} the ray meets nothing, and the drawing holds the point in faces {holders:?}"));
+                }
+                if has_outline && in_sil && near_sil > hair {
+                    return Err(format!("at {q:?} the ray meets nothing, and the silhouette holds the point"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every solid word, and raised figures with holes or hollows, drawn in every named view and two
+/// free ones, each checked by [`check_drawing`]. The default run draws each word at its defaults
+/// at detail 9.
+#[test]
+fn drawings_by_checks_of_my_own() {
+    drawings(1, &[9], 48, 1_000);
+}
+
+/// The full run: two sets a word (its defaults and a corner draw) at details 9 and 30, with more
+/// points a drawing.
+#[test]
+#[ignore = "the full draw of every solid word in every view (two sets, two details): minutes in the gate's build"]
+fn drawings_full() {
+    drawings(sets(2), &[9, 30], 160, 3_000);
+}
+
+fn drawings(n_sets: usize, details: &[u32], samples: usize, least: usize) {
+    use specula_formae::draw::{draw as picture, views, Projection};
+    let mut faults: Vec<String> = Vec::new();
+    let (mut drawn, mut refused, mut no_outline) = (0usize, 0usize, 0usize);
+    let mut subjects: Vec<(String, Mesh)> = Vec::new();
+    for w in words(Kind::Solid) {
+        let params = params_of(&w);
+        let mut seq = Seq(seed(w.name()) ^ 0x3C3C);
+        for set in 0..n_sets {
+            let given: Vec<(&str, f64)> = if set == 0 { Vec::new() } else { params.iter().map(|p| (p.name, draw(p, &mut seq, set))).collect() };
+            let Ok(s) = Spec::of(w, &given) else { continue };
+            for &detail in details {
+                if let Ok(Built::Mesh(m)) = s.build(detail) {
+                    subjects.push((format!("{} {given:?} at {detail}", w.name()), m));
+                }
+            }
+        }
+    }
+    for name in ["annulus", "frame", "star", "polygon_ring", "cross", "heart"] {
+        let fig = Spec::new(name, Some(Kind::Plane), &[]).expect("a figure");
+        let made = [("slab", raise::slab(&fig, 0.2)), ("stepped", raise::stepped(&fig, 3, 0.1, 0.03)), ("relief", raise::relief(&fig, 0.15, 0.1, 0.05)), ("pillow", raise::pillow(&fig, 0.1, 0.2, 0.04))];
+        for (op, s) in made {
+            if let Ok(m) = s.and_then(|s| s.build(details[0])) {
+                subjects.push((format!("{op} of {name}"), m));
+            }
+        }
+    }
+    for (name, mesh) in &subjects {
+        let mut seq = Seq(seed(name));
+        let mut projections: Vec<(String, Projection)> = views().iter().map(|v| (v.name.to_string(), v.projection)).collect();
+        for _ in 0..2 {
+            let (a, e) = (-180.0 + 360.0 * seq.next(), -89.0 + 178.0 * seq.next());
+            projections.push((format!("free {a} {e}"), Projection::Orthographic { azimuth: a, elevation: e }));
+        }
+        for (vname, p) in projections {
+            let what = format!("{name} in {vname}");
+            let d = match picture(mesh, p) {
+                Ok(d) => d,
+                Err(Error::Constraint { rule: "drawing_too_large", .. }) => {
+                    refused += 1;
+                    continue;
+                }
+                Err(e) => {
+                    gather(&mut faults, name, format!("{what}: {e}"));
+                    continue;
+                }
+            };
+            drawn += 1;
+            if d.silhouette_refused.is_some() {
+                no_outline += 1;
+            }
+            if let Err(e) = check_drawing(mesh, &d, p.rows(), &mut seq, samples) {
+                gather(&mut faults, name, format!("{what}: {e}"));
+            }
+        }
+    }
+    faults.truncate(80);
+    assert!(faults.is_empty(), "{} faults ({drawn} drawn, {refused} refused):\n{}", faults.len(), faults.join("\n"));
+    assert!(drawn > least, "only {drawn} drawn ({refused} refused)");
+    // A silhouette the drawing could not close is said, and rare (a coil seen along its axis).
+    assert!(no_outline * 50 <= drawn, "{no_outline} of {drawn} drawings have no silhouette");
+}
+
+// ---------------------------------------------------------------- slices and layers
+
+/// The distance from `p` to the triangle `a b c` (my own: to its plane where the foot is inside,
+/// else to its nearest side).
+fn to_triangle(p: P3, a: P3, b: P3, c: P3) -> f64 {
+    let to_seg = |a: P3, b: P3| {
+        let e = sub(b, a);
+        let t = (dot(sub(p, a), e) / dot(e, e)).clamp(0.0, 1.0);
+        norm(sub(p, [a[0] + e[0] * t, a[1] + e[1] * t, a[2] + e[2] * t]))
+    };
+    let n = cross(sub(b, a), sub(c, a));
+    let nn = dot(n, n);
+    if nn > 0.0 && [(a, b), (b, c), (c, a)].iter().all(|(u, v)| dot(cross(sub(*v, *u), sub(p, *u)), n) >= 0.0) {
+        return dot(sub(p, a), n).abs() / nn.sqrt();
+    }
+    to_seg(a, b).min(to_seg(b, c)).min(to_seg(c, a))
+}
+
+/// A cut checked from the mesh's points alone: each region well made by my own outline check
+/// (its rings simple, the outer counter-clockwise, the holes clockwise and inside it), the
+/// regions' areas the cut's, and every ring point (put back in space by the plane's frame) on
+/// the plane and on the mesh's surface to rounding.
+fn check_slice(mesh: &Mesh, s: &specula_formae::slice::Slice) -> Result<(), String> {
+    let (u, w) = s.plane.frame();
+    let n = s.plane.normal;
+    let reach = mesh.points.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs()));
+    let hair = 1e-9 * reach;
+    let mut area = 0.0;
+    for (i, r) in s.regions.iter().enumerate() {
+        let (a, _) = own_outline(&r.rings).map_err(|e| format!("region {i}: {e}"))?;
+        area += a;
+    }
+    if (area - s.area()).abs() > 1e-9 * area.abs() + hair * hair {
+        return Err(format!("the regions hold {area} and the cut {}", s.area()));
+    }
+    let tris: Vec<[P3; 3]> = mesh.triangles().iter().map(|(_, t)| t.map(|v| mesh.points[v as usize])).collect();
+    for r in s.rings.iter().take(4) {
+        for q in r.iter().step_by((r.len() / 8).max(1)) {
+            let p = [u[0] * q[0] + w[0] * q[1] + n[0] * s.plane.offset, u[1] * q[0] + w[1] * q[1] + n[1] * s.plane.offset, u[2] * q[0] + w[2] * q[1] + n[2] * s.plane.offset];
+            let d = tris.iter().map(|t| to_triangle(p, t[0], t[1], t[2])).fold(f64::MAX, f64::min);
+            if d > hair {
+                return Err(format!("a ring point {q:?} is {d} from the mesh"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every solid word cut at drawn heights along each axis (checked by [`check_slice`]); a ball's
+/// cut is the circle Pythagoras gives (every ring point at `√(r² − h²)` from the axis, less no
+/// more than the build's error); a cone's shrinks in a straight line; a torus cut through its
+/// axis is two circles of the tube's radius; and the layers of every word sum, times their
+/// spacing, to its volume within the midpoint rule's bound for what the cuts show.
+#[test]
+fn slices_by_checks_of_my_own() {
+    slices(1, &[30]);
+}
+
+/// The full run: two sets a word, details 9, 30 and 101.
+#[test]
+#[ignore = "the full cut of every solid word (two sets, three details): minutes in the gate's build"]
+fn slices_full() {
+    slices(sets(2), &[9, 30, 101]);
+}
+
+fn slices(n_sets: usize, details: &[u32]) {
+    use specula_formae::slice::{layers, slice, Axis, Plane};
+    let mut faults: Vec<String> = Vec::new();
+    let mut cuts = 0usize;
+    for w in words(Kind::Solid) {
+        let params = params_of(&w);
+        let mut seq = Seq(seed(w.name()) ^ 0x5A5A);
+        for set in 0..n_sets {
+            let given: Vec<(&str, f64)> = if set == 0 { Vec::new() } else { params.iter().map(|p| (p.name, draw(p, &mut seq, set))).collect() };
+            let Ok(s) = Spec::of(w, &given) else { continue };
+            for &detail in details {
+                let Ok(Built::Mesh(m)) = s.build(detail) else { continue };
+                let what = format!("{} {given:?} at {detail}", w.name());
+                let Some((lo, hi)) = m.bounds() else { continue };
+                let h = m.chord_error;
+                let reach = m.points.iter().flatten().fold(0.0f64, |a, x| a.max(x.abs()));
+                let hair = 1e-9 * reach;
+                for (k, axis) in [Axis::X, Axis::Y, Axis::Z].into_iter().enumerate() {
+                    for _ in 0..2 {
+                        let at = lo[k] + (hi[k] - lo[k]) * (0.02 + 0.96 * seq.next());
+                        match slice(&m, Plane::at(axis, at)) {
+                            Ok(c) => {
+                                cuts += 1;
+                                if let Err(e) = check_slice(&m, &c) {
+                                    gather(&mut faults, w.name(), format!("{what}: cut {axis:?} at {at}: {e}"));
+                                }
+                                // The ball's cut: Pythagoras.
+                                if ["sphere", "icosphere", "cube_sphere"].contains(&w.form.name) && axis == Axis::Y {
+                                    let r = s.args.f("radius");
+                                    let y = at - r;
+                                    for ring in &c.rings {
+                                        for q in ring {
+                                            let d = (q[0] * q[0] + q[1] * q[1] + y * y).sqrt();
+                                            if d > r + hair || d < r - h - hair {
+                                                gather(&mut faults, w.name(), format!("{what}: a point of the cut at {at} is {d} from the centre, radius {r}, error {h}"));
+                                            }
+                                        }
+                                    }
+                                    if c.regions.len() != 1 || c.rings.len() != 1 {
+                                        gather(&mut faults, w.name(), format!("{what}: the ball's cut at {at} has {} rings", c.rings.len()));
+                                    }
+                                }
+                                // The cone's cut shrinks in a straight line.
+                                if w.form.name == "cone" && w.alias.is_none() && axis == Axis::Y {
+                                    let (rr, hh) = (s.args.f("radius"), s.args.f("height"));
+                                    let want = rr * (1.0 - at / hh);
+                                    for q in c.rings.iter().flatten() {
+                                        let d = (q[0] * q[0] + q[1] * q[1]).sqrt();
+                                        if d > want + hair || d < want - h - hair {
+                                            gather(&mut faults, w.name(), format!("{what}: a point of the cut at {at} is {d} from the axis, the cone's radius there {want}"));
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => gather(&mut faults, w.name(), format!("{what}: cut {axis:?} at {at}: {e}")),
+                        }
+                    }
+                }
+                // A torus cut through its axis: two circles of the tube's radius.
+                if w.form.name == "torus" && w.alias.is_none() {
+                    let (big, tube) = (s.args.f("radius"), s.args.f("tube"));
+                    match slice(&m, Plane::at(Axis::Z, 0.0)) {
+                        Ok(c) => {
+                            if c.regions.len() != 2 {
+                                gather(&mut faults, w.name(), format!("{what}: the cut through the axis has {} regions", c.regions.len()));
+                            }
+                            // In the frame of +Z, u = x and v = y: the circles' middles are at (±big, tube);
+                            // the one at +x is cut along a meridian of the build at every detail (its
+                            // ring's first sample), so its points lie on the tube's circle there.
+                            for q in c.rings.iter().flatten().filter(|q| q[0] > 0.0) {
+                                let d = ((q[0] - big) * (q[0].abs() - big) + (q[1] - tube) * (q[1] - tube)).sqrt();
+                                if d > tube + hair || d < tube - h - hair {
+                                    gather(&mut faults, w.name(), format!("{what}: a point of the cut through the axis is {d} from the tube's middle, tube {tube}, error {h}"));
+                                }
+                            }
+                        }
+                        Err(e) => gather(&mut faults, w.name(), format!("{what}: the cut through the axis: {e}")),
+                    }
+                }
+                // Layers: the midpoint rule's sum against the volume, within the span times the
+                // areas' total change and their greatest (on each span the integral and its
+                // middle's value differ by no more than the span times the area's change over it,
+                // which the samples bound together with the greatest area, for a function of few
+                // turns).
+                let n_layers = 48;
+                match layers(&m, Axis::Y, n_layers) {
+                    Ok(ls) => {
+                        let step = (hi[1] - lo[1]) / n_layers as f64;
+                        let areas: Vec<f64> = ls.iter().map(|l| l.area()).collect();
+                        let sum: f64 = areas.iter().sum::<f64>() * step;
+                        let vol = m.measures().size.unwrap_or(0.0);
+                        let tv: f64 = areas.windows(2).map(|x| (x[1] - x[0]).abs()).sum::<f64>() + 2.0 * areas.iter().fold(0.0f64, |a, x| a.max(x.abs()));
+                        if (sum - vol).abs() > step * tv + 1e-9 * vol.abs() {
+                            gather(&mut faults, w.name(), format!("{what}: the layers hold {sum} and the volume is {vol}"));
+                        }
+                    }
+                    Err(e) => gather(&mut faults, w.name(), format!("{what}: layers: {e}")),
+                }
+            }
+        }
+    }
+    faults.truncate(80);
+    assert!(faults.is_empty(), "{} faults ({cuts} cuts):\n{}", faults.len(), faults.join("\n"));
+    assert!(cuts > 500, "only {cuts} cuts");
+}
+
+/// A ball's layers sum, times their spacing, to its volume plus the midpoint rule's error, which
+/// for the true ball of radius `r` cut into `N` layers is exactly `2 π r³ / (3 N²)` (each layer's
+/// area `π (r² − y²)` is a quadratic, on which the rule is off by `−Δ³ A'' / 24` a span): at 8,
+/// 16 and 32 layers, within what the build's error takes from the areas.
+#[test]
+fn layers_of_a_ball_converge_as_the_square_of_the_spacing() {
+    use specula_formae::slice::{layers, Axis};
+    let r = 0.7;
+    let Ok(Built::Mesh(m)) = Spec::new("sphere", Some(Kind::Solid), &[("radius", r)]).unwrap().build(512) else { panic!("a sphere") };
+    let h = m.chord_error;
+    let pi = std::f64::consts::PI;
+    for n in [8u32, 16, 32] {
+        let ls = layers(&m, Axis::Y, n).unwrap();
+        let step = 2.0 * r / n as f64;
+        let sum: f64 = ls.iter().map(|l| l.area()).sum::<f64>() * step;
+        let want = 4.0 / 3.0 * pi * r * r * r + 2.0 * pi * r * r * r / (3.0 * (n * n) as f64);
+        // A cut of the build is inside the ball's and within `h` of it: its area short by no more
+        // than its perimeter times h, `2 π r h`, a layer.
+        let allowed = 2.0 * pi * r * h * 2.0 * r;
+        assert!((sum - want).abs() <= allowed, "{n} layers: {sum}, the rule says {want} (allowed {allowed})");
+    }
 }

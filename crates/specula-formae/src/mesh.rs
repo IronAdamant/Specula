@@ -193,6 +193,17 @@ pub enum SolidFault {
         /// The edge's first point in the base.
         edge: usize,
     },
+    /// A raised figure's inset outline (see [`crate::raise`]) collapses an edge or stops being
+    /// simple at this inset.
+    InsetTooDeep {
+        /// The inset asked for, metres.
+        inset: f64,
+        /// The deepest inset found to hold at this detail (0 if none).
+        holds: f64,
+    },
+    /// A flat cap with holes could not be cut into triangles that tile it (a mistake: the
+    /// outline was checked first).
+    CapNotCut,
 }
 
 /// How far, as a multiple of the machine epsilon times the solid's reach `R` (its greatest

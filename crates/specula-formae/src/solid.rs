@@ -768,7 +768,7 @@ impl Rev {
 }
 
 /// A plane figure's fault as a solid's section fault.
-fn section_fault(f: Fault) -> SolidFault {
+pub(crate) fn section_fault(f: Fault) -> SolidFault {
     match f {
         Fault::ShortEdge { point, length, .. } => SolidFault::SectionShortEdge { point, length },
         Fault::Crossing { a, b } => SolidFault::SectionCrossing { a, b },
