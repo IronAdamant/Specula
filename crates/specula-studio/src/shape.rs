@@ -37,8 +37,8 @@
 //! 6. **Its weight**: only outward turning counts (a notch, a slot, the inside corner of an L
 //!    count for nothing); a step's turn is the turn within its own window, and the window is
 //!    as long as the part is thick, so that **a part's turning counts by its thickness**. A
-//!    step takes its class from the corners near it of its own part, and of parts at least
-//!    half as thick ([`THINNER`]): a stalk's tip is not its rim's corner. A point counts
+//!    step takes its class from the corners near it of its own part (not across a joint): an
+//!    apple's stalk is not its rim's corner. A point counts
 //!    double ([`POINT_WEIGHT`]).
 //!
 //! So: a disc, an egg, a capsule, an oval up to three times as long as wide and a box rounded
@@ -141,9 +141,6 @@ pub const PLATEAU_RISE: f32 = 0.1;
 /// ... and for this many steps at the least (a few pixels of a thin taper are level by the
 /// pixels alone: a spike's tip was judged at its own few pixels at one angle in ninety).
 pub const PLATEAU_MIN: usize = 24;
-/// A step is classed by the corners near it of parts at least this share as thick as its own:
-/// a stalk too thin to leave a joint in the smoothed outline is not its rim's corner.
-pub const THINNER: f32 = 0.5;
 /// A thickness under this many pixels is not read: the shape is `None`; and the thickness about
 /// a step is not taken to be level ([`PLATEAU`]) until it is this much.
 pub const MIN_THICK: f32 = 4.0;
@@ -1002,12 +999,6 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
         let (mut most, mut corner, mut at_most) = (0.0f32, 0.0f32, i);
         for k in 0..=back + on {
             let j = (i + count - back + k) % count;
-            // (A corner of a part much thinner than this step's is not this step's: a stalk too
-            // thin to leave a joint in the outline, smoothed, has its tip; the rim it stands on
-            // does not.)
-            if host[j] < THINNER * host[i] {
-                continue;
-            }
             if cornered[j] > most {
                 (most, at_most) = (cornered[j], j);
             }

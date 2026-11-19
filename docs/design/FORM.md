@@ -404,8 +404,7 @@ and **checked only when a style asks** for one.
      the cusp between two bumps of a cloud count for nothing). A step's turn is the turn
      within its own window, and the window is as long as the part is thick: **a part's
      turning counts by its thickness.** A step takes its class from the corners near it of
-     its own part, and of parts at least half as thick: a stalk's tip, even where the stalk
-     is too thin to leave a joint in the smoothed outline, is not its rim's corner. A point
+     its own part, not across a joint: a stalk's tip is not its rim's corner. A point
      counts double.
 
   The shares (`round`, `square`, `pointed`) sum to 1; `leading` names the largest; `convexity`
@@ -621,7 +620,9 @@ and **checked only when a style asks** for one.
      the sides of its window bending); with neither it is read by its angle. A box whose edges
      wobble by half a pixel to two is 95% to 100% square in every mask (it was 0% in some); a
      plank so, 59% at the least and leading square. Held by `tests/shape_families.rs` (eight
-     noisy boxes, discs and planks); with the old side test put back it fails.
+     noisy boxes, discs and planks); seeded with the old rule (a corner with no side found is
+     soft) and sides found as strictly as the straightening found them, 15 of its claims fail
+     and two of the module's tests.
   2. **Limbs and necks: mended, by a different cause than the review read.** The thickness
      profile along the outline was not the trouble so much as **what a part is**: a leg that
      continues a body's side leaves no joint at all in the outline, inward or by a leap, and so
@@ -634,8 +635,8 @@ and **checked only when a style asks** for one.
      in all 360 masks (it was 22% to 67%, pointed in 102); in a T-pose 100%; arms at its sides
      48% round, 52% square in every mask (between, and steady); the bottles lead square in
      every mask (a curved shoulder led round in 282, square in 76); an axe moves by under a
-     quarter (it moved by 0.30 in a degree). Held by the families test; with the part's
-     thickness taken as the most along it, as before, the figure fails.
+     quarter (it moved by 0.30 in a degree). Held by the families test; seeded with a part's
+     thickness taken as the most along it (no plateau), 8 of its claims fail (the combs first).
   3. **The bands on a plank: mended where the cause was the code, and a limit where it is the
      pixels.** Most of a plank's swing came from a second source of corners: where two runs
      the straightening kept met at 30° to 40°, a corner for certain; the chords a small
@@ -663,10 +664,12 @@ and **checked only when a style asks** for one.
      corners into one end, and it is read as a point: **a limit**, said above and held by the
      test as it is, so that a change to it is seen.
   Minor:
-  6. **A short stalk: mended.** A step takes its class from corners of its own part, and of
-     parts at least half as thick: an apple's stalk of 6 pixels and a disc's whisker of 30 now
-     leave it 100% round (24% pointed before). A stalk too thin to leave a joint in the
-     smoothed outline was the case the joint alone did not hold.
+  6. **A short stalk: mended.** A step takes its class from the corners of its own part, not
+     across a joint, and a stalk's tip is of the stalk's own thickness: an apple's stalk of 6
+     pixels and a disc's whisker of 30 leave it 100% round in every mask of every degree (24%
+     pointed before; a test). A rule that a step ignore the corners of parts under half its
+     thickness was tried, and once the other mends were in, nothing at any degree needed it: it
+     is not in the code.
   7. **Common assets**: a sword now leads pointed (in 348 masks of 360), a disc with ten smooth
      lobes is round (98%; it was wholly pointed), a heater shield leads square (57%). Not
      changed, and said above as what the measure is: a dagger is half square and half pointed,
@@ -675,8 +678,10 @@ and **checked only when a style asks** for one.
   8. **Floors that held only at the sampled angles: mended.** The families test holds its
      claims at every degree, mirrored and shifted, in its ignored run (four minutes in release
      on a busy machine), and every nine degrees in the default one (half a minute in debug).
-  9. **The median of five**: kept, and now in the parts' first look as well; whether a test
-     fails without it is said in the report of this work.
+  9. **The median of five: not mended.** It is kept (now in the parts' first look as well),
+     and still no test fails without it: seeded out, the module's tests and the families every
+     nine degrees all pass. It is there for a disc that touches one step alone; whether it
+     matters at every degree was not measured.
   10. **The cost: said.** On a busy machine, in one process: a disc 31 ms, a box 25 ms, a figure
      17 ms, a comb of 8-pixel teeth 32 ms, a box with wobbling edges 26 ms, the whole picture
      40 ms; **the worst found, a comb of one-pixel teeth, 354 ms: twelve times a disc** (a

@@ -475,3 +475,15 @@ fn cost() {
     }
     std::fs::write(std::env::temp_dir().join("specula-shape-cost.txt"), out).unwrap();
 }
+
+/// **A short stalk is not its rim's corner, at any degree** (its fourth review: a stalk shorter
+/// than the rim's window took a quarter of an apple as a point; and a stalk of six pixels, too
+/// thin to leave a joint in the smoothed outline, did so at three degrees of ninety until a step
+/// took its class only from parts at least half as thick as its own). Every degree, plain,
+/// mirrored and shifted, for the apple and the disc with a whisker.
+#[test]
+fn a_short_stalk_is_not_its_rims_corner_at_any_degree() {
+    for (name, s) in swept(1, &|n| n == "apple stem .05 6px" || n == "disc whisker 30px") {
+        assert!(s.leads(R) && s.lo[R] >= 0.95 && s.hi[P] < 0.05, "{name}: {s:?}");
+    }
+}
