@@ -313,6 +313,42 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
       about 1.14 times the calibrated case's rate, if time goes with the powers). Asking
       which primitive made each triangle (`primitive_of_triangles`) is charged at the
       weights only, not for powers past them.
+    **A ninth** (2026-11-20, of that mend, against a distance bracketed from both sides by
+    the reviewer's own method) **said not to merge it. Neither major finding is mended
+    yet, so until they are: do not give `roundness` to a shape that is thin along one
+    axis, and do not take the work limit to bound a recipe of deeply nested unions.**
+    1. **The mend brought a fault of its own: just past a thin face, beside its rim, the
+       field falls far short of the distance, and steps.** A plank of half sizes
+       1 by 0.5 by 0.00001 at a roundness of 0.3, sampled near its rim: a hair inside the
+       hard face the field is 0.48 mm, which is right; a hair outside it the field is
+       0.0086 mm, 56 times short, and it stays short for about ten thicknesses out. The
+       code before the mend gives 0.48 mm at every one of those points. The new start
+       takes the way out of the hard shape as its guessed normal; there that is the thin
+       axis, which is the eighth review's failure turned round. A field that falls short
+       is still a bound, but a swelling, a shell or a blend measured from it comes out
+       wrong there, and a step in the field is what the fourth review refused. The new
+       test samples only past the corners of sheets thin along one axis.
+    2. **The work limit does not bound a build of rounded shapes under nested unions.**
+       The mesher's pruning evaluates every subtree again at each level of nested plain
+       unions and is charged once; those evaluations also earn the allowance of powers. A
+       cube of roundness 0.3 under 10, 40 and 120 nested unions takes 1.7, 3.5 and 6.2
+       times the calibrated case's powers for a unit of work (by a busy machine's clock,
+       22 times at 120). The pruning did this for every primitive before; it makes the
+       sentence above ("no recipe can take more than...") false.
+    3. *Medium:* asking which primitive made a triangle runs up to 5.9 times the calibrated
+       powers a unit (capped by its own limit: about 0.7 s at worst). *Medium:* false
+       sentences above: "every power is counted" (at a roundness of 0.5 the sure way's
+       inner steps take no power and are not counted); "a thin shape costs less than under
+       the graded weight" (a millionth-thick sheet at a roundness of two thirds went from
+       0.72 to 0.99 of the limit at a resolution of 64, so resolutions of about 65 to 71
+       are refused where they built); "0.04% to the sure way" and "177 at most" hold for
+       the author's samples (the reviewer's sent 3.1%, with 187 at most).
+    4. *Minor:* nothing fails when the tally is not reset at the start of a mesh, nor when
+       what was paid is not kept; the colours' charge is held by nothing.
+    Found sound: away from finding 1 the field is within a thousandth of the bracketed
+    distance and never over it; no other step in 13 million samples; 510 is a true ceiling
+    on one sample's powers; the charge depends on nothing but the recipe and its tree;
+    Sepulcra's approved props build as they did.
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded

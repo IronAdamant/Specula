@@ -440,7 +440,10 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       along a guessed normal (beside a thin sheet's rim it had started millions of times
       short), and a build is charged for the powers its solve takes past what the weight
       covers, so the work limit bounds the time whatever the shape. One weight; the
-      thinness grading is gone. Not reviewed yet.
+      thinness grading is gone. Its review said not to merge it: the new start leaves the
+      field up to 56 times short of the distance just past a thin face beside its rim,
+      with a step; and nested unions are pruned at each level and charged once
+      (PROCEDURAL_MODELLING.md, "A ninth"). Not mended yet.
     - **Shape language, after its third review** (2026-11-19): not to merge, again: a crate
       with wide bevels read as round and a ball on a string as pointed. It is not written a
       fourth time on a guess: the shares stay a reported fact, the check stays for a style
@@ -462,7 +465,12 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       the asset's size is its greatest width; the advice names the right count. Its
       review said not to merge it: a ring whose axis is no longer square to it (a lean; an
       odd turn then an uneven scale) is measured wrongly and called measured, and the
-      sphere's advice names too few subdivisions (FORM.md, "Its second review").
+      sphere's advice names too few subdivisions (FORM.md, "Its second review"). Mended
+      (2026-11-20): a ring is measured face by face round its axis from the profile read
+      off the built mesh, normals carried by the map's inverse transpose; advice names a
+      count only after measuring the shape again at it; the reviewer's kind of truth is a
+      permanent test (`tests/facet_truth.rs`, 400 random chains); the greatest width is
+      exact; every shape not measured is said at once. Not reviewed yet.
     - **The light report** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)): `perf_light`
       measures what each light feature of a view costs on the machine the engine runs on, at
       the size asked, by the GPU's own timestamps: the view as the world has it, each feature

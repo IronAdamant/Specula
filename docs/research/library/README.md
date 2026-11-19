@@ -215,11 +215,34 @@ citing rightly) and delivered within the hour.
 |---|---|---|
 | [I6](I6-distance-fields-citations.md) | Citations, working links, licences and what each source claims, for: Quilez's 2D and 3D distance functions (a 2D field that is exact stays exact when extruded or revolved; unions, differences and intersections give bounds); Bærentzen and Aanæs 2005 (the sign of a mesh's distance by the angle-weighted pseudonormal, for a closed, orientable mesh); Jacobson, Kavan and Sorkine-Hornung 2013 and Barill et al. 2018 (inside and outside by winding numbers, for meshes with defects); Hart 1996 (a field may fall short of the distance and must never exceed it); the smooth minimum (Quilez: in its normalised form the blend's `k` is the most a shape is thickened, and the polynomial family never overstates the distance; Barbier et al. 2025, CC BY, the best peer-reviewed use of it) | the licence of Quilez's article text and figures (only his code snippets are stated MIT); MIT headers inside his Shadertoy shaders; whether the free copy of Hart's paper matches the journal's text; whether Dekkers et al. 2004 states a blend's error bound; no peer-reviewed paper was found that states the smooth minimum's deviation bound as a result |
 
-- **No second checker's report came with it**, and nothing in it has been re-opened against its
-  sources here yet. It is a list of where to read, not of numbers: each formula is derived and
-  written here, and held by a test against a nearest point found by search, whatever its source says.
-- **Kept as delivered but for five words**: a phrase naming the time zone it was compiled in was
-  taken out of its second line.
+- **It was brought up to date the same day** (four more passes and a second check of the last, all
+  in the one file): the gaps of the first pass followed up, and modern free sources found for what
+  sat behind paywalls.
+  - *A proof that a distance field never rises faster than one in one*: Bálint, Valasek and Gergó
+    2019 (Acta Cybernetica, free), from the triangle inequality, not by quoting Hart. The same
+    authors 2023: a union, an intersection and a difference of such fields stay bounds, and their
+    error against the true distance can be arbitrarily large.
+  - *A proof that a blended union stays within that rule*: Dekkers, van Overveld and Golsteijn's
+    1996 technical report (free; the 2004 journal text was not reached), Appendix A, for a blend
+    term whose slope lies between −1 and 0.
+  - *The blends' formulas in peer-reviewed papers*: the quadratic kernel (Barbier et al. 2025) and
+    a cubic one (Zanni 2023/2025, who sets his tracer's bound to 1.45 "to accommodate for field
+    compression associated with our compact operators": a blend is not to be taken as keeping the
+    rule without a test).
+  - *Settled*: Quilez's article text has no licence at all (his code is MIT, read on a shader of his
+    own); the article numbers of the two winding-number papers; the name the second paper's author
+    was published under.
+  - *Still not found after five passes*: a peer-reviewed paper that states, as a result, how far a
+    polynomial smooth minimum falls below the minimum (a quarter of `k` for the quadratic one, by
+    one line of arithmetic; a 2026 preprint states it); Hart's journal wording against the free
+    manuscript copies.
+- **Its last pass has a second check inside it** (six of eight sources confirmed, two corrected on
+  their licences, one whose free copy could not be re-opened); the earlier passes have none.
+  Nothing in it has been re-opened against its sources here yet. It is a list of where to read,
+  not of numbers: each formula is derived and written here, and held by a test against a nearest
+  point found by search, whatever its source says.
+- **Kept as delivered but for a few words**: the phrases naming the time zone it was compiled in
+  were taken out of four heading lines.
 - **What it says for the design** (FORMAE's sculpt stage, when it is built): raise and turn the
   library's plane figures from an exact distance in the plane, which stays exact; a boolean or a
   blend of fields is a bound, so the mesher is told a slack and bounds are widened by the blend's

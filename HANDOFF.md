@@ -947,9 +947,25 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       and the sphere's advice names too few subdivisions (it takes each to halve the
       turn; they do not). None of Sepulcra's props has such a ring. The prop that
       stopped showing is `grave_bell`, rightly: its facets are nine tenths of a pixel at
-      the size the studio reads. **A third mender is on it, with the reviewer's probe as
-      the test it must pass. Give no style a `max_facet_deg` until a reviewer says
-      merge.** The recipe measure's three small findings were mended with it (the
+      the size the studio reads. **A third agent has mended it** (2026-11-20, merged;
+      FORM.md, "What was mended, second round" under the faceting section): **a ring is
+      measured face by face round its axis**, each band of faces rebuilt from the
+      profile read off the built mesh, its normals carried by the map's inverse
+      transpose, so a lean or an uneven scale after a turn is exact, and so are cones,
+      flared cylinders, lathes with a slope and a torus round its axis. **Advice is
+      measured before it is given**: a count is named only after the shape was measured
+      again at that count under its own maps, or the advice says that none holds. The
+      reviewer's kind of truth is a permanent test now (`tests/facet_truth.rs`: 400
+      random chains, the maps carried and the mesh measured by code that calls nothing
+      of what it checks): by the author's run every kind's stand-in is within 0.12% of
+      the mesh and every turn within 0.003°. Also: every shape not measured is said in
+      the first answer; the greatest width is exact (a search of pairs after the
+      sweeps); the kept records can no longer drop the answer (they could: 70 leant
+      discs). **A side effect to know:** a sloped band turns less than a wall, so
+      Sepulcra's four-sided cones read 87° to 89° where they read 90°, and its median
+      is 87.5°; no verdict at 20° moved. A sculpt's figure is said to be an estimate
+      (its mesh turns 1.06 to 1.5 times it). **Not reviewed yet: a third review is
+      running. Give no style a `max_facet_deg` until a reviewer says merge.** The recipe measure's three small findings were mended with it (the
       snap held by a test; the wobbling rod's limit stated and held: up to 1.8% of the
       width a long rod is cut and reads square, past it it is pressed and reads rounder;
       the two weak tests made exact).
@@ -1048,11 +1064,18 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       recipe can take more than 1.25 times the calibrated case's powers for a unit of
       work, whatever its shape. The thinness grading is gone (one weight). By its own
       count the review's worst case went from 4.1 times its charge to within the bound,
-      and the worst of 1,188 builds is 1.14 times. **Not reviewed yet (a review is
-      running), and not timed: the quiet-machine timing is owed**
-      (`cargo run --release -p specula-model --example rounded_rates 5`). A recipe whose
-      samples take more than 17 powers on average is charged more than before and may be
-      refused where it built.
+      and the worst of 1,188 builds is 1.14 times. A recipe whose samples take more than
+      17 powers on average is charged more than before and may be refused where it
+      built. **Its reviewer said not to merge it** (2026-11-20; PROCEDURAL_MODELLING.md,
+      "A ninth"), and **the mend is on this branch with a fault of its own: just past a
+      thin face, beside its rim, the field falls up to 56 times short of the distance
+      and steps** (the new start guesses the normal along the thin axis there: the
+      eighth review's failure turned round). And the work limit still does not bound a
+      build under deeply nested unions (the mesher's pruning evaluates a subtree again
+      at each level and is charged once: 6 times the calibrated powers at 120 levels).
+      **Until a reviewer says merge: do not give `roundness` to a shape that is thin
+      along one axis.** No recipe in the repository uses `roundness`. A fresh agent is
+      mending both, with the reviewer's bracketed distance as a permanent test.
     - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.
