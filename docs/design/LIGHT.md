@@ -174,5 +174,42 @@ and `perf_frame`'s offscreen record after a report is a measuring render's, whic
 says. It found sound: that no measuring render leaks into another view (two reports and nine
 `sight_frame` calls at once: every capture identical to one taken later), that the timings are
 each render's own, the job's handling of owners, closed sessions and deadlines, and every claim
-of what the engine's light has and has not, against the renderer. **These mends are not
-reviewed yet.**
+of what the engine's light has and has not, against the renderer.
+
+## Its second review, which stopped early
+
+A second model was given the mends (2026-11-20). **It stopped before it had run the engine**:
+to weigh another piece it was given with this one it needed a temporary counter in a tracked
+source file of its own worktree, the permission for that was refused, and its brief said to
+stop there. So what follows was found by reading the code and by a simulation of the noise
+rule, and **nothing of it has been seen in a running engine yet**. Its provisional verdict
+is **not to merge the mends**, on the first finding.
+
+1. **Major, by reading: the wait for a view that is still loading can keep itself
+   waiting.** Until its first render the job asks at every step whether the view is ready,
+   and asks freshly each time, where `sight_frame` asks freshly once and then only looks.
+   In 2D a fresh question while a check is in flight orders one more check, and an ordered
+   check counts as loading: a view with a sprite not yet loaded would then wait the whole
+   ten seconds and be measured with a warning that things were still loading. Each such
+   step also reads file times on the engine thread, and for effects' textures scans every
+   one of them (AGENTS rule 15). The wait also leaves out the upload of built models that
+   `sight_frame` does first.
+2. *Minor:* an answer cut short with fewer than five rounds still gives advice for the
+   budget, with a note that giving up every feature told from the noise is not enough; the
+   reason is that too few frames were counted. Nothing but a warning's words marks the
+   answer as partial. A call whose time runs out in its first two rounds answers nothing.
+3. *Minor:* "no image is read back" is true of the processor's copy and not of the
+   graphics card's: each measuring render still copies its image into a buffer the host can
+   read (16 MB at 2048 pixels a side), after the last timed pass, so outside the times.
+4. *Minor:* the noise rule holds for noise that is spread evenly and not for a machine
+   that is busy by turns. Simulated, 100,000 pairs a cell: a feature that costs nothing is
+   called a cost 0.5% to 0.6% of the time at five, seven and nine frames, as the source
+   says; with a third of the frames late by a fifth it is 1.5% at nine frames and 3.0% at
+   five; with half of them late, 9.3% at nine. A real cost of 2% of the frame is told 41%
+   of the time at nine frames and 1% noise, one of 5% nearly always.
+
+By reading it found the first review's mends in place at their causes (the walk for a
+budget, the copy skipped only for the report's own renders, the frame counts, grading, the
+interface's `include_ui`, the offscreen record's sentence), each but the skipped copy with
+a test. **Not checked:** any run on either adapter, this page sentence by sentence, and
+cancelling. **None of this is mended yet.**

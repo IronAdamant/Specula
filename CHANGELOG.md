@@ -393,7 +393,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       stopped at the first feature not told from the noise; every measuring render copied
       its image back on the engine thread and threw it away. Both mended, with five smaller
       findings (frames, the noise rule by frame count, grading, loading, `include_ui`, a
-      job that answers early when its call's time is nearly out).
+      job that answers early when its call's time is nearly out). A second review of those
+      mends (2026-11-20) stopped early on a refused permission, before it ran the engine;
+      by reading it found that the wait for a loading view can keep itself waiting, and by
+      simulation that the noise rule does not hold on a machine that is busy by turns
+      (LIGHT.md, "Its second review, which stopped early"). Not mended yet.
     - **Shape language, after its third review** (2026-11-19): not to merge, again: a crate
       with wide bevels read as round and a ball on a string as pointed. It is not written a
       fourth time on a guess: the shares stay a reported fact, the check stays for a style

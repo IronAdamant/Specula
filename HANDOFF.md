@@ -811,8 +811,18 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       image back on the engine thread for nothing (stalls at large sizes). Mended, with
       five smaller findings (at least five frames and nine unless given, with a noise rule
       that widens for fewer; grading counted only when it draws; a loading view waited
-      for; `include_ui`; a job near its call's end answers with what it has). **These
-      mends are not reviewed yet.**
+      for; `include_ui`; a job near its call's end answers with what it has). **A second
+      reviewer was given the mends and stopped early** (2026-11-20; LIGHT.md, "Its second
+      review, which stopped early"): it was refused the permission for a temporary counter
+      in a tracked file of its own worktree, and stopped as its brief told it to, before
+      it had run the engine. By reading it found one major fault (the wait for a loading
+      view asks freshly at every step, so in 2D it can keep itself waiting the whole ten
+      seconds, and it reads file times on the engine thread), two small ones, and by
+      simulation that the noise rule calls a costless feature a cost up to one time in
+      eleven on a machine that is busy by turns. Its provisional verdict is not to merge.
+      **Nothing of it is reproduced in an engine or mended yet. The rounded shape's
+      levelled weights, given to the same reviewer, were not looked at: they are still
+      unreviewed.**
     - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.
