@@ -2984,6 +2984,8 @@ mod tests {
         let take = |tree: &SdfNode| -> (f64, f64) {
             let (_, s) = mesh(tree, &MeshOptions { max_work: u64::MAX, max_triangles: 2_000_000, ..opts(32) }).unwrap();
             assert!(s.rounded_samples > 0, "{s:?}");
+            // (Every power the build took was charged: none is left over for the next.)
+            assert_eq!(rounded_taken(), [0, 0], "{s:?}");
             (s.rounded_powers as f64 / s.work as f64, s.rounded_powers as f64 / s.rounded_samples as f64)
         };
         let calibrated = take(&cut(rounded([0.3; 3], 6.67, false)));

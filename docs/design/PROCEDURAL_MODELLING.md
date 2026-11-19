@@ -306,8 +306,13 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     - *Left as it is:* the charge is in powers, and a power's time against a unit of plain
       work was last timed on a busy machine (about 48 units); whether the calibrated case
       still runs at the plain cut's rate now that it takes fewer powers a sample (16 where it
-      took 22) is for a quiet machine. Asking which primitive made each triangle
-      (`primitive_of_triangles`) is charged at the weights only, not for powers past them.
+      took 22) is for a quiet machine: `cargo run --release -p specula-model --example
+      rounded_rates` times the calibrated case and the dearest by count against a plain cut
+      in the same run, with each one's powers a thousand units (by count the dearest takes
+      1.14 times the calibrated case's powers for its work, so it should run at no more than
+      about 1.14 times the calibrated case's rate, if time goes with the powers). Asking
+      which primitive made each triangle (`primitive_of_triangles`) is charged at the
+      weights only, not for powers past them.
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded
