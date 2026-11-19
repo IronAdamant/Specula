@@ -757,6 +757,12 @@ impl Ctx<'_> {
         })?;
         self.spend(st.work);
         self.tally.grow(&n.path, 0, shape.triangle_count())?;
+        // A sculpt is round where its tree is: its surface is cut into cells, and round its
+        // tightest ball, limb or section a cell turns the surface by the cell over the radius.
+        if let Some(radius) = sdf::least_radius(&tree) {
+            let turn = 2.0 * dmath::asin((st.cell / (2.0 * radius)).min(1.0)).to_degrees();
+            self.round(n, "sdf", turn, radius);
+        }
         self.stat(
             &n.path,
             Json::obj([

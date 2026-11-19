@@ -157,10 +157,11 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   for the nearest point with a dozen to twenty powers a sample outside the shape, over twenty times
   a plain box's. So a cube of roundness 0.3 builds at a resolution of 64 on under half of the work
   limit and is refused at 96, where the same cube at roundness 1 takes a third of the limit (a test
-  holds this); a thin board has an eighth of a cube's samples at the same resolution. **A thin
-  rounded shape costs more a sample than a thick one** (under an eighth as thick as it is long,
-  box or cylinder: about 1.7 times): more of its samples take more steps, and up to one in eight
-  is left to the sure way. The weights are **set against the plain primitives' own rate, not
+  holds this); a thin board has an eighth of a cube's samples at the same resolution. **A very thin
+  rounded shape costs more a sample than a thick one**: down to a twentieth as thick as it is
+  long a sample costs what a cube's does, and from there to a two-thousandth the weight rises to
+  about 1.7 times (a foil, a hair: more of their samples take more steps, and up to one in eight
+  is left to the sure way). The weights are **set against the plain primitives' own rate, not
   against a time**: a build at the work limit is to take what a plain box cut from a plain box
   takes there, whatever the machine and its state (2026-11-19, release, one thread: that plain
   cut ran at 1.01 to 1.07 ns a unit of work, a 2 m box with a rounded cube, plate or needle cut
@@ -206,7 +207,15 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     have a weight of their own now, the test holds a foil and a hair to under thirty steps a
     sample and one in eight left over, and the weights are said against the plain primitives'
     rate (the time the comment gave, 1.3 s at the limit, was measured on a cooler machine than
-    the reviewer's or this one an afternoon later). **Not reviewed yet.**
+    the reviewer's or this one an afternoon later). **A seventh** (2026-11-19) **said merge**:
+    the panic gone by every reproduction and by sweeps from a kilometre to the end of the
+    numbers, with no step count over 200. It counted the solve's steps by thinness and found
+    the thin weight's one line at an eighth in the wrong place: the steps are the same from a
+    half to a twentieth as thick as long and rise only far thinner, so a plank a hair under an
+    eighth was charged 1.7 times its neighbour. The weight is graded now, by the logarithm of
+    the thinness from a twentieth to a two-thousandth. Its timings, taken while two other
+    builds ran, could not settle whether shapes near a seventh are under-priced by a fifth:
+    **to be measured again on a quiet machine.**
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded

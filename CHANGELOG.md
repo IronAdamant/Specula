@@ -355,6 +355,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       into each other, on silhouettes of 256 pixels, and is steady to a tenth over a quarter
       turn for fourteen known shapes. Sepulcra's 56 recipes lead square (31), pointed (18)
       and round (7). The form checks and it have their place in the critique.
+    - **Faceting, from what a recipe names round** (2026-11-19; FORM.md): the form check that
+      three tries could not make from a mesh. The modeller records how coarsely each shape
+      a recipe names round was built (the turn between its faces, its radius); the facts
+      give the coarsest whose facets show at the asset's size, and `[form] max_facet_deg`
+      limits it. A prism is an extruded outline and says nothing.
     - **The light report** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)): `perf_light`
       measures what each light feature of a view costs on the machine the engine runs on, at
       the size asked, by the GPU's own timestamps: the view as the world has it, each feature

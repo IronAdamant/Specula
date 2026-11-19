@@ -42,7 +42,12 @@ pub const MAX_COMPARES: u64 = 50_000_000;
 pub const MAX_LISTED: usize = 8;
 
 /// The form checks `[form.allow]` may exempt.
-pub const CHECKS: [&str; 5] = ["loose_pieces", "razor_edges", "shading_seams", "smeared_creases", "small_relief"];
+pub const CHECKS: [&str; 6] = ["loose_pieces", "razor_edges", "shading_seams", "smeared_creases", "small_relief", "faceting"];
+
+/// A facet is seen when its middle stands in from the true curve by this share of the
+/// asset's size or more: a pixel of the 512 the studio draws its silhouettes at. Under it a
+/// round shape's faceting is not counted (the eight sides of a candle on a table of candles).
+pub const FACET_SEEN: f32 = 1.0 / 512.0;
 
 /// A piece of the mesh that touches no other piece and does not reach the ground.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -150,7 +155,7 @@ impl FormFacts {
             j.set("seam_m", r3(self.seam_m));
             j.set("smeared_crease_m", r3(self.smeared_m));
         } else {
-            j.set("shading", Json::from("not measured: the mesh has no normal for every vertex"));
+            j.set("shading", Json::from("not measured: a vertex in use has no normal, or one of no length or that is no number"));
         }
         j.set("relief", Json::obj([("big", r3(self.relief[0])), ("medium", r3(self.relief[1])), ("small", r3(self.relief[2]))]));
         j
@@ -369,7 +374,14 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
     // (Of the vertices a measured triangle uses, and no other: one stray vertex with a normal
     // of no length, used by nothing, switched both measures off, and the checks then passed
     // on nothing. Fourth review.)
-    f.shaded = tris.iter().all(|(_, raw, _)| raw.iter().all(|i| m.normals.get(*i as usize).is_some_and(|n| length(*n) > 1e-6)));
+    // (And a normal whose length is no number, or past what a number holds, is none: its
+    // angle to another came out as no number, which is neither a seam nor a smear, and the
+    // checks passed on nothing again. Fifth review.)
+    let has_length = |n: &V3| {
+        let l = length(*n);
+        l.is_finite() && l > 1e-6
+    };
+    f.shaded = tris.iter().all(|(_, raw, _)| raw.iter().all(|i| m.normals.get(*i as usize).is_some_and(has_length)));
     let normal = |i: u32| m.normals.get(i as usize).copied().unwrap_or([0.0; 3]);
     let mut edges: BTreeMap<(u32, u32), Vec<Side>> = BTreeMap::new();
     for (i, (w, raw, face)) in tris.iter().enumerate() {
@@ -891,6 +903,23 @@ mod tests {
         let mut none = smeared.clone();
         none.normals.clear();
         assert!(!measure(&none).shaded);
+        // (A fifth review: a normal whose length is past what a number holds, or is no finite
+        // number, is no normal either: its angle to another is no number, neither seam nor smear.)
+        for huge in [1.0e20f32, f32::INFINITY] {
+            let mut far = smeared.clone();
+            far.normals[5] = [huge, 0.0, 0.0];
+            assert!(!measure(&far).shaded, "a normal of length {huge}");
+        }
+        // And a box whose every face is written twice, the second time back to front: every
+        // edge is shared by four triangles, none is a crease between two faces, and the facts
+        // say so (more tangled length than shared), which the checks of the creases fail on.
+        let once = flat(&box_quads([0.0; 3], [1.0; 3]));
+        let mut twice = once.clone();
+        for t in once.indices.as_chunks::<3>().0 {
+            twice.indices.extend_from_slice(&[t[0], t[2], t[1]]);
+        }
+        let got = measure(&twice);
+        assert!(got.tangled_m > got.edge_m && got.crease_m == 0.0 && measure(&once).crease_m > 11.9, "{got:?}");
 
         // Every triangle written from its next corner: the same relief.
         let lumpy = joined(&ball(0.5, 12, [0.0, 0.5, 0.0]), &flat(&box_quads([0.3, 0.0, 0.3], [0.9, 0.35, 0.8])));

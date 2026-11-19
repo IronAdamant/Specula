@@ -99,7 +99,7 @@ read by its own parser; the studio reads only its own tables and rejects unknown
 | `[palette]` | `families` (named groups of palette names; everything else is neutral), `max_delta_e` (Oklab distance from the nearest palette blend), `max_off_palette` (share of surface area allowed beyond it), `neutral_max_chroma` (Oklch chroma), `exempt` (neutral names allowed above it, each with a reason), `forbid` (category → families it must not use: "never green on the player side"), `reserve` (family → the only assets, by name glob, that may use it: "fire is for braziers only"), `emissive` (presets allowed to glow: "emissive only for gameplay meaning"). |
 | `[naming]` | `case = "snake"`, `max_len`, `file_matches_name`, `categories` (the allowed list), `parts_named` (every part has a name). |
 | `[taste]` | thresholds for the taste checks below; `[taste.allow]` exempts deliberate style per subject glob, with the reason in a comment (like `[motion.allow]`). |
-| `[form]` | limits on the form checks ([FORM.md](FORM.md)): `max_loose_pieces` (0 unless given), `max_razor_share`, `max_seam_share`, `max_smeared_share`, `max_small_relief`; `[form.allow]` exempts as `[taste.allow]` does. The measures are in every asset's facts (`form`) whether or not they are limited. |
+| `[form]` | limits on the form checks ([FORM.md](FORM.md)): `max_loose_pieces` (0 unless given), `max_razor_share`, `max_facet_deg`, `max_seam_share`, `max_smeared_share`, `max_small_relief`; `[form.allow]` exempts as `[taste.allow]` does. The measures are in every asset's facts (`form`) whether or not they are limited. |
 | `[stage]`, `[shots]` | the game rig's light and backdrop, the game camera and the viewports. |
 | `[bible]` | per category, the bible's rule text, quoted back in critiques. |
 

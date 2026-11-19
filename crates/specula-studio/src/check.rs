@@ -42,6 +42,29 @@ fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
     if m.triangles == 0 {
         return;
     }
+    if let Some(max) = limits.max_facet_deg {
+        // From what the recipe names round, where its facets show at the asset's size: a mesh
+        // alone cannot say what was meant to be round (three tries at it: docs/design/FORM.md).
+        // An asset with nothing named round, or none whose facets show, has nothing to fail.
+        // (Checked whether or not the mesh's own form was measured: it is the recipe's to say.)
+        let (turn, said, fix) = match f.faceting() {
+            Some(r) => {
+                let sides = (360.0 / max).ceil().max(3.0);
+                let fix = match r.what {
+                    "sdf" => format!("raise the sculpt's \"resolution\" (its cells are too large for a radius of {:.3} m), or give its thinnest round part more radius; a shape meant to have flat sides is an extruded outline, not a sculpt of balls", r.radius_m),
+                    "sphere" => "give the sphere one more \"subdivisions\" (each halves the turn); or exempt the asset in [form.allow] if the facets are its look".to_string(),
+                    what => format!("give the {what} at least {sides:.0} round it (\"sides\" or \"segments\"); a shape meant to have flat sides is an extruded outline of that many sides, which nothing calls round; or exempt the asset in [form.allow] if the facets are its look"),
+                };
+                (r.turn_deg, format!("its {} at {} turns {:.1}° between neighbouring faces at a radius of {:.3} m: its facets stand {:.1} mm in from the curve", r.what, r.path, r.turn_deg, r.radius_m, r.sag_m() * 1000.0), fix)
+            }
+            None => (0.0, if f.round.is_empty() { "its recipe names no shape round".to_string() } else { format!("none of its {} round shapes has facets that show at its size", f.round.len()) }, String::new()),
+        };
+        let mut finding = Finding::measure("faceting", s, f64::from(turn), f64::from(max), Bound::Max, "deg", at(rules, "form.max_facet_deg"), said, fix);
+        if !finding.passed && limits.allows(s, "faceting") {
+            finding.exempt = true;
+        }
+        r.findings.push(finding);
+    }
     if let (Some(why), Some(_)) = (m.skipped, limits.max_loose_pieces) {
         // Not measured at all (too many triangles): the loose check fails saying so. It never
         // passes on what it did not look at.
@@ -92,10 +115,47 @@ fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
         }
         r.findings.push(finding);
     }
+    // Nothing of it could be measured (every triangle without an area), or most of its edges
+    // are shared by more than two triangles (its faces written twice, or back to back, so
+    // that no edge is a crease between two faces): the measures of its creases are of nothing,
+    // and the checks that limit them fail saying so. (A box written double-sided passed
+    // "0% of its creases are razors". Fifth review.)
+    let nothing = m.pieces == 0 && m.skipped.is_none();
+    let tangled = m.tangled_m > m.edge_m;
+    if nothing && limits.max_loose_pieces.is_some() && m.unread == 0 {
+        let mut finding = Finding::flag(
+            "loose_pieces",
+            s,
+            true,
+            at(rules, "form.max_loose_pieces"),
+            format!("none of its {} triangles has an area: there is nothing of it to measure", m.triangles),
+            "export the mesh again: its triangles have no size".to_string(),
+        );
+        if limits.allows(s, "loose_pieces") {
+            finding.exempt = true;
+        }
+        r.findings.push(finding);
+    }
+    for (check, key, limit) in [("razor_edges", "max_razor_share", limits.max_razor_share), ("smeared_creases", "max_smeared_share", limits.max_smeared_share), ("shading_seams", "max_seam_share", limits.max_seam_share)] {
+        if tangled && limit.is_some() {
+            let mut finding = Finding::flag(
+                check,
+                s,
+                true,
+                at(rules, &format!("form.{key}")),
+                format!("its creases could not be measured: {:.2} m of its edges are shared by more than two triangles, against {:.2} m shared by two (faces written twice, or back to back)", m.tangled_m, m.edge_m),
+                "write each face once (a sheet seen from both sides is one face drawn double-sided, not two faces); or exempt the asset in [form.allow]".to_string(),
+            );
+            if limits.allows(s, check) {
+                finding.exempt = true;
+            }
+            r.findings.push(finding);
+        }
+    }
     // Shading that was not measured is said as a failure of the checks that limit it, never
     // passed as a share of nothing (a mesh whose every crease is smeared read "0% of its
     // creases", with one vertex's normal missing: fourth review).
-    let unshaded = !m.shaded && m.edge_m + m.open_m + m.tangled_m > 0.0;
+    let unshaded = !tangled && !m.shaded && m.edge_m + m.open_m + m.tangled_m > 0.0;
     for (check, key, limit) in [("shading_seams", "max_seam_share", limits.max_seam_share), ("smeared_creases", "max_smeared_share", limits.max_smeared_share)] {
         if unshaded && limit.is_some() {
             let mut finding = Finding::flag(
@@ -119,18 +179,18 @@ fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
         }
         r.findings.push(finding);
     };
-    if let (Some(max), Some(loose), false) = (limits.max_loose_pieces, m.loose_count, m.unread > 0) {
+    if let (Some(max), Some(loose), false) = (limits.max_loose_pieces, m.loose_count, m.unread > 0 || nothing) {
         let first = m.loose.first().map(|l| format!(": the largest, {} triangles and {:.2} m across, is {:.2} m from anything else, at [{:.2}, {:.2}, {:.2}]", l.triangles, l.size_m, l.gap_m, l.at[0], l.at[1], l.at[2])).unwrap_or_default();
         push("loose_pieces", loose as f64, f64::from(max), "pieces", "max_loose_pieces", format!("{loose} of its {} pieces touch nothing and hang clear of the ground{first}", m.pieces), "join each loose piece to the rest (move it until it overlaps, or bridge the gap), or delete it; if it is meant to hover, exempt it in [form.allow]");
     }
-    if let Some(max) = limits.max_razor_share {
+    if let Some(max) = limits.max_razor_share.filter(|_| !tangled) {
         push("razor_edges", f64::from(m.razor_share()), f64::from(max), "share", "max_razor_share", format!("{:.0}% of its {:.2} m of creases turn more than {RAZOR_DEG}° with no bevel", m.razor_share() * 100.0, m.crease_m), "bevel the hard edges (a \"bevel\" on the outline, a \"corner\" or \"roundness\" on the box): no made thing has an edge that sharp");
     }
     let size = f.size_m[0].max(f.size_m[1]).max(f.size_m[2]).max(1e-6);
-    if let Some(max) = limits.max_seam_share.filter(|_| !unshaded) {
+    if let Some(max) = limits.max_seam_share.filter(|_| !unshaded && !tangled) {
         push("shading_seams", f64::from(m.seam_m / size), f64::from(max), "of its size", "max_seam_share", format!("{:.2} m of edges that are not creases are shaded more than {SEAM_DEG}° apart on their two sides: a line in the light where the surface has none", m.seam_m), "let the two sides share their normals there (one part, or a smooth step), or make the edge a real crease");
     }
-    if let Some(max) = limits.max_smeared_share.filter(|_| !unshaded) {
+    if let Some(max) = limits.max_smeared_share.filter(|_| !unshaded && !tangled) {
         let share = if m.crease_m > 0.0 { m.smeared_m / m.crease_m } else { 0.0 };
         push("smeared_creases", f64::from(share), f64::from(max), "share", "max_smeared_share", format!("{:.0}% of its creases are shaded as if they were round: a dark smear along each", share * 100.0), "shade hard edges flat (split the normals there), or round the edge with real faces");
     }
@@ -517,6 +577,7 @@ categories = ["stone", "enemy"]
             max_seam_share: Some(0.1),
             max_smeared_share: Some(0.5),
             max_small_relief: Some(0.5),
+            max_facet_deg: None,
             allow: vec![("warding_*".into(), vec!["small_relief".into()])],
         };
         let found = of_form(&check(&f, &r, &palette(&r)));
@@ -548,6 +609,54 @@ categories = ["stone", "enemy"]
         let found = of_form(&check(&f, &r, &palette(&r)));
         let loose: Vec<_> = found.iter().filter(|x| x.check == "loose_pieces").collect();
         assert!(loose.len() == 1 && loose[0].is_error() && loose[0].message.contains("3 of its") && loose[0].message.contains("could not be read"), "{loose:?}");
+
+        // Faces written twice (more edge shared by more than two triangles than by two): the
+        // three checks of its creases fail saying they could not be measured (fifth review).
+        f.form = FormFacts { tangled_m: 20.5, edge_m: 0.0, crease_m: 0.0, razor_m: 0.0, ..f.form.clone() };
+        let found = of_form(&check(&f, &r, &palette(&r)));
+        for name in ["razor_edges", "smeared_creases", "shading_seams"] {
+            let x: Vec<_> = found.iter().filter(|x| x.check == name).collect();
+            assert!(x.len() == 1 && x[0].is_error() && x[0].message.contains("shared by more than two triangles"), "{name}: {x:?}");
+        }
+        // Triangles, and none with an area: the loose check fails on nothing to measure.
+        f.form = FormFacts { triangles: 2, loose_count: Some(0), ..FormFacts::default() };
+        let found = of_form(&check(&f, &StyleRules::defaults(), &palette(&r)));
+        assert!(found.len() == 1 && found[0].check == "loose_pieces" && found[0].is_error() && found[0].message.contains("none of its 2 triangles has an area"), "{found:?}");
+
+        // Faceting: from what the recipe names round, where it shows at the asset's size.
+        // The asset is 2.4 m tall: a facet shows from 4.7 mm (a 512th of it).
+        let round = |path: &str, what: &'static str, turn_deg: f32, radius_m: f32| specula_model::Round { path: path.into(), what, turn_deg, radius_m };
+        let mut faceted = r.clone();
+        faceted.form = crate::rules::FormRules { max_facet_deg: Some(20.0), allow: vec![("lantern_*".into(), vec!["faceting".into()])], ..crate::rules::FormRules::default() };
+        let only = |rep: &Report| rep.findings.iter().find(|x| x.check == "faceting").cloned().expect("faceting was checked");
+        // (Nothing named round: nothing to fail, and it says so.)
+        f.form = FormFacts { triangles: 12, loose_count: Some(0), ..FormFacts::default() };
+        let none = only(&check(&f, &faceted, &palette(&r)));
+        assert!(none.passed && none.value == 0.0 && none.message.contains("names no shape round"), "{none:?}");
+        // A column of six sides at half a metre stands 67 mm in from its curve: seen, and 60
+        // degrees a side where the style allows 20. A candle of six sides at 2 cm stands in
+        // 2.7 mm: not seen at this size, and not counted.
+        f.round = vec![round("parts[0].shape", "cylinder", 60.0, 0.5), round("parts[3].shape", "cylinder", 60.0, 0.02), round("parts[1].shape", "sphere", 10.45, 0.4)];
+        let bad = only(&check(&f, &faceted, &palette(&r)));
+        assert!(bad.is_error() && (bad.value - 60.0).abs() < 1e-3 && bad.limit == 20.0, "{bad:?}");
+        assert!(bad.message.contains("cylinder at parts[0].shape turns 60.0°") && bad.message.contains("67.0 mm") && bad.fix.contains("at least 18 round it") && bad.fix.contains("extruded outline") && bad.rule.ends_with("form.max_facet_deg"), "{bad:?}");
+        f.round.remove(0);
+        let fine = only(&check(&f, &faceted, &palette(&r)));
+        // (The ball's faces turn 10.45 degrees and stand 1.7 mm in: under what is seen. So
+        // does the candle. Nothing shows.)
+        assert!(fine.passed && fine.value == 0.0 && fine.message.contains("none of its 2 round shapes"), "{fine:?}");
+        f.round.push(round("parts[2].shape", "sdf", 35.0, 0.3));
+        let sculpt = only(&check(&f, &faceted, &palette(&r)));
+        assert!(sculpt.is_error() && sculpt.fix.contains("resolution"), "{sculpt:?}");
+        // The facts say it, and a style may allow it by name.
+        let j = f.to_json(4);
+        assert_eq!(j.get("faceting").and_then(|x| x.get("turn_deg")).and_then(Json::as_f64), Some(35.0));
+        assert_eq!(j.get("faceting").and_then(|x| x.get("worst")).and_then(|w| w.get("shape")).and_then(Json::as_str), Some("sdf"));
+        let mut lantern = f.clone();
+        lantern.subject = "lantern_a".into();
+        let allowed = only(&check(&lantern, &faceted, &palette(&r)));
+        assert!(!allowed.passed && allowed.exempt && !allowed.is_error(), "{allowed:?}");
+        f.round.clear();
 
         // A mesh too large to measure: nothing but the loose check, which fails saying so.
         f.form = FormFacts { triangles: 9_000_000, skipped: Some("more triangles than the form measures take"), ..FormFacts::default() };

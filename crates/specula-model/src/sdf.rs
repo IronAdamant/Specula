@@ -222,6 +222,35 @@ pub struct SdfStats {
     pub trees_kept: usize,
 }
 
+/// The least radius anything round in the tree turns at, in the tree's own metres (each node's
+/// `scale` and `round` taken with it): a ball's, a capsule's, the thin end of a round cone, a
+/// torus's tube, an ellipsoid's least, a cylinder's, the narrowest section of a column.
+/// `None` for a tree with nothing round in it (boxes and half spaces). A box swollen by
+/// `round` turns at that radius; a rounded box or cylinder (`roundness`) is not counted: how
+/// tightly it turns is its maker's number.
+pub fn least_radius(n: &SdfNode) -> Option<f32> {
+    let least = |a: Option<f32>, b: Option<f32>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    let own = match &n.kind {
+        Kind::Prim(p) => match *p {
+            Prim::Sphere { radius } | Prim::Capsule { radius, .. } => Some(radius),
+            Prim::Cylinder { radius, radius_top, .. } => Some(radius.max(radius_top)),
+            Prim::Torus { tube, .. } => Some(tube),
+            Prim::Ellipsoid { radii } => Some(radii[0].min(radii[1]).min(radii[2])),
+            // (Its thin end, unless that is a point: a point is not round.)
+            Prim::RoundCone { ra, rb, .. } => Some(if ra.min(rb) > 0.0 { ra.min(rb) } else { ra.max(rb) }),
+            Prim::Column { sections, count, .. } => sections[..(count as usize).clamp(1, MAX_SECTIONS)].iter().map(|s| s[1].min(s[2])).fold(None, |a, r| least(a, Some(r))),
+            Prim::Box { .. } | Prim::Rounded { .. } | Prim::HalfSpace { .. } => None,
+        },
+        Kind::Group { kids, .. } => kids.iter().map(least_radius).fold(None, least),
+    };
+    // (A swelling rounds what it swells: a box swollen by 2 cm turns at 2 cm.)
+    let swollen = if n.m.round > 0.0 { Some(own.map_or(n.m.round, |r| r + n.m.round)) } else { own };
+    swollen.map(|r| r * n.m.scale.abs()).filter(|r| r.is_finite() && *r > 0.0)
+}
+
 fn count_nodes(n: &SdfNode) -> usize {
     1 + match &n.kind {
         Kind::Prim(_) => 0,
@@ -507,8 +536,10 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
 /// What a rounded box or cylinder costs a sample over a plain primitive: at a power of 2 (an
 /// ellipsoid's own shares, no power to take); at any other (a dozen to twenty powers a sample
 /// outside the shape, where the nearest point is solved for; a power of 4 is solved the same
-/// way and costs the same); and at any other when the shape is thin ([`ROUNDED_THIN`]), where
-/// more samples take more steps and up to one in eight is left to the sure way.
+/// way and costs the same); and at any other at its thinnest ([`ROUNDED_THIN`]: a foil, a
+/// hair), where more samples take more steps and up to one in eight is left to the sure way.
+/// Between a twentieth and a two-thousandth as thick as long the weight goes from the second
+/// to the third ([`rounded_cost`]).
 ///
 /// **Set against the plain primitives' own rate, not against a time**: a build at the work
 /// limit is to take what a plain box cut from a plain box takes there, whatever the machine
@@ -520,8 +551,23 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
 /// 1.04). A sixth review found the thin ones: the weights had been set from shapes down to a
 /// fiftieth as thick as long, and against a time measured on a cooler machine.
 const ROUNDED_COST: [u64; 3] = [300, 1300, 2200];
-/// A rounded shape whose least half size is under this share of its greatest is thin.
-const ROUNDED_THIN: f32 = 0.125;
+/// How thin a rounded shape is (its least half size over its greatest) where its sample begins
+/// to cost more than a thick one's, and where it costs the most: between them the weight
+/// goes from the one to the other by the logarithm of the thinness. (One line at an eighth
+/// was tried first: a seventh review counted the solve's steps and found them the same from
+/// a half to a twentieth, 1:7.9 and 1:8.1 alike, and rising only far thinner; a plank a hair
+/// under an eighth was refused where one a hair over built.)
+const ROUNDED_THIN: (f32, f32) = (1.0 / 20.0, 1.0 / 2000.0);
+
+/// What a sample of a rounded box or cylinder costs at a power other than 2, by how thin it
+/// is ([`ROUNDED_COST`], [`ROUNDED_THIN`]).
+fn rounded_cost(half: V3, disc: bool) -> u64 {
+    // (A cylinder's two sizes are its radius and its half height.)
+    let (least, most) = if disc { (half[0].min(half[1]), half[0].max(half[1])) } else { (half[0].min(half[1]).min(half[2]), half[0].max(half[1]).max(half[2])) };
+    let thin = if most > 0.0 && least > 0.0 { (least / most).min(1.0) } else { ROUNDED_THIN.1 };
+    let along = ((crate::dmath::ln(ROUNDED_THIN.0) - crate::dmath::ln(thin)) / (crate::dmath::ln(ROUNDED_THIN.0) - crate::dmath::ln(ROUNDED_THIN.1))).clamp(0.0, 1.0);
+    ROUNDED_COST[1] + crate::dmath::round_f64((ROUNDED_COST[2] - ROUNDED_COST[1]) as f64 * f64::from(along)) as u64
+}
 
 /// A rounded box's or cylinder's field ([`Prim::Rounded`]), in metres.
 ///
@@ -1194,15 +1240,7 @@ fn prim_cost(p: &Prim) -> u64 {
         // one and a half times its slowest. Before the steps they were 27 and 175 ns: what a
         // swelling that is right at a thin board's corners costs.)
         Prim::Rounded { power: 2.0, .. } => ROUNDED_COST[0],
-        Prim::Rounded { half, disc, .. } => {
-            // (A cylinder's two sizes are its radius and its half height.)
-            let (least, most) = if disc { (half[0].min(half[1]), half[0].max(half[1])) } else { (half[0].min(half[1]).min(half[2]), half[0].max(half[1]).max(half[2])) };
-            if least < most * ROUNDED_THIN {
-                ROUNDED_COST[2]
-            } else {
-                ROUNDED_COST[1]
-            }
-        }
+        Prim::Rounded { half, disc, .. } => rounded_cost(half, disc),
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 12,
         Prim::Cylinder { .. } => 35,
     }
@@ -2399,10 +2437,18 @@ mod tests {
         let (thick, thin) = (cost([0.5; 3], 4.0, false), cost([0.9, 1e-4, 0.9], 4.0, false));
         assert!(thin > thick && thin - 48 == ROUNDED_COST[2] && thick - 48 == ROUNDED_COST[1], "{thick} and {thin}");
         assert_eq!(cost([1e-4, 0.9, 1e-4], 6.67, false), thin);
-        assert_eq!(cost([0.5, 0.07, 0.3], 2.5, false), thick, "an eighth is not thin");
-        assert_eq!(cost([0.5, 0.06, 0.3], 2.5, false), thin);
+        // Down to a twentieth as thick as long a sample costs what a cube's does (a seventh
+        // review counted the steps: the same from a half to a twentieth), and from there the
+        // weight rises with the thinness, with no line that one plank is over and its
+        // neighbour under.
+        for near in [[0.5f32, 0.07, 0.3], [0.5, 0.06, 0.3], [0.5, 0.026, 0.3]] {
+            assert_eq!(cost(near, 2.5, false), thick, "{near:?}");
+        }
+        let graded: Vec<u64> = [20.0f32, 21.0, 50.0, 200.0, 1000.0, 2000.0, 9000.0].iter().map(|k| cost([0.5, 0.5 / k, 0.5], 4.0, false)).collect();
+        assert!(graded.windows(2).all(|w| w[0] <= w[1]) && graded[0] == thick && graded[5] == thin && graded[6] == thin, "{graded:?}");
+        assert!(graded[1] - graded[0] < 30 && graded[2] > thick + 100 && graded[3] > graded[2] + 200 && graded[3] < thin - 200, "{graded:?}");
         // (A cylinder: its radius and its half height; the third number is not a size.)
-        assert_eq!((cost([0.5, 0.5, 0.0], 4.0, true), cost([0.5, 0.01, 0.0], 4.0, true), cost([0.01, 0.5, 0.0], 4.0, true)), (thick, thin, thin));
+        assert_eq!((cost([0.5, 0.5, 0.0], 4.0, true), cost([0.5, 0.0001, 0.0], 4.0, true), cost([0.0001, 0.5, 0.0], 4.0, true)), (thick, thin, thin));
         assert_eq!(cost([0.9, 1e-4, 0.9], 2.0, false), cost([0.5; 3], 2.0, false), "at a power of 2 nothing is solved for");
     }
 

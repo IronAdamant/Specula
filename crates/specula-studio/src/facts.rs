@@ -22,6 +22,16 @@ pub struct RecipeInfo {
     pub colours: Vec<String>,
 }
 
+impl AssetFacts {
+    /// The coarsest of its round shapes whose facets are seen at its size (they stand in from
+    /// the true curve by [`crate::form::FACET_SEEN`] of the asset's size or more): the one
+    /// that turns the most between neighbouring faces. `None` when no facet shows.
+    pub fn faceting(&self) -> Option<&specula_model::Round> {
+        let size = self.size_m[0].max(self.size_m[1]).max(self.size_m[2]);
+        self.round.iter().filter(|r| r.sag_m() >= size * crate::form::FACET_SEEN).max_by(|a, b| a.turn_deg.total_cmp(&b.turn_deg).then(a.sag_m().total_cmp(&b.sag_m())))
+    }
+}
+
 /// Colour names in a recipe's JSON (any depth; bounded by the recipe's own size).
 fn colour_names(v: &Json, out: &mut std::collections::BTreeSet<String>) {
     match v {
@@ -162,6 +172,10 @@ pub struct AssetFacts {
     pub named_colours: Vec<String>,
     /// Its form, measured on its finest level ([`crate::form`]).
     pub form: crate::form::FormFacts,
+    /// The shapes its recipe names round, and how coarsely each was built: what a mesh alone
+    /// cannot say ([`specula_model::Round`]; the ones that sag the most first, bounded). Empty
+    /// for an imported mesh, which has no recipe to say what was meant to be round.
+    pub round: Vec<specula_model::Round>,
 }
 
 /// `name k=v k=v` (parameters sorted, whole numbers without a fraction).
@@ -241,6 +255,7 @@ impl AssetFacts {
             rigged: model.rig.is_some(),
             named_colours: info.map(|i| i.colours.clone()).unwrap_or_default(),
             form: model.lods.first().map(|m| crate::form::measure_with(m, stop)).unwrap_or_default(),
+            round: model.extras.round.clone(),
         }
     }
 
@@ -265,6 +280,21 @@ impl AssetFacts {
             ("materials", Json::arr(self.materials.iter().map(|m| Json::from(m.name.as_str())))),
         ]);
         j.set("form", self.form.to_json());
+        if let Some(worst) = self.faceting() {
+            // What is seen of it: the coarsest of the round shapes whose facets show at the
+            // asset's size, and the few that sag the most.
+            j.set(
+                "faceting",
+                Json::obj([
+                    ("turn_deg", Json::from((f64::from(worst.turn_deg) * 100.0).round() / 100.0)),
+                    ("worst", worst.to_json()),
+                    ("round", Json::arr(self.round.iter().take(8).map(|r| r.to_json()))),
+                    ("round_shapes", Json::from(self.round.len())),
+                ]),
+            );
+        } else if !self.round.is_empty() {
+            j.set("faceting", Json::obj([("turn_deg", Json::from(0.0)), ("round_shapes", Json::from(self.round.len())), ("note", Json::from("no round shape's facets show at the asset's size"))]));
+        }
         if colours > 0 && self.total_area > 0.0 {
             j.set(
                 "colours",

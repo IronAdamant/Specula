@@ -31,7 +31,7 @@ lit that way cannot show form, however long it is looked at.
 |---|---|---|
 | `clay` | every lit surface as the same matte clay, under a studio's light that comes with the camera whichever way it looks: a key from the upper left, a fill from the right, the glow of a pale ceiling and a dim floor, a soft shine. A surface whose normal points away from the viewer is stained red | the first look at any shape: it reads the same from every side and under any world's light; flat where it should be round shows as an even tone; **red is an inside-out face** (or the inside of an open shape) |
 | `normals` | each surface's own normal as colour: world x, y, z as red, green, blue (128 is 0). Not turned toward the viewer, as the lit frame turns it | normals that point the wrong way; **hard edges and flat-shaded faces, as steps of colour**; a seam, where two neighbours differ by a step; shading that does not follow the shape |
-| `curvature` | how fast a **smooth-shaded** surface's normal turns: mid grey where it is flat, lighter where it turns away (a ridge, a ball), darker where it turns in (a groove) | where a form that should swell is flat; a ledge or a soft crease as a light or dark band. **A hard edge does not show here**, and a flat-shaded shape reads flat however coarse it is: the normal does not turn within a face. Look for those in `normals`, and in the asset's form facts (`crease_m`, `razor_share`, `facet_deg`) |
+| `curvature` | how fast a **smooth-shaded** surface's normal turns: mid grey where it is flat, lighter where it turns away (a ridge, a ball), darker where it turns in (a groove) | where a form that should swell is flat; a ledge or a soft crease as a light or dark band. **A hard edge does not show here**, and a flat-shaded shape reads flat however coarse it is: the normal does not turn within a face. Look for those in `normals`, and in the asset's facts (`crease_m`, `razor_share`, and `faceting` for what its recipe names round) |
 | `stripes` | the level bands a mirror of this shape would show of a striped room | bands that run evenly on an even surface, and kink, pinch or break where the surface has a dent, a ridge or a seam too slight to see otherwise (how a car's body is checked) |
 
 - **The curvature view's scale** (`form_scale`, metres, 0.001 to 1000): the radius of the ball that
@@ -273,21 +273,76 @@ three seconds of them (only vertices in use are looked at now, and the stop is a
 not numbers, passed the loose check on nothing (`unread_triangles`, above); and two lines of this
 page said a sliver is a thousand to one where the code's is half a million to one. All mended,
 each a case of a test (`the_fourth_review_of_the_form_checks`, and the check's own).
-- **These mends are not reviewed yet.**
 
-**Faceting is not a form check, after three tries.** How coarsely a round surface is faceted
-cannot be read from a mesh alone: a box and a four-sided cylinder are the same mesh, a
+**A fifth review, of those** (another model, 2026-11-19), **said merge**, with small findings,
+mended: a normal whose length is not a finite number still counted as shading, and its angles,
+which are no numbers, read as neither seam nor smear (it is no normal now); **a mesh whose
+faces are all written twice** (back to back, as some tools write a double-sided sheet) has
+every edge shared by four triangles, no crease between two faces, and passed "0% of its creases
+are razors" (when more of the edge length is shared by more than two triangles than by two, the
+three checks of the creases now fail saying they could not be measured); a mesh of triangles
+with no area passed the loose check with "0 of its 0 pieces" (it fails on nothing to measure);
+and the line of this page that still named the old faceting fact. It found the earlier findings
+closed by their own reproductions, the facts exactly the same under every reordering of
+triangles, corners and vertices (the relief to a billionth), 600,000 separate triangles
+measured in 1.8 s with a stop honoured in a twentieth of a second, and unread triangles
+failing the loose check in the default style.
+
+**Faceting cannot be read from a mesh, after three tries.** How coarsely a round surface is
+faceted cannot be read from a mesh alone: a box and a four-sided cylinder are the same mesh, a
 hard-shaded prism is a coarse cylinder or a prism by what its maker meant, and the modeller's
 own shading follows the coarseness it would be measuring. Each definition that satisfied one
 reviewer's cases failed another's: over every edge that is not a crease (a dome on a slab read
 smooth), over curved edges that are not creases (a ten-sided cylinder read smooth), over edges
 shaded as one surface (the modeller's coarse cylinders read smooth, and a smooth-shaded box
-faceted). **Where it belongs** is at build time, where a recipe says what is meant to be round: a
-cylinder's `segments`, a sphere's `subdivisions`, a distance-field's `resolution` against the
-radii it meshes. That is not built; `style.toml`'s `max_facet_deg` and the check `faceting` are
-no longer known, and the form views (`normals`, `curvature`) are how faceting is looked for.
+faceted). It was taken out of the mesh's measures, and built where it belongs (below).
 
-**Not built:** faceting, as said above; pieces that pass through each other by
+### Faceting, from what the recipe names round
+
+**A recipe says what is meant to be round, by the name it gives a shape** (2026-11-19). A
+`cylinder` is round and an extruded outline of ten sides is a prism, whatever their triangles;
+so the modeller records, for every shape a recipe names round, how coarsely it was built
+(`specula_model::Round`, in the built model's extras, the 64 that sag the most):
+
+| The recipe's shape | The turn between neighbouring faces | At the radius |
+|---|---|---|
+| `cylinder`, `cone` | 360° over `sides` (12 unless given: 30°) | its larger radius |
+| `sphere` | 41.8° halved for each of its `subdivisions` (one unless given: 20.9°) | its radius |
+| `torus` | twice: 360° over `segments` at the ring's outer radius, and over `sides` at the tube's | each its own |
+| `capsule` | the greater of 360° over `segments` and 90° over `rings` | its radius |
+| `lathe` | 360° over `segments` (16 unless given: 22.5°) | its profile's widest |
+| `sdf` (a sculpt) | what a cell of its grid turns the surface by round its tightest ball, limb, tube or section: twice the arc sine of the cell over twice that radius | that radius |
+
+Not counted: boxes, extruded and swept outlines (their corners are their maker's), a rounded
+box's or cylinder's own roundness, and the coarse far level of a model, which halves every count
+on purpose. The radius is the recipe's own, before the part is scaled.
+
+- **In every asset's facts** (`faceting`, beside `form`): `turn_deg`, the coarsest turn among the
+  round shapes **whose facets are seen at the asset's size**; that shape (`worst`: where in the
+  recipe, what it is, its turn, its radius, and `sag_m`, how far the middle of a facet stands in
+  from the true curve); the eight that sag the most; and how many round shapes the recipe has.
+  A facet is seen when it stands in by a 512th of the asset's size or more (a pixel of the
+  studio's silhouettes): the six sides of a candle on a table of candles are not counted, and
+  the six sides of the table's leg are.
+- **The check `faceting`**, when a style gives `[form] max_facet_deg` (degrees, 0 to 180; none
+  unless given): fails an asset whose `turn_deg` is over it, naming the shape and where it is,
+  with how many sides would hold the limit in its fix, and that a shape meant to have flat sides
+  is an extruded outline. `[form.allow]` exempts as for the other form checks. An asset with no
+  round shape, or none whose facets show, passes saying so; an imported mesh has no recipe and
+  nothing to say. It is checked whether or not the mesh's own form was measured.
+- **What it says of Sepulcra** (2026-11-19, its 56 recipes through `studio_check`): 41 name
+  something round, and in 36 of them a round shape whose facets show turns more than 20° a face;
+  the median is 90°. Rings of three sides (`torus`, `sides: 3`, on six props: 120°), cones of four
+  sides, capsules of one ring, and two statues whose sculpts' cells are larger than their thinnest limb
+  (`statue_angel`: 116° at a radius of 5 cm). That is its look, low and faceted, approved at the
+  window in M4: Sepulcra's `style.toml` gives no limit and nothing fails. A style that wants
+  round things round sets one (20° is a cylinder of 18 sides).
+- **Limits.** The radius is not scaled by the part's own transform, so a shape scaled up in
+  place is judged at its written size. An arch outline's `segments` and a rounded outline's are
+  not counted. A sculpt's figure is its tightest radius against its cells, so one thin limb
+  speaks for the whole sculpt. **Not reviewed yet.**
+
+**Not built:** pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so
 `seam_m` does not see them: the form views do).
 

@@ -556,3 +556,57 @@ fn wind_terms_ride_on_the_model() {
         assert_eq!(e.path, path, "{bad}: {e:?}");
     }
 }
+
+/// What a recipe names round is recorded with how coarsely it was built, and what it names
+/// a prism is not (a mesh alone cannot tell the two: an extruded outline of ten sides and a
+/// ten-sided cylinder are the same triangles). The turn between neighbouring faces and the
+/// radius it turns at, the ones whose facets stand furthest in from their curve first; the
+/// coarse far level, which halves every count on purpose, records nothing.
+#[test]
+fn what_a_recipe_names_round_says_how_coarsely_it_was_built() {
+    let part = |name: &str, shape: &str| format!(r#"{{ "name": "{name}", "material": "stone", "shape": {shape} }}"#);
+    let text = format!(
+        r#"{{ "recipe": 1, "name": "rounds", "lods": [0.25], "parts": [{}] }}"#,
+        [
+            part("column", r#"{"op":"cylinder","radius":0.5,"height":2,"sides":6}"#),
+            part("post", r#"{"op":"cylinder","radius":0.1,"height":1}"#),
+            part("spire", r#"{"op":"cone","radius":0.3,"height":1,"sides":24}"#),
+            part("ball", r#"{"op":"sphere","radius":0.4,"subdivisions":2}"#),
+            part("ring", r#"{"op":"torus","radius":0.7,"tube":0.05,"segments":24,"sides":6}"#),
+            part("pill", r#"{"op":"capsule","radius":0.2,"height":1,"segments":16,"rings":2}"#),
+            part("urn", r#"{"op":"lathe","profile":[[0.1,0],[0.3,0.4],[0.2,0.8]],"segments":10}"#),
+            part("prism", r#"{"op":"extrude","outline":{"sides":6,"radius":0.5},"height":2}"#),
+            part("crate", r#"{"op":"box","size":[1,1,1]}"#),
+            part("bead", r#"{"op":"sdf","resolution":24,"tree":{"op":"sphere","radius":0.3}}"#),
+        ]
+        .join(", ")
+    );
+    let model = build_with(&text, &[]).unwrap();
+    let round = &model.extras.round;
+    let of = |path: &str| round.iter().filter(|r| r.path == path).collect::<Vec<_>>();
+    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    // Six sides: sixty degrees a side, at half a metre. Twelve unless said: thirty.
+    assert!(matches!(of("parts[0].shape")[..], [r] if r.what == "cylinder" && near(r.turn_deg, 60.0) && near(r.radius_m, 0.5)), "{round:?}");
+    assert!(matches!(of("parts[1].shape")[..], [r] if near(r.turn_deg, 30.0) && near(r.radius_m, 0.1)));
+    assert!(matches!(of("parts[2].shape")[..], [r] if r.what == "cone" && near(r.turn_deg, 15.0)));
+    assert!(matches!(of("parts[3].shape")[..], [r] if r.what == "sphere" && near(r.turn_deg, 41.81 / 4.0) && near(r.radius_m, 0.4)));
+    // A torus turns twice: round its ring and round its tube.
+    let ring = of("parts[4].shape");
+    assert!(ring.len() == 2 && ring.iter().any(|r| near(r.turn_deg, 15.0) && near(r.radius_m, 0.75)) && ring.iter().any(|r| near(r.turn_deg, 60.0) && near(r.radius_m, 0.05)), "{ring:?}");
+    assert!(matches!(of("parts[5].shape")[..], [r] if r.what == "capsule" && near(r.turn_deg, 45.0) && near(r.radius_m, 0.2)));
+    assert!(matches!(of("parts[6].shape")[..], [r] if r.what == "lathe" && near(r.turn_deg, 36.0) && near(r.radius_m, 0.3)));
+    // A prism and a box are what they are named: nothing is said of them.
+    assert!(of("parts[7].shape").is_empty() && of("parts[8].shape").is_empty());
+    // A sculpt: its cells against its tightest radius.
+    assert!(matches!(of("parts[9].shape")[..], [r] if r.what == "sdf" && near(r.radius_m, 0.3) && r.turn_deg > 2.0 && r.turn_deg < 20.0), "{:?}", of("parts[9].shape"));
+    // The far level, built with half of every count, added nothing: one fact a round.
+    assert_eq!(round.len(), 9);
+    // The ones that stand furthest in from their curve come first: the six-sided column, by
+    // 6.7 cm (half a metre, less its cosine of thirty degrees).
+    assert!(round.windows(2).all(|w| w[0].sag_m() >= w[1].sag_m()));
+    assert!(round[0].path == "parts[0].shape" && near(round[0].sag_m(), 0.5 * (1.0 - 0.8660254)), "{:?}", round[0]);
+    let j = round[0].to_json();
+    assert_eq!((j.get("shape").and_then(Json::as_str), j.get("turn_deg").and_then(Json::as_f64)), (Some("cylinder"), Some(60.0)));
+    // A model of boxes says nothing.
+    assert!(build_with(&one_part(r#"{"op":"box","size":[1,1,1]}"#, ""), &[]).unwrap().extras.round.is_empty());
+}

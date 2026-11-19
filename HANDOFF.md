@@ -480,9 +480,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       recipe within the parser's limits made the solve panic (a rounded box under seven
       scales of a thousandth: a sample too far for numbers), and a foil or a hair cost up to
       1.7 times a plain cut's rate under the one weight. Mended: such a sample has the bound
-      for its distance, thin rounded shapes (under an eighth as thick as long) have a weight
-      of their own, and the weights are set against the plain primitives' rate and not
-      against a time. **This is not reviewed yet.** Two
+      for its distance, thin rounded shapes have a weight of their own, and the weights are
+      set against the plain primitives' rate and not against a time. **A seventh reviewer
+      said merge**, and found the thin weight's line in the wrong place (the solve's steps
+      are the same down to a twentieth as thick as long): it is graded by thinness now.
+      Owed: the rates measured again on a quiet machine. Two
       limits of the same kind are written down and not mended: inside a rounded shape the
       field is a bound, so a `shell` or a shrinking of one is thinner than asked beside its
       corners; and a column's field is in units of its narrower half size, so `round` and a
@@ -559,7 +561,9 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       from another corner moved the small relief by a tenth; vertices no triangle uses were
       all welded before the first look at whether to stop; unreadable triangles passed.
       Mended (shading judged on the vertices in use, and unmeasured shading fails its checks;
-      `unread_triangles`). **These mends are not reviewed yet.**
+      `unread_triangles`). **A fifth reviewer said merge**, with small findings, mended (a
+      normal of no finite length is none; a mesh whose faces are all written twice fails
+      the crease checks as not measured; triangles with no area fail the loose check).
     - **Shape language: built** (2026-11-19; FORM.md, "Shape language"): how round, square
       or pointed an asset's outline is, in every asset's taste measures; a style may ask for
       one (`[taste] shape_language`), and the `storybook` preset asks for round. With it the
@@ -586,7 +590,15 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       passed on `24bfe7de` before those mends. **Owed:** a review, by models that did not
       write them, of the fifth round's mends (shape language, the rounded field's guard and
       thin weight, the form checks) and of the light report. Nothing of part 4 is pushed.
-    - **Owed from the form checks:** faceting, from what a recipe says is round (above).
+    - **Faceting, from what a recipe names round: built** (2026-11-19, evening; FORM.md,
+      "Faceting, from what the recipe names round"). The modeller records, for every shape
+      a recipe names round (cylinder, cone, sphere, torus, capsule, lathe, a sculpt), the
+      turn between its neighbouring faces and its radius; an extruded outline of ten sides
+      is a prism and says nothing. Every asset's facts have the coarsest turn whose facets
+      show at the asset's size, and a style may limit it (`[form] max_facet_deg`: the check
+      `faceting`). With it **every form check the owner asked for is built**. Sepulcra's
+      props are faceted on purpose (the median 90 degrees a face, rings of three sides):
+      its style gives no limit. **Not reviewed yet.**
     - **The light report: built** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)):
       `perf_light` draws a view offscreen as the world has it and with each light feature
       that is on left out (the sun's shadows, ambient occlusion, bloom, anti-aliasing, fog,

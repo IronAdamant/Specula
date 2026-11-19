@@ -1154,7 +1154,43 @@ pub struct ModelExtras {
     pub terrain_transform: Option<Affine>,
     /// Per generator or boolean: its path and what it did (counts, work), bounded.
     pub stats: Vec<(String, Json)>,
+    /// The shapes the recipe names round, and how coarsely each was built ([`Round`]): the
+    /// ones whose facets stand furthest off the true curve first, at most [`MAX_ROUND`].
+    pub round: Vec<Round>,
 }
+
+/// A shape a recipe names round (a cylinder, a cone, a sphere, a torus, a capsule, a lathe, a
+/// sculpt), and how coarsely it was built: **what a mesh alone cannot say** (a box and a
+/// four-sided cylinder are one mesh; whether a ten-sided column is a coarse cylinder or a
+/// prism is what its maker meant, and the recipe says which: a prism is an extruded outline
+/// of ten sides, a cylinder is a cylinder).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Round {
+    /// Where in the recipe (`parts[2].shape`, `parts[0].shape.of[1]`).
+    pub path: String,
+    /// The shape's name in the recipe.
+    pub what: &'static str,
+    /// The turn between neighbouring faces round it, degrees: 360 over a cylinder's sides.
+    pub turn_deg: f32,
+    /// The radius it turns at, metres, as the recipe gives it (before the part's own scale).
+    pub radius_m: f32,
+}
+
+impl Round {
+    /// How far the middle of a facet stands in from the true curve, metres: what is seen of
+    /// the faceting in a silhouette.
+    pub fn sag_m(&self) -> f32 {
+        self.radius_m * (1.0 - dmath::cos(self.turn_deg.to_radians() * 0.5))
+    }
+
+    pub fn to_json(&self) -> Json {
+        let r = |x: f32, k: f64| Json::from(dmath::round_f64(f64::from(x) * k) / k);
+        Json::obj([("path", Json::from(self.path.as_str())), ("shape", Json::from(self.what)), ("turn_deg", r(self.turn_deg, 100.0)), ("radius_m", r(self.radius_m, 1.0e4)), ("sag_m", r(self.sag_m(), 1.0e5))])
+    }
+}
+
+/// Round shapes kept for one model's facts.
+pub const MAX_ROUND: usize = 64;
 
 impl Model {
     /// A bounded summary for tool responses.
@@ -1427,7 +1463,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         budget: (min_t, max_t),
         notes,
         rig: rig.map(|(r, _)| r),
-        extras: ModelExtras { textures, terrain, terrain_transform, stats },
+        extras: ModelExtras { textures, terrain, terrain_transform, stats, round: tally.round.take() },
         wind,
     })
 }
@@ -1545,9 +1581,25 @@ struct Tally {
     terrain_transform: std::cell::Cell<Option<Affine>>,
     /// Boolean and texture work spent so far (all budgets are per build).
     work: std::cell::Cell<u64>,
+    /// The shapes named round so far ([`Round`]), the [`MAX_ROUND`] that sag the most.
+    round: std::cell::RefCell<Vec<Round>>,
 }
 
 impl Tally {
+    /// A shape named round was built this coarsely. Kept if it is among the [`MAX_ROUND`]
+    /// whose facets stand furthest off their curve.
+    fn rounded(&self, round: Round) {
+        if !(round.turn_deg.is_finite() && round.radius_m.is_finite() && round.turn_deg > 0.0 && round.radius_m > 0.0) {
+            return;
+        }
+        let mut list = self.round.borrow_mut();
+        let at = list.partition_point(|r| r.sag_m() >= round.sag_m());
+        if at < MAX_ROUND {
+            list.insert(at, round);
+            list.truncate(MAX_ROUND);
+        }
+    }
+
     /// A piece of `old` triangles is about to become `new`: fail before allocating if that
     /// breaks the part or model limit, else record it.
     fn grow(&self, path: &str, old: usize, new: usize) -> Result<(), RecipeError> {
@@ -1939,6 +1991,14 @@ impl Ctx<'_> {
 
     /// An integer in `lo..=hi`. A coarse build halves segment and side counts (rounding up,
     /// never below `lo`), resamples nothing and subdivides nothing.
+    /// The shape at `n` is one the recipe names round, built with `turn_deg` between its faces
+    /// at `radius_m` (not for the coarse far level, which is coarse on purpose).
+    fn round(&self, n: &Node, what: &'static str, turn_deg: f32, radius_m: f32) {
+        if !self.coarse {
+            self.tally.rounded(Round { path: n.path.clone(), what, turn_deg, radius_m });
+        }
+    }
+
     fn int(&self, n: &Node, name: &str, default: i64, lo: i64, hi: i64) -> Result<u32, RecipeError> {
         let v = self.num(n, name, default as f64)?;
         let r = dmath::round_f64(v);
@@ -2157,11 +2217,15 @@ impl Ctx<'_> {
                 let top = if n.op == "cone" { 0.0 } else { self.ranged(n, "radius_top", radius as f64, 0.0, 1e4)? };
                 let height = self.positive(n, "height", 1.0)?;
                 let sides = self.int(n, "sides", 12, 3, 256)?;
+                self.round(n, if n.op == "cone" { "cone" } else { "cylinder" }, 360.0 / sides as f32, radius.max(top));
                 let bevel = if n.op == "cone" { 0.0 } else { self.ranged(n, "bevel", 0.0, 0.0, 100.0)? };
                 (8 * sides as usize, Box::new(move || geom(Shape::cylinder(radius, top, height, sides, bevel))))
             }
             "sphere" => {
                 let (r, sub) = (self.positive(n, "radius", 1.0)?, self.int(n, "subdivisions", 1, 0, 5)?);
+                // (A twenty-sided ball's faces turn 41.8 degrees from one to the next, and each
+                // subdivision halves that.)
+                self.round(n, "sphere", 41.81 / (1u32 << sub) as f32, r);
                 (20 * 4usize.pow(sub), Box::new(move || Ok(Shape::sphere(r, sub))))
             }
             "torus" => {
@@ -2171,11 +2235,16 @@ impl Ctx<'_> {
                     return Err(e(&n.at("tube"), ErrorCode::OutOfRange, "tube must be smaller than radius").with_numbers(tube as f64, radius as f64));
                 }
                 let (segs, sides) = (self.int(n, "segments", 24, 3, 512)?, self.int(n, "sides", 8, 3, 64)?);
+                // (Round the ring, and round the tube: two rounds, each with its own radius.)
+                self.round(n, "torus", 360.0 / segs as f32, radius + tube);
+                self.round(n, "torus", 360.0 / sides as f32, tube);
                 (2 * segs as usize * sides as usize, Box::new(move || Ok(Shape::torus(radius, tube, segs, sides))))
             }
             "capsule" => {
                 let (r, h) = (self.positive(n, "radius", 0.5)?, self.positive(n, "height", 2.0)?);
                 let (segs, rings) = (self.int(n, "segments", 12, 3, 256)?, self.int(n, "rings", 3, 1, 32)?);
+                // (Round its axis, and over each end: a quarter turn in `rings` bands.)
+                self.round(n, "capsule", (360.0 / segs as f32).max(90.0 / rings as f32), r);
                 (2 * segs as usize * (2 * rings as usize + 1), Box::new(move || Ok(Shape::capsule(r, h, segs, rings))))
             }
             "plane" => {
@@ -2241,6 +2310,8 @@ impl Ctx<'_> {
                 }
                 let prof: Vec<V2> = rows.iter().map(|r| [r[0], r[1]]).collect();
                 let segs = self.int(n, "segments", 16, 3, 256)?;
+                // (Round its axis, at its widest; its profile's own corners are its maker's.)
+                self.round(n, "lathe", 360.0 / segs as f32, prof.iter().map(|p| p[0]).fold(0.0f32, f32::max));
                 let caps = self.bool(n, "caps", true);
                 (2 * segs as usize * (prof.len() + 1), Box::new(move || Ok(Shape::lathe(&prof, segs, caps))))
             }

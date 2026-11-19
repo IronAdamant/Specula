@@ -13,7 +13,7 @@ pub const PASSES: [(&str, &[&str]); 7] = [
     ("silhouette", &["silhouette_distinct", "thumb_solidity", "px_gameplay", "px_phone", "shape_language"]),
     // (The mesh's own form, after the outline and before the light: a piece that floats or
     // an edge that cuts is mended in the shape, not in its colours.)
-    ("form", &["loose_pieces", "razor_edges", "shading_seams", "smeared_creases", "small_relief"]),
+    ("form", &["loose_pieces", "razor_edges", "shading_seams", "smeared_creases", "small_relief", "faceting"]),
     ("value", &["value_contrast", "value_contrast_worst", "flat_lighting"]),
     ("colour", &["palette_distance", "neutral_saturation", "family_forbidden", "emissive_preset"]),
     ("scale", &["height", "width", "depth", "aspect"]),
