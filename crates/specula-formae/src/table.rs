@@ -72,6 +72,34 @@ pub enum Family {
     Spiral,
     /// Closed curves that cross or touch themselves (a figure eight, a rose).
     Loop,
+    /// Boxes and wedges.
+    Block,
+    /// The five Platonic solids.
+    Platonic,
+    /// The thirteen Archimedean solids.
+    Archimedean,
+    /// The thirteen Catalan solids (the Archimedean solids' duals).
+    Catalan,
+    /// Prisms, antiprisms, pyramids, bipyramids, trapezohedra and their frusta.
+    Prismatoid,
+    /// Stars in space: solids with pyramids raised on a core's faces.
+    Stellated,
+    /// Spheres, ellipsoids and their parts.
+    Sphere,
+    /// Cylinders, cones, tubes and capsules.
+    Cylinder,
+    /// Tori and their parts.
+    Torus,
+    /// Other solids of revolution: lenses, spindles, barrels, eggs, paraboloids.
+    Revolution,
+    /// Rounded blocks: superellipsoids, rounded boxes.
+    Rounded,
+    /// Shells with a thickness: domes and bowls.
+    Shell,
+    /// Tubes swept along a curve: springs, knots, the Möbius band.
+    Sweep,
+    /// Solids from other solids: the intersection of cylinders, an arrow.
+    Compound,
 }
 
 impl Family {
@@ -96,6 +124,20 @@ impl Family {
             Family::Arc => "arc",
             Family::Spiral => "spiral",
             Family::Loop => "loop",
+            Family::Block => "block",
+            Family::Platonic => "platonic",
+            Family::Archimedean => "archimedean",
+            Family::Catalan => "catalan",
+            Family::Prismatoid => "prismatoid",
+            Family::Stellated => "stellated",
+            Family::Sphere => "sphere",
+            Family::Cylinder => "cylinder",
+            Family::Torus => "torus",
+            Family::Revolution => "revolution",
+            Family::Rounded => "rounded",
+            Family::Shell => "shell",
+            Family::Sweep => "sweep",
+            Family::Compound => "compound",
         }
     }
 }
@@ -251,11 +293,11 @@ impl Form {
 
 /// The families' own lists, in catalogue order. A new family adds its list here; a new form in
 /// a family is one entry in that family's file.
-fn lists() -> [&'static [Form]; 3] {
-    [crate::forms::polygons::FORMS, crate::forms::round::FORMS, crate::forms::curves::FORMS]
+fn lists() -> [&'static [Form]; 5] {
+    [crate::forms::polygons::FORMS, crate::forms::round::FORMS, crate::forms::curves::FORMS, crate::forms::flat::FORMS, crate::forms::curved::FORMS]
 }
-fn alias_lists() -> [&'static [Alias]; 3] {
-    [crate::forms::polygons::ALIASES, crate::forms::round::ALIASES, crate::forms::curves::ALIASES]
+fn alias_lists() -> [&'static [Alias]; 5] {
+    [crate::forms::polygons::ALIASES, crate::forms::round::ALIASES, crate::forms::curves::ALIASES, crate::forms::flat::ALIASES, crate::forms::curved::ALIASES]
 }
 
 /// Every form, in catalogue order.

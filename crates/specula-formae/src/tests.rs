@@ -11,7 +11,7 @@ use crate::{params_of, Built, Error, Measures, Spec, DETAIL_DEFAULT, DETAIL_MAX,
 const EPS: f64 = f64::EPSILON;
 
 /// Every word: each form by its name, and each alias.
-fn words() -> Vec<Found> {
+pub(crate) fn words() -> Vec<Found> {
     let mut v: Vec<Found> = forms().iter().map(|f| Found { form: f, alias: None }).collect();
     for a in aliases() {
         v.push(find(a.name, Some(a.kind)).expect("every alias resolves"));
@@ -20,7 +20,7 @@ fn words() -> Vec<Found> {
 }
 
 /// The cases of a word: its defaults, then each parameter at its least and its greatest.
-fn cases(found: &Found) -> Vec<(String, Vec<(&'static str, f64)>)> {
+pub(crate) fn cases(found: &Found) -> Vec<(String, Vec<(&'static str, f64)>)> {
     let mut v = vec![("defaults".to_string(), Vec::new())];
     for p in params_of(found) {
         v.push((format!("{}={}", p.name, p.min), vec![(p.name, p.min)]));
@@ -58,6 +58,7 @@ fn t1_every_form_builds_at_its_extremes() {
                         let pts: Vec<Pt> = match &b {
                             Built::Outline(o) => o.points().copied().collect(),
                             Built::Curve(c) => c.points.clone(),
+                            Built::Mesh(m) => m.points.iter().flat_map(|p| [[p[0], p[1]], [p[2], 0.0]]).collect(),
                         };
                         assert!(pts.iter().all(|p| p[0].is_finite() && p[1].is_finite()), "{what}: a point is not finite");
                         assert!(b.chord_error().is_finite(), "{what}");
@@ -80,7 +81,7 @@ fn t1_every_form_builds_at_its_extremes() {
 /// curve's points are finite and no step of it has zero length.
 #[test]
 fn t2_every_outline_is_well_made() {
-    for w in words() {
+    for w in words().into_iter().filter(|w| w.form.kind != Kind::Solid) {
         for (label, given) in cases(&w) {
             let s = spec(&w, &given);
             let details: &[u32] = if label == "defaults" { &[DETAIL_MIN, DETAIL_DEFAULT, DETAIL_MAX] } else { &[DETAIL_MIN, DETAIL_DEFAULT] };
@@ -103,6 +104,8 @@ fn t2_every_outline_is_well_made() {
                             assert!(l > size * 1e-9, "{what}: step {i} has length {l}");
                         }
                     }
+                    // (A solid's mesh is checked by test 3, in tests_solid.rs.)
+                    Built::Mesh(_) => {}
                 }
             }
         }
@@ -110,7 +113,7 @@ fn t2_every_outline_is_well_made() {
 }
 
 /// A value a refusal carries.
-fn value(values: &[(&'static str, f64)], name: &str) -> Option<f64> {
+pub(crate) fn value(values: &[(&'static str, f64)], name: &str) -> Option<f64> {
     values.iter().find(|v| v.0 == name).map(|v| v.1)
 }
 
@@ -119,6 +122,7 @@ fn fault(b: &Built) -> Option<crate::Fault> {
     match b {
         Built::Outline(o) => o.validate().err(),
         Built::Curve(c) => c.validate().err(),
+        Built::Mesh(_) => None,
     }
 }
 
@@ -130,6 +134,9 @@ fn fault(b: &Built) -> Option<crate::Fault> {
 /// of the range or the ceiling).
 fn sound_refusal(what: &str, s: &Spec, d: u32, e: &Error) {
     let Error::Constraint { rule, values, .. } = e else { panic!("{what}: {e}") };
+    if s.form.kind == Kind::Solid {
+        return crate::tests_solid::sound_solid_refusal(what, s, d, e);
+    }
     let v = |n: &str| value(values, n).unwrap_or_else(|| panic!("{what}: {rule} carries no {n}: {values:?}"));
     let raw = || s.raw(d).unwrap_or_else(|| panic!("{what}: refused {rule} and its geometry is refused too"));
     match *rule {
@@ -144,6 +151,7 @@ fn sound_refusal(what: &str, s: &Spec, d: u32, e: &Error) {
                     dist(r[point], r[(point + 1) % r.len()])
                 }
                 Built::Curve(c) => dist(c.points[point], c.points[(point + 1) % c.points.len()]),
+                Built::Mesh(_) => unreachable!("solids are refused by sound_solid_refusal"),
             };
             assert_eq!(edge, v("edge"), "{what}: the edge it names is not that long");
             match value(values, "coarser_detail_that_holds") {
@@ -196,7 +204,7 @@ impl Seq {
 /// logarithm, so a millimetre is as likely as a kilometre). (The cases of [`cases`] move one
 /// parameter at a time; a figure whose parameters must agree, a hole and its disc, a spiral's
 /// start and its turns, is tried there at one corner only.)
-fn cases_together(found: &Found, drawn: usize) -> Vec<(String, Vec<(&'static str, f64)>)> {
+pub(crate) fn cases_together(found: &Found, drawn: usize) -> Vec<(String, Vec<(&'static str, f64)>)> {
     let ps = params_of(found);
     let mut v = Vec::new();
     for i in 0..ps.len() {
@@ -241,7 +249,7 @@ fn cases_together(found: &Found, drawn: usize) -> Vec<(String, Vec<(&'static str
 #[test]
 fn t2b_parameters_moved_together() {
     let (mut built, mut refused) = (0usize, 0usize);
-    for w in words() {
+    for w in words().into_iter().filter(|w| w.form.kind != Kind::Solid) {
         for (label, given) in cases_together(&w, 24) {
             let what = format!("{} {label}", w.name());
             let s = Spec::of(w, &given).unwrap_or_else(|e| panic!("{what}: arguments in their ranges refused: {e}"));
@@ -306,7 +314,7 @@ fn the_reviews_cases_are_refused_or_build() {
     ];
     for (word, args, d, rule, holds) in rows {
         let what = format!("{word} {args:?} detail {d}");
-        let s = Spec::new(word, None, args).unwrap();
+        let s = Spec::new(word, Some(Kind::Plane), args).or_else(|_| Spec::new(word, Some(Kind::Curve), args)).unwrap();
         match (s.build(*d), *rule) {
             (Ok(b), "") => {
                 assert_eq!(fault(&b), None, "{what}");
@@ -444,7 +452,7 @@ fn small_argument_functions_keep_their_digits() {
 /// would be a mistake in the form's geometry that sampling hides.
 #[test]
 fn pieces_join() {
-    for w in words() {
+    for w in words().into_iter().filter(|w| w.form.kind != Kind::Solid) {
         for (label, given) in cases(&w) {
             let s = spec(&w, &given);
             let Ok(b) = s.build(DETAIL_MIN) else { continue };
@@ -477,7 +485,7 @@ fn reach(b: &Built) -> f64 {
 #[test]
 fn t4_closed_forms_hold_against_the_build() {
     let mut checked = 0;
-    for w in words() {
+    for w in words().into_iter().filter(|w| w.form.kind != Kind::Solid) {
         for (label, given) in cases(&w) {
             let s = spec(&w, &given);
             let Ok(closed) = s.closed() else { continue };
@@ -559,7 +567,7 @@ fn t4_closed_forms_hold_against_the_build() {
 /// detail doubles (the sag of a chord goes with the square of its length).
 #[test]
 fn error_falls_as_the_rule_says() {
-    for f in forms().iter().filter(|f| f.curved) {
+    for f in forms().iter().filter(|f| f.curved && f.kind != Kind::Solid) {
         let w = Found { form: f, alias: None };
         let s = spec(&w, &[]);
         let (b1, b2) = (s.build(256).unwrap(), s.build(512).unwrap());
@@ -651,8 +659,10 @@ fn kin_resolve_and_are_mutual() {
     for f in forms() {
         for k in f.kin {
             assert!(k.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'), "{}: kin {k}", f.name);
-            let other = if f.kind == Kind::Solid { None } else { Some(Kind::Solid) };
-            match find(k, other) {
+            // A solid's kin is a plane figure or a curve: looked for as each (a word may name
+            // a solid as well, as `lens` does).
+            let found = if f.kind == Kind::Solid { find(k, Some(Kind::Plane)).or_else(|_| find(k, Some(Kind::Curve))) } else { find(k, Some(Kind::Solid)) };
+            match found {
                 Ok(g) => {
                     assert_ne!(g.form.kind, f.kind, "{}: kin {k} is of its own kind", f.name);
                     let back = g.form.kin.iter().any(|x| *x == f.name || aliases().iter().any(|a| a.name == *x && a.of == f.name));
@@ -671,7 +681,7 @@ fn kin_resolve_and_are_mutual() {
 #[test]
 fn t7_anchors_lie_where_they_say() {
     let mut checked = 0;
-    for w in words() {
+    for w in words().into_iter().filter(|w| w.form.kind != Kind::Solid) {
         for (label, given) in cases(&w) {
             let s = spec(&w, &given);
             // A vertex must be a point of every build: an odd detail too.
@@ -695,6 +705,7 @@ fn t7_anchors_lie_where_they_say() {
                     (Built::Curve(c), crate::On::Boundary) => assert!(c.distance(p) <= h, "{what}: {} from the curve", c.distance(p)),
                     (Built::Outline(o), crate::On::Inside) => assert!(o.contains(p), "{what}: not inside"),
                     (Built::Curve(_), crate::On::Inside) => panic!("{what}: a curve has no inside"),
+                    (Built::Mesh(_), _) => unreachable!("solids have their own test 7"),
                 }
                 // The direction is held where the figure is thicker than its build's error
                 // there: at the defaults, and at every case for straight figures. (An ellipse
@@ -728,6 +739,7 @@ fn t8_builds_are_pinned() {
         let pts: Vec<Pt> = match &b {
             Built::Outline(o) => o.points().copied().collect(),
             Built::Curve(c) => c.points.clone(),
+            Built::Mesh(_) => Vec::new(),
         };
         for p in pts {
             bytes.extend_from_slice(&p[0].to_bits().to_le_bytes());
@@ -864,7 +876,8 @@ fn common_words_resolve() {
         ("reuleaux_triangle", "reuleaux_polygon"),
         ("trefoil", "foil"),
     ] {
-        assert_eq!(find(word, None).unwrap().form.name, form, "{word}");
+        // (Some of these words name a solid too: `disc` is also the short cylinder.)
+        assert_eq!(find(word, Some(Kind::Plane)).unwrap().form.name, form, "{word}");
     }
     let sq = Spec::new("square", None, &[("size", 2.0)]).unwrap();
     assert_eq!((sq.args.f("width"), sq.args.f("height")), (2.0, 2.0));

@@ -194,6 +194,46 @@ pub(crate) fn rotate(p: Pt, t: f64) -> Pt {
 pub(crate) fn rad(deg: f64) -> f64 {
     deg * (PI / 180.0)
 }
+/// A point in space.
+pub type P3 = [f64; 3];
+
+pub(crate) fn sub3(a: P3, b: P3) -> P3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+pub(crate) fn add3(a: P3, b: P3) -> P3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+pub(crate) fn scale3(a: P3, s: f64) -> P3 {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+pub(crate) fn dot3(a: P3, b: P3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+pub(crate) fn cross3(a: P3, b: P3) -> P3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+pub(crate) fn len3(a: P3) -> f64 {
+    dot3(a, a).sqrt()
+}
+pub(crate) fn dist3(a: P3, b: P3) -> f64 {
+    len3(sub3(a, b))
+}
+/// `a` scaled to unit length (`a` itself when it has none).
+pub(crate) fn norm3(a: P3) -> P3 {
+    let l = len3(a);
+    if l > 0.0 {
+        scale3(a, 1.0 / l)
+    } else {
+        a
+    }
+}
+pub(crate) fn tan(x: f64) -> f64 {
+    dmath::tan_f64(x)
+}
+pub(crate) fn asin(x: f64) -> f64 {
+    dmath::asin_f64(x.clamp(-1.0, 1.0))
+}
+
 /// The distance from `p` to the segment `a`-`b`.
 pub(crate) fn dist_to_segment(p: Pt, a: Pt, b: Pt) -> f64 {
     let d = sub(b, a);

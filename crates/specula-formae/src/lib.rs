@@ -2,7 +2,7 @@
 //! changes by numbers, as a character starts from the measured human figure.
 //!
 //! The library is **a table** ([`forms`], [`aliases`], [`find`]): each [`Form`] has a name, a
-//! kind ([`Kind::Plane`], [`Kind::Curve`], and from stage 1b [`Kind::Solid`]), a family, one line
+//! kind ([`Kind::Plane`], [`Kind::Curve`], [`Kind::Solid`]), a family, one line
 //! of what it is, its parameters (unit, default, range, whether whole), whether it has curved
 //! parts, and its relatives of the other kinds. A [`Spec`] is a form with resolved arguments:
 //! it is counted ([`Spec::count`]: exactly, before any work), built ([`Spec::build`]),
@@ -15,6 +15,14 @@
 //! - A plane figure builds to an [`Outline`]: rings of `f64` points, the first the outer
 //!   boundary counter-clockwise, any further rings holes clockwise, each ring simple, no ring
 //!   repeating its first point. A curve builds to a [`Curve`]: points in order, open or closed.
+//! - A solid builds to a [`Mesh`]: points in `f64` (right-handed, +Y up), planar faces wound
+//!   counter-clockwise seen from outside, each face in a named [`Surface`] that is flat or smooth,
+//!   an exact outward normal at each corner where a smooth surface is analytic there, and for
+//!   each smooth surface the turn between its faces and its radius ([`Mesh::rounds`]). It is
+//!   watertight (every edge used twice, once each way), wound outward, of the Euler
+//!   characteristic of its genus, and stands on `y = 0` with its middle on the Y axis (as the
+//!   modeller's solids do). [`ops`] makes prisms, pyramids and solids of revolution of any
+//!   plane figure of one ring.
 //! - Each form's origin is said in its `origin` (its natural centre: a circle's centre, a
 //!   triangle's centroid, an arch's base).
 //! - Angles are given in degrees. Detail is the number of segments in a full turn
@@ -43,15 +51,21 @@ pub mod error;
 mod forms;
 mod geom;
 pub mod maths;
+pub mod mesh;
+pub mod ops;
 pub mod outline;
 pub mod spec;
+pub(crate) mod solid;
 pub mod table;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_solid;
 
 pub use anchor::{Anchor, On};
 pub use detail::{detail_for, sag, segments, DETAIL_DEFAULT, DETAIL_MAX, DETAIL_MIN};
 pub use error::Error;
+pub use mesh::{Face, Mesh, Round, SolidFault, Surface};
 pub use outline::{Curve, Fault, Outline, EDGE_FLOOR};
 pub use spec::{params_of, Args, Spec};
 pub use table::{aliases, find, form, forms, nearest, Alias, Family, Form, Found, Kind, Param, Set, Unit};
@@ -64,13 +78,13 @@ pub const MAX_POINTS: u64 = 262_144;
 pub struct Count {
     /// Points.
     pub points: u64,
-    /// Rings of a plane figure; 1 for a curve; faces of a solid (stage 1b).
+    /// Rings of a plane figure; 1 for a curve; faces of a solid.
     pub parts: u64,
 }
 
 /// A shape's measures. For a plane figure: `size` its area, `boundary` its perimeter (holes'
-/// included); for a curve: `boundary` its length (`size` and `centroid` none); for a solid
-/// (stage 1b): `size` its volume, `boundary` its surface area. Plane coordinates have `z = 0`.
+/// included); for a curve: `boundary` its length (`size` and `centroid` none); for a solid:
+/// `size` its volume, `boundary` its surface area. Plane coordinates have `z = 0`.
 /// A measure that is not known is `None`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Measures {
@@ -95,6 +109,8 @@ pub enum Built {
     Outline(Outline),
     /// A curve.
     Curve(Curve),
+    /// A solid.
+    Mesh(Mesh),
 }
 
 impl Built {
@@ -103,6 +119,7 @@ impl Built {
         match self {
             Built::Outline(o) => o.measures(),
             Built::Curve(c) => c.measures(),
+            Built::Mesh(m) => m.measures(),
         }
     }
     /// The number of points built.
@@ -110,13 +127,15 @@ impl Built {
         match self {
             Built::Outline(o) => o.rings.iter().map(|r| r.len() as u64).sum(),
             Built::Curve(c) => c.points.len() as u64,
+            Built::Mesh(m) => m.points.len() as u64,
         }
     }
-    /// Rings of a plane figure; 1 for a curve.
+    /// Rings of a plane figure; 1 for a curve; faces of a solid.
     pub fn parts(&self) -> u64 {
         match self {
             Built::Outline(o) => o.rings.len() as u64,
             Built::Curve(_) => 1,
+            Built::Mesh(m) => m.faces.len() as u64,
         }
     }
     /// The build's chord error (see [`Outline::chord_error`]).
@@ -124,6 +143,7 @@ impl Built {
         match self {
             Built::Outline(o) => o.chord_error,
             Built::Curve(c) => c.chord_error,
+            Built::Mesh(m) => m.chord_error,
         }
     }
 }

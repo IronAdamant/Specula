@@ -258,7 +258,7 @@ fn super_anchors(a: &Args) -> Vec<Anchor> {
 
 // Moss's egg: a half circle below, two arcs of twice the radius from the ends of its diameter,
 // and a small arc at the top from the half circle's top point.
-const P_MOSS: &[Param] = &[len("radius", "the lower half circle's radius (half the egg's width)", 0.5)];
+pub(crate) const P_MOSS: &[Param] = &[len("radius", "the lower half circle's radius (half the egg's width)", 0.5)];
 fn moss_geom(a: &Args) -> Result<Geom, Refusal> {
     let r = a.f("radius");
     let rho = (2.0 - 2f64.sqrt()) * r;
@@ -334,8 +334,8 @@ fn ovoid_anchors(a: &Args) -> Vec<Anchor> {
     vec![out("top", [0.0, t], [0.0, 1.0], On::Boundary), out("bottom", [0.0, -b], [0.0, -1.0], On::Boundary), out("right", [rx, 0.0], [1.0, 0.0], On::Vertex), out("left", [-rx, 0.0], [-1.0, 0.0], On::Vertex)]
 }
 
-const P_DROP: &[Param] = &[len("radius", "the round end's radius", 0.3), len("length", "from the round end's centre to the tip, along +y", 0.8)];
-fn drop_parts(a: &Args) -> Result<(f64, f64, f64), Refusal> {
+pub(crate) const P_DROP: &[Param] = &[len("radius", "the round end's radius", 0.3), len("length", "from the round end's centre to the tip, along +y", 0.8)];
+pub(crate) fn drop_parts(a: &Args) -> Result<(f64, f64, f64), Refusal> {
     let (r, l) = (a.f("radius"), a.f("length"));
     if l <= r * (1.0 + 1e-6) {
         return Err(refuse("tip_outside_circle", "the tip must lie outside the round end: length over radius", &[("radius", r), ("length", l)]));
@@ -732,20 +732,20 @@ fn superf_geom(a: &Args) -> Result<Geom, Refusal> {
 
 // ---------------------------------------------------------------- the table
 
-const KIN_CIRCLE: &[&str] = &["cylinder", "cone", "sphere"];
+const KIN_CIRCLE: &[&str] = &["cylinder", "cone", "sphere", "icosphere", "cube_sphere", "spherical_segment", "hourglass", "hyperboloid"];
 
 pub(crate) const FORMS: &[Form] = &[
     plane!("circle", Circle, "a circle", "the centre", P_CIRCLE, curved: true, kin: KIN_CIRCLE, circle_geom, circle_closed, circle_anchors),
     plane!("semicircle", Circle, "a half disc, flat side down", "the middle of the diameter", P_CIRCLE, curved: true, kin: &["half_cylinder", "hemisphere"], semicircle_geom, semicircle_closed, semicircle_anchors),
     plane!("sector", Circle, "a circular sector (a pie slice), from +x counter-clockwise", "the circle's centre (the apex)", P_SECTOR, curved: true, kin: &["cylinder_sector", "spherical_wedge"], sector_geom, sector_closed, sector_anchors),
     plane!("circular_segment", Circle, "the part of a disc cut off by a chord", "the circle's centre", P_SECTOR, curved: true, kin: &["spherical_cap"], segment_geom, segment_closed, segment_anchors),
-    plane!("annulus", Circle, "a disc with a round hole (a ring)", "the centre", P_ANNULUS, curved: true, kin: &["tube", "torus"], annulus_geom, annulus_closed, annulus_anchors),
-    plane!("annular_sector", Circle, "a sector of a ring (a thick arc)", "the circles' centre", P_ASECTOR, curved: true, kin: &["torus_sector"], asector_geom, asector_closed, super::no_anchors),
+    plane!("annulus", Circle, "a disc with a round hole (a ring)", "the centre", P_ANNULUS, curved: true, kin: &["tube", "torus", "helix", "torus_knot"], annulus_geom, annulus_closed, annulus_anchors),
+    plane!("annular_sector", Circle, "a sector of a ring (a thick arc)", "the circles' centre", P_ASECTOR, curved: true, kin: &["torus_sector", "dome", "bowl"], asector_geom, asector_closed, super::no_anchors),
     plane!("lune", Circle, "a crescent: a disc less an overlapping disc", "the first circle's centre", P_LUNE, curved: true, kin: &[], lune_geom, lune_closed, lune_anchors),
-    plane!("lens", Circle, "the common part of two equal discs", "midway between the centres", P_LENS, curved: true, kin: &["biconvex_lens"], lens_geom, lens_closed, lens_anchors),
+    plane!("lens", Circle, "the common part of two equal discs", "midway between the centres", P_LENS, curved: true, kin: &["biconvex_lens", "spindle"], lens_geom, lens_closed, lens_anchors),
     plane!("stadium", Circle, "a rectangle with half discs on its ends (the plane capsule)", "the centre", P_STADIUM, curved: true, kin: &["capsule"], stadium_geom, stadium_closed, stadium_anchors),
     plane!("rounded_rectangle", Circle, "a rectangle with corners of a true radius", "the centre", P_RRECT, curved: true, kin: &["rounded_box"], rrect_geom, rrect_closed, rrect_anchors),
-    plane!("ellipse", Oval, "an ellipse", "the centre", P_ELLIPSE, curved: true, kin: &["elliptic_cylinder", "ellipsoid"], ellipse_geom, ellipse_closed, ellipse_anchors),
+    plane!("ellipse", Oval, "an ellipse", "the centre", P_ELLIPSE, curved: true, kin: &["elliptic_cylinder", "ellipsoid", "elliptic_torus"], ellipse_geom, ellipse_closed, ellipse_anchors),
     plane!("superellipse", Oval, "a superellipse (Lamé curve)", "the centre", P_SUPER, curved: true, kin: &["superellipsoid"], super_geom, super_closed, super_anchors),
     plane!("moss_egg", Oval, "Moss's egg: four arcs of circles (a half circle, two of twice its radius, a small cap)", "the lower half circle's centre", P_MOSS, curved: true, kin: &["egg_of_revolution"], moss_geom, moss_closed, moss_anchors),
     plane!("oval", Oval, "the four-centre oval of the drafting construction (arcs of two radii)", "the centre", P_OVAL, curved: true, kin: &[], oval_geom, oval_closed, oval_anchors),

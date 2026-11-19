@@ -13,6 +13,23 @@ use crate::Measures;
 
 const POLY_ORIGIN: &str = "the centre of its bounds";
 const KIN_TRIANGLE: &[&str] = &["triangular_prism", "pyramid", "tetrahedron"];
+/// The solids with equilateral faces name the triangle by its sides (equilateral_triangle is its alias).
+const KIN_TRI_SSS: &[&str] = &[
+    "triangular_prism", "pyramid", "tetrahedron", "tetrahedron_in_sphere", "octahedron", "octahedron_in_sphere", "icosahedron", "icosahedron_in_sphere", "antiprism", "stella_octangula",
+    "disdyakis_dodecahedron", "disdyakis_triacontahedron", "truncated_tetrahedron", "cuboctahedron", "truncated_cube", "rhombicuboctahedron", "snub_cube", "icosidodecahedron",
+    "truncated_dodecahedron", "rhombicosidodecahedron", "snub_dodecahedron",
+];
+/// The solids with isosceles faces, and the wedge (a right triangle raised).
+const KIN_TRI_BH: &[&str] = &[
+    "triangular_prism", "pyramid", "tetrahedron", "wedge", "bipyramid", "small_stellated_dodecahedron", "triakis_tetrahedron", "triakis_octahedron", "tetrakis_hexahedron",
+    "triakis_icosahedron", "pentakis_dodecahedron",
+];
+const KIN_RECT: &[&str] = &["box", "wedge", "cube_in_sphere", "cuboctahedron", "truncated_octahedron", "rhombicuboctahedron", "truncated_cuboctahedron", "snub_cube", "rhombicosidodecahedron", "truncated_icosidodecahedron", "barrel", "mobius_band", "steinmetz_solid"];
+const KIN_POLY: &[&str] = &[
+    "prism", "antiprism", "pyramid", "bipyramid", "pyramid_frustum", "dodecahedron", "dodecahedron_in_sphere", "truncated_tetrahedron", "truncated_cube", "truncated_octahedron",
+    "truncated_cuboctahedron", "icosidodecahedron", "truncated_dodecahedron", "truncated_icosahedron", "rhombicosidodecahedron", "truncated_icosidodecahedron", "snub_dodecahedron",
+    "pentagonal_icositetrahedron", "pentagonal_hexecontahedron",
+];
 const KIN_PRISM: &[&str] = &["prism"];
 
 fn pts_ring(p: Result<Vec<Pt>, Refusal>) -> Result<Geom, Refusal> {
@@ -193,7 +210,7 @@ fn trap_closed(a: &Args) -> Measures {
 
 const P_POLY: &[Param] = &[count("sides", "the number of sides", 6.0, 3.0, 256.0), len("radius", "the circumradius: centre to vertex", 0.5)];
 
-fn regular(n: usize, r: f64) -> Vec<Pt> {
+pub(crate) fn regular(n: usize, r: f64) -> Vec<Pt> {
     (0..n).map(|i| polar([0.0, 0.0], r, 0.5 * PI + TAU * i as f64 / n as f64)).collect()
 }
 fn poly_pts(a: &Args) -> Result<Vec<Pt>, Refusal> {
@@ -212,7 +229,7 @@ fn poly_anchors(a: &Args) -> Vec<Anchor> {
 const P_STAR: &[Param] = &[count("points", "the number of points", 5.0, 3.0, 100.0), len("outer", "centre to a point's tip", 0.5), len("inner", "centre to a notch between points", 0.2)];
 
 /// A star of `n` points, tips at `outer`, notches at `inner`, the first tip on +y.
-fn star(n: usize, outer: f64, inner: f64) -> Vec<Pt> {
+pub(crate) fn star(n: usize, outer: f64, inner: f64) -> Vec<Pt> {
     (0..2 * n).map(|i| polar([0.0, 0.0], if i % 2 == 0 { outer } else { inner }, 0.5 * PI + PI * i as f64 / n as f64)).collect()
 }
 fn star_pts(a: &Args) -> Result<Vec<Pt>, Refusal> {
@@ -606,21 +623,21 @@ fn rect_geom(a: &Args) -> Result<Geom, Refusal> {
 }
 
 pub(crate) const FORMS: &[Form] = &[
-    plane!("triangle_sss", Triangle, "a triangle by its three sides", "the centroid", P_SSS, curved: false, kin: KIN_TRIANGLE, pts!(sss_pts), sss_closed, tri!(sss_pts)),
+    plane!("triangle_sss", Triangle, "a triangle by its three sides", "the centroid", P_SSS, curved: false, kin: KIN_TRI_SSS, pts!(sss_pts), sss_closed, tri!(sss_pts)),
     plane!("triangle_sas", Triangle, "a triangle by two sides and the angle between them", "the centroid", P_SAS, curved: false, kin: KIN_TRIANGLE, pts!(sas_pts), sas_closed, tri!(sas_pts)),
-    plane!("triangle", Triangle, "a triangle by its base, its height and where the apex is", "the centroid", P_TRI, curved: false, kin: KIN_TRIANGLE, pts!(tri_pts), tri_closed, tri!(tri_pts)),
-    plane!("rectangle", Quadrilateral, "a rectangle", "the centre", P_RECT, curved: false, kin: &["box", "wedge"], rect_geom, rect_closed, rect_anchors),
+    plane!("triangle", Triangle, "a triangle by its base, its height and where the apex is", "the centroid", P_TRI, curved: false, kin: KIN_TRI_BH, pts!(tri_pts), tri_closed, tri!(tri_pts)),
+    plane!("rectangle", Quadrilateral, "a rectangle", "the centre", P_RECT, curved: false, kin: KIN_RECT, rect_geom, rect_closed, rect_anchors),
     plane!("parallelogram", Quadrilateral, "a parallelogram by its base, height and bottom-left angle", "the centre", P_PARA, curved: false, kin: KIN_PRISM, pts!(para_pts), para_closed, verts!(para_pts)),
-    plane!("rhombus", Quadrilateral, "a rhombus by its two diagonals", "where the diagonals cross", P_RHOMBUS, curved: false, kin: KIN_PRISM, pts!(rhombus_pts), rhombus_closed, verts!(rhombus_pts)),
-    plane!("kite", Quadrilateral, "a convex kite: two pairs of equal sides next to each other", "where the diagonals cross", P_KITE, curved: false, kin: KIN_PRISM, pts!(kite_pts), kite_closed, diag_anchors),
+    plane!("rhombus", Quadrilateral, "a rhombus by its two diagonals", "where the diagonals cross", P_RHOMBUS, curved: false, kin: &["prism", "rhombic_dodecahedron", "rhombic_triacontahedron", "bicone"], pts!(rhombus_pts), rhombus_closed, verts!(rhombus_pts)),
+    plane!("kite", Quadrilateral, "a convex kite: two pairs of equal sides next to each other", "where the diagonals cross", P_KITE, curved: false, kin: &["prism", "trapezohedron", "deltoidal_icositetrahedron", "deltoidal_hexecontahedron"], pts!(kite_pts), kite_closed, diag_anchors),
     plane!("dart", Quadrilateral, "a concave kite (an arrowhead): a tip, two wings and a reflex notch", "the middle of the line between the wing tips", P_DART, curved: false, kin: KIN_PRISM, pts!(dart_pts), dart_closed, diag_anchors),
-    plane!("trapezium", Quadrilateral, "a quadrilateral with one pair of parallel sides (US: trapezoid)", "the bottom side's middle, at half the height", P_TRAP, curved: false, kin: KIN_PRISM, pts!(trap_pts), trap_closed, verts!(trap_pts)),
-    plane!("regular_polygon", Polygon, "a regular polygon, a vertex on +y", "the centre", P_POLY, curved: false, kin: &["prism", "antiprism", "pyramid", "bipyramid"], pts!(poly_pts), poly_closed, poly_anchors),
+    plane!("trapezium", Quadrilateral, "a quadrilateral with one pair of parallel sides (US: trapezoid)", "the bottom side's middle, at half the height", P_TRAP, curved: false, kin: &["prism", "pyramid_frustum", "frustum"], pts!(trap_pts), trap_closed, verts!(trap_pts)),
+    plane!("regular_polygon", Polygon, "a regular polygon, a vertex on +y", "the centre", P_POLY, curved: false, kin: KIN_POLY, pts!(poly_pts), poly_closed, poly_anchors),
     plane!("star", Star, "a star of n points with its tip and notch radii", "the centre", P_STAR, curved: false, kin: &["star_prism"], pts!(star_pts), star_closed, star_anchors),
-    plane!("star_polygon", Star, "the outline of the regular star polygon {n/k}", "the centre", P_STARPOLY, curved: false, kin: &["star_prism"], pts!(starpoly_pts), none, starpoly_anchors),
+    plane!("star_polygon", Star, "the outline of the regular star polygon {n/k}", "the centre", P_STARPOLY, curved: false, kin: &["star_prism", "stella_octangula", "small_stellated_dodecahedron"], pts!(starpoly_pts), none, starpoly_anchors),
     plane!("cross", Symbol, "a plus-shaped cross", "the centre", P_CROSS, curved: false, kin: KIN_PRISM, pts!(cross_pts), cross_closed, cross_anchors),
     plane!("saltire", Symbol, "an X-shaped cross (the plus turned 45 degrees)", "the centre", P_SALTIRE, curved: false, kin: KIN_PRISM, pts!(saltire_pts), saltire_closed, verts!(saltire_pts)),
-    plane!("arrow", Symbol, "an arrow pointing along +x: a shaft and a triangular head", POLY_ORIGIN, P_ARROW, curved: false, kin: KIN_PRISM, pts!(arrow_pts), arrow_closed, arrow_anchors),
+    plane!("arrow", Symbol, "an arrow pointing along +x: a shaft and a triangular head", POLY_ORIGIN, P_ARROW, curved: false, kin: &["prism", "round_arrow"], pts!(arrow_pts), arrow_closed, arrow_anchors),
     plane!("double_arrow", Symbol, "an arrow with a head at each end", POLY_ORIGIN, P_ARROW, curved: false, kin: KIN_PRISM, pts!(darrow_pts), darrow_closed, darrow_anchors),
     plane!("chevron", Symbol, "a chevron: a V band pointing up, of a thickness measured vertically", POLY_ORIGIN, P_CHEVRON, curved: false, kin: KIN_PRISM, pts!(chevron_pts), chevron_closed, chevron_anchors),
     plane!("shield", Symbol, "a heater shield: a straight top and sides, and two arcs meeting at the point", POLY_ORIGIN, P_SHIELD, curved: true, kin: KIN_PRISM, shield_geom, none, shield_anchors),
@@ -629,8 +646,8 @@ pub(crate) const FORMS: &[Form] = &[
     plane!("u_section", Section, "a U (channel) section, open upward", POLY_ORIGIN, P_USEC, curved: false, kin: KIN_PRISM, pts!(usec_pts), usec_closed, verts!(usec_pts)),
     plane!("h_section", Section, "an H (I-beam) section: two flanges joined by a web", POLY_ORIGIN, P_HSEC, curved: false, kin: KIN_PRISM, pts!(hsec_pts), hsec_closed, verts!(hsec_pts)),
     plane!("z_section", Section, "a Z section: a web with flanges to opposite sides", POLY_ORIGIN, P_ZSEC, curved: false, kin: KIN_PRISM, pts!(zsec_pts), zsec_closed, verts!(zsec_pts)),
-    plane!("frame", Frame, "a rectangle with a rectangular hole of an even border", "the centre", P_FRAME, curved: false, kin: KIN_PRISM, frame_geom, frame_closed, frame_anchors),
-    plane!("polygon_ring", Frame, "a regular polygon with a similar hole", "the centre", P_PRING, curved: false, kin: KIN_PRISM, pring_geom, pring_closed, pring_anchors),
+    plane!("frame", Frame, "a rectangle with a rectangular hole of an even border", "the centre", P_FRAME, curved: false, kin: &[], frame_geom, frame_closed, frame_anchors),
+    plane!("polygon_ring", Frame, "a regular polygon with a similar hole", "the centre", P_PRING, curved: false, kin: &[], pring_geom, pring_closed, pring_anchors),
     plane!("gear", Gear, "a spur gear with straight flanks (not an involute profile)", "the centre", P_GEAR, curved: false, kin: KIN_PRISM, pts!(gear_pts), gear_closed, gear_anchors),
     plane!("sawtooth_band", Band, "a strip with sawteeth on its top edge (a ramp and a drop)", "the middle of the bottom edge", P_SAW, curved: false, kin: KIN_PRISM, pts!(saw_pts), saw_closed, no_anchors),
     plane!("battlement_band", Band, "a wall with merlons on its top edge, one at each end", "the middle of the bottom edge", P_BATTLE, curved: false, kin: KIN_PRISM, pts!(battle_pts), battle_closed, no_anchors),

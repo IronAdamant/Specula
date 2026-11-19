@@ -36,14 +36,34 @@ macro_rules! curve {
     };
 }
 
-/// An alias of a plane figure or a curve.
+/// A solid's entry.
+macro_rules! solid {
+    ($name:expr, $fam:ident, $about:expr, $origin:expr, $params:expr, curved: $c:expr, kin: $kin:expr, $geom:expr, $closed:expr, $anchors:expr) => {
+        crate::table::Form {
+            name: $name,
+            kind: crate::table::Kind::Solid,
+            family: crate::table::Family::$fam,
+            about: $about,
+            origin: $origin,
+            params: $params,
+            curved: $c,
+            kin: $kin,
+            band: None,
+            imp: crate::table::Imp { geom: $geom, closed: $closed, anchors: $anchors },
+        }
+    };
+}
+
+/// An alias of a plane figure, a curve or a solid.
 macro_rules! alias {
     ($name:expr, $kind:ident, $of:expr, $about:expr, $set:expr) => {
         crate::table::Alias { name: $name, kind: crate::table::Kind::$kind, of: $of, about: $about, set: $set }
     };
 }
 
+pub(crate) mod curved;
 pub(crate) mod curves;
+pub(crate) mod flat;
 pub(crate) mod polygons;
 pub(crate) mod round;
 

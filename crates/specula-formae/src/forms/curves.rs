@@ -425,7 +425,7 @@ pub(crate) const FORMS: &[Form] = &[
     curve!("elliptical_arc", Arc, "an arc of an ellipse, by polar angle from +x", "the ellipse's centre", P_EARC, curved: true, band: Some("elliptical_arc_band"), kin: &[], earc_geom, none, no_anchors),
     curve!("parabola", Arc, "an arc of the parabola y = c x², its vertex at the origin", "the vertex", P_PARA, curved: true, band: Some("parabola_band"), kin: &["paraboloid"], para_geom, para_closed, no_anchors),
     curve!("catenary", Arc, "a hanging chain, y = a (cosh(x / a) − 1)", "the lowest point", P_CAT, curved: true, band: Some("catenary_band"), kin: &[], cat_geom, cat_closed, no_anchors),
-    curve!("sine_wave", Arc, "a sine wave along x", "the middle of its span, on the middle line", P_SINE, curved: true, band: Some("sine_band"), kin: &[], sine_geom, none, no_anchors),
+    curve!("sine_wave", Arc, "a sine wave along x", "the middle of its span, on the middle line", P_SINE, curved: true, band: Some("sine_band"), kin: &["helix"], sine_geom, none, no_anchors),
     curve!("archimedean_spiral", Spiral, "the spiral r = start + pitch θ / 2π", "the pole", P_ASP, curved: true, band: Some("archimedean_spiral_band"), kin: &[], asp_geom, asp_closed, no_anchors),
     curve!("logarithmic_spiral", Spiral, "the spiral whose radius grows by a ratio each turn", "the pole", P_LSP, curved: true, band: Some("logarithmic_spiral_band"), kin: &[], lsp_geom, lsp_closed, no_anchors),
     curve!("involute", Spiral, "the involute of a circle: the path of a string's end unwound from it", "the base circle's centre", P_INV, curved: true, band: Some("involute_band"), kin: &[], inv_geom, inv_closed, no_anchors),

@@ -15,12 +15,23 @@
 //! - has a closed-form area and length that the build agrees with as far as its own chord
 //!   error allows (the same bound the crate's tests derive: the region between a chord and its
 //!   curve lies in a strip as long as the chord and as wide as the error).
+//! - and, for a solid (stage 1b): is well made for its genus (closed, wound outward, planar faces,
+//!   Euler's formula), has no two faces crossing and no normal pointing in, and has a volume and
+//!   an area within what its error allows of the closed forms (the crate's derivations: a shell of
+//!   `2 h A` for the volume; for the area the faces' lean and their edges' strips). A solid's area
+//!   is not held under its closed form, as a curve's length is under its: a faceted surface's
+//!   area can be over the true one where the surface is not convex.
 //!
 //! No form may refuse everything: a word that never builds from its own ranges is a table
 //! that lies about them.
 
 use specula_core::dmath;
-use specula_formae::{aliases, find, forms, params_of, Built, Error, Found, Spec};
+use specula_formae::{aliases, find, forms, params_of, Built, Error, Found, Kind, Spec};
+
+fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
 
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
@@ -52,6 +63,9 @@ fn words() -> Vec<Found> {
 #[test]
 fn every_word_with_arguments_drawn_together() {
     const SETS: usize = 300;
+    // A solid's build is ten to a hundred times a plane figure's: 40 sets a solid word by default
+    // (the same demands of each), and `FORMAE_PROBE_SOLID_SETS` to draw more, as a check.
+    let solid_sets: usize = std::env::var("FORMAE_PROBE_SOLID_SETS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
     let mut never: Vec<&str> = Vec::new();
     let (mut built, mut refused) = (0usize, 0usize);
     // (Every fault is gathered, a few of each word, and they are said together.)
@@ -65,7 +79,8 @@ fn every_word_with_arguments_drawn_together() {
         let params = params_of(&w);
         let mut seq = Seq(seed(w.name()));
         let mut ok = 0usize;
-        for set in 0..SETS {
+        let solid = w.form.kind == Kind::Solid;
+        for set in 0..if solid { solid_sets } else { SETS } {
             let given: Vec<(&str, f64)> = params
                 .iter()
                 .map(|p| {
@@ -87,6 +102,9 @@ fn every_word_with_arguments_drawn_together() {
             let what = format!("{} {given:?}", w.name());
             let s = Spec::of(w, &given).unwrap_or_else(|e| panic!("{what}: an argument inside its range was refused: {e}"));
             for detail in [8u32, 64, 256] {
+                if solid && detail == 256 && set % 4 != 0 {
+                    continue;
+                }
                 let b = match s.build(detail) {
                     Ok(b) => b,
                     Err(Error::Constraint { .. } | Error::TooManyPoints { .. }) => {
@@ -126,6 +144,32 @@ fn every_word_with_arguments_drawn_together() {
                             }
                         }
                     }
+                    Built::Mesh(mesh) => {
+                        // A solid: well made for its genus (closed, wound outward, planar faces,
+                        // nothing under the floor, Euler's formula), no two faces crossing (searched
+                        // where the mesh is small enough for a test), every normal on the outer
+                        // side of its face.
+                        let genus = s.genus().unwrap_or_else(|| panic!("{what}: a solid with no genus"));
+                        if let Err(f) = mesh.validate(genus) {
+                            fault(w.name(), format!("{what} at detail {detail}: {f:?}"));
+                            continue;
+                        }
+                        if mesh.faces.len() <= 10_000 {
+                            if let Some(pair) = mesh.self_crossing() {
+                                fault(w.name(), format!("{what} at detail {detail}: faces {pair:?} cross"));
+                                continue;
+                            }
+                        }
+                        for f in &mesh.faces {
+                            if let Some(ns) = &f.normals {
+                                let a = mesh.area_vector(f);
+                                if ns.iter().any(|n| n[0] * a[0] + n[1] * a[1] + n[2] * a[2] <= 0.0) {
+                                    fault(w.name(), format!("{what} at detail {detail}: a normal points in"));
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
                 for a in s.anchors().unwrap_or_else(|e| panic!("{what}: built, and its anchors refused: {e}")) {
@@ -134,6 +178,27 @@ fn every_word_with_arguments_drawn_together() {
                 // The closed forms against the build.
                 let closed = s.closed().unwrap_or_else(|e| panic!("{what}: built, and its closed forms refused: {e}"));
                 let round = 64.0 * b.points() as f64 * f64::EPSILON * reach;
+                if let (Built::Mesh(mesh), Some(c), Some(x), Some(a)) = (&b, closed.size, m.size, m.boundary) {
+                    // A solid's volume: the true and the built solid differ only within the build's
+                    // error `h` of the surface, a shell of at most `2 h A` (as an area's `2 h P`).
+                    let allowed = 2.0 * b.chord_error() * a + round * reach * reach + 1e-9 * c.abs();
+                    if (c - x).abs() > allowed {
+                        fault(w.name(), format!("{what} at detail {detail}: volume closed {c}, built {x} (off by {}, allowed {allowed})", (c - x).abs()));
+                    }
+                    // Its area: a face stands for a patch whose normals lean by at most the turn `t`
+                    // to its neighbours' (so the patch is within `1 / cos t` of the face's area), and
+                    // each edge lies within `h` of where the patch's edge falls (an area of at most
+                    // `h` times its length on each side).
+                    if let Some(ca) = closed.boundary {
+                        let t = mesh.rounds().iter().map(|r| r.turn_deg.to_radians()).fold(0.0f64, f64::max).min(1.5);
+                        let edges: f64 = mesh.faces.iter().map(|f| (0..f.verts.len()).map(|i| dist3(mesh.points[f.verts[i] as usize], mesh.points[f.verts[(i + 1) % f.verts.len()] as usize])).sum::<f64>()).sum::<f64>() * 0.5;
+                        let allowed = a * (1.0 / dmath::cos_f64(t) - 1.0) + 2.0 * b.chord_error() * edges + round * reach + 1e-9 * ca.abs();
+                        if (ca - a).abs() > allowed {
+                            fault(w.name(), format!("{what} at detail {detail}: area closed {ca}, built {a} (off by {}, allowed {allowed})", (ca - a).abs()));
+                        }
+                    }
+                    continue;
+                }
                 if let (Some(c), Some(x), Some(p)) = (closed.size, m.size, m.boundary) {
                     let allowed = 2.0 * b.chord_error() * p + round * reach + 1e-9 * c.abs();
                     if (c - x).abs() > allowed {

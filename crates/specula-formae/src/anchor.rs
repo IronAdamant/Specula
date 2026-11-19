@@ -46,3 +46,14 @@ pub(crate) fn out(name: &str, p: [f64; 2], d: [f64; 2], on: On) -> Anchor {
 pub(crate) fn vertices(prefix: &str, pts: &[[f64; 2]]) -> Vec<Anchor> {
     pts.iter().take(MAX_NUMBERED).enumerate().map(|(i, p)| at(&format!("{prefix}_{i}"), *p, On::Vertex)).collect()
 }
+
+/// A solid's anchor.
+pub(crate) fn at3(name: &str, p: [f64; 3], on: On) -> Anchor {
+    Anchor { name: name.to_string(), at: p, dir: None, on }
+}
+
+/// A solid's anchor with an outward direction (normalised here).
+pub(crate) fn out3(name: &str, p: [f64; 3], d: [f64; 3], on: On) -> Anchor {
+    let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    Anchor { name: name.to_string(), at: p, dir: Some([d[0] / l, d[1] / l, d[2] / l]), on }
+}

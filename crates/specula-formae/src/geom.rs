@@ -56,7 +56,7 @@ impl Seg {
         !matches!(self, Seg::Line { .. })
     }
     /// The point at `i / k` of the way along the piece.
-    fn at(&self, i: u64, k: u64) -> Pt {
+    pub fn at(&self, i: u64, k: u64) -> Pt {
         let u = i as f64 / k as f64;
         match self {
             Seg::Line { a, b } => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u],
@@ -68,7 +68,7 @@ impl Seg {
     /// sample segment's chord to the true curve: for an arc its sag, exactly; for a parametric
     /// piece the greatest of the distances at a quarter, a half and three quarters of each
     /// sample's parameter (an estimate, not a bound).
-    fn emit(&self, detail: u32, out: &mut Vec<Pt>) -> f64 {
+    pub fn emit(&self, detail: u32, out: &mut Vec<Pt>) -> f64 {
         let k = self.k(detail);
         let mut worst = 0.0f64;
         let mut prev = self.at(0, k);
@@ -104,6 +104,8 @@ pub(crate) enum Geom {
     Rings(Vec<Vec<Seg>>),
     /// A curve: open (its last end point is a point) or closed.
     Path { segs: Vec<Seg>, closed: bool },
+    /// A solid: its construction, which counts, builds and measures it.
+    Solid(Rc<dyn crate::solid::Make>),
 }
 
 impl Geom {
@@ -113,6 +115,7 @@ impl Geom {
         match self {
             Geom::Rings(rings) => (rings.iter().map(|r| sum(r)).fold(0, u64::saturating_add), rings.len() as u64),
             Geom::Path { segs, closed } => (sum(segs).saturating_add(u64::from(!closed)), 1),
+            Geom::Solid(m) => m.count(detail),
         }
     }
 
@@ -146,6 +149,7 @@ impl Geom {
                 }
                 crate::Built::Curve(Curve { points: pts, closed: *closed, chord_error: err })
             }
+            Geom::Solid(m) => crate::Built::Mesh(m.build(detail).0),
         }
     }
 
@@ -153,19 +157,26 @@ impl Geom {
         match self {
             Geom::Rings(r) => r.iter().flatten().collect(),
             Geom::Path { segs, .. } => segs.iter().collect(),
+            Geom::Solid(_) => Vec::new(),
         }
     }
 
     /// Whether any piece is curved.
     #[cfg(test)]
     pub fn curved(&self) -> bool {
-        self.segs().iter().any(|s| s.curved())
+        match self {
+            Geom::Solid(m) => m.curved(),
+            _ => self.segs().iter().any(|s| s.curved()),
+        }
     }
 
     /// The greatest distance between the build at `detail` and the true outline, exactly, when
     /// every curved piece is an arc (the sag `r (1 - cos(δ/2))` of its sample angle δ); `None`
     /// when a parametric piece is there (then the build's own `chord_error` is the measure).
     pub fn sag(&self, detail: u32) -> Option<f64> {
+        if let Geom::Solid(m) = self {
+            return m.error(detail);
+        }
         let mut worst = 0.0f64;
         for s in self.segs() {
             match s {
@@ -181,6 +192,9 @@ impl Geom {
     /// rings), perimeter, centroid and bounds, by integrals along each piece (Green's theorem).
     /// For a curve: its length and bounds.
     pub fn exact(&self) -> Measures {
+        if let Geom::Solid(m) = self {
+            return m.exact();
+        }
         let segs = self.segs();
         if segs.iter().any(|s| matches!(s, Seg::Fn { .. })) {
             return Measures::default();
@@ -243,6 +257,7 @@ impl Geom {
                 series: None,
             },
             Geom::Path { .. } => Measures { size: None, boundary: Some(length), centroid: None, bounds, series: None },
+            Geom::Solid(_) => Measures::default(),
         }
     }
 
@@ -251,6 +266,9 @@ impl Geom {
     /// is the exact area less, for each sample chord of each arc, the signed area between the
     /// chord and the arc, `r²(δ − sin δ)/2` (δ the signed sample angle). `None` otherwise.
     pub fn built_area(&self, detail: u32) -> Option<f64> {
+        if matches!(self, Geom::Solid(_)) {
+            return None;
+        }
         let exact = self.exact().size?;
         let mut cut = 0.0;
         for s in self.segs() {
@@ -280,6 +298,7 @@ impl Geom {
         match self {
             Geom::Rings(r) => r.iter().for_each(|x| chain(x, true)),
             Geom::Path { segs, closed } => chain(segs, *closed),
+            Geom::Solid(_) => {}
         }
         worst
     }
