@@ -141,6 +141,9 @@ pub const PLATEAU_RISE: f32 = 0.1;
 /// ... and for this many steps at the least (a few pixels of a thin taper are level by the
 /// pixels alone: a spike's tip was judged at its own few pixels at one angle in ninety).
 pub const PLATEAU_MIN: usize = 24;
+/// The thicknesses a part's level is tried at ([`plateaus`]): from [`MIN_THICK`], each this
+/// many times the last (and the part's own greatest).
+pub const LADDER: f32 = 1.05;
 /// A thickness under this many pixels is not read: the shape is `None`; and the thickness about
 /// a step is not taken to be level ([`PLATEAU`]) until it is this much.
 pub const MIN_THICK: f32 = 4.0;
@@ -154,10 +157,19 @@ pub const SMOOTH: f32 = 0.012;
 pub const STRAIGHT_RUN: f32 = 0.1;
 /// How far (pixels) the straightened outline may lie from the pixels' own.
 pub const STRAIGHTEN_PX: f32 = 1.5;
+/// How far (pixels) the ends of a straightened side may lie from the line of its middle half.
+pub const TRIM_PX: f32 = 0.5;
+/// A run is a side only if its points lie, on the mean, within this many pixels to one side of
+/// its chord ([`runs`]).
+pub const BOW_PX: f32 = 0.2;
 /// How much more a point counts for than a curve or a square corner of the same turn: a
 /// sharp corner draws the eye before a right angle does. Without it a spike is never mostly
 /// pointed: its tip turns under 180 degrees and the two corners of its base 90 each.
 pub const POINT_WEIGHT: f32 = 2.0;
+/// A step takes its class from the corners near it only of parts at least this share as thick
+/// as its own: an apple's rim is not classed by the tip of its stalk, a box's side by the end
+/// of a thin limb that meets it.
+pub const THINNER: f32 = 0.5;
 /// A net turn of this much or more is a corner (counted, in `corners`).
 pub const CORNER_DEG: f32 = 60.0;
 /// The side, in pixels, of the silhouettes the studio measures shape language on.
@@ -431,7 +443,7 @@ fn spine(d: &[f32], w: usize, h: usize) -> Vec<(f32, f32, f32)> {
 /// the largest disc of the `spine` that reaches it, 0 where none does. The discs are tried
 /// the largest first, each against the points near it that have none yet (the points are
 /// kept by squares of the picture).
-fn thickness(spine: &[(f32, f32, f32)], at: &[P], w: usize, h: usize) -> Vec<f32> {
+fn thickness(spine: &[(f32, f32, f32)], at: &[P], w: usize, h: usize, work: &mut u64) -> Vec<f32> {
     const CELL: usize = 8;
     let (cw, ch) = (w / CELL + 2, h / CELL + 2);
     let cell = |p: P| -> usize {
@@ -454,6 +466,7 @@ fn thickness(spine: &[(f32, f32, f32)], at: &[P], w: usize, h: usize) -> Vec<f32
         for cy in y0..=y1 {
             for cx in x0..=x1 {
                 let list = &mut cells[cy * cw + cx];
+                *work += 1 + list.len() as u64;
                 if list.is_empty() {
                     continue;
                 }
@@ -474,35 +487,101 @@ fn thickness(spine: &[(f32, f32, f32)], at: &[P], w: usize, h: usize) -> Vec<f32
     out
 }
 
-/// The points of `line` (open, at least two) that a straightened line keeps: its ends, and
-/// between two kept points the one furthest from the straight line through them while it is
-/// further than `slack` (Douglas and Peucker's rule).
-fn straighten(line: &[P], slack: f32, base: usize, keep: &mut Vec<usize>) {
-    let mut spans = vec![(0usize, line.len() - 1)];
-    let mut kept = vec![false; line.len()];
-    kept[0] = true;
-    kept[line.len() - 1] = true;
-    while let Some((a, b)) = spans.pop() {
-        if b <= a + 1 {
-            continue;
+/// The points of a closed outline (`points`, from the first) at which a straightened outline
+/// turns: each run from one to the next is as long as it can be with every point of it within
+/// `slack` of the straight line from its first point through its last. Found in one walk round
+/// (each point is looked at once, or twice where a run ends): the directions from a run's first
+/// point that keep every point so far within `slack` narrow as the run goes on, and the run ends
+/// at the first point outside them. (Douglas and Peucker's rule until its sixth version, which
+/// is quadratic where the farthest point is always at one end of what is left: a comb of
+/// one-pixel teeth took a third of a second.)
+fn runs(points: &[P], slack: f32, long: f32, work: &mut u64) -> Vec<(usize, bool)> {
+    let n = points.len();
+    let mut kept = vec![(0usize, false)];
+    let mut i = 0usize;
+    while i < n {
+        let a = points[i];
+        let (mut lo, mut hi) = (f32::NEG_INFINITY, f32::INFINITY);
+        let mut along: Option<P> = None;
+        let mut furthest = 0.0f32;
+        let mut end = i + 1;
+        let mut j = i + 1;
+        while j <= n {
+            *work += 1;
+            let v = sub(points[j % n], a);
+            let d = (v[0] * v[0] + v[1] * v[1]).sqrt();
+            if d > slack {
+                let r = *along.get_or_insert([v[0] / d, v[1] / d]);
+                let at = specula_core::dmath::atan2(cross(r, v), r[0] * v[0] + r[1] * v[1]);
+                // (And the run goes on along its line: one that came back on itself, round the tip
+                // of a thin blade, would cut the tip off.)
+                let ahead = r[0] * v[0] + r[1] * v[1];
+                if at < lo || at > hi || ahead < furthest - slack {
+                    break;
+                }
+                furthest = furthest.max(ahead);
+                let give = specula_core::dmath::atan2(slack, (d * d - slack * slack).sqrt());
+                (lo, hi) = (lo.max(at - give), hi.min(at + give));
+            }
+            end = j;
+            j += 1;
         }
-        let along = sub(line[b], line[a]);
-        let length = dist(line[a], line[b]);
-        let (mut far, mut most) = (a, slack);
-        for (i, p) in line.iter().enumerate().take(b).skip(a + 1) {
-            let off = if length > 1e-6 { cross(along, sub(*p, line[a])).abs() / length } else { dist(*p, line[a]) };
-            if off > most {
-                (far, most) = (i, off);
+        // A long run is a side if it does not bow: the mean of its points' offsets from its
+        // chord, each to its own side, is under [`BOW_PX`] (the steps of a slanted side's
+        // pixels fall to both sides of it; a curve's flank, within `slack` of its chord for
+        // ninety pixels on a large oval, falls all to one). Its ends are pulled back to where the
+        // outline leaves the line of its middle half by more than [`TRIM_PX`]: a run reaches as
+        // far into the rounding of a corner as `slack` lets it, and left there it would end in
+        // a kink.
+        let mut side = None;
+        if dist(a, points[end % n]) >= long && end > i + 8 {
+            let (q1, q3) = (points[i + (end - i) / 4], points[i + 3 * (end - i) / 4]);
+            let (dir, len) = (sub(q3, q1), dist(q1, q3));
+            let off = |p: P| if len > 1e-6 { cross(dir, sub(p, q1)) / len } else { 0.0 };
+            let (mut s, mut e) = (i, end);
+            while s + 1 < e && off(points[s % n]).abs() > TRIM_PX {
+                s += 1;
+            }
+            while e > s + 1 && off(points[e % n]).abs() > TRIM_PX {
+                e -= 1;
+            }
+            // (The line through the means of its first and last quarters, and the mean offset of
+            // its middle half from that line: means, so that the pixels' steps cancel.)
+            let mean = |a: usize, b: usize| {
+                let c = (b - a).max(1) as f32;
+                let t = (a..b).fold([0.0f32; 2], |t, k| [t[0] + points[k % n][0], t[1] + points[k % n][1]]);
+                [t[0] / c, t[1] / c]
+            };
+            let q = (e - s) / 4;
+            let (pa, pb) = (mean(s, s + q.max(1)), mean(e - q.max(1) + 1, e + 1));
+            let (cd, cl) = (sub(pb, pa), dist(pa, pb));
+            let bow = if cl > 1e-6 && q >= 1 { (s + q..e - q).map(|k| cross(cd, sub(points[k % n], pa)) / cl).sum::<f32>() / (e - s - 2 * q).max(1) as f32 } else { f32::INFINITY };
+            *work += 2 * (end - i) as u64;
+            if bow.abs() <= BOW_PX && cl >= long {
+                side = Some((s, e));
             }
         }
-        if far != a {
-            kept[far] = true;
-            spans.push((a, far));
-            spans.push((far, b));
+        match side {
+            Some((s, e)) => {
+                if s > i {
+                    kept.push((s, true));
+                } else {
+                    kept.last_mut().unwrap().1 = true;
+                }
+                if e < end && e < n {
+                    kept.push((e, false));
+                }
+            }
+            None => {}
         }
+        if end < n {
+            kept.push((end, false));
+        }
+        i = end;
     }
-    keep.extend(kept.iter().enumerate().filter(|(_, k)| **k).map(|(i, _)| base + i));
+    kept
 }
+
 
 /// The convex hull of `points` (Andrew's chain); empty for fewer than three apart.
 fn hull_of(points: &[P]) -> Vec<P> {
@@ -565,12 +644,13 @@ struct Walked {
 /// along it by a Gaussian of its own deviation `sigma` (so that the polygon's own corners on a
 /// curve run together into the curve), then walked again in steps of one pixel of its own
 /// length (smoothed, a slanted side's steps are shorter than the pixels were).
-fn walk(points: &[P], sigma: &[f32]) -> Walked {
+fn walk(points: &[P], sigma: &[f32], work: &mut u64) -> Walked {
     let n = points.len();
     let smooth: Vec<P> = (0..n)
         .map(|i| {
             let s = sigma[i];
             let reach = ((3.0 * s).ceil() as usize).min(n / 2);
+            *work += 1 + reach as u64;
             let (mut at, mut total) = ([points[i][0], points[i][1]], 1.0f32);
             for k in 1..=reach {
                 let w = specula_core::dmath::exp(-0.5 * (k as f32 / s) * (k as f32 / s));
@@ -602,6 +682,7 @@ fn walk(points: &[P], sigma: &[f32]) -> Walked {
             }
         }
     }
+    *work += (n + even.len()) as u64;
     Walked { even, from }
 }
 
@@ -702,6 +783,7 @@ fn joints(turn: &[f32], way: f32, k: usize) -> Vec<bool> {
 /// limb meets the body and whether or not the outline turns inward there. Along a taper it
 /// keeps rising (by more than [`PLATEAU_RISE`] over the length), to the taper's foot: a
 /// spike's tip is of the spike.
+#[cfg(test)]
 fn first_plateau(raw: &[f32], at: usize, cyclic: bool) -> f32 {
     let n = raw.len();
     let limit = if cyclic { n / 2 } else { n };
@@ -732,16 +814,123 @@ fn first_plateau(raw: &[f32], at: usize, cyclic: bool) -> f32 {
     most
 }
 
+/// The greatest of any run of a sequence, in constant time once built (a sparse table: the
+/// greatest of each run of a power of two long).
+struct Greatest {
+    levels: Vec<Vec<f32>>,
+}
+
+impl Greatest {
+    fn new(v: &[f32], work: &mut u64) -> Greatest {
+        let mut levels = vec![v.to_vec()];
+        let mut w = 1;
+        while 2 * w <= v.len() {
+            let last = &levels[levels.len() - 1];
+            let next: Vec<f32> = (0..=v.len() - 2 * w).map(|i| last[i].max(last[i + w])).collect();
+            *work += next.len() as u64;
+            levels.push(next);
+            w *= 2;
+        }
+        Greatest { levels }
+    }
+
+    /// The greatest of `a..=b`.
+    fn of(&self, a: usize, b: usize) -> f32 {
+        let k = (usize::BITS - 1 - (b - a + 1).leading_zeros()) as usize;
+        self.levels[k][a].max(self.levels[k][b + 1 - (1 << k)])
+    }
+}
+
+/// How thick the part is that each step of `raw` (the thickness under each step of a part's
+/// outline; `cyclic` when the part is the whole outline) is of ([`PLATEAU`]): the least of
+/// the thicknesses `T` of a ladder (from [`MIN_THICK`], each [`LADDER`] times the last, and the
+/// part's own greatest) such that, from the nearest step at least `(1 - PLATEAU_RISE) T - 0.5`
+/// thick, the outline is no thicker than `T` for [`PLATEAU`]` T` steps further each way; and
+/// the part is that thick there: the greatest thickness in that reach. ...
+fn plateaus(raw: &[f32], cyclic: bool, work: &mut u64) -> Vec<f32> {
+    let n = raw.len();
+    let most = raw.iter().copied().fold(0.0f32, f32::max);
+    // (A closed part is read three times round, so that a reach is a run of the sequence.)
+    let seq: Vec<f32> = if cyclic { raw.iter().chain(raw).chain(raw).copied().collect() } else { raw.to_vec() };
+    let base = if cyclic { n } else { 0 };
+    let table = Greatest::new(&seq, work);
+    // The greatest within `reach` steps of step `i` each way (the whole part once the reach
+    // goes round it, or past both its ends).
+    let within = |i: usize, reach: usize| -> f32 {
+        if cyclic {
+            if 2 * reach + 1 >= n { most } else { table.of(base + i - reach, base + i + reach) }
+        } else {
+            table.of(i.saturating_sub(reach), (i + reach).min(n - 1))
+        }
+    };
+    let mut ladder: Vec<f32> = Vec::new();
+    let mut t = MIN_THICK;
+    while t < most {
+        ladder.push(t);
+        t *= LADDER;
+    }
+    ladder.push(most);
+    let mut out = vec![f32::NAN; n];
+    let mut near = vec![usize::MAX; seq.len()];
+    for t in ladder {
+        if t < MIN_THICK {
+            break;
+        }
+        // How far each step is from the nearest one at least so thick.
+        let floor = (1.0 - PLATEAU_RISE) * t - 0.5;
+        let mut last: Option<usize> = None;
+        for (j, v) in seq.iter().enumerate() {
+            if *v >= floor {
+                last = Some(j);
+            }
+            near[j] = last.map_or(usize::MAX, |l| j - l);
+        }
+        last = None;
+        for j in (0..seq.len()).rev() {
+            if seq[j] >= floor {
+                last = Some(j);
+            }
+            if let Some(l) = last {
+                near[j] = near[j].min(l - j);
+            }
+        }
+        *work += 2 * seq.len() as u64;
+        let span = (PLATEAU * t).ceil() as usize;
+        for i in 0..n {
+            *work += 1;
+            if !out[i].is_nan() || raw[i] > t {
+                continue;
+            }
+            let r = near[base + i];
+            if r == usize::MAX {
+                continue;
+            }
+            let reach = r + span;
+            let m = within(i, reach.min(n));
+            if m <= t {
+                out[i] = m;
+            }
+        }
+    }
+    // (Where no rung holds, the part is thinner than is read: it is as thick as it is at most.)
+    for v in out.iter_mut() {
+        if v.is_nan() {
+            *v = most;
+        }
+    }
+    out
+}
+
 /// Each step's part (the outline between two joints; [`JOINT`] at a joint) and how thick the
 /// part is there ([`first_plateau`]). A part's first and last few steps are read as no
 /// thicker than the step within them (a joint's inside corner is touched by the thicker
 /// part's discs). A joint's steps take the thinner of the two parts beside them.
-fn parts(joint: &[bool], raw: &[f32]) -> (Vec<u32>, Vec<f32>) {
+fn parts(joint: &[bool], raw: &[f32], work: &mut u64) -> (Vec<u32>, Vec<f32>) {
     let count = raw.len();
     let mut part = vec![JOINT; count];
     let mut host = vec![0.0f32; count];
     let Some(start) = (0..count).find(|i| joint[*i]) else {
-        return (vec![0; count], (0..count).map(|i| first_plateau(raw, i, true)).collect());
+        return (vec![0; count], plateaus(raw, true, work));
     };
     let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut i = 1;
@@ -758,6 +947,7 @@ fn parts(joint: &[bool], raw: &[f32]) -> (Vec<u32>, Vec<f32>) {
         runs.push((start + i, len));
         i += len;
     }
+    *work += count as u64;
     for (id, (a, len)) in runs.iter().enumerate() {
         let margin = (len / 8).min(JOINT_MARGIN);
         let mut own: Vec<f32> = (0..*len).map(|k| raw[(a + k) % count]).collect();
@@ -765,28 +955,55 @@ fn parts(joint: &[bool], raw: &[f32]) -> (Vec<u32>, Vec<f32>) {
             own[k] = own[k].min(own[margin]);
             own[len - 1 - k] = own[len - 1 - k].min(own[len - 1 - margin]);
         }
-        for k in 0..*len {
+        for (k, t) in plateaus(&own, false, work).into_iter().enumerate() {
             part[(a + k) % count] = id as u32;
-            host[(a + k) % count] = first_plateau(&own, k, false);
+            host[(a + k) % count] = t;
         }
     }
-    // (A joint's steps, from the parts beside it.)
-    for i in 0..count {
-        if part[i] == JOINT {
-            let back = (1..count).map(|k| (i + count - k) % count).find(|j| part[*j] != JOINT);
-            let on = (1..count).map(|k| (i + k) % count).find(|j| part[*j] != JOINT);
-            host[i] = match (back, on) {
-                (Some(b), Some(o)) => host[b].min(host[o]),
-                _ => raw[i],
-            };
+    // (A joint's steps, from the parts beside it: the nearest part's thickness each way, in
+    // two walks twice round.)
+    let mut back = vec![f32::NAN; count];
+    let mut last = f32::NAN;
+    for k in 0..2 * count {
+        let j = (start + k) % count;
+        if part[j] != JOINT {
+            last = host[j];
+        } else {
+            back[j] = last;
         }
     }
+    last = f32::NAN;
+    for k in (0..2 * count).rev() {
+        let j = (start + k) % count;
+        if part[j] != JOINT {
+            last = host[j];
+        } else if !(back[j].is_nan() || last.is_nan()) {
+            host[j] = back[j].min(last);
+        } else {
+            host[j] = raw[j];
+        }
+    }
+    *work += 4 * count as u64;
     (part, host)
 }
 
 /// One silhouette's shape language. `None` for an empty mask, one too large to trace, or a
 /// piece too small to have a shape (under [`MIN_SIZE`] pixels across).
 pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
+    of_mask_counted(m).0
+}
+
+/// What [`of_mask`] reads, and how much work it took to read it: the steps of every loop it
+/// ran, in all (for the tests that hold its cost to the size of the mask and the length of
+/// the outline).
+#[doc(hidden)]
+pub fn of_mask_counted(m: &Mask) -> (Option<ShapeLanguage>, u64) {
+    let mut work = 0u64;
+    let read = read(m, &mut work);
+    (read, work)
+}
+
+fn read(m: &Mask, work: &mut u64) -> Option<ShapeLanguage> {
     let (points, inside) = outline(m)?;
     // The shape's size is its greatest width: the same whichever way it is turned. (The
     // longer side of the box round it grows by two fifths as a square is turned to stand on
@@ -794,12 +1011,16 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
     // one angle and a corner at another. Its second review.)
     let hull = hull_of(&points);
     let size = greatest_width(&hull);
+    // (The outline, the flood that finds the piece, the hull and every pair of its points.)
+    *work += (m.w as u64 + 1) * (m.h as u64 + 1) * 4 + points.len() as u64 * 4 + (hull.len() * hull.len()) as u64;
     if size < MIN_SIZE {
         return None;
     }
     // How thick the piece is: the discs that fill it. What takes the pixels out of the outline
     // below is sized by the shape, or by its greatest thickness where it is all thin.
     let spine = spine(&distances(&inside, m.w as usize, m.h as usize), m.w as usize, m.h as usize);
+    // (The distances, three passes over the pixels, and the spine, sixteen neighbours a pixel.)
+    *work += 20 * (m.w as u64) * (m.h as u64) + spine.len() as u64;
     let thickest = spine.first().map_or(0.0, |s| s.2);
     if thickest < MIN_THICK {
         return None;
@@ -809,14 +1030,7 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
     // stays within a pixel of it (a slanted side, whose pixels step, is then one straight
     // side: smoothing alone left a ripple along it that read as a gentle curve, and a box
     // turned five degrees was a quarter round), and walked again a pixel at a time.
-    let far = (0..points.len()).max_by(|a, b| dist(points[*a], points[0]).total_cmp(&dist(points[*b], points[0])).then(b.cmp(a)))?;
-    let mut kept: Vec<usize> = Vec::new();
-    straighten(&points[..=far], STRAIGHTEN_PX, 0, &mut kept);
-    kept.pop();
-    let mut back: Vec<P> = points[far..].to_vec();
-    back.push(points[0]);
-    straighten(&back, STRAIGHTEN_PX, far, &mut kept);
-    kept.pop();
+    let kept = runs(&points, STRAIGHTEN_PX, (STRAIGHT_RUN * scale).max(8.0), work);
     if kept.len() < 3 {
         return None;
     }
@@ -825,12 +1039,11 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
     // corner rounded by a sixteenth of the size read as round or as square by the angle the
     // box was turned to (its second review). A curve keeps its pixels, and the smoothing
     // below, which is as long as their steps there, takes them out.
-    let long = (STRAIGHT_RUN * scale).max(8.0);
     let mut walked: Vec<P> = Vec::new();
-    for (k, i) in kept.iter().enumerate() {
-        let j = kept[(k + 1) % kept.len()];
+    for (k, (i, side)) in kept.iter().enumerate() {
+        let j = kept[(k + 1) % kept.len()].0;
         let (a, b) = (points[*i], points[j % points.len()]);
-        if dist(a, b) >= long {
+        if *side {
             let steps = (dist(a, b).round() as usize).max(1);
             walked.extend((0..steps).map(|k| [a[0] + (b[0] - a[0]) * k as f32 / steps as f32, a[1] + (b[1] - a[1]) * k as f32 / steps as f32]));
         } else {
@@ -851,15 +1064,20 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
     // leap in the thickness along the outline, which flickered as limbs and necks turned.)
     let sigma_g = (SMOOTH * scale).max(2.0);
     let chord_g = ((CHORD * scale).round() as usize).max(1);
-    let coarse = walk(&points, &vec![sigma_g; points.len()]);
+    let coarse = walk(&points, &vec![sigma_g; points.len()], work);
     if coarse.even.len() < 8 * chord_g.max(2) {
         return None;
     }
     let turn_g = turning(&coarse.even, &vec![chord_g; coarse.even.len()]);
-    let way = if turn_g.iter().sum::<f32>() >= 0.0 { 1.0f32 } else { -1.0 };
-    let raw_g = median5(&thickness(&spine, &coarse.even, w, h));
+    // (The turning, the joints and the median, a few walks round the outline.)
+    *work += 12 * coarse.even.len() as u64;
+    // (Its own way round, from the area the traced outline holds: the sum of its turning says
+    // the same of a clean outline, and the opposite of one that a straightened run has made
+    // loop on itself at a sharp tip, where the whole outline then read inside out.)
+    let way = if area(&outline_points) >= 0.0 { 1.0f32 } else { -1.0 };
+    let raw_g = median5(&thickness(&spine, &coarse.even, w, h, work));
     let joint_g = joints(&turn_g, way, (2.0 * sigma_g).ceil() as usize + chord_g);
-    let (part_g, host_g) = parts(&joint_g, &raw_g);
+    let (part_g, host_g) = parts(&joint_g, &raw_g, work);
     // (Carried back to the outline's own points, to smooth each part by its thickness.)
     let n = points.len();
     let (mut host_w, mut part_w) = (vec![-1.0f32; n], vec![JOINT; n]);
@@ -880,7 +1098,7 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
     // whole shape's size, a narrow tooth's square end was rounded into a half disc before its
     // own window saw it, and a comb read as points: its fourth review.)
     let sigma_w: Vec<f32> = host_w.iter().map(|t| (SMOOTH * SPAN * t).clamp(2.0, sigma_g)).collect();
-    let fine = walk(&points, &sigma_w);
+    let fine = walk(&points, &sigma_w, work);
     let count = fine.even.len();
     if count < 8 * chord_g.max(2) {
         return None;
@@ -987,6 +1205,8 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
             (sides / (back + on + 1) as f32 / SIDED).min(1.0)
         })
         .collect();
+    // (Each step's reach, its sides and its window's five spans, each a walk the length of its reach.)
+    *work += (0..count).map(|i| (4 * (half[i] + blur[i]) + 2 * half[i] + 1) as u64).sum::<u64>() + 10 * count as u64;
     let mut shares = [0.0f32; 3];
     let mut corners = 0u32;
     for (i, by) in out.iter().copied().enumerate() {
@@ -997,8 +1217,14 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
         // review: a stalk shorter than the rim's window took a quarter of a disc as a point).
         let (back, on) = extent[i];
         let (mut most, mut corner, mut at_most) = (0.0f32, 0.0f32, i);
+        *work += (back + on + 1) as u64;
         for k in 0..=back + on {
             let j = (i + count - back + k) % count;
+            // (Not from a part much thinner than its own: a stalk's tip is not its rim's corner,
+            // whether or not a joint was found where it stands.)
+            if host[j] < THINNER * host[i] {
+                continue;
+            }
             if cornered[j] > most {
                 (most, at_most) = (cornered[j], j);
             }

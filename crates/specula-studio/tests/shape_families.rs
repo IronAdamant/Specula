@@ -145,6 +145,123 @@ fn families() -> Vec<(String, F)> {
     p("disc whisker 30px".into(), Box::new(|x, y| x.hypot(y) < 0.39 || (x < -0.38 && x > -0.39 - 30.0 / 512.0 && y.abs() < 1.0 / 1024.0)));
     p("fence".into(), Box::new(|x, y| (x.abs() < 0.44 && ((y + 0.1).abs() < 0.02 || (y - 0.15).abs() < 0.02)) || ((0..5).any(|k| (x - (-0.36 + 0.18 * k as f32)).abs() < 0.03) && y > -0.30 && y < 0.30) || (0..5).any(|k| within(&[[-0.36 + 0.18 * k as f32 - 0.03, -0.30], [-0.36 + 0.18 * k as f32 + 0.03, -0.30], [-0.36 + 0.18 * k as f32, -0.36]], x, y))));
     drop(p);
+    v.extend(reviewed());
+    v
+}
+
+fn hash2(i: i32, seed: u32) -> f32 {
+    let mut h = (i as u32).wrapping_mul(2654435761) ^ seed.wrapping_mul(0x9e3779b9);
+    h ^= h >> 15;
+    h = h.wrapping_mul(2246822519);
+    h ^= h >> 13;
+    (h % 10000) as f32 / 10000.0 - 0.5
+}
+
+/// The shapes of the fourth and fifth reviews' probes that were not among the families, as
+/// they drew them (every review's probe shape is a permanent test: its sixth version's brief).
+fn reviewed() -> Vec<(String, F)> {
+    let mut v: Vec<(String, F)> = Vec::new();
+    let mut p = |n: String, f: F| v.push((n, f));
+    // The fifth review: figures, tapers, smooth outlines, holes, lobes, crescents, gears.
+    for th in [6.0f32, 8.0, 10.0, 12.0, 16.0, 24.0] {
+        let r = th / 2.0 / 512.0;
+        p(format!("fig diag arms {th}px"), Box::new(move |x, y| x.hypot(y + 0.32) < 0.09 || rounded(x, y + 0.07, 0.12, 0.15, 0.01) || capsule(x, y, [-0.1, -0.2], [-0.34, 0.02], r) || capsule(x, y, [0.1, -0.2], [0.34, 0.02], r) || capsule(x, y, [-0.06, 0.07], [-0.14, 0.42], 0.04) || capsule(x, y, [0.06, 0.07], [0.14, 0.42], 0.04)));
+    }
+    p("fig tapered limbs".into(), Box::new(|x, y| x.hypot(y + 0.32) < 0.09 || rounded(x, y + 0.07, 0.12, 0.15, 0.01) || cone(x, y, [-0.1, -0.2], [-0.34, 0.02], 0.04, 0.008) || cone(x, y, [0.1, -0.2], [0.34, 0.02], 0.04, 0.008) || cone(x, y, [-0.06, 0.07], [-0.14, 0.42], 0.06, 0.015) || cone(x, y, [0.06, 0.07], [0.14, 0.42], 0.06, 0.015)));
+    p("dog tapered legs".into(), Box::new(|x, y| ell(x, y, 0.0, -0.05, 0.28, 0.12) || (x + 0.32).hypot(y + 0.18) < 0.09 || [-0.2f32, 0.2].iter().any(|lx| cone(x, y, [*lx, 0.0], [*lx + 0.03, 0.36], 0.05, 0.015)) || cone(x, y, [0.26, -0.08], [0.42, -0.25], 0.03, 0.008)));
+    p("fig box limbs".into(), Box::new(|x, y| rounded(x, y + 0.32, 0.08, 0.08, 0.005) || rounded(x, y + 0.07, 0.12, 0.15, 0.005) || ((x.abs() - 0.18).abs() < 0.03 && (-0.2..0.1).contains(&y)) || ((x.abs() - 0.06).abs() < 0.035 && (0.08..0.42).contains(&y))));
+    p("pear".into(), Box::new(|x, y| x.hypot(y - 0.15) < 0.27 || x.hypot(y + 0.17) < 0.16 || (y > -0.17 && y < 0.15 && x.abs() < 0.16 + 0.11 * ((y + 0.17) / 0.32).powi(2))));
+    p("bowling pin".into(), Box::new(|x, y| { let t = (y + 0.44) / 0.88; if !(0.0..=1.0).contains(&t) { return false; } let w = 0.06 + 0.10 * (-((t - 0.12) / 0.09).powi(2)).exp() + 0.17 * (-((t - 0.68) / 0.2).powi(2)).exp(); x.abs() < w && !(t > 0.97 && x.abs() > 0.08) }));
+    p("teardrop smooth".into(), Box::new(|x, y| { let t = (y + 0.44) / 0.86; (0.0..=1.0).contains(&t) && x.abs() < 0.6 * (t * (1.0 - t)).sqrt() * t.powf(0.3) }));
+    p("vase smooth".into(), Box::new(|x, y| { let t = (y + 0.42) / 0.84; (0.0..=1.0).contains(&t) && x.abs() < 0.08 + 0.16 * (PI * t).sin().powi(2) + 0.06 * (1.0 - t).powi(6) }));
+    p("ring".into(), Box::new(|x, y| (0.25..0.43).contains(&x.hypot(y))));
+    p("box with hole".into(), Box::new(|x, y| x.abs() < 0.32 && y.abs() < 0.32 && !(x.abs() < 0.15 && y.abs() < 0.15)));
+    p("trefoil".into(), Box::new(|x, y| (0..3).any(|k| { let a = TAU * k as f32 / 3.0 - PI / 2.0; (x - 0.17 * a.cos()).hypot(y - 0.17 * a.sin()) < 0.25 })));
+    p("6 lobes sharp cusps".into(), Box::new(|x, y| (0..6).any(|k| { let a = TAU * k as f32 / 6.0; (x - 0.3 * a.cos()).hypot(y - 0.3 * a.sin()) < 0.15 }) || x.hypot(y) < 0.25));
+    for (name, off, r2) in [("crescent thin", 0.10f32, 0.40f32), ("crescent mid", 0.18, 0.36), ("crescent fat", 0.25, 0.30)] {
+        p(name.into(), Box::new(move |x, y| x.hypot(y) < 0.44 && (x - off).hypot(y) > r2));
+    }
+    for teeth in [8usize, 12, 24] {
+        p(format!("gear tri teeth {teeth}"), Box::new(move |x, y| { let r = x.hypot(y); let a = (y.atan2(x) / TAU * teeth as f32).rem_euclid(1.0); r < 0.33 + 0.1 * (1.0 - (2.0 * a - 1.0).abs()) }));
+        p(format!("gear sq teeth {teeth}"), Box::new(move |x, y| { let r = x.hypot(y); let a = (y.atan2(x) / TAU * teeth as f32).rem_euclid(1.0); r < 0.34 || (r < 0.43 && a < 0.5) }));
+    }
+    p("L thin".into(), Box::new(|x, y| ((-0.3..-0.24).contains(&x) && y.abs() < 0.4) || ((-0.3..0.3).contains(&x) && (0.34..0.4).contains(&y))));
+    p("T".into(), Box::new(|x, y| (x.abs() < 0.4 && (-0.4..-0.28).contains(&y)) || (x.abs() < 0.06 && (-0.4..0.4).contains(&y))));
+    p("plus thin".into(), Box::new(|x, y| (x.abs() < 0.43 && y.abs() < 0.03) || (x.abs() < 0.03 && y.abs() < 0.43)));
+    p("plus thick".into(), Box::new(|x, y| (x.abs() < 0.43 && y.abs() < 0.15) || (x.abs() < 0.15 && y.abs() < 0.43)));
+    for (n, inner) in [(3usize, 0.18f32), (4, 0.18), (6, 0.25), (8, 0.3), (16, 0.33), (16, 0.40), (24, 0.40)] {
+        let s = star(n, 0.45, inner);
+        p(format!("star {n} inner {inner}"), Box::new(move |x, y| within(&s, x, y)));
+    }
+    for n in [3usize, 4, 5, 7, 9] {
+        let s = regpoly(n, 0.44);
+        p(format!("polygon {n}"), Box::new(move |x, y| within(&s, x, y)));
+    }
+    for (hx, hy) in [(0.4f32, 0.2f32), (0.25, 0.4)] {
+        for seed in [3u32, 11] {
+            for amp_px in [1.0f32, 2.0] {
+                let amp = amp_px / 512.0;
+                p(format!("noisy box {:.1}x{:.1} {amp_px}px s{seed}", 2.0 * hx, 2.0 * hy), Box::new(move |x, y| { let a = (y.atan2(x) / TAU + 0.5) * 140.0; let i = a.floor(); let t = a - i; let n = hash2(i as i32, seed) * (1.0 - t) + hash2(i as i32 + 1, seed) * t; x.abs() < hx + 2.0 * amp * n && y.abs() < hy + 2.0 * amp * n }));
+            }
+        }
+    }
+    p("box edge pixel noise".into(), Box::new(|x, y| { let a = (y.atan2(x) / TAU + 0.5) * 1400.0; let n = hash2(a as i32, 5); x.abs() < 0.3 + n / 512.0 && y.abs() < 0.25 + n / 512.0 }));
+    for tooth in [10.0f32, 12.0, 14.0, 16.0] {
+        let per = 2.0 * tooth / 512.0;
+        p(format!("comb {tooth}px long .12"), Box::new(move |x, y| x.abs() < 0.4 && ((0.0..0.12).contains(&y) || ((-0.12..0.0).contains(&y) && ((x + 0.4) / per).fract() < 0.5))));
+        p(format!("rake {tooth}px tines .3"), Box::new(move |x, y| x.abs() < 0.4 && ((0.0..0.05).contains(&y) || ((-0.30..0.0).contains(&y) && ((x + 0.4) / per).fract() < 0.5))));
+    }
+    // The fifth review's stalks of every width by length (an apple is a disc of 0.38).
+    for th in [6.0f32, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 16.0] {
+        for len in [0.02f32, 0.03, 0.04, 0.06, 0.09, 0.1] {
+            let hw = th / 1024.0;
+            p(format!("stalk {th}px len {len}"), Box::new(move |x, y| x.hypot(y - 0.04) < 0.38 || (x.abs() < hw && y < 0.0 && y > -0.34 - len)));
+        }
+    }
+    for th in [7.0f32, 8.0, 9.0] {
+        let r = th / 2.0 / 512.0;
+        p(format!("snowman diag capsule arms {th}px"), Box::new(move |x, y| x.hypot(y - 0.2) < 0.24 || x.hypot(y + 0.16) < 0.17 || capsule(x, y, [-0.12, -0.12], [-0.40, -0.30], r) || capsule(x, y, [0.12, -0.12], [0.40, -0.30], r)));
+        p(format!("snowman horiz capsule arms {th}px"), Box::new(move |x, y| x.hypot(y - 0.2) < 0.24 || x.hypot(y + 0.16) < 0.17 || capsule(x, y, [-0.44, -0.16], [0.44, -0.16], r)));
+    }
+    // Lenses: two arcs meeting at tips of the angle named.
+    for tip in [50.0f32, 70.0, 90.0, 110.0, 130.0] {
+        let c = 0.42f32;
+        let d = c / (tip / 2.0).to_radians().tan();
+        let r = (d * d + c * c).sqrt();
+        p(format!("lens tip {tip}"), Box::new(move |x, y| (x + d).hypot(y) < r && (x - d).hypot(y) < r));
+    }
+    for ratio in [3.0f32, 3.3, 4.0] {
+        let ry = 0.40 / ratio;
+        p(format!("ellipse alone {ratio}:1"), Box::new(move |x, y| (x / 0.4).hypot((y - 0.08) / ry) < 1.0));
+        p(format!("cumulus base {ratio}:1"), Box::new(move |x, y| (x / 0.4).hypot((y - 0.08) / ry) < 1.0 || (x + 0.12).hypot(y + 0.02) < 0.16 || (x - 0.12).hypot(y + 0.06) < 0.19));
+    }
+    p("cloud flat bottom".into(), Box::new(|x, y| y < 0.15 && ((x + 0.2).hypot(y - 0.05) < 0.17 || (x - 0.2).hypot(y - 0.05) < 0.17 || x.hypot(y + 0.05) < 0.22)));
+    p("sword square guard no pommel".into(), Box::new(|x, y| within(&[[-0.035, -0.10], [0.035, -0.10], [0.035, 0.34], [0.0, 0.44], [-0.035, 0.34]], x, y) || (x.abs() < 0.15 && (y + 0.12).abs() < 0.02) || (x.abs() < 0.02 && (-0.40..-0.10).contains(&y))));
+    p("pointed arch window".into(), Box::new(|x, y| (x.abs() < 0.2 && (0.0..0.42).contains(&y)) || (y < 0.0 && (x + 0.2).hypot(y) < 0.4 && (x - 0.2).hypot(y) < 0.4)));
+    for tip in [0.06f32, 0.045, 0.03, 0.02] {
+        p(format!("lone club tip {tip}"), Box::new(move |x, y| cone(x, y, [0.0, 0.36], [0.0, -0.36], 0.06, tip)));
+        p(format!("disc + club arm tip {tip}"), Box::new(move |x, y| x.hypot(y - 0.14) < 0.28 || cone(x, y, [0.0, 0.0], [0.0, -0.40], 0.06, tip)));
+    }
+    p("disc + square stub 60px".into(), Box::new(|x, y| x.hypot(y - 0.08) < 0.34 || (x.abs() < 30.0 / 512.0 && (-0.42..0.0).contains(&y))));
+    // The fourth review: rims that wobble further, whiskers by width and count, tables' legs.
+    for amp_px in [3.0f32, 4.0, 6.0] {
+        for freq in [40.0f32, 90.0, 200.0] {
+            let amp = amp_px / 512.0;
+            p(format!("noisy disc {amp_px}px f{freq}"), Box::new(move |x, y| { let a = (y.atan2(x) / TAU + 0.5) * freq; let i = a.floor(); let t = a - i; let n = hash(i as i32) * (1.0 - t) + hash(i as i32 + 1) * t; x.hypot(y) < 0.40 + 2.0 * amp * n }));
+            p(format!("noisy box {amp_px}px f{freq}"), Box::new(move |x, y| { let a = (y.atan2(x) / TAU + 0.5) * freq; let i = a.floor(); let t = a - i; let n = hash(i as i32 + 77) * (1.0 - t) + hash(i as i32 + 78) * t; x.abs() < 0.30 + 2.0 * amp * n && y.abs() < 0.30 + 2.0 * amp * n }));
+        }
+    }
+    for wpx in [1.0f32, 2.0, 3.0, 4.0, 6.0, 8.0] {
+        let hw = wpx / 512.0 / 2.0;
+        for count in [1usize, 2, 4] {
+            p(format!("disc + {count} whiskers {wpx}px"), Box::new(move |x, y| x.hypot(y) < 0.36 || ((0..count).any(|k| { let a = PI * k as f32 / count as f32 * if count == 1 { 1.0 } else { 2.0 }; let (u, v) = (x * a.cos() + y * a.sin(), -x * a.sin() + y * a.cos()); v.abs() < hw && u > 0.0 && u < 0.47 }))));
+        }
+    }
+    for leg_px in [8.0f32, 12.0, 16.0, 20.0, 25.0] {
+        let hw = leg_px / 1024.0;
+        p(format!("table legs {leg_px}px"), Box::new(move |x, y| (y < -0.13 && y > -0.21 && x.abs() < 0.33) || ((x.abs() - 0.28).abs() < hw && (-0.21..0.3).contains(&y))));
+    }
+    drop(p);
     v
 }
 
@@ -628,7 +745,8 @@ fn corpus() -> Vec<(&'static str, &'static str, F)> {
 /// The corpus swept every `step` degrees: each shape's name, the leads a person would give,
 /// and its sweep.
 fn corpus_swept(step: u32) -> Vec<(&'static str, &'static str, Sweep)> {
-    let all = corpus();
+    let only = std::env::var("ONLY").ok();
+    let all: Vec<_> = corpus().into_iter().filter(|(n, _, _)| only.as_ref().is_none_or(|o| o.split('|').any(|o| n.contains(o)))).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let out = std::sync::Mutex::new(Vec::new());
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(12);
@@ -696,4 +814,79 @@ fn the_corpus_fits_its_pictures() {
         }
     }
     assert!(bad.is_empty(), "reach the edge: {bad:?}");
+}
+
+/// The masks whose cost its reviews found worst, and the worst made since: coils of wire,
+/// combs of one-pixel teeth, spirals, fine branches, the whole picture.
+fn costly() -> Vec<(&'static str, Mask)> {
+    let from = |f: &dyn Fn(i32, i32) -> bool| {
+        let mut m = Mask::empty(512, 512);
+        for y in 0..512 {
+            for x in 0..512 {
+                m.on[(y * 512 + x) as usize] = f(x, y);
+            }
+        }
+        m
+    };
+    let coil = |wire: f32, pitch: f32| {
+        move |x: i32, y: i32| {
+            let (u, v) = (x as f32 - 256.0, y as f32 - 256.0);
+            let (r, a) = (u.hypot(v), v.atan2(u) + PI);
+            (u - 127.0).hypot(v) < 12.0 || (0..40).any(|k| { let rr = 115.0 + pitch * (a + TAU * k as f32) / TAU; (r - rr).abs() < wire / 2.0 && rr < 250.0 })
+        }
+    };
+    vec![
+        ("disc", from(&|x, y| (x as f32 - 255.5).hypot(y as f32 - 255.5) < 225.0)),
+        ("coil of 3px wire", from(&coil(3.0, 6.0))),
+        ("coil of 2.5px wire", from(&coil(2.5, 5.0))),
+        ("coil of 4px wire", from(&coil(4.0, 8.0))),
+        ("coil of 6px wire", from(&coil(6.0, 12.0))),
+        ("comb of 1px teeth, full height", from(&|x, y| (y > 2 && y < 14 && x > 2 && x < 509) || ((14..509).contains(&y) && x > 2 && x < 509 && x % 2 == 0))),
+        ("double comb of 1px teeth", from(&|x, y| (y > 250 && y < 262 && x > 2 && x < 509) || (((3..250).contains(&y) || (262..509).contains(&y)) && x > 2 && x < 509 && x % 2 == 0))),
+        ("comb of 1px teeth, a staircase", from(&|x, y| (y > 2 && y < 14 && x > 2 && x < 509) || ((14..509).contains(&y) && x > 2 && x < 509 && x % 2 == 0 && y < 14 + x))),
+        ("comb of 3px teeth, 1px gaps", from(&|x, y| (y > 2 && y < 14 && x > 2 && x < 509) || ((14..509).contains(&y) && x > 2 && x < 509 && x % 4 != 0))),
+        ("comb of 5px teeth, tapering", from(&|x, y| (y > 2 && y < 14 && x > 2 && x < 509) || ((14..509).contains(&y) && x > 2 && x < 509 && (x % 12) < 6 - (y - 14) / 100))),
+        ("big box and 1px comb", from(&|x, y| (y > 5 && y < 400 && x > 5 && x < 507) || ((400..500).contains(&y) && x > 5 && x < 507 && x % 2 == 0))),
+        ("square spiral", from(&|x, y| { let (cx, cy) = (x - 256, y - 256); let ring = cx.abs().max(cy.abs()); let band = ring / 10; band % 2 == 0 && !(cy > 0 && cx.abs() < 5 && band % 4 == 0) && ring < 250 })),
+        ("tapering spiral horn", from(&|x, y| { let (u, v) = (x as f32 - 256.0, y as f32 - 256.0); let r = u.hypot(v); let a = v.atan2(u); (0..6).any(|k| { let th = a + PI + TAU * k as f32; let rr = 20.0 + 6.0 * th; let w = 1.0 + 0.6 * th; (r - rr).abs() < w && rr < 250.0 }) })),
+        ("spiral of 9px", from(&|x, y| { let (u, v) = (x as f32 - 256.0, y as f32 - 256.0); let r = u.hypot(v); let a = v.atan2(u); (0..14).any(|k| { let rr = 30.0 + 18.0 / TAU * (a + PI + TAU * k as f32); (r - rr).abs() < 4.5 && rr < 250.0 }) })),
+        ("thirty deep lobes", from(&|x, y| { let (u, v) = (x as f32 - 256.0, y as f32 - 256.0); u.hypot(v) < 180.0 + 60.0 * (30.0 * v.atan2(u)).sin() })),
+        ("fine branches", from(&|x, y| { let (u, v) = (x as f32 - 256.0, y as f32); (u.abs() < 6.0 && v > 300.0) || (v < 300.0 && v > 40.0 && ((u / 5.0).round() * 5.0 - u).abs() < 1.2 && u.abs() < (300.0 - v) * 0.8) || (v > 290.0 && v < 305.0 && u.abs() < 220.0) })),
+        ("a sun of 200 hairs", from(&|x, y| { let (u, v) = (x as f32 - 256.0, y as f32 - 256.0); let r = u.hypot(v); r < 120.0 || (r < 250.0 && ((v.atan2(u) / TAU + 0.5) * 200.0).fract() < 0.5 * 2.0 / (r * TAU / 200.0)) })),
+        ("a box with a ragged rim", from(&|x, y| { let n = ((x * 7919 + y * 104729) % 97) as f32 / 97.0; (40..472).contains(&x) && (40..472).contains(&y) && !((x < 60 || x > 452 || y < 60 || y > 452) && n < 0.5) })),
+        ("a checkerboard over a box", from(&|x, y| ((100..412).contains(&x) && (100..412).contains(&y)) || ((x + y) % 2 == 0 && (x / 16 + y / 16) % 2 == 0))),
+        ("whole picture", from(&|_, _| true)),
+    ]
+}
+
+/// The pixels of a mask on its piece's edge (on, with a side neighbour off or off the picture):
+/// about the length of its outlines.
+fn edge_pixels(m: &Mask) -> u64 {
+    let (w, h) = (m.w as i32, m.h as i32);
+    let on = |x: i32, y: i32| x >= 0 && y >= 0 && x < w && y < h && m.on[(y * w + x) as usize];
+    (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|(x, y)| on(*x, *y) && !(on(x - 1, *y) && on(x + 1, *y) && on(*x, y - 1) && on(*x, y + 1))).count() as u64
+}
+
+/// (The work and time of each costly mask, as ratios: written to `specula-shape-cost.txt` in
+/// the temporary folder.)
+#[test]
+#[ignore = "times the measure; run in release"]
+fn cost_table() {
+    let mut out = String::new();
+    let cases = costly();
+    let time = |m: &Mask| {
+        let started = std::time::Instant::now();
+        for _ in 0..3 {
+            std::hint::black_box(of_mask(m));
+        }
+        started.elapsed().as_secs_f64() / 3.0
+    };
+    let disc = time(&cases[0].1);
+    for (name, m) in &cases {
+        let (_, work) = specula_studio::shape::of_mask_counted(m);
+        let t = time(m);
+        let (px, edge) = ((m.w * m.h) as u64, edge_pixels(m));
+        out += &format!("{name:34} {:8.1} ms {:6.2} times a disc   work {work:10}  {:5.1} a pixel  {:6.1} an edge pixel\n", t * 1000.0, t / disc, work as f64 / px as f64, work as f64 / edge.max(1) as f64);
+    }
+    std::fs::write(std::env::temp_dir().join("specula-shape-cost.txt"), out).unwrap();
 }
