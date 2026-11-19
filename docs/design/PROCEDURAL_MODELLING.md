@@ -65,7 +65,7 @@ Notes:
 
 ## Shapes by name (`specula-formae`, 2026-11-20)
 
-The shape library's forms (`crates/specula-formae`: plane figures, curves and solids by name,
+The shape library's forms ([FORMAE.md](FORMAE.md): `crates/specula-formae`, plane figures, curves and solids by name,
 each with its parameters) reach recipes two ways, beside the generators of tier 1, which stay as
 they are (no existing recipe changes):
 

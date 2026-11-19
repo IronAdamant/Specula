@@ -1,0 +1,187 @@
+//! The shape library's tools and items, tested in-process.
+
+use super::*;
+
+fn j(text: &str) -> Json {
+    Json::parse(text).unwrap()
+}
+
+fn ok(name: &str, args: &str) -> Json {
+    let r = if name == "formae_list" { list_tool(&j(args)) } else { get_tool(&j(args)) };
+    r.unwrap_or_else(|e| panic!("{name} {args}: {e}"))
+}
+
+/// The catalogue lists every form, page by page, under its ceiling, and the figure with the
+/// modeller's own fields for it.
+#[test]
+fn the_catalogue_lists_every_form_and_the_figure() {
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..100 {
+        let args = match &cursor {
+            None => r#"{"limit": 200}"#.to_string(),
+            Some(c) => format!(r#"{{"limit": 200, "cursor": "{c}"}}"#),
+        };
+        let a = ok("formae_list", &args);
+        assert!(a.to_string().len() <= MAX_ANSWER_BYTES);
+        for r in a.get("forms").and_then(Json::as_array).unwrap() {
+            seen.push(r.get("name").and_then(Json::as_str).unwrap().to_string());
+        }
+        let fig = a.get("figures").and_then(Json::as_array).unwrap();
+        let fields = fig[0].get("fields").and_then(Json::as_array).unwrap();
+        let names: Vec<&str> = fields.iter().filter_map(|f| f.get("name").and_then(Json::as_str)).collect();
+        let want: Vec<&str> = specula_model::shape_fields("figure").unwrap().iter().map(|f| f.0).collect();
+        assert!(!want.is_empty() && names == want, "{names:?} against {want:?}");
+        cursor = a.get("next_cursor").and_then(Json::as_str).map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let all: Vec<String> = formae::forms().iter().map(|f| f.name.to_string()).collect();
+    assert_eq!(seen, all);
+    let solids = ok("formae_list", r#"{"kind": "solid", "family": "platonic"}"#);
+    let rows = solids.get("forms").and_then(Json::as_array).unwrap();
+    assert!(!rows.is_empty() && rows.iter().all(|r| r.get("kind").and_then(Json::as_str) == Some("solid")));
+    let hearts = ok("formae_list", r#"{"word": "heart"}"#);
+    assert!(hearts.get("forms").and_then(Json::as_array).unwrap().iter().any(|r| r.get("name").and_then(Json::as_str) == Some("heart")));
+    assert!(list_tool(&j(r#"{"family": "nope"}"#)).is_err());
+    assert!(list_tool(&j(r#"{"limit": 1000}"#)).is_err());
+    assert!(list_tool(&j(r#"{"colour": "red"}"#)).is_err());
+}
+
+/// `formae_get` of every form and alias answers under its ceiling with its parameters, counts
+/// and snippets; an unknown word answers with the nearest; a count past what it builds is
+/// answered without the measures as built.
+#[test]
+fn every_form_is_answered_under_its_ceiling() {
+    let mut words: Vec<(String, &str)> = formae::forms().iter().map(|f| (f.name.to_string(), f.kind.name())).collect();
+    words.extend(formae::aliases().iter().map(|a| (a.name.to_string(), a.kind.name())));
+    for (w, k) in &words {
+        for detail in [8, 64] {
+            let a = ok("formae_get", &format!(r#"{{"name": "{w}", "kind": "{k}", "detail": {detail}}}"#));
+            assert!(a.to_string().len() <= MAX_ANSWER_BYTES, "{w}");
+            assert!(a.get("params").is_some() && a.get("count").is_some() && a.get("snippets").is_some() && a.get("kin").is_some(), "{w}: {a}");
+        }
+    }
+    let e = get_tool(&j(r#"{"name": "icosahedrn"}"#)).unwrap_err();
+    assert!(e.contains("icosahedron"), "{e}");
+    let e = get_tool(&j(r#"{"name": "torus", "args": {"tub": 1}}"#)).unwrap_err();
+    assert!(e.contains("tube"), "{e}");
+    let big = ok("formae_get", r#"{"name": "sphere", "detail": 4096}"#);
+    assert!(big.get("built").and_then(|b| b.get("not_built")).is_some(), "{big}");
+}
+
+/// Measures as built and in closed form are the library's: a ball's volume.
+#[test]
+fn a_balls_measures_are_the_librarys() {
+    let a = ok("formae_get", r#"{"name": "sphere", "args": {"radius": 2}, "detail": 64}"#);
+    let closed = a.get("closed").and_then(|c| c.get("size")).and_then(Json::as_f64).unwrap();
+    assert!((closed - 4.0 / 3.0 * std::f64::consts::PI * 8.0).abs() < 1e-9, "{closed}");
+    let built = a.get("built").and_then(|b| b.get("measures")).and_then(|m| m.get("size")).and_then(Json::as_f64).unwrap();
+    assert!(built < closed && built > 0.98 * closed, "{built} against {closed}");
+}
+
+/// The 2D items by a form's name: a heart filled; an annulus with its hole; a curve stroked and
+/// refused a fill; a solid drawn, its faces shaded; a solid in layers; refusals as data; the
+/// canonical description is the name and the numbers, and parses back to itself.
+#[test]
+fn shape2d_items_by_name() {
+    use crate::two_d::Shape2dSpec;
+    let parse = |t: &str| Shape2dSpec::parse(&j(t));
+    let heart = parse(r##"{"items": [{"form": "heart", "detail": 32, "at": [1, 2], "scale": 0.5, "fill": "#ff0000"}]}"##).unwrap();
+    assert!(heart.mesh().is_some_and(|m| !m.indices.is_empty()));
+    assert_eq!(heart.json.to_string(), parse(&heart.json.to_string()).unwrap().json.to_string());
+    let canon = heart.json.to_string();
+    assert!(canon.contains("\"form\":\"heart\"") && canon.contains("\"detail\":32") && !canon.contains("points"), "{canon}");
+    let ring = parse(r##"{"items": [{"form": "annulus", "fill": "#00ff00"}]}"##).unwrap();
+    assert!(ring.mesh().is_some_and(|m| !m.indices.is_empty()));
+    assert!(parse(r##"{"items": [{"form": "sine_wave", "stroke": {"width": 0.02}}]}"##).is_ok());
+    let e = parse(r##"{"items": [{"form": "sine_wave", "fill": "#ffffff"}]}"##).map(|_| ()).unwrap_err();
+    assert!(e.contains("open"), "{e}");
+    let drawn = parse(r##"{"items": [{"solid": "icosahedron", "view": "isometric", "fill": "#8c96a3"}]}"##).unwrap();
+    assert!(drawn.mesh().is_some_and(|m| !m.indices.is_empty()));
+    let layered = parse(r##"{"items": [{"solid": "torus", "detail": 16, "layers": {"count": 6, "axis": "y", "step": [0, 0.05]}, "fill": "#8c96a3"}]}"##).unwrap();
+    assert!(layered.mesh().is_some_and(|m| !m.indices.is_empty()));
+    assert_eq!(layered.json.to_string(), parse(&layered.json.to_string()).unwrap().json.to_string());
+    let circle = r##"{"form": "circle", "detail": 4096, "fill": "#fff"}"##;
+    let many = format!(r#"{{"items": [{}]}}"#, [circle; 5].join(", "));
+    for (bad, says) in [
+        (r##"{"items": [{"form": "hart", "fill": "#fff"}]}"##, "heart"),
+        (r##"{"items": [{"form": "heart", "args": {"wide": 1}, "fill": "#fff"}]}"##, "takes"),
+        (r##"{"items": [{"form": "heart", "detail": 5000, "fill": "#fff"}]}"##, "detail"),
+        (r##"{"items": [{"solid": "sphere", "fill": "#fff"}]}"##, "view"),
+        (r##"{"items": [{"solid": "sphere", "detail": 4096, "view": "top", "fill": "#fff"}]}"##, "lower detail"),
+        (r##"{"items": [{"rect": [0, 0, 1, 1], "detail": 9, "fill": "#fff"}]}"##, "form's name"),
+        (many.as_str(), "left"),
+        (r##"{"items": [{"solid": "cube", "view": "isometric", "rotate": 30, "fill": "#fff"}]}"##, "view"),
+    ] {
+        let e = parse(bad).map(|_| ()).unwrap_err();
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+}
+
+/// The dearest item the limits allow is answered: each solid at the finest detail a 2D item
+/// takes, drawn from the front (where most are not convex there is a pair search) and cut into
+/// the most layers. What it did is said in the assertion's count, never a time.
+#[test]
+fn the_dearest_items_are_built_within_their_limits() {
+    use crate::two_d::Shape2dSpec;
+    let mut built = 0;
+    for f in formae::forms().iter().filter(|f| f.kind == Kind::Solid) {
+        let spec = Spec::of(Found { form: f, alias: None }, &[]).unwrap();
+        let best = [8u32, 16, 32, 64, 128, 256].into_iter().rfind(|d| spec.count(*d).is_ok_and(|c| c.points <= MAX_ITEM_SOLID_POINTS && c.parts <= MAX_DRAW_FACES));
+        let Some(d) = best else { continue };
+        for how in [r#""view": "front""#.to_string(), format!(r#""layers": {{"count": {MAX_ITEM_LAYERS}}}"#)] {
+            let text = format!(r##"{{"items": [{{"solid": "{}", "detail": {d}, {how}, "fill": "#8c96a3"}}]}}"##, f.name);
+            match Shape2dSpec::parse(&j(&text)) {
+                Ok(_) => built += 1,
+                Err(e) => assert!(e.contains("left") || e.contains("code"), "{text}: {e}"),
+            }
+        }
+    }
+    assert!(built > 100, "{built} of the dearest items built");
+}
+
+/// Every tool argument has a limit in its schema.
+#[test]
+fn the_tools_are_defined_with_bounds() {
+    let defs = definitions();
+    assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["formae_list", "formae_get"]);
+    for d in &defs {
+        let props = d.input_schema.get("properties").and_then(Json::as_object).unwrap();
+        for (name, prop) in props {
+            let bounded = match prop.get("type").and_then(Json::as_str).unwrap() {
+                "string" => prop.get("maxLength").is_some(),
+                "integer" => prop.get("maximum").is_some(),
+                "object" => prop.get("maxProperties").is_some(),
+                _ => true,
+            };
+            assert!(bounded, "{}.{name} has no limit", d.name);
+        }
+    }
+}
+
+/// The area a 2D item by name fills is its figure's as built (an annulus's hole is a hole), and
+/// a drawn solid's faces are shaded: more than one colour, each the item's darkened.
+#[test]
+fn an_items_fill_is_its_figure_and_its_faces_are_shaded() {
+    use crate::two_d::Shape2dSpec;
+    let area = |s: &Shape2dSpec| {
+        let m = s.mesh().unwrap();
+        m.indices.as_chunks::<3>().0.iter().map(|t| {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| m.vertices[i as usize].position);
+            0.5 * f64::from((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs()
+        }).sum::<f64>()
+    };
+    for word in ["annulus", "heart", "gear", "frame"] {
+        let s = Shape2dSpec::parse(&j(&format!(r##"{{"items": [{{"form": "{word}", "detail": 64, "fill": "#808080"}}], "aa": false}}"##))).unwrap();
+        let want = Spec::new(word, Some(Kind::Plane), &[]).unwrap().build(64).unwrap().measures().size.unwrap();
+        let got = area(&s);
+        assert!((got - want).abs() <= 1e-4 * want, "{word}: filled {got}, built {want}");
+    }
+    let drawn = Shape2dSpec::parse(&j(r##"{"items": [{"solid": "icosahedron", "view": "isometric", "fill": "#ffffff"}], "aa": false}"##)).unwrap();
+    let mut colours: Vec<[u8; 4]> = drawn.mesh().unwrap().vertices.iter().map(|v| v.color).collect();
+    colours.sort_unstable();
+    colours.dedup();
+    assert!(colours.len() > 2 && colours.iter().all(|c| c[0] < 255 && c[0] >= 63), "{colours:?}");
+}

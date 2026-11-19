@@ -205,6 +205,44 @@ pub fn shape_names() -> Vec<&'static str> {
     SHAPES.iter().map(|(n, _)| *n).collect()
 }
 
+/// A shape generator's fields as the recipe's own field table declares them: `(name, required,
+/// what it takes)`, for tools that show them (`formae_list`'s figure); `None` for no such
+/// generator.
+pub fn shape_fields(name: &str) -> Option<Vec<(&'static str, bool, &'static str)>> {
+    SHAPES.iter().find(|(n, _)| *n == name).map(|(_, fields)| fields.iter().map(|f| (f.name, f.required, f.kind.word())).collect())
+}
+
+impl Kind {
+    /// What a field of this kind takes, in a word or two.
+    fn word(self) -> &'static str {
+        match self {
+            Num => "number",
+            Int => "whole number",
+            Bool => "true or false",
+            Axis => "axis",
+            Color => "colour",
+            Vec2 => "[x, y]",
+            Vec3 => "[x, y, z]",
+            Scale => "number or [x, y, z]",
+            Nums => "numbers",
+            Rows => "rows of numbers",
+            Colors => "colours",
+            Outline => "outline",
+            Jitter => "jitter",
+            Operands => "shapes",
+            Sdf | Sdfs => "distance-field nodes",
+            Obj(_) => "object",
+            Objs(_) => "objects",
+            Material => "material",
+            Choice(_) => "one of a list",
+            ShapeOps => "a shape",
+            Ranges => "ranges",
+            Name => "name",
+            FormArgs => "a form's parameters",
+        }
+    }
+}
+
 /// Names of every operation.
 pub fn op_names() -> Vec<&'static str> {
     OPS.iter().map(|(n, _)| *n).collect()

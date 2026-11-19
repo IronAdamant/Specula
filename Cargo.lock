@@ -104,6 +104,7 @@ dependencies = [
  "specula-audio",
  "specula-balance",
  "specula-core",
+ "specula-formae",
  "specula-gltf",
  "specula-gpu",
  "specula-gustus",

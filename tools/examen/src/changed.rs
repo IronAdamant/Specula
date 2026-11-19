@@ -67,6 +67,8 @@ pub const READ_BY_TESTS: &[&str] = &[
     "games/sepulcra/DESIGN.md",
     // crates/specula/src/timeline.rs holds the timeline's design to its schema.
     "docs/design/TIMELINE.md",
+    // crates/specula-formae/tests/doc_table.rs holds the shape library's table of every form.
+    "docs/design/FORMAE.md",
 ];
 
 /// Folders whose every file is read by tests, by the tooling or by the live checks, whatever

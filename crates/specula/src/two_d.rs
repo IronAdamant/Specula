@@ -846,7 +846,9 @@ pub fn parse_tile_edits(layer: &str, cells: &Json) -> Result<TileEdits, String> 
 // ---------------------------------------------------------------------------------------------
 
 const SHAPE_KEYS: &[&str] = &["items", "tolerance", "aa", "z_layer"];
-const ITEM_KEYS: &[&str] = &["rect", "radius", "circle", "ellipse", "polygon", "polyline", "path", "fill", "stroke"];
+const ITEM_KEYS: &[&str] = &["rect", "radius", "circle", "ellipse", "polygon", "polyline", "path", "form", "solid", "args", "detail", "view", "layers", "at", "scale", "rotate", "fill", "stroke"];
+/// The keys only an item by a form's name takes (`crate::formae_tools::items`).
+const FORM_KEYS: &[&str] = &["args", "detail", "view", "layers", "at", "scale", "rotate"];
 const STROKE_KEYS: &[&str] = &["width", "color", "join", "cap", "miter_limit"];
 
 /// sRGB colour with alpha: `"#rrggbb"`, `"#rrggbbaa"`, `"#rgb"` or `[r, g, b(, a)]` in 0..1.
@@ -1123,13 +1125,40 @@ impl Shape2dSpec {
         for (i, item) in list.iter().enumerate() {
             let what = format!("shape2d.items[{i}]");
             keys(item, &what, ITEM_KEYS)?;
-            let geometry: Vec<&str> = ["rect", "circle", "ellipse", "polygon", "polyline", "path"].into_iter().filter(|k| opt(item, k).is_some()).collect();
+            let geometry: Vec<&str> = ["rect", "circle", "ellipse", "polygon", "polyline", "path", "form", "solid"].into_iter().filter(|k| opt(item, k).is_some()).collect();
             if geometry.len() != 1 {
-                return Err(format!("'{what}' needs exactly one of rect, circle, ellipse, polygon, polyline, path"));
+                return Err(format!("'{what}' needs exactly one of rect, circle, ellipse, polygon, polyline, path, form (a plane figure or curve of the shape library), solid (one of its solids, drawn or in layers)"));
             }
             let kind = geometry[0];
             let g = opt(item, kind).expect("present");
+            let by_name = kind == "form" || kind == "solid";
+            if let Some(k) = FORM_KEYS.iter().find(|k| !by_name && opt(item, k).is_some()) {
+                return Err(format!("'{what}.{k}' belongs to an item by a form's name (form or solid): this one is a {kind}"));
+            }
             let mut canon: Vec<(&'static str, Json)> = Vec::new();
+            // An item by a form's name: the shape library's figure, curve or solid, as pieces
+            // (`crate::formae_tools::items`). Its canonical fields are its name and numbers.
+            let mut pieces: Vec<(Path, Option<f32>)> = Vec::new();
+            let mut open = kind == "polyline";
+            if by_name {
+                let (made, fields) = crate::formae_tools::items(item, &what, &mut budget)?;
+                canon.extend(fields);
+                open = made.iter().any(|p| !p.closed);
+                for p in made {
+                    let mut path = Path::new();
+                    for ring in &p.rings {
+                        let Some((first, rest)) = ring.split_first() else { continue };
+                        path.move_to(*first);
+                        for q in rest {
+                            path.line_to(*q);
+                        }
+                        if p.closed {
+                            path.close();
+                        }
+                    }
+                    pieces.push((path, p.shade));
+                }
+            }
             let radius = num(item, "radius", &what, 0.0, 1e6)?;
             if radius.is_some() && kind != "rect" {
                 return Err(format!("'{what}.radius' (rounded corners) only applies to rect"));
@@ -1142,6 +1171,7 @@ impl Shape2dSpec {
                 Ok(a.into_iter().map(|x| x as f32).collect())
             };
             let path = match kind {
+                _ if by_name => Path::new(),
                 "rect" => {
                     let r = quad("rect", 4)?;
                     if r[2] <= 0.0 || r[3] <= 0.0 {
@@ -1213,8 +1243,8 @@ impl Shape2dSpec {
             if fill.is_none() && stroke.is_none() {
                 return Err(format!("'{what}' needs a 'fill' colour, a 'stroke', or both"));
             }
-            if kind == "polyline" && fill.is_some() {
-                return Err(format!("'{what}': a polyline is open; stroke it (or use polygon to fill)"));
+            if open && fill.is_some() {
+                return Err(format!("'{what}': a {} is open; stroke it (or use polygon, or a curve's band, to fill)", if by_name { "curve" } else { "polyline" }));
             }
             if let Some(c) = fill {
                 canon.push(("fill", rgba_json(c)));
@@ -1237,12 +1267,25 @@ impl Shape2dSpec {
                 }
                 canon.push(("stroke", Json::obj(sf)));
             }
-            if let Some(c) = path.control_bounds() {
-                let pad = stroke.map_or(0.0, |s| s.width as f64 * 0.5 * vector::stroke_reach(s.join));
-                b = [b[0].min(c[0] - pad), b[1].min(c[1] - pad), b[2].max(c[2] + pad), b[3].max(c[3] + pad)];
+            if !by_name {
+                pieces.push((path, None));
+            }
+            for (path, shade) in pieces {
+                if let Some(c) = path.control_bounds() {
+                    let pad = stroke.map_or(0.0, |s| s.width as f64 * 0.5 * vector::stroke_reach(s.join));
+                    b = [b[0].min(c[0] - pad), b[1].min(c[1] - pad), b[2].max(c[2] + pad), b[3].max(c[3] + pad)];
+                }
+                // (A solid's drawn face or layer: its fill darkened by its shade, `0.25 + 0.75 s`.)
+                let fill = match (fill, shade) {
+                    (Some(c), Some(s)) => {
+                        let k = 0.25 + 0.75 * s.clamp(0.0, 1.0);
+                        Some([(c[0] as f32 * k) as u8, (c[1] as f32 * k) as u8, (c[2] as f32 * k) as u8, c[3]])
+                    }
+                    (c, _) => c,
+                };
+                items.push(ShapeItem { path, fill, stroke });
             }
             canon_items.push(Json::obj(canon));
-            items.push(ShapeItem { path, fill, stroke });
         }
         let mut cf: Vec<(&'static str, Json)> = vec![("items", Json::arr(canon_items))];
         if tolerance != 0.005 {

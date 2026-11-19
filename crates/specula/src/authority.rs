@@ -696,6 +696,7 @@ pub fn access(tool: &str) -> Option<Access> {
         // authority (Site::L10nReview, also when a table is written with project_*).
         "l10n_get" | "l10n_check" => ReadOnly,
         "memory_get" | "memory_list" | "memory_why" => ReadOnly,
+        "formae_list" | "formae_get" => ReadOnly,
         "memory_note" => World("project"),
         "l10n_set" => World("project"),
         // Posts one plan of board tasks (task_plan's store rules).

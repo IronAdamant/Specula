@@ -136,6 +136,7 @@ mod timeline;
 mod timeline_tools;
 mod l10n_tools;
 mod memory_tools;
+mod formae_tools;
 pub mod launch_cli;
 pub mod launch_client;
 pub mod launch_engine;
