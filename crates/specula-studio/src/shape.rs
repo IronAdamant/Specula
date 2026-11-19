@@ -2,14 +2,18 @@
 //! numbers. Round reads as friendly, square as sturdy, pointed as dangerous: a convention of
 //! character and prop design, not a law, so it is in every asset's taste measures and is
 //! checked only when a style asks for one (`[taste] shape_language`). **It is a heuristic**: on
-//! a held-out corpus of 103 common game assets it leads as a person would in every mask for
-//! 90 of them (FORM.md names the others).
+//! forty common game assets written down before its seventh version read them, it leads as a
+//! person would in every mask for FRESH_RIGHT of them (FORM.md, "Its seventh version", names
+//! the others); on the 162 of the corpus its tests hold, which were read while it was tuned,
+//! for 136.
 //!
 //! Measured on a silhouette mask, **each part at its own scale and weighed by its thickness**
 //! (since its fourth version). Every threshold is an angle, a share of a part's thickness or of
-//! the shape's size, or a floor of the pixel grid said as one (since its sixth: a test holds the
-//! same shapes drawn at 256 to 512 pixels to the same reading). Every step is linear in the
-//! picture's pixels and the outline's length ([`of_mask_counted`] counts the work).
+//! the shape's size, or a floor of the pixel grid said as one. A test holds 26 shapes drawn at
+//! 256 to 512 pixels to the same reading; five common assets with no thin part drift with the
+//! size by up to a quarter, cause not traced (below). Every step is linear in the picture's
+//! pixels and the outline's length but for a table of range maxima, which grows as its length
+//! times its logarithm ([`of_mask_counted`] counts the work).
 //!
 //! 1. **The parts.** The outline is smoothed by the shape's scale and its **joints** found:
 //!    where it turns inward by [`JOINT_DEG`] in one place (the foot of a stalk, an armpit, the
@@ -29,6 +33,10 @@
 //! 4. **A corner's angle** is its window's net turn less the window's lopsidedness (what the
 //!    two sides of the window turn counts only as far as both do): the mouth of a slot in a
 //!    disc is a right angle, the rim's own turn being on one side of it only.
+//!    **Two outward corners are two corners** however short the stretch between them (since
+//!    its seventh version, [`apart`]): where each is square at the scale of the distance
+//!    between them, no window between them reaches both (the end of an overhang, a slab or a
+//!    stub judged in its body's window was one corner of 180 degrees, a point).
 //! 5. **Its class**: gentle up to [`ROUND_DEG`] (part of a curve: an octagon's corners),
 //!    square, or from [`POINTED_DEG`] a point. **A corner between two curves** (the end of an
 //!    oval, the horn of a crescent, the tip of a leaf) is not square: a curve, or from
@@ -47,7 +55,8 @@
 //! by a third of its shorter side are round, and so is a balloon on a string, an apple with its
 //! stalk, a snowman with stick arms, a figure of a ball, a box and capsule limbs, a leaf, and a
 //! disc with a slot cut in it; a box is square, and so is one rounded by a tenth of its side or
-//! with its corners cut off by a seventh of it, a bar however thin, a table on thin legs, a comb
+//! with its corners cut off by a seventh of it, a bar however thin, a table on thin legs, a pedestal,
+//! a shelf with a cornice, a box with an overhanging slab, a staircase, a comb
 //! whose teeth are twelve pixels or more, a bottle and a box whose edges wobble by up to four
 //! pixels; a triangle, a spike, a star, a crescent, a mace and an oval five times as long as
 //! wide or more are pointed.
@@ -63,6 +72,16 @@
 //!   lead goes by the angle it is turned to; so is a lens whose tips are right angles.
 //! - **A part under about six pixels thick** (a comb's tooth under twelve pixels across) has
 //!   its two corners smoothed into one end, and is read as a point.
+//! - **A rounded stub on a body** (a sofa's arms, the rolls of a scroll, a submarine's fin)
+//!   shorter than six times its own thickness is judged at the body's thickness, and its round
+//!   end, a half turn in one window, reads as a corner or a point: a sofa of parts each rounded
+//!   by a third reads square. Two square corners have [`apart`]; a round end has nothing yet.
+//!   So does the end of a slab under about a sixth as thick as the body it overhangs, at some
+//!   angles (the body's smoothing spreads its corners into one).
+//! - **Five common assets with no thin part drift with the size of the picture** (a teddy
+//!   bear, a penguin, a sunflower, a pig, a chess pawn: their mean share moves by 0.14 to 0.24
+//!   at 256 to 384 pixels against 512, and the pawn leads square in a few masks); the cause is
+//!   not traced. The 26 sized shapes of the tests hold within 0.12.
 //! - A body bristling with more than about a dozen hair-thin parts is not read. Holes are not
 //!   traced. It reads outlines, not surfaces.
 //! - Shapes near half and half stay there and their lead says nothing: a half disc is half
@@ -972,6 +991,113 @@ fn parts(joint: &[bool], raw: &[f32], reach: usize, work: &mut u64) -> (Vec<u32>
     (part, host)
 }
 
+/// The five windows a corner's angle is the mean over, in twentieths of its half window.
+const SPANS: [usize; 5] = [15, 20, 20, 24, 27];
+
+/// **Two corners are two corners, however short the stretch between them** (its seventh
+/// version). A stub or an overhang shorter than [`PLATEAU`] times its own thickness takes the
+/// thickness of the body it stands on ([`plateaus`]: its level is not reached before the body's
+/// rise), and so is judged in the body's window; that window held both square corners of its
+/// end, which then read as one corner of 180 degrees, a point (a pedestal, a shelf with a
+/// cornice, a slab across a box: its sixth review). So, for each step: how far its window is
+/// to be cut, and by how much (`(cap, s)`; `s` 0 where nothing is cut).
+///
+/// - **The corners**: the peaks of `net`, the turn within the smoothing's own reach about each
+///   step, from [`KINK_DEG`]'s first angle; two peaks of one sign are one corner unless the turn
+///   between them falls to under half the less of them.
+/// - Two **outward** corners that follow each other round the outline, no closer than the
+///   smoothing spreads either (`blur`: closer, it cannot tell them apart), each **square at its
+///   own scale**: its turn within half the distance to its nearer neighbour each way, by
+///   [`ROUND_DEG`] (`s`, the less square of the two). A jog (an outward corner a few pixels
+///   from an inward one) and the two 45-degree kinks of a corner cut off flat are not square at
+///   that scale, and stay as they were.
+/// - Every step between them is read, beside its own window, in one cut short of the farther
+///   corner (its longest window, `SPANS`, stops before it), and its angle and weight are those
+///   of the whole window moved toward the cut one's by `s` (`read`). Never a window of a length
+///   between: one that holds both corners and not the inward corner beside them reads a point.
+///
+/// Every length is a distance along the outline between corners, or a share of one, and every
+/// threshold an angle the measure already has or a half: drawn twice as large, it cuts alike.
+fn apart(net: &[f32], sum: &[f64], way: f32, half: &[usize], blur: &[usize], work: &mut u64) -> Vec<(usize, f32)> {
+    let count = net.len();
+    let mut cut = vec![(0usize, 0.0f32); count];
+    let v = |i: usize| net[i % count].abs();
+    let floor = KINK_DEG.0.to_radians();
+    // The corners round the outline in order, and whether each turns outward: the peaks of the
+    // turn within the smoothing's own reach (`net`), from [`KINK_DEG`]'s first angle; two peaks of
+    // one sign are two corners where the turn between them falls to under half the less of
+    // them (two corners closer than a window of the body's are one run of turning there: an
+    // overhang's end).
+    let mut peaks: Vec<usize> = (0..count).filter(|i| v(*i) >= floor && v(*i) >= v(*i + count - 1) && v(*i) > v(*i + 1)).collect();
+    *work += 3 * count as u64;
+    if peaks.len() < 2 {
+        return cut;
+    }
+    let mut corners: Vec<usize> = Vec::new();
+    for p in peaks.drain(..) {
+        if let Some(&q) = corners.last() {
+            if (net[q] > 0.0) == (net[p] > 0.0) {
+                let low = (q..=p).map(|j| v(j)).fold(f32::INFINITY, f32::min);
+                *work += (p - q + 1) as u64;
+                if low >= 0.5 * v(q).min(v(p)) {
+                    if v(p) > v(q) {
+                        *corners.last_mut().unwrap() = p;
+                    }
+                    continue;
+                }
+            }
+        }
+        corners.push(p);
+    }
+    // (And round the end to the first.)
+    if corners.len() > 2 {
+        let (q, p) = (corners[corners.len() - 1], corners[0]);
+        if (net[q] > 0.0) == (net[p] > 0.0) && (q..=p + count).map(|j| v(j)).fold(f32::INFINITY, f32::min) >= 0.5 * v(q).min(v(p)) {
+            if v(q) > v(p) {
+                corners[0] = q;
+            }
+            corners.pop();
+        }
+    }
+    let corners: Vec<(usize, bool)> = corners.into_iter().map(|j| (j, net[j] * way > 0.0)).collect();
+    let n = corners.len();
+    if n < 2 {
+        return cut;
+    }
+    let turn = |a: usize, b: usize| ((sum[b] - sum[a]) as f32 * way).to_degrees();
+    let longest = SPANS[SPANS.len() - 1];
+    for c in 0..n {
+        let ((a, oa), (b, ob)) = (corners[c], corners[(c + 1) % n]);
+        let d = (b + count - a) % count;
+        // (Two corners closer than the smoothing spreads either, as far as it reaches each way,
+        // are not told apart by it: a stalk a few pixels wide judged at its rim's scale.)
+        if !(oa && ob) || d < blur[a].max(blur[b]) {
+            continue;
+        }
+        // (Each corner's own turn: within half the distance to its nearer neighbour each way,
+        // so that a jog, an outward corner a few pixels from an inward one, is not square at
+        // its own scale where the smoothing spreads it over more than that.)
+        let (before, after) = (corners[(c + n - 1) % n].0, corners[(c + 2) % n].0);
+        let (ra, rb) = (((a + count - before) % count).min(d) / 2, ((after + count - b) % count).min(d) / 2);
+        let own = turn(a + count - ra, a + count + ra).min(turn(b + count - rb, b + count + rb));
+        let s = smoothstep(ROUND_DEG.0, ROUND_DEG.1, own);
+        if s <= 0.0 {
+            continue;
+        }
+        for j in 0..=d {
+            let i = (a + j) % count;
+            // (The longest of a step's five windows reaches `longest` twentieths of its half:
+            // it must stop short of the farther corner.)
+            let cap = ((j.max(d - j) - 1) * 20 / longest).max(2);
+            if cap < half[i] && s > cut[i].1 {
+                cut[i] = (cap, s);
+            }
+        }
+        *work += d as u64 + 1;
+    }
+    cut
+}
+
 /// One silhouette's shape language. `None` for an empty mask, one too large to trace, or a
 /// piece too small to have a shape (under [`MIN_SIZE`] pixels across).
 pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
@@ -1095,7 +1221,6 @@ fn read(m: &Mask, work: &mut u64) -> Option<ShapeLanguage> {
     let chord: Vec<usize> = host.iter().map(|t| ((CHORD * SPAN * t).round() as usize).clamp(1, chord_g)).collect();
     let blur: Vec<usize> = from.iter().zip(&chord).map(|(s, c)| (2.0 * sigma_w[*s]).ceil() as usize + c).collect();
     let half: Vec<usize> = host.iter().map(|t| ((0.5 * WINDOW * t).round() as usize).clamp(2, (count / 8).max(2))).collect();
-    let small: Vec<usize> = host.iter().zip(&half).map(|(t, h)| ((0.5 * KINK * t).round() as usize).clamp(2, *h)).collect();
     let turn = turning(&even, &chord);
     // (The turn so far, three times round, so that a window is a difference of two sums. In f64:
     // thousands of small turns are summed.)
@@ -1103,16 +1228,25 @@ fn read(m: &Mask, work: &mut u64) -> Option<ShapeLanguage> {
     for j in 0..3 * count {
         sum[j + 1] = sum[j] + f64::from(turn[j % count]);
     }
-    let net: Vec<f32> = (0..count).map(|i| (sum[i + count + half[i]] - sum[i + count - half[i]]) as f32).collect();
     // (The small window is not rounded to whole steps: on a part a few pixels thick it is a
     // step or two, and two steps where it should be one made a capsule's round end a corner
     // drawn small and a curve drawn large. The turn so far is read between steps.)
     let at = |x: f64| { let k = x.floor(); let j = k as usize; sum[j] + (sum[j + 1] - sum[j]) * (x - k) };
-    let fine_net: Vec<f32> = (0..count).map(|i| { let s = f64::from((0.5 * KINK * host[i]).max(KINK_SMOOTH * sigma_w[from[i]]).min(half[i] as f32)); (at((i + count) as f64 + s) - at((i + count) as f64 - s)) as f32 }).collect();
+    let kinked = |half: &[usize]| -> Vec<f32> { (0..count).map(|i| { let s = f64::from((0.5 * KINK * host[i]).max(KINK_SMOOTH * sigma_w[from[i]]).min(half[i] as f32)); (at((i + count) as f64 + s) - at((i + count) as f64 - s)) as f32 }).collect() };
+    // **Two corners are two corners**, however short the stretch between them (its seventh
+    // version): no window holds both of two outward corners that are each square at the scale
+    // of the distance between them ([`apart`]).
+
+    let sharp: Vec<f32> = (0..count).map(|i| { let s = f64::from((KINK_SMOOTH * sigma_w[from[i]]).max(1.0)); (at((i + count) as f64 + s) - at((i + count) as f64 - s)) as f32 }).collect();
+    let cut = apart(&sharp, &sum, way, &half, &blur, work);
+    let small: Vec<usize> = host.iter().zip(&half).map(|(t, h)| ((0.5 * KINK * t).round() as usize).clamp(2, *h)).collect();
+    let net: Vec<f32> = (0..count).map(|i| (sum[i + count + half[i]] - sum[i + count - half[i]]) as f32).collect();
+    let fine_net = kinked(&half);
     // Only where the outline turns its own way round (outward: its bulges and its corners)
     // does it count; where it turns back on itself (a notch, a slot, the inside corner of an
     // L) it does not.
-    let out: Vec<f32> = net.iter().map(|n| (n * way).max(0.0).to_degrees()).collect();
+    // (Where [`apart`] cuts a window, what the cut window holds, by as much as the cut is made.)
+    let out: Vec<f32> = (0..count).map(|i| { let whole = (net[i] * way).max(0.0).to_degrees(); let (cap, s) = cut[i]; if s > 0.0 { let held = (((sum[i + count + cap] - sum[i + count - cap]) as f32) * way).max(0.0).to_degrees(); whole + s * (held - whole) } else { whole } }).collect();
     // How much of a corner the outline has at each step: its turn within the small window.
     // (Either way: an inside corner is a corner too, and takes its turn back out of the window
     // it shares with an outside one, as it does out of the window's net turn.) (There was a
@@ -1155,15 +1289,23 @@ fn read(m: &Mask, work: &mut u64) -> Option<ShapeLanguage> {
             let core = small[i].max(blur[i]);
             let at = i + count;
             let net = |from: usize, to: usize| ((sum[to] - sum[from]) as f32) * way;
-            let mean = [15usize, 20, 20, 24, 27]
-                .iter()
-                .map(|k| {
-                    let reach = (half[i] * k / 20).max(core);
-                    let (before, after) = (net(at - reach, at - core), net(at + core, at + reach));
-                    net(at - reach, at + reach) - (before - after).abs()
-                })
-                .sum::<f32>()
-                / 5.0;
+            let angle = |half: usize, core: usize| {
+                SPANS
+                    .iter()
+                    .map(|k| {
+                        let reach = (half * k / 20).max(core);
+                        let (before, after) = (net(at - reach, at - core), net(at + core, at + reach));
+                        net(at - reach, at + reach) - (before - after).abs()
+                    })
+                    .sum::<f32>()
+                    / 5.0
+            };
+            // (Where [`apart`] cuts the window, the angle the cut window holds, by as much as the
+            // cut is made; the middle is cut with it: a middle as wide as the smoothing spreads a
+            // corner would hold both corners again.)
+            let (cap, s) = cut[i];
+            let whole = angle(half[i], core);
+            let mean = if s > 0.0 { whole + s * (angle(cap, core.min(cap)) - whole) } else { whole };
             // (Along each side from the middle out to twice the window: the end of a long oval is
             // straightened into chords near its tip, and its sides bend beyond them.)
             let far = (2 * half[i]).min(count / 8);
