@@ -62,7 +62,7 @@ fn t1_every_form_builds_at_its_extremes() {
                         assert!(pts.iter().all(|p| p[0].is_finite() && p[1].is_finite()), "{what}: a point is not finite");
                         assert!(b.chord_error().is_finite(), "{what}");
                     }
-                    Err(Error::Constraint { .. }) if label != "defaults" => {}
+                    Err(e @ Error::Constraint { .. }) if label != "defaults" => sound_refusal(&what, &s, d, &e),
                     Err(Error::TooManyPoints { points, ceiling, .. }) if d == DETAIL_MAX || label != "defaults" => {
                         assert!(points > ceiling && ceiling == MAX_POINTS, "{what}");
                     }
@@ -106,6 +106,337 @@ fn t2_every_outline_is_well_made() {
                 }
             }
         }
+    }
+}
+
+/// A value a refusal carries.
+fn value(values: &[(&'static str, f64)], name: &str) -> Option<f64> {
+    values.iter().find(|v| v.0 == name).map(|v| v.1)
+}
+
+/// Whether a build is well made, as `Spec::build` must have checked.
+fn fault(b: &Built) -> Option<crate::Fault> {
+    match b {
+        Built::Outline(o) => o.validate().err(),
+        Built::Curve(c) => c.validate().err(),
+    }
+}
+
+/// A refusal of a build at `d` is sound. A form's own rule (a triangle's inequality) passes.
+/// `not_well_made` is never sound: it is a mistake in a form's geometry. For the two rules a
+/// build's own check gives, the fault is real (the build as sampled has that edge, or those two
+/// edges crossing), its numbers are what they say, and a detail it names builds well made; where
+/// it names none, the last detail it tried is not well made too (or the search reached the end
+/// of the range or the ceiling).
+fn sound_refusal(what: &str, s: &Spec, d: u32, e: &Error) {
+    let Error::Constraint { rule, values, .. } = e else { panic!("{what}: {e}") };
+    let v = |n: &str| value(values, n).unwrap_or_else(|| panic!("{what}: {rule} carries no {n}: {values:?}"));
+    let raw = || s.raw(d).unwrap_or_else(|| panic!("{what}: refused {rule} and its geometry is refused too"));
+    match *rule {
+        "not_well_made" => panic!("{what}: {e}"),
+        "edge_under_floor" => {
+            assert_eq!(v("detail"), d as f64, "{what}");
+            assert!(v("edge") <= v("floor") && v("floor") == crate::EDGE_FLOOR * v("size"), "{what}: {values:?}");
+            let (ring, point) = (v("ring") as usize, v("point") as usize);
+            let edge = match raw() {
+                Built::Outline(o) => {
+                    let r = &o.rings[ring];
+                    dist(r[point], r[(point + 1) % r.len()])
+                }
+                Built::Curve(c) => dist(c.points[point], c.points[(point + 1) % c.points.len()]),
+            };
+            assert_eq!(edge, v("edge"), "{what}: the edge it names is not that long");
+            match value(values, "coarser_detail_that_holds") {
+                Some(h) => {
+                    assert!(h < d as f64 && h >= DETAIL_MIN as f64, "{what}: {values:?}");
+                    s.build(h as u32).unwrap_or_else(|e| panic!("{what}: the detail {h} it names does not hold: {e}"));
+                }
+                None => {
+                    let last = v("searched_to") as u32;
+                    assert!(last <= d && fault(&s.raw(last).unwrap()).is_some(), "{what}: names no coarser detail, and {last} holds");
+                }
+            }
+        }
+        "crosses_at_this_detail" => {
+            assert_eq!(v("detail"), d as f64, "{what}");
+            let (a, b) = ((v("ring_a") as usize, v("edge_a") as usize), (v("ring_b") as usize, v("edge_b") as usize));
+            match fault(&raw()) {
+                Some(crate::Fault::Crossing { a: x, b: y }) => assert_eq!((x, y), (a, b), "{what}"),
+                other => panic!("{what}: refused for a crossing, and the build's fault is {other:?}"),
+            }
+            match value(values, "finer_detail_that_holds") {
+                Some(h) => {
+                    assert!(h > d as f64 && h <= DETAIL_MAX as f64, "{what}: {values:?}");
+                    s.build(h as u32).unwrap_or_else(|e| panic!("{what}: the detail {h} it names does not hold: {e}"));
+                }
+                None => {
+                    let last = v("searched_to") as u32;
+                    let ended = last == DETAIL_MAX || s.count((2 * last).min(DETAIL_MAX)).map(|c| c.points > MAX_POINTS).unwrap_or(false);
+                    assert!(last >= d && (ended || fault(&s.raw(last).unwrap()).is_some()), "{what}: names no finer detail, and {last} holds");
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A fixed sequence (a 64-bit linear congruential generator; the high bits).
+struct Seq(u64);
+
+impl Seq {
+    fn next(&mut self) -> f64 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// The cases of a word with its parameters **moved together**: every pair of parameters at
+/// each of its four corners (least and greatest), all at their least, all at their greatest,
+/// and `drawn` sets drawn at random together from a fixed sequence (lengths by their
+/// logarithm, so a millimetre is as likely as a kilometre). (The cases of [`cases`] move one
+/// parameter at a time; a figure whose parameters must agree, a hole and its disc, a spiral's
+/// start and its turns, is tried there at one corner only.)
+fn cases_together(found: &Found, drawn: usize) -> Vec<(String, Vec<(&'static str, f64)>)> {
+    let ps = params_of(found);
+    let mut v = Vec::new();
+    for i in 0..ps.len() {
+        for j in i + 1..ps.len() {
+            for (x, y) in [(ps[i].min, ps[j].min), (ps[i].min, ps[j].max), (ps[i].max, ps[j].min), (ps[i].max, ps[j].max)] {
+                v.push((format!("{}={x} {}={y}", ps[i].name, ps[j].name), vec![(ps[i].name, x), (ps[j].name, y)]));
+            }
+        }
+    }
+    v.push(("all least".to_string(), ps.iter().map(|p| (p.name, p.min)).collect()));
+    v.push(("all greatest".to_string(), ps.iter().map(|p| (p.name, p.max)).collect()));
+    let mut seq = Seq(found.name().bytes().fold(0x9e37_79b9_7f4a_7c15u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)));
+    for k in 0..drawn {
+        let given: Vec<(&'static str, f64)> = ps
+            .iter()
+            .map(|p| {
+                let u = seq.next();
+                let x = if p.integer {
+                    let span = (p.max - p.min).min(if k % 4 == 0 { f64::MAX } else { 12.0 });
+                    (p.min + floor(u * (span + 1.0))).min(p.max)
+                } else if p.min > 0.0 && p.max / p.min > 100.0 {
+                    let (lo, hi) = (ln(p.min), ln(p.max));
+                    exp(lo + (hi - lo) * u).clamp(p.min, p.max)
+                } else {
+                    p.min + (p.max - p.min) * u
+                };
+                (p.name, x)
+            })
+            .collect();
+        v.push((format!("drawn {k}"), given));
+    }
+    v
+}
+
+/// Test 2b: every word with its parameters moved together ([`cases_together`]), at the least,
+/// the default and a fine detail: each case is refused soundly ([`sound_refusal`]: a form's
+/// rule, the ceiling, or a build's own check with its numbers right), or it builds into
+/// what is well made, with the count it gave, and with closed forms the build agrees with as
+/// far as its chord error allows: the area within `2 h P` (as in test 4) and no chords longer
+/// than the curve (the straight chord between two points is the shortest way between them).
+/// The tolerances for rounding are test 4's.
+#[test]
+fn t2b_parameters_moved_together() {
+    let (mut built, mut refused) = (0usize, 0usize);
+    for w in words() {
+        for (label, given) in cases_together(&w, 24) {
+            let what = format!("{} {label}", w.name());
+            let s = Spec::of(w, &given).unwrap_or_else(|e| panic!("{what}: arguments in their ranges refused: {e}"));
+            for d in [DETAIL_MIN, DETAIL_DEFAULT, 256] {
+                let what = format!("{what} detail {d}");
+                let b = match s.build(d) {
+                    Ok(b) => b,
+                    Err(Error::TooManyPoints { points, ceiling, .. }) => {
+                        assert!(points > ceiling, "{what}");
+                        refused += 1;
+                        continue;
+                    }
+                    Err(e) => {
+                        sound_refusal(&what, &s, d, &e);
+                        refused += 1;
+                        continue;
+                    }
+                };
+                built += 1;
+                assert_eq!(fault(&b), None, "{what}: built and not well made");
+                let c = s.count(d).unwrap();
+                assert_eq!((c.points, c.parts), (b.points(), b.parts()), "{what}: the count before building");
+                let m = b.measures();
+                let r = reach(&b);
+                let round = 16.0 * b.points() as f64 * EPS * r;
+                let closed = s.closed().unwrap_or_else(|e| panic!("{what}: built, and its closed forms refused: {e}"));
+                if let (Some(c), Some(x), Some(p)) = (closed.size, m.size, m.boundary) {
+                    let allowed = 2.0 * b.chord_error() * p + round * r;
+                    assert!((c - x).abs() <= allowed, "{what}: area closed {c}, built {x} (allowed {allowed})");
+                }
+                if let (Some(c), Some(x)) = (closed.boundary, m.boundary) {
+                    assert!(x <= c + round, "{what}: the chords ({x}) are longer than the curve ({c})");
+                }
+            }
+        }
+    }
+    assert!(built > 10_000 && refused > 0, "{built} built, {refused} refused");
+}
+
+/// The review of stage 1a's cases, each found by drawing arguments together, with what the
+/// library does with each now: the first three kinds are refused as data with their numbers
+/// (and a detail that holds where one does), or build well made where the sampling was mended;
+/// the catenary's closed length is no longer shorter than its chords.
+#[test]
+fn the_reviews_cases_are_refused_or_build() {
+    // (word, arguments, detail, the rule it is refused by or "" when it builds, the detail
+    // the refusal names as holding, if any)
+    type Row = (&'static str, &'static [(&'static str, f64)], u32, &'static str, Option<f64>);
+    let rows: &[Row] = &[
+        ("gear", &[("teeth", 105.0), ("root", 0.00011284783532522105), ("tip", 1031.793784777701), ("tooth", 0.7129560673336757), ("land", 0.6323433519833985)], 8, "edge_under_floor", None),
+        ("battlement_band", &[("length", 0.00010853812235728455), ("base", 8057.930403089384), ("height", 23.069361422647724), ("merlons", 10.0), ("merlon", 0.6379562031322041)], 64, "edge_under_floor", None),
+        ("ring", &[("radius", 1256.5230118449845), ("inner", 0.00014468423384050833)], 256, "edge_under_floor", Some(128.0)),
+        ("ring", &[("radius", 1256.5230118449845), ("inner", 0.00014468423384050833)], 128, "", None),
+        ("round_arch", &[("width", 0.00011602386460976056), ("height", 8525.439259243396)], 64, "edge_under_floor", Some(32.0)),
+        ("pill", &[("length", 4185.131940510725), ("radius", 0.00012452536911405925)], 256, "edge_under_floor", Some(128.0)),
+        ("sine_band", &[("length", 0.0006145017350052247), ("amplitude", 0.0011813095366212962), ("cycles", 12.462733997305241), ("phase", -15.348398427860786), ("thickness", 9416.204099087514)], 8, "edge_under_floor", None),
+        ("involute_band", &[("radius", 2908.7223467649874), ("turns", 18.1994108338729), ("width", 0.00013514101361150228)], 64, "edge_under_floor", None),
+        ("elliptical_arc_band", &[("rx", 4.3437798963557235), ("ry", 2082.586216072282), ("angle", 279.8106240402298), ("width", 0.7800532177121826)], 8, "", None),
+        ("elliptical_arc_band", &[("rx", 4.3437798963557235), ("ry", 2082.586216072282), ("angle", 279.8106240402298), ("width", 0.7800532177121826)], 16, "", None),
+        ("archimedean_spiral_band", &[("start", 4978.123567788994), ("pitch", 49.35527769712236), ("turns", 17.943618443656764), ("width", 4.3715589553345415)], 8, "crosses_at_this_detail", Some(16.0)),
+        ("chain_curve", &[("width", 0.00013199255086421892), ("a", 3764.1320216008635)], 8, "", None),
+    ];
+    for (word, args, d, rule, holds) in rows {
+        let what = format!("{word} {args:?} detail {d}");
+        let s = Spec::new(word, None, args).unwrap();
+        match (s.build(*d), *rule) {
+            (Ok(b), "") => {
+                assert_eq!(fault(&b), None, "{what}");
+                if let (Some(c), Some(x)) = (s.closed().unwrap().boundary, b.measures().boundary) {
+                    assert!(x <= c, "{what}: the chords ({x}) are longer than the curve ({c})");
+                }
+            }
+            (Err(e @ Error::Constraint { .. }), rule) if !rule.is_empty() => {
+                let Error::Constraint { rule: got, values, .. } = &e else { unreachable!() };
+                assert_eq!(got, &rule, "{what}");
+                let named = value(values, "coarser_detail_that_holds").or(value(values, "finer_detail_that_holds"));
+                assert_eq!(named, *holds, "{what}: {values:?}");
+                sound_refusal(&what, &s, *d, &e);
+            }
+            (other, _) => panic!("{what}: {other:?}, expected {rule:?}"),
+        }
+    }
+    // The involute band's short edge is its end cap: the band's own width.
+    let s = Spec::new("involute_band", None, &[("radius", 2908.7223467649874), ("turns", 18.1994108338729), ("width", 0.00013514101361150228)]).unwrap();
+    let Err(Error::Constraint { values, .. }) = s.build(8) else { panic!() };
+    // (To the rounding of its ends, which lie some 3e5 m out: a few ulps of that.)
+    assert!((value(&values, "edge").unwrap() - 0.00013514101361150228).abs() <= 8.0 * EPS * value(&values, "size").unwrap(), "{values:?}");
+}
+
+/// The elliptical arc band's two edges are sampled on shared rays, so no detail can make its
+/// chords cross: at every detail from the least to 512, a band of every shape the drawn
+/// arguments give builds (a crossing refusal here would be the sampling's fault).
+#[test]
+fn elliptical_arc_band_is_simple_at_every_detail() {
+    let w = find("elliptical_arc_band", None).unwrap();
+    let mut built = 0;
+    for (label, given) in cases_together(&w, 200) {
+        let s = Spec::of(w, &given).unwrap();
+        for d in [8, 9, 12, 16, 24, 64, 512] {
+            match s.build(d) {
+                Ok(_) => built += 1,
+                Err(Error::Constraint { rule, .. }) if rule != "crosses_at_this_detail" => {}
+                Err(Error::TooManyPoints { .. }) => {}
+                Err(e) => panic!("elliptical_arc_band {label} detail {d}: {e}"),
+            }
+        }
+    }
+    assert!(built > 500, "{built}");
+}
+
+/// Simpson's rule with `n` (even) intervals: a reference for closed forms whose integrands are
+/// smooth and, at the arguments used, nearly constant over each interval (its error is
+/// `h⁴ f⁗ / 180` of the span, far under the tolerances here).
+fn simpson(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let h = (b - a) / n as f64;
+    let mut s = f(a) + f(b);
+    for i in 1..n {
+        s += if i % 2 == 1 { 4.0 } else { 2.0 } * f(a + h * i as f64);
+    }
+    s * h / 3.0
+}
+
+/// The closed forms that take a difference of near-equal numbers, or `sinh`, `asinh`, `exp`
+/// at small arguments, against Simpson's rule on their own integrands, at the corners of the
+/// ranges where the plain forms lose digits (a shallow chain, a nearly flat parabola, a short
+/// arc of a spiral far out, a thin band of a large ellipse), and at their defaults.
+#[test]
+fn closed_forms_keep_their_digits() {
+    let rel = |what: &str, got: f64, want: f64, tol: f64| assert!((got - want).abs() <= tol * want.abs(), "{what}: {got}, the integral says {want} (off by {:e} of it)", (got - want).abs() / want.abs());
+    let len_of = |name: &str, args: &[(&str, f64)]| Spec::new(name, None, args).unwrap().closed().unwrap().boundary.unwrap();
+    for (w, a) in [(1e-4, 1e4), (0.00013199255086421892, 3764.1320216008635), (1.0, 0.5), (10.0, 0.5)] {
+        let want = simpson(|x| crate::maths::coshm1(x / a) + 1.0, -0.5 * w, 0.5 * w, 200_000);
+        rel("catenary", len_of("catenary", &[("width", w), ("a", a)]), want, 1e-13);
+    }
+    for (w, h) in [(1e4, 1e-4), (1.0, 0.5), (1e-4, 1e4)] {
+        let c = 4.0 * h / (w * w);
+        let want = simpson(|x| (1.0 + 4.0 * c * c * x * x).sqrt(), -0.5 * w, 0.5 * w, 200_000);
+        rel("parabola", len_of("parabola", &[("width", w), ("height", h)]), want, 1e-12);
+    }
+    for (s0, p, n) in [(1e4, 1e-4, 0.25), (4978.1, 49.4, 17.9), (0.0, 1.0, 3.0), (0.05, 0.1, 3.0), (1e4, 1e4, 50.0)] {
+        let b = p / TAU;
+        let want = simpson(|t| ((s0 + b * t) * (s0 + b * t) + b * b).sqrt(), 0.0, TAU * n, 200_000);
+        rel("archimedean spiral", len_of("archimedean_spiral", &[("start", s0), ("pitch", p), ("turns", n)]), want, 1e-12);
+    }
+    for (s0, g, n) in [(1.0, 1.01, 0.25), (0.05, 1.5, 3.0)] {
+        let k = ln(g) / TAU;
+        let want = simpson(|t| (1.0 + k * k).sqrt() * s0 * exp(k * t), 0.0, TAU * n, 20_000);
+        rel("logarithmic spiral", len_of("logarithmic_spiral", &[("start", s0), ("growth", g), ("turns", n)]), want, 1e-12);
+    }
+    // A thin band of a circle (rx = ry): exactly 2 r h θ, h half the width.
+    for (r, w, t) in [(1e4, 1e-4, 90.0), (1e4, 1e-4, 359.0), (0.5, 0.05, 200.0)] {
+        let got = Spec::new("elliptical_arc_band", None, &[("rx", r), ("ry", r), ("width", w), ("angle", t)]).unwrap().closed().unwrap().size.unwrap();
+        rel("elliptical_arc_band of a circle", got, r * w * rad(t), 1e-13);
+    }
+    // And of an ellipse, where nothing cancels: half the integral over the polar angle of the
+    // difference of the squared radii.
+    let (rx, ry, w, t) = (0.6, 0.35, 0.05, 250.0);
+    let r2 = |a: f64, b: f64, f: f64| {
+        let (s, c) = sin_cos(f);
+        a * a * b * b / ((b * c) * (b * c) + (a * s) * (a * s))
+    };
+    let want = simpson(|f| 0.5 * (r2(rx + 0.5 * w, ry + 0.5 * w, f) - r2(rx - 0.5 * w, ry - 0.5 * w, f)), 0.0, rad(t), 20_000);
+    let got = Spec::new("elliptical_arc_band", None, &[("rx", rx), ("ry", ry), ("width", w), ("angle", t)]).unwrap().closed().unwrap().size.unwrap();
+    rel("elliptical_arc_band", got, want, 1e-12);
+}
+
+/// `expm1`, `ln1p`, `sinh` and `asinh` keep their digits at small arguments: against their
+/// series, which at these arguments are exact to rounding (the first term left out is under
+/// `1e-17` of the sum), to a few units in the last place; and against the plain forms where
+/// those do not cancel.
+#[test]
+fn small_argument_functions_keep_their_digits() {
+    let close = |what: &str, got: f64, want: f64| assert!((got - want).abs() <= 4.0 * EPS * want.abs(), "{what}: {got}, the series says {want}");
+    for x in [1e-12, 3.7e-9, 1e-8, -2e-7, 1e-6, 4e-6] {
+        close(&format!("expm1({x})"), expm1(x), x + x * x / 2.0 + x * x * x / 6.0);
+        close(&format!("ln1p({x})"), ln1p(x), x - x * x / 2.0 + x * x * x / 3.0);
+        close(&format!("sinh({x})"), sinh(x), x + x * x * x / 6.0);
+        close(&format!("asinh({x})"), asinh(x), x - x * x * x / 6.0);
+        close(&format!("coshm1({x})"), coshm1(x), x * x / 2.0 + x * x * x * x / 24.0);
+    }
+    // Between: the series to many terms (each term `x² / ((2i)(2i + 1))` of the one before).
+    for x in [0.01, 0.3, 0.9, -0.6] {
+        let (mut term, mut sum) = (x, x);
+        for i in 1..30 {
+            term *= x * x / ((2 * i) as f64 * (2 * i + 1) as f64);
+            sum += term;
+        }
+        close(&format!("sinh({x})"), sinh(x), sum);
+        close(&format!("sinh(asinh({x}))"), sinh(asinh(x)), x);
+    }
+    for x in [1.5, 3.0, 20.0] {
+        let e = exp(x);
+        close(&format!("sinh({x})"), sinh(x), 0.5 * (e - 1.0 / e));
+        close(&format!("asinh({x})"), asinh(x), ln(x + (x * x + 1.0).sqrt()));
+        close(&format!("expm1({x})"), expm1(x), e - 1.0);
     }
 }
 

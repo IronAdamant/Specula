@@ -51,19 +51,60 @@ pub(crate) fn powf(x: f64, y: f64) -> f64 {
         exp(y * ln(x))
     }
 }
-pub(crate) fn cosh(x: f64) -> f64 {
-    let e = exp(x);
-    0.5 * (e + 1.0 / e)
+/// `e^x − 1`, keeping its digits when `x` is small (where `exp(x) − 1` keeps only those of
+/// `x` past the ones `1` takes): Kahan's form `(u − 1) x / ln u`, `u = e^x`, whose rounding
+/// errors in `u − 1` and `ln u` cancel. Held by a test against the series at small `x`.
+pub(crate) fn expm1(x: f64) -> f64 {
+    let u = exp(x);
+    if u == 1.0 {
+        return x;
+    }
+    let um1 = u - 1.0;
+    if um1 == -1.0 || !u.is_finite() {
+        return um1;
+    }
+    um1 * x / ln(u)
 }
+/// `ln(1 + x)`, keeping its digits when `x` is small: `ln u · x / (u − 1)`, `u = 1 + x`, by
+/// the same cancellation of rounding errors. Held by a test against the series.
+pub(crate) fn ln1p(x: f64) -> f64 {
+    let u = 1.0 + x;
+    if u == 1.0 {
+        x
+    } else {
+        ln(u) * x / (u - 1.0)
+    }
+}
+/// `cosh x − 1` as `2 sinh²(x / 2)`, which keeps its digits where `cosh x − 1` cancels.
+pub(crate) fn coshm1(x: f64) -> f64 {
+    let s = sinh(0.5 * x);
+    2.0 * s * s
+}
+/// The hyperbolic sine. Under 1 in size it is `(m + m / (m + 1)) / 2` with `m = e^|x| − 1`
+/// from [`expm1`] (the plain `(e^x − e^−x) / 2` loses as many digits as `1 / |x|` has: at
+/// `x = 1e-8`, eight); over it, the plain form, which no longer cancels.
 pub(crate) fn sinh(x: f64) -> f64 {
-    let e = exp(x);
-    0.5 * (e - 1.0 / e)
+    let a = x.abs();
+    let v = if a < 1.0 {
+        let m = expm1(a);
+        0.5 * (m + m / (m + 1.0))
+    } else {
+        let e = exp(a);
+        0.5 * (e - 1.0 / e)
+    };
+    if x < 0.0 {
+        -v
+    } else {
+        v
+    }
 }
-/// The inverse hyperbolic sine, `ln(x + sqrt(x^2 + 1))`, taken on `|x|` so it keeps its
-/// precision for negative arguments.
+/// The inverse hyperbolic sine, taken on `|x|` so it keeps its precision for negative
+/// arguments: under 1 in size `ln1p(a + a² / (1 + √(1 + a²)))` (the plain `ln(a + √(a² + 1))`
+/// takes the logarithm of a number near 1 and loses as many digits as `1 / a` has); over it
+/// the plain form.
 pub(crate) fn asinh(x: f64) -> f64 {
     let a = x.abs();
-    let v = ln(a + (a * a + 1.0).sqrt());
+    let v = if a < 1.0 { ln1p(a + a * a / (1.0 + (1.0 + a * a).sqrt())) } else { ln(a + (a * a + 1.0).sqrt()) };
     if x < 0.0 {
         -v
     } else {

@@ -20,6 +20,12 @@
 //! - Angles are given in degrees. Detail is the number of segments in a full turn
 //!   ([`detail`] has the rule, the range and the error).
 //! - A refusal is an [`Error`] with a code and the numbers that decided it.
+//! - **A build is well made at every detail it accepts, or it is refused as data**: what
+//!   [`Spec::build`] returns passes [`Outline::validate`] (or [`Curve::validate`]). A figure
+//!   whose parts are farther apart in size than [`EDGE_FLOOR`] (a billionth) allows is refused
+//!   as `edge_under_floor`, and a build whose chords cross at a coarse detail, though the
+//!   figure does not, as `crosses_at_this_detail`; each names a detail that holds where one
+//!   does. [`Spec::build`] has the rules.
 //! - Deterministic: only IEEE basic operations, square roots and `specula_core::dmath`, so the
 //!   same arguments give the same bytes on every machine.
 //!
@@ -46,7 +52,7 @@ mod tests;
 pub use anchor::{Anchor, On};
 pub use detail::{detail_for, sag, segments, DETAIL_DEFAULT, DETAIL_MAX, DETAIL_MIN};
 pub use error::Error;
-pub use outline::{Curve, Fault, Outline};
+pub use outline::{Curve, Fault, Outline, EDGE_FLOOR};
 pub use spec::{params_of, Args, Spec};
 pub use table::{aliases, find, form, forms, nearest, Alias, Family, Form, Found, Kind, Param, Set, Unit};
 

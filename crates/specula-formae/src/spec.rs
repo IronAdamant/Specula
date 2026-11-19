@@ -5,6 +5,9 @@ use crate::detail::{DETAIL_MAX, DETAIL_MIN};
 use crate::error::Error;
 use crate::geom::Geom;
 use crate::table::{find, Alias, Form, Found, Kind, Param, Set};
+use crate::outline::{Fault, EDGE_FLOOR};
+#[cfg(doc)]
+use crate::outline::{Curve, Outline};
 use crate::{Built, Count, Measures, MAX_POINTS};
 
 /// A form's parameters, resolved: every parameter of the form has its value (defaults, then an
@@ -169,15 +172,46 @@ impl Spec {
     }
 
     /// The points and parts (rings for a plane figure, 1 for a curve) a build at `detail`
-    /// will have, exactly, before any work.
+    /// will have, exactly, before any work. (It is what the build has when it is made: a
+    /// build can still be refused as not well made at that detail, which only sampling shows:
+    /// see [`Spec::build`].)
     pub fn count(&self, detail: u32) -> Result<Count, Error> {
         Spec::check_detail(detail)?;
         let (points, parts) = self.geom()?.count(detail);
         Ok(Count { points, parts })
     }
 
-    /// Builds the form at `detail`. A build whose count is over [`MAX_POINTS`] is refused
-    /// with both numbers, before any sampling.
+    /// Builds the form at `detail`. **What it returns is well made, or it is refused as
+    /// data**: an [`Outline`] that [`Outline::validate`] accepts, or a [`Curve`] that
+    /// [`Curve::validate`] accepts. In order:
+    ///
+    /// - a build whose count is over [`MAX_POINTS`] is refused with both numbers
+    ///   ([`Error::TooManyPoints`]), before any sampling;
+    /// - the build is sampled, and checked (near linear in its points);
+    /// - an edge at most [`EDGE_FLOOR`] of the figure's size is refused as
+    ///   [`Error::Constraint`] with the rule **`edge_under_floor`**: the figure's parts are
+    ///   farther apart in size than the floor allows (a hole of a tenth of a millimetre in a
+    ///   disc of a kilometre). Its values are the edge's `ring`, `point` and length (`edge`),
+    ///   the figure's `size`, the `floor` and the `detail`; and, where one of the coarser
+    ///   details `detail / 2`, `detail / 4`, ... (down to [`DETAIL_MIN`]) builds well made,
+    ///   the finest of them as `coarser_detail_that_holds` (short edges that are a curve's
+    ///   samples grow at a coarser detail; a straight edge does not, and then none is named);
+    ///   `searched_to` is the last detail tried;
+    /// - two edges that cross are refused with the rule **`crosses_at_this_detail`**: the
+    ///   true figure is simple, and its chords stray from it by the build's chord error,
+    ///   which at this detail is more than half the gap between two of its parts (a spiral's
+    ///   turns, far out). Its values are the two edges (`ring_a`, `edge_a`, `ring_b`,
+    ///   `edge_b`), the `detail` and the `chord_error`; and, where one of `detail × 2`,
+    ///   `detail × 4`, ... (up to [`DETAIL_MAX`], under the ceiling) builds well made, the
+    ///   coarsest of them as `finer_detail_that_holds`; `searched_to` is the last detail
+    ///   tried;
+    /// - any other fault (a ring wound the wrong way, a hole outside) would be a mistake in the
+    ///   form's own geometry, refused with the rule `not_well_made`; the crate's tests hold that
+    ///   no form makes one.
+    ///
+    /// Refusing, and not building something else, keeps the count exact and the detail what
+    /// was asked for. The search for a detail that holds builds at most nine more times, each
+    /// under the ceiling, and only on a refusal.
     pub fn build(&self, detail: u32) -> Result<Built, Error> {
         Spec::check_detail(detail)?;
         let g = self.geom()?;
@@ -185,7 +219,42 @@ impl Spec {
         if points > MAX_POINTS {
             return Err(Error::TooManyPoints { form: self.form.name, points, ceiling: MAX_POINTS });
         }
-        Ok(g.build(detail))
+        let b = g.build(detail);
+        match fault_of(&b) {
+            None => Ok(b),
+            Some(f) => Err(self.not_well_made(&g, detail, &b, f)),
+        }
+    }
+
+    /// The refusal of a build at `detail` that has the fault `f`.
+    fn not_well_made(&self, g: &Geom, detail: u32, b: &Built, f: Fault) -> Error {
+        let size = match b {
+            Built::Outline(o) => o.size(),
+            Built::Curve(c) => c.size(),
+        };
+        let d = detail as f64;
+        let constraint = |rule: &'static str, message: &str, values: Vec<(&'static str, f64)>| Error::Constraint { form: self.form.name, rule, message: message.to_string(), values };
+        match f {
+            Fault::ShortEdge { ring, point, length } => {
+                let (holds, last) = holds_at(g, detail, false);
+                let mut v = vec![("ring", ring as f64), ("point", point as f64), ("edge", length), ("size", size), ("floor", EDGE_FLOOR * size), ("detail", d)];
+                if let Some(h) = holds {
+                    v.push(("coarser_detail_that_holds", h as f64));
+                }
+                v.push(("searched_to", last as f64));
+                constraint("edge_under_floor", "an edge of the build is no longer than a billionth of the figure's size: its parts are too far apart in size (a coarser detail is named where one holds)", v)
+            }
+            Fault::Crossing { a, b: e } => {
+                let (holds, last) = holds_at(g, detail, true);
+                let mut v = vec![("ring_a", a.0 as f64), ("edge_a", a.1 as f64), ("ring_b", e.0 as f64), ("edge_b", e.1 as f64), ("detail", d), ("chord_error", b.chord_error())];
+                if let Some(h) = holds {
+                    v.push(("finer_detail_that_holds", h as f64));
+                }
+                v.push(("searched_to", last as f64));
+                constraint("crosses_at_this_detail", "the build's chords cross at this detail, though the figure does not: they stray from it farther than half the gap between two of its parts (a finer detail is named where one holds under the ceiling)", v)
+            }
+            other => constraint("not_well_made", &format!("the build is not well made ({other:?}): a mistake in the form's geometry"), vec![("detail", d)]),
+        }
     }
 
     /// The closed-form measures: exact from the geometry where every piece is a line or an
@@ -248,5 +317,51 @@ impl Spec {
     #[cfg(test)]
     pub(crate) fn geom_curved(&self) -> bool {
         self.geom().map(|g| g.curved()).unwrap_or(false)
+    }
+
+    /// The build at `detail` as sampled, unchecked (for tests: what [`Spec::build`] refuses).
+    #[cfg(test)]
+    pub(crate) fn raw(&self, detail: u32) -> Option<Built> {
+        self.geom().ok().map(|g| g.build(detail))
+    }
+}
+
+/// What is wrong with a build, if anything.
+fn fault_of(b: &Built) -> Option<Fault> {
+    match b {
+        Built::Outline(o) => o.validate().err(),
+        Built::Curve(c) => c.validate().err(),
+    }
+}
+
+/// From a detail at which the build is not well made, the nearest detail by halves
+/// (`finer` false: `from / 2`, `from / 4`, ... down to [`DETAIL_MIN`]) or by doubles (`finer`:
+/// up to [`DETAIL_MAX`], while the count is under the ceiling) at which it is; and the last
+/// detail tried (`from` when none was). Going coarser it goes on only past short edges, and
+/// going finer only past crossings: the other fault only grows that way.
+fn holds_at(g: &Geom, from: u32, finer: bool) -> (Option<u32>, u32) {
+    let mut d = from;
+    loop {
+        let next = if finer {
+            if d >= DETAIL_MAX {
+                return (None, d);
+            }
+            d.saturating_mul(2).min(DETAIL_MAX)
+        } else {
+            if d <= DETAIL_MIN {
+                return (None, d);
+            }
+            (d / 2).max(DETAIL_MIN)
+        };
+        if g.count(next).0 > MAX_POINTS {
+            return (None, d);
+        }
+        d = next;
+        match fault_of(&g.build(d)) {
+            None => return (Some(d), d),
+            Some(Fault::ShortEdge { .. }) if !finer => {}
+            Some(Fault::Crossing { .. }) if finer => {}
+            Some(_) => return (None, d),
+        }
     }
 }

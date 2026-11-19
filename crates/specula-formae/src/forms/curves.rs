@@ -7,9 +7,15 @@
 //!   thickness and its area is exactly thickness × span. Where the curve is steep the band is
 //!   thinner across it (by `1/√(1 + slope²)`);
 //! - the elliptical arc between the ellipses of semi-axes `rx ± w/2`, `ry ± w/2` (nested, so
-//!   simple), cut by the rays of its angle;
+//!   simple), cut by the rays of its angle, and both edges sampled on the same rays, so that
+//!   its build is simple at every detail too (`earcb_geom` has the argument);
 //! - the spirals by a **radial** width (along the radius): simple while the width is under the
 //!   gap between turns;
+//!
+//! "Simple" is said of the true figure. A build's chords stray from their curve by the chord
+//! error, and where that passes the gap between two parts of the figure (a spiral's turns far
+//! out, at a coarse detail) the chords can cross though the curve does not: such a build is
+//! refused as data, naming a finer detail that holds ([`crate::Spec::build`]).
 //! - the involute by a true (normal) width: its offsets are involutes of the same circle, so
 //!   simple while the width is under the gap between turns, 2π times the base radius.
 //!   A thick arc is the `annular_sector`; a thick line segment is a `rectangle`.
@@ -147,18 +153,38 @@ fn earcb_parts(a: &Args) -> Result<(f64, f64, f64, f64), Refusal> {
 fn earcb_geom(a: &Args) -> Result<Geom, Refusal> {
     let (rx, ry, t, h) = earcb_parts(a)?;
     let (oa, ob, ia, ib) = (rx + h, ry + h, rx - h, ry - h);
+    // **Both edges are sampled on the same rays from the centre**: the outer one evenly in
+    // its parametric angle u, the inner one where each of the outer's rays meets it. So every
+    // edge lies in a wedge between two neighbouring rays (each under half a turn: u steps by at
+    // most an eighth of a turn), the outer edge's ends lie beyond the inner's on both rays of a
+    // wedge, and the two caps lie along the first and the last ray: no two edges can cross at
+    // any detail. (Sampled each in its own parametric angle, the two edges' chords sat on
+    // different rays and crossed where their sag passed the width.)
+    let (u0, u1) = (0.0, param_angle(oa, ob, t));
+    let k = (u1 - u0) / TAU;
+    let inner = move |u: f64| {
+        let (s, c) = sin_cos(u);
+        ellipse_polar(ia, ib, atan2(ob * s, oa * c))
+    };
     Ok(ring(vec![
-        ellipse_piece(oa, ob, 0.0, t),
+        func(move |u| [oa * cos(u), ob * sin(u)], u0, u1, k),
         line(ellipse_polar(oa, ob, t), ellipse_polar(ia, ib, t)),
-        ellipse_piece(ia, ib, t, 0.0),
+        func(inner, u1, u0, k),
         line([ia, 0.0], [oa, 0.0]),
     ]))
 }
 fn earcb_closed(a: &Args) -> Measures {
     let Ok((rx, ry, t, h)) = earcb_parts(a) else { return Measures::default() };
-    // An ellipse's sector from parametric angle 0 to u has area a b u / 2.
+    // An ellipse's sector from parametric angle 0 to u has area a b u / 2, so the band is
+    // (oa ob u_o − ia ib u_i) / 2. Written as (oa ob − ia ib) u_o / 2 + ia ib (u_o − u_i) / 2,
+    // with oa ob − ia ib = 2h (rx + ry) and u_o − u_i the angle between the vectors
+    // (ob cos t, oa sin t) and (ib cos t, ia sin t), whose cross product is
+    // 2h (ry − rx) sin t cos t: no near-equal numbers are subtracted (a thin band of a large
+    // ellipse lost digits by the hundred millions in the plain difference).
     let (oa, ob, ia, ib) = (rx + h, ry + h, rx - h, ry - h);
-    ap(Some(0.5 * (oa * ob * param_angle(oa, ob, t) - ia * ib * param_angle(ia, ib, t))), None)
+    let (s, c) = sin_cos(t);
+    let du = atan2(2.0 * h * (ry - rx) * s * c, ib * ob * c * c + ia * oa * s * s);
+    ap(Some(0.5 * (2.0 * h * (rx + ry) * param_angle(oa, ob, t) + ia * ib * du)), None)
 }
 
 // ---------------------------------------------------------------- graphs
@@ -193,7 +219,8 @@ fn cat_f(a: &Args) -> Result<(YFn, f64, f64), Refusal> {
     if 0.5 * w / c > 10.0 {
         return Err(refuse("not_too_steep", "half the width may be at most ten times the parameter a (the ends rise as cosh)", &[("width", w), ("a", c)]));
     }
-    Ok((Rc::new(move |x| c * (cosh(x / c) - 1.0)), 0.5 * w, 2.0 * atan(sinh(0.5 * w / c)) / TAU))
+    // (cosh − 1 as 2 sinh²(x/2): the plain difference keeps none of a shallow chain's sag.)
+    Ok((Rc::new(move |x| c * coshm1(x / c)), 0.5 * w, 2.0 * atan(sinh(0.5 * w / c)) / TAU))
 }
 fn cat_geom(a: &Args) -> Result<Geom, Refusal> {
     let (f, x, t) = cat_f(a)?;
@@ -248,9 +275,23 @@ fn asp_geom(a: &Args) -> Result<Geom, Refusal> {
 }
 fn asp_closed(a: &Args) -> Measures {
     let (s, p, n) = (a.f("start"), a.f("pitch"), a.f("turns"));
-    let b = p / TAU;
-    let g = |u: f64| 0.5 * b * (u * (1.0 + u * u).sqrt() + asinh(u));
-    length(g((s + p * n) / b) - g(s / b))
+    length(asp_length(s, p, n))
+}
+/// The Archimedean spiral's length from radius `s` over `n` turns of pitch `p`:
+/// `(1/b) [F(r1) − F(r0)]`, `F(r) = (r S + b² asinh(r / b)) / 2`, `S = √(r² + b²)`, `b = p / 2π`.
+/// The two differences are taken without subtracting near-equal numbers (the plain
+/// `F(r1) − F(r0)` loses as many digits as `r0² / (r1² − r0²)` has: a short arc far out):
+/// `r1 S1 − r0 S0 = (r1² − r0²)(r1² + r0² + b²) / (r1 S1 + r0 S0)` and
+/// `asinh(r1/b) − asinh(r0/b) = asinh((r1² − r0²) / (r1 S0 + r0 S1))`, with
+/// `r1² − r0² = b Δθ (r1 + r0)`.
+pub(crate) fn asp_length(s: f64, p: f64, n: f64) -> f64 {
+    let (b, dt) = (p / TAU, TAU * n);
+    let (r0, r1) = (s, s + p * n);
+    let (s0, s1) = ((r0 * r0 + b * b).sqrt(), (r1 * r1 + b * b).sqrt());
+    let sum = r1 + r0;
+    let a_over_b = dt * sum * (r1 * r1 + r0 * r0 + b * b) / (r1 * s1 + r0 * s0);
+    let d = b * dt * sum / (r1 * s0 + r0 * s1);
+    0.5 * (a_over_b + b * asinh(d))
 }
 fn aspb_geom(a: &Args) -> Result<Geom, Refusal> {
     let (s, p, w) = (a.f("start"), a.f("pitch"), a.f("width"));
@@ -287,7 +328,8 @@ fn lsp_geom(a: &Args) -> Result<Geom, Refusal> {
 }
 fn lsp_closed(a: &Args) -> Measures {
     let Ok((s, k, t1)) = lsp_parts(a) else { return Measures::default() };
-    length((1.0 + k * k).sqrt() / k * (s * exp(k * t1) - s))
+    // (e^{kt} − 1 by expm1: a slow spiral over a short turn keeps its digits.)
+    length((1.0 + k * k).sqrt() / k * s * expm1(k * t1))
 }
 fn lspb_geom(a: &Args) -> Result<Geom, Refusal> {
     let (s, k, t1) = lsp_parts(a)?;
@@ -303,7 +345,7 @@ fn lspb_geom(a: &Args) -> Result<Geom, Refusal> {
 fn lspb_closed(a: &Args) -> Measures {
     let Ok((s, k, t1)) = lsp_parts(a) else { return Measures::default() };
     let w = a.f("width");
-    ap(Some(w * s * s * (exp(2.0 * k * t1) - 1.0) / (2.0 * k)), None)
+    ap(Some(w * s * s * expm1(2.0 * k * t1) / (2.0 * k)), None)
 }
 
 const P_INV: &[Param] = &[len("radius", "the base circle's radius", 0.1), ratio("turns", "how far the string unwinds, in turns", 2.0, 0.1, 20.0)];

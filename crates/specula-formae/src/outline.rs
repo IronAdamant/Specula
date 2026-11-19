@@ -44,7 +44,7 @@ pub enum Fault {
         /// The point.
         point: usize,
     },
-    /// An edge is shorter than a billionth of the figure's size.
+    /// An edge is no longer than [`EDGE_FLOOR`] (a billionth) of the figure's size.
     ShortEdge {
         /// The ring.
         ring: usize,
@@ -73,6 +73,17 @@ pub enum Fault {
         ring: usize,
     },
 }
+
+/// The least length an edge (or a curve's step) of a build may have, as a share of the
+/// figure's size (the diagonal of its bounds). Why a billionth: an edge's ends are rounded to
+/// about `1e-16` of the figure's reach, so an edge a billionth of it long is known to seven
+/// digits, which the crossing test (signs of products of such differences) still reads
+/// rightly; much shorter, and whether two edges cross is decided by rounding. A figure whose
+/// parts are farther apart in size than this (a hole of a tenth of a millimetre in a disc of a
+/// kilometre, sampled finely) is refused as data by [`crate::Spec::build`]. (The modeller
+/// works in `f32`, whose points are rounded to about a ten-millionth of their reach: a part
+/// under that is lost there whatever this floor says.)
+pub const EDGE_FLOOR: f64 = 1e-9;
 
 /// The signed area of a ring (positive counter-clockwise), by the shoelace formula.
 pub fn signed_area(ring: &[Pt]) -> f64 {
@@ -183,7 +194,7 @@ impl Outline {
             let n = r.len();
             for i in 0..n {
                 let l = dist(r[i], r[(i + 1) % n]);
-                if l <= size * 1e-9 {
+                if l <= size * EDGE_FLOOR {
                     return Err(Fault::ShortEdge { ring: ri, point: i, length: l });
                 }
             }
@@ -304,6 +315,34 @@ impl Curve {
             l += dist(self.points[n - 1], self.points[0]);
         }
         Measures { size: None, boundary: Some(l), centroid: None, bounds: bounds_of(self.points.iter()), series: None }
+    }
+
+    /// The curve's size: the diagonal of its bounds.
+    pub fn size(&self) -> f64 {
+        bounds_of(self.points.iter()).map(|(lo, hi)| len([hi[0] - lo[0], hi[1] - lo[1]])).unwrap_or(0.0)
+    }
+
+    /// Checks that the curve is well made: two points or more, every coordinate finite, and no
+    /// step (the closing one too, if it is closed) shorter than [`EDGE_FLOOR`] of its size. A
+    /// curve may cross itself (a figure eight does), so crossings are not looked for. A fault
+    /// names ring 0.
+    pub fn validate(&self) -> Result<(), Fault> {
+        let n = self.points.len();
+        if n < 2 {
+            return Err(Fault::TooFew { ring: 0 });
+        }
+        if let Some(i) = self.points.iter().position(|p| !(p[0].is_finite() && p[1].is_finite())) {
+            return Err(Fault::NotFinite { ring: 0, point: i });
+        }
+        let size = self.size();
+        let steps = if self.closed { n } else { n - 1 };
+        for i in 0..steps {
+            let l = dist(self.points[i], self.points[(i + 1) % n]);
+            if l <= size * EDGE_FLOOR {
+                return Err(Fault::ShortEdge { ring: 0, point: i, length: l });
+            }
+        }
+        Ok(())
     }
 
     /// The distance from `p` to the curve.
