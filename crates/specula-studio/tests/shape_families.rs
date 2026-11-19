@@ -1553,10 +1553,12 @@ fn size_table() {
 /// `taste.rs`, done to boxes and planks from a square to sixteen times as long as wide (the
 /// thinnest 26 pixels across), standing and lying, to crosses of three widths and an L (and
 /// the pointed advice to triangles, a star and a pencil), passes the check at the default share
-/// (0.5) in every mask, every nine degrees.
+/// (0.5) in every mask, every thirty degrees in the default run (every nine until its seventh
+/// version: the default run was over two minutes; what holds a rule is a test of its own, not the
+/// sweep's step) and every degree in the ignored run.
 #[test]
 fn the_checks_advice_leads_to_a_pass() {
-    advice_holds(9);
+    advice_holds(30);
 }
 
 #[test]
@@ -1625,10 +1627,11 @@ fn corpus_holds(step: u32) {
 /// **The corpus reads as a person would, at a stated rate**: of its 162 common assets (the sixth
 /// version's 103 and the sixth review's 59, each written down before the measure was run on
 /// them), 136 lead as a person would in every mask of every degree; the 26 it misreads are held
-/// as they read today (`MISREAD`). Every nine degrees.
+/// as they read today (`MISREAD`). Every thirty degrees in the default run (every nine until its
+/// seventh version), every degree in the ignored run, where the rate is held.
 #[test]
 fn the_corpus_reads_as_a_person_would() {
-    corpus_holds(9);
+    corpus_holds(30);
 }
 
 #[test]
