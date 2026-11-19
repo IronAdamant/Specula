@@ -28,8 +28,8 @@
 
 | Dimension | Path | Launch notes |
 |-----------|------|----------------|
-| **2D** | `/Users/aron/Documents/coding_projects/Crystal Drift` | Playing by default; features `remote,capture` |
-| **3D** | `/Users/aron/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`**; features `remote,capture` |
+| **2D** | `~/Documents/coding_projects/Crystal Drift` | Playing by default; features `remote,capture` |
+| **3D** | `~/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`**; features `remote,capture` |
 
 Pins: Bevy **0.19**, BRP **15702**, `remote,capture`. Skills: `bevy-agent-loop`, eyesight-packs.
 
@@ -129,8 +129,8 @@ Implement pure, unit-tested helpers where possible.
 
 ## 5. Phase H1 — Version dogfood (Tier 1.1)
 
-- [x] `/Users/aron/Documents/coding_projects/Crystal Drift` has `.git` (init if missing) and at least one commit after H2 (or commit pre+post).  
-- [x] `/Users/aron/Documents/coding_projects/Iron Feud` same.  
+- [x] `~/Documents/coding_projects/Crystal Drift` has `.git` (init if missing) and at least one commit after H2 (or commit pre+post).  
+- [x] `~/Documents/coding_projects/Iron Feud` same.  
 - [x] Specula docs note how dogfood is versioned (sibling repos; not necessarily monorepo).  
 - [x] Optional: `.gitignore` for `target/`, `captures/` (keep intentional eyesight samples if desired).  
 - [x] **Do not** force-push dogfood history unless human asks.
@@ -141,7 +141,7 @@ Implement pure, unit-tested helpers where possible.
 
 ## 6. Phase H2 — Crystal Drift: 1 new feature + improve all features
 
-**Path:** `/Users/aron/Documents/coding_projects/Crystal Drift`
+**Path:** `~/Documents/coding_projects/Crystal Drift`
 
 ### Quotas
 
@@ -203,7 +203,7 @@ Each row: regenerate or replace PNG + keep path stable + referenced in load/spaw
 
 ## 7. Phase H3 — Iron Feud: 1 new feature + improve all features + heightfield
 
-**Path:** `/Users/aron/Documents/coding_projects/Iron Feud`  
+**Path:** `~/Documents/coding_projects/Iron Feud`  
 **Playing:** `IRON_FEUD_AUTO_PLAY=1` mandatory  
 
 ### Quotas
@@ -382,8 +382,8 @@ long-term correctness over speed. Prefer durable tests, live captures, honest lo
 
 Order: Specula hardening first (rebuild install), version CD+IF git,
 then dogfood craft:
-  2D: /Users/aron/Documents/coding_projects/Crystal Drift
-  3D: /Users/aron/Documents/coding_projects/Iron Feud
+  2D: ~/Documents/coding_projects/Crystal Drift
+  3D: ~/Documents/coding_projects/Iron Feud
 Each game: exactly 1 new feature; improve ALL existing features.
 CD: transparent sprite BGs only — no purple/magenta square plates; env shows through.
 IF: complex non-block silhouettes (drills look like drills, belts like belts);

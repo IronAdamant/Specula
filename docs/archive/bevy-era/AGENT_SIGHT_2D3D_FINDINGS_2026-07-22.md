@@ -26,7 +26,7 @@
 
 ## Crystal Drift (2D) D1
 
-**Path:** `/Users/aron/Documents/coding_projects/Crystal Drift`
+**Path:** `~/Documents/coding_projects/Crystal Drift`
 
 | Quota | Item |
 |-------|------|
@@ -45,7 +45,7 @@
 
 ## Iron Feud (3D) D2
 
-**Path:** `/Users/aron/Documents/coding_projects/Iron Feud`  
+**Path:** `~/Documents/coding_projects/Iron Feud`  
 **Playing:** `IRON_FEUD_AUTO_PLAY=1`
 
 | Quota | Item |

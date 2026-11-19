@@ -29,8 +29,8 @@ This plan is written for a session where the human may be **away for several hou
 
 | Dimension | Path | Launch notes |
 |-----------|------|----------------|
-| **2D** | `/Users/aron/Documents/coding_projects/Crystal Drift` | Playing by default; features `remote,capture` |
-| **3D** | `/Users/aron/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`** for Playing; features `remote,capture` |
+| **2D** | `~/Documents/coding_projects/Crystal Drift` | Playing by default; features `remote,capture` |
+| **3D** | `~/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`** for Playing; features `remote,capture` |
 
 Pins: Bevy **0.19**, BRP **15702**, `remote,capture`. Skills: `bevy-agent-loop`, eyesight-packs.
 
@@ -120,7 +120,7 @@ Implement in `crates/specula-brp` / `crates/specula` (MCP + CLI). Unit-test pure
 
 ## 5. Phase D1 — Crystal Drift (2D) content + env
 
-**Path:** `/Users/aron/Documents/coding_projects/Crystal Drift`
+**Path:** `~/Documents/coding_projects/Crystal Drift`
 
 ### Required quotas (all must ship and appear in live BRP Names)
 
@@ -150,7 +150,7 @@ Implement in `crates/specula-brp` / `crates/specula` (MCP + CLI). Unit-test pure
 
 ## 6. Phase D2 — Iron Feud (3D) content + height-varying terrain
 
-**Path:** `/Users/aron/Documents/coding_projects/Iron Feud`  
+**Path:** `~/Documents/coding_projects/Iron Feud`  
 **Playing:** `IRON_FEUD_AUTO_PLAY=1` mandatory for all env claims  
 
 ### Required quotas
@@ -304,8 +304,8 @@ I will be away for several hours — take as long as needed; NO shortcuts;
 long-term correctness over speed. Prefer durable tests, live captures, honest logs.
 
 Order mandatory: Specula sight/MCP first (rebuild install), then dogfood
-  2D: /Users/aron/Documents/coding_projects/Crystal Drift
-  3D: /Users/aron/Documents/coding_projects/Iron Feud
+  2D: ~/Documents/coding_projects/Crystal Drift
+  3D: ~/Documents/coding_projects/Iron Feud
 Each game: 2 new features+assets displayed+tested; improve existing environments.
 3D: varying ground height flat → hills → mountains (visible in landscape packs).
 Live see verify + review both; fix until green. Findings + assessments.

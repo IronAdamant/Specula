@@ -3,8 +3,9 @@
 //! docs/), and an absolute temp path names the user and, for Claude's scratch folders, the session.
 //!
 //! Scans every file `git ls-files` lists (skips cleanly without git). Binary files are skipped by extension.
-//! `docs/archive/` is exempt (history from before this check, already public). A line that must show such a
-//! pattern as test data carries the marker `private-scan: allow`.
+//! `docs/archive/` is scanned like the rest (it was exempt until 2026-11-19, when the home folder paths in it
+//! were written as `~/`; what older commits hold stays as it is: history is not rewritten). A line that must
+//! show such a pattern as test data carries the marker `private-scan: allow`.
 //!
 //! **A citation may hold a UUID.** The library research (`docs/research/library/`, kept as it was delivered)
 //! cites papers and datasets by their links, and a university's repository, a DOI or a flora's database
@@ -171,7 +172,7 @@ fn tracked_files_hold_no_private_paths() {
     for name in out.split(|&b| b == 0).filter(|n| !n.is_empty()) {
         let name = String::from_utf8_lossy(name).replace('\\', "/");
         let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-        if name == me || name.starts_with("docs/archive/") || SKIP_EXT.contains(&ext.as_str()) {
+        if name == me || SKIP_EXT.contains(&ext.as_str()) {
             continue;
         }
         let Ok(bytes) = std::fs::read(root.join(&name)) else { continue };

@@ -22,7 +22,7 @@ Livestream, editor, unlit suite, auto taste.
 
 ## Crystal Drift (R1)
 
-**Path:** `/Users/aron/Documents/coding_projects/Crystal Drift`
+**Path:** `~/Documents/coding_projects/Crystal Drift`
 
 | Quota | Item |
 |-------|------|
@@ -35,7 +35,7 @@ Livestream, editor, unlit suite, auto taste.
 
 ## Iron Feud (R2)
 
-**Path:** `/Users/aron/Documents/coding_projects/Iron Feud` · `IRON_FEUD_AUTO_PLAY=1`
+**Path:** `~/Documents/coding_projects/Iron Feud` · `IRON_FEUD_AUTO_PLAY=1`
 
 | Quota | Item |
 |-------|------|

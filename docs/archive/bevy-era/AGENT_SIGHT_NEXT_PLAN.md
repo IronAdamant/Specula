@@ -166,7 +166,7 @@ Implement in `crates/specula-brp` + `crates/specula` (MCP + CLI). Unit-test pure
 
 ## 6. Phase S1 — Crystal Drift dogfood content
 
-**Path:** `/Users/aron/Documents/coding_projects/Crystal Drift`  
+**Path:** `~/Documents/coding_projects/Crystal Drift`  
 **Features:** `remote,capture`  
 **State:** Playing (default launch)
 
@@ -196,7 +196,7 @@ Primary rank should prefer **Player** over Crystal when both present.
 
 ## 7. Phase S2 — Iron Feud dogfood content
 
-**Path:** `/Users/aron/Documents/coding_projects/Iron Feud`  
+**Path:** `~/Documents/coding_projects/Iron Feud`  
 **Features:** `remote,capture`  
 **State:** **Playing** via `IRON_FEUD_AUTO_PLAY=1` (mandatory for all env eyesight)
 
@@ -323,8 +323,8 @@ All must hold:
 ```text
 Execute docs/AGENT_SIGHT_NEXT_PLAN.md to completion (S0 → S4).
 Order is mandatory: MCP/sight code first, rebuild MCP, then dogfood
-  /Users/aron/Documents/coding_projects/Crystal Drift
-  /Users/aron/Documents/coding_projects/Iron Feud
+  ~/Documents/coding_projects/Crystal Drift
+  ~/Documents/coding_projects/Iron Feud
 Each game: 2 additions, 1 improvement, env modification AND env addition.
 Do NOT implement: livestream/60fps, human editor, unlit suite, auto taste scoring.
 Bevy 0.19, remote,capture, BRP 15702. Iron Feud: IRON_FEUD_AUTO_PLAY=1.

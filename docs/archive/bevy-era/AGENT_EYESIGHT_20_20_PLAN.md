@@ -319,7 +319,7 @@ Update `.grok/skills/bevy-agent-loop/SKILL.md` and `references/eyesight-packs.md
 
 ## 8. Dogfood contract (required targets)
 
-### Crystal Drift — `/Users/aron/Documents/coding_projects/Crystal Drift`
+### Crystal Drift — `~/Documents/coding_projects/Crystal Drift`
 
 | Need | Notes |
 |------|--------|
@@ -329,7 +329,7 @@ Update `.grok/skills/bevy-agent-loop/SKILL.md` and `references/eyesight-packs.md
 | Acuity proofs | true fovea on Player; landscape pack; motion diversity; black-frame not false-positive; filtered subjects |
 | Env | Nebula field + station already present |
 
-### Iron Feud — `/Users/aron/Documents/coding_projects/Iron Feud`
+### Iron Feud — `~/Documents/coding_projects/Iron Feud`
 
 | Need | Notes |
 |------|--------|
@@ -412,8 +412,8 @@ All must hold:
 ```text
 Execute docs/AGENT_EYESIGHT_20_20_PLAN.md Phase A{N} only (or A0–A8 if OBJECTIVE batches).
 Respect: agent eyesight acuity, not editor; not human taste product.
-Dogfood: /Users/aron/Documents/coding_projects/Crystal Drift and
-         /Users/aron/Documents/coding_projects/Iron Feud (Playing: IRON_FEUD_AUTO_PLAY=1).
+Dogfood: ~/Documents/coding_projects/Crystal Drift and
+         ~/Documents/coding_projects/Iron Feud (Playing: IRON_FEUD_AUTO_PLAY=1).
 Bevy 0.19, remote,capture, BRP 15702.
 Update plan checkboxes + PROGRESS.md; write findings if phase completes exit criteria.
 README honesty when A7 (or final batch): 20/20 sight; taste/design human-owned.

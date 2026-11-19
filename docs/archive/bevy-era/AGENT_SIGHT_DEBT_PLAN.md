@@ -27,8 +27,8 @@
 
 | Dimension | Path | Launch notes |
 |-----------|------|----------------|
-| **2D** | `/Users/aron/Documents/coding_projects/Crystal Drift` | Playing by default; features `remote,capture` |
-| **3D** | `/Users/aron/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`**; features `remote,capture` |
+| **2D** | `~/Documents/coding_projects/Crystal Drift` | Playing by default; features `remote,capture` |
+| **3D** | `~/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`**; features `remote,capture` |
 
 Pins: Bevy **0.19**, BRP **15702**, `remote,capture`. Skills: `bevy-agent-loop`, eyesight-packs.
 
@@ -116,7 +116,7 @@ Implement in `crates/specula-brp` / `crates/specula`. Pure logic unit-tested.
 
 ## 4. Phase R1 — Crystal Drift (2D): new + full improve pass
 
-**Path:** `/Users/aron/Documents/coding_projects/Crystal Drift`
+**Path:** `~/Documents/coding_projects/Crystal Drift`
 
 ### Quotas (all required)
 
@@ -182,7 +182,7 @@ Implement in `crates/specula-brp` / `crates/specula`. Pure logic unit-tested.
 
 ## 5. Phase R2 — Iron Feud (3D): new + full improve pass
 
-**Path:** `/Users/aron/Documents/coding_projects/Iron Feud`  
+**Path:** `~/Documents/coding_projects/Iron Feud`  
 **Playing:** `IRON_FEUD_AUTO_PLAY=1` mandatory for env claims  
 
 ### Quotas (all required)
@@ -360,8 +360,8 @@ I will be away — take as long as needed; NO shortcuts;
 long-term correctness over speed. Prefer durable tests, live captures, honest logs.
 
 Order: Specula residual sight debt first (rebuild install), then dogfood
-  2D: /Users/aron/Documents/coding_projects/Crystal Drift
-  3D: /Users/aron/Documents/coding_projects/Iron Feud
+  2D: ~/Documents/coding_projects/Crystal Drift
+  3D: ~/Documents/coding_projects/Iron Feud
 Each game: 1 new feature+asset; 1 new environment; improve ALL existing assets
   and ALL existing environments (inventory tables in plan).
 IF: keep 3+ height bands; start playable. Live see verify + packs both; fix until green.

@@ -31,8 +31,8 @@
 
 | Dimension | Path | Launch notes |
 |-----------|------|----------------|
-| **2D** | `/Users/aron/Documents/coding_projects/Crystal Drift` | Playing by default; features `remote,capture` |
-| **3D** | `/Users/aron/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`**; features `remote,capture` |
+| **2D** | `~/Documents/coding_projects/Crystal Drift` | Playing by default; features `remote,capture` |
+| **3D** | `~/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`**; features `remote,capture` |
 
 Pins: Bevy **0.19**, BRP **15702**, `remote,capture`. Skills: `bevy-agent-loop`.  
 Workflow: `/agent-sight-dogfood` (`mode=full`, `skip_install` per policy after install).
@@ -331,8 +331,8 @@ Order:
   T6  Findings, PROGRESS, ROADMAP, AGENTS, skill, commit
 
 Dogfood:
-  2D: /Users/aron/Documents/coding_projects/Crystal Drift
-  3D: /Users/aron/Documents/coding_projects/Iron Feud
+  2D: ~/Documents/coding_projects/Crystal Drift
+  3D: ~/Documents/coding_projects/Iron Feud
 Bevy 0.19, remote,capture, BRP 15702. Iron Feud: IRON_FEUD_AUTO_PLAY=1.
 Entity fovea: always --profile iron-feud|crystal-drift.
 Exclude: livestream/60fps, human editor, unlit suite, auto taste scoring.

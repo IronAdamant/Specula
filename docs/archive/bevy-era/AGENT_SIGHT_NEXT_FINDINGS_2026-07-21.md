@@ -18,7 +18,7 @@
 
 ## Dogfood inventory
 
-### Crystal Drift (`/Users/aron/Documents/coding_projects/Crystal Drift`)
+### Crystal Drift (`~/Documents/coding_projects/Crystal Drift`)
 
 | Quota | Item |
 |-------|------|
@@ -30,7 +30,7 @@
 
 Live packet: `primary_subject=Player`; Names include BeaconBuoy, RescuePod, DebrisRing, Nebula*, DerelictStation.
 
-### Iron Feud (`/Users/aron/Documents/coding_projects/Iron Feud`)
+### Iron Feud (`~/Documents/coding_projects/Iron Feud`)
 
 | Quota | Item |
 |-------|------|

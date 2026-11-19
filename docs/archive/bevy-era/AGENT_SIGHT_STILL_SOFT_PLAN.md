@@ -40,8 +40,8 @@ Soft findings claimed E0–E7 complete and workflow green, yet residual honesty 
 
 | Dimension | Path | Launch notes |
 |-----------|------|----------------|
-| **2D** | `/Users/aron/Documents/coding_projects/Crystal Drift` | Playing; `remote,capture` |
-| **3D** | `/Users/aron/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`**; `remote,capture` |
+| **2D** | `~/Documents/coding_projects/Crystal Drift` | Playing; `remote,capture` |
+| **3D** | `~/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`**; `remote,capture` |
 
 Pins: Bevy **0.19**, BRP **15702**.  
 **Workflow closeout (mandatory):**
@@ -54,9 +54,9 @@ Pins: Bevy **0.19**, BRP **15702**.
   "skip_install": true,   // false if SS1–SS5 just installed MCP
   "require_cd_name": "CargoPod",
   "require_if_name": "OreCrusher",
-  "cd_path": "/Users/aron/Documents/coding_projects/Crystal Drift",
-  "if_path": "/Users/aron/Documents/coding_projects/Iron Feud",
-  "specula_root": "/Users/aron/Documents/coding_projects/Specula"
+  "cd_path": "~/Documents/coding_projects/Crystal Drift",
+  "if_path": "~/Documents/coding_projects/Iron Feud",
+  "specula_root": "~/Documents/coding_projects/Specula"
 }
 ```
 
@@ -327,8 +327,8 @@ Workflow full is REQUIRED for closeout (not gates-only).
 Default in agent-sight-dogfood.rhai is already mode=full — keep it.
   mode=full, CD + IF sequential, skeptic green preferred.
 Dogfood paths:
-  2D: /Users/aron/Documents/coding_projects/Crystal Drift
-  3D: /Users/aron/Documents/coding_projects/Iron Feud
+  2D: ~/Documents/coding_projects/Crystal Drift
+  3D: ~/Documents/coding_projects/Iron Feud
 Bevy 0.19, remote,capture, BRP 15702. Iron Feud: IRON_FEUD_AUTO_PLAY=1.
 Entity: --profile iron-feud|crystal-drift.
 Exclude: livestream, editor, taste scoring.

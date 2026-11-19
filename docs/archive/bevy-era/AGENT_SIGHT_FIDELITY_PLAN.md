@@ -29,8 +29,8 @@
 
 | Dimension | Path | Launch notes |
 |-----------|------|----------------|
-| **2D** | `/Users/aron/Documents/coding_projects/Crystal Drift` | Playing by default; features `remote,capture` |
-| **3D** | `/Users/aron/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`**; features `remote,capture` |
+| **2D** | `~/Documents/coding_projects/Crystal Drift` | Playing by default; features `remote,capture` |
+| **3D** | `~/Documents/coding_projects/Iron Feud` | **`IRON_FEUD_AUTO_PLAY=1`**; features `remote,capture` |
 
 Pins: Bevy **0.19**, BRP **15702**, `remote,capture`. Skills: `bevy-agent-loop`, eyesight-packs.  
 Versioning: sibling git repos — see [DOGFOOD_REPOS.md](DOGFOOD_REPOS.md).
@@ -153,7 +153,7 @@ Implement only what residual multi-view / gates still need. Prefer pure, unit-te
 
 ## 6. Phase F1 — Crystal Drift: 1 new feature + improve all features
 
-**Path:** `/Users/aron/Documents/coding_projects/Crystal Drift`
+**Path:** `~/Documents/coding_projects/Crystal Drift`
 
 ### Quotas
 
@@ -220,7 +220,7 @@ Each row: regenerate or replace PNG + keep path stable when possible + reference
 
 ## 7. Phase F2 — Iron Feud: 1 new feature + improve all features + heightfield
 
-**Path:** `/Users/aron/Documents/coding_projects/Iron Feud`  
+**Path:** `~/Documents/coding_projects/Iron Feud`  
 **Playing:** `IRON_FEUD_AUTO_PLAY=1` mandatory  
 
 ### Quotas
@@ -401,8 +401,8 @@ long-term correctness over speed. Prefer durable tests, live captures, honest lo
 
 Order: Specula residual platform first (rebuild install if code changed),
 then dogfood craft:
-  2D: /Users/aron/Documents/coding_projects/Crystal Drift
-  3D: /Users/aron/Documents/coding_projects/Iron Feud
+  2D: ~/Documents/coding_projects/Crystal Drift
+  3D: ~/Documents/coding_projects/Iron Feud
 Each game: exactly 1 NEW feature (beyond PulseMine / LoadingBay);
 improve ALL existing features to complex non-block silhouettes.
 CD: transparent sprite BGs only — no purple/magenta square plates; env shows through.

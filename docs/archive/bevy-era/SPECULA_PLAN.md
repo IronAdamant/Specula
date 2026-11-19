@@ -168,7 +168,7 @@ Minimal Bevy app, no game code: load glTF, frame from AABB, render, write output
 - [ ] `docs/HISTORY.md` — one line per old phase (V, A, S, D, R, H, F, T, E, SS) with what it established
 - [ ] `docs/SIGHT.md` — architecture, current guarantees, known limits (single source)
 - [ ] Agent-loop skill: 26 rules → ~8 (drop rules that only patch deleted heuristics)
-- [ ] Replace absolute `/Users/aron/...` paths with `specula.toml` (dogfood game paths, ports)
+- [ ] Replace absolute `~/...` paths with `specula.toml` (dogfood game paths, ports)
 - [ ] Split `eyesight.rs` (4148 lines) → `image`, `packet`, `subjects`, `packs`, `see` modules
 - [ ] Track future work as GitHub issues or one living plan, not letter-coded micro-phases
 
