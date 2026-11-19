@@ -1960,6 +1960,16 @@ pub use bevel::{Bevel, BevelStats, MAX_ROUND_SEGMENTS};
 /// edges) or added (concave ones) in the same exact plane space, so faces stay exactly flat and
 /// merge back into few triangles.
 pub fn evaluate_bevelled(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Budget) -> Result<(Shape, CsgStats, BevelStats), CsgError> {
+    evaluate_bevelled_leaves(tree, bevel, budget).map(|(s, _, st, bs)| (s, st, bs))
+}
+
+/// A result and the leaf each of its triangles came from.
+type Sourced = (Shape, Vec<u32>);
+
+/// [`evaluate_bevelled`], with the leaf (operand, in the tree's depth-first order) each of the
+/// result's triangles came from: a triangle of a bevel's tube has a number past the tree's
+/// leaves. (Every face of the result is a piece of one operand's face, so this is exact.)
+pub fn evaluate_bevelled_leaves(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Budget) -> Result<(Shape, Vec<u32>, CsgStats, BevelStats), CsgError> {
     let (mut ses, input) = Session::new(tree)?;
     let polys = eval_node(tree, &ses.grid, &mut ses.srcs, &mut ses.leaf_id, budget)?;
     let (shape, leaf, cl) = to_shape(&polys, &ses.grid, &ses.srcs, budget)?;
@@ -1978,7 +1988,7 @@ pub fn evaluate_bevelled(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Bud
     };
     let Some(b) = bevel.filter(|b| b.width > 0.0) else {
         let st = stats(&shape, budget);
-        return Ok((shape, st, BevelStats::default()));
+        return Ok((shape, leaf, st, BevelStats::default()));
     };
     let (cutters, fillers, mut bs) = bevel::tubes(&shape, &leaf, b, budget)?;
     let add = |tubes: Vec<Shape>, ses: &mut Session, budget: &mut Budget, bs: &mut BevelStats| -> Vec<Vec<Poly>> {
@@ -1995,12 +2005,13 @@ pub fn evaluate_bevelled(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Bud
     };
     let cut = add(cutters, &mut ses, budget, &mut bs);
     let fill = add(fillers, &mut ses, budget, &mut bs);
-    let apply = |cut: Vec<Vec<Poly>>, fill: Vec<Vec<Poly>>, budget: &mut Budget| -> Result<Shape, CsgError> {
+    let apply = |cut: Vec<Vec<Poly>>, fill: Vec<Vec<Poly>>, budget: &mut Budget| -> Result<Sourced, CsgError> {
         let mut out = multi_difference(polys.clone(), disjoint_groups(cut, budget)?, budget)?;
         if !fill.is_empty() {
             out = multi_union(out, disjoint_groups(fill, budget)?, budget)?;
         }
-        Ok(to_shape(&out, &ses.grid, &ses.srcs, budget)?.0)
+        let (s, l, _) = to_shape(&out, &ses.grid, &ses.srcs, budget)?;
+        Ok((s, l))
     };
     let mut done = apply(cut.clone(), fill.clone(), budget);
     if matches!(&done, Err(e) if e.kind != CsgErrorKind::Limit) {
@@ -2019,7 +2030,7 @@ pub fn evaluate_bevelled(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Bud
             }
             Ok((keep, dropped))
         };
-        let retried = (|| -> Result<Option<(Shape, usize)>, CsgError> {
+        let retried = (|| -> Result<Option<(Sourced, usize)>, CsgError> {
             let (cut, dc) = alone(cut, true, budget)?;
             let (fill, df) = alone(fill, false, budget)?;
             if dc + df == 0 || cut.len() + fill.len() == 0 {
@@ -2041,15 +2052,15 @@ pub fn evaluate_bevelled(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Bud
         }
     }
     match done {
-        Ok(s) => {
+        Ok((s, l)) => {
             let st = stats(&s, budget);
-            Ok((s, st, bs))
+            Ok((s, l, st, bs))
         }
         // The bevel is a finish: when its booleans can't be done the edges stay sharp (the stats
         // say so); running out of budget is still an error.
         Err(e) if e.kind != CsgErrorKind::Limit => {
             let st = stats(&shape, budget);
-            Ok((shape, st, BevelStats { failed: Some(e.message), ..bs }))
+            Ok((shape, leaf, st, BevelStats { failed: Some(e.message), ..bs }))
         }
         Err(e) => Err(e),
     }

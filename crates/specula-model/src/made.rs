@@ -47,25 +47,62 @@ pub const MAX_MADE: usize = 64;
 /// Shapes kept while a model is built (the rest add to the surface nothing speaks for).
 pub(crate) const MAX_KEPT: usize = 512;
 /// Points in one outline.
-pub const MAX_VIEW_POINTS: usize = 256;
+pub const MAX_VIEW_POINTS: usize = 128;
 /// Outlines of one shape (a sculpt has several for each of its primitives).
 pub const MAX_VIEWS: usize = 96;
+/// Outlines kept in one model's record in all (of [`MAX_VIEW_POINTS`] each at the most: a
+/// quarter of a megabyte; the shapes with the most surface keep theirs first).
+pub const MAX_RECORD_VIEWS: usize = 256;
 
 /// A shape's surface: the sum of its triangles' areas.
 pub fn area(s: &Shape) -> f32 {
-    let p = |i: u32| s.positions.get(i as usize).copied().unwrap_or([0.0; 3]);
     let mut sum = 0.0f64;
     for t in &s.tris {
-        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
-        let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
-        let n: V3 = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
-        sum += 0.5 * f64::from((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt());
+        sum += f64::from(triangle_area(s, *t));
     }
     if sum.is_finite() {
         sum as f32
     } else {
         0.0
     }
+}
+
+/// One triangle's area (0 for one that is not finite).
+pub fn triangle_area(s: &Shape, t: [u32; 3]) -> f32 {
+    let p = |i: u32| s.positions.get(i as usize).copied().unwrap_or([0.0; 3]);
+    let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+    let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+    let n: V3 = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    let x = 0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if x.is_finite() {
+        x
+    } else {
+        0.0
+    }
+}
+
+/// Two records of one path made one (a scatter item's variants): the surfaces summed, and
+/// each one's outlines weighed by its share of them (an outline both have, once; past
+/// [`MAX_VIEWS`], the later one's left out).
+pub fn merge(into: &mut Made, other: Made) {
+    let total = |m: &Made| m.views.iter().map(|(_, w)| *w).sum::<f32>();
+    let (ta, tb) = (total(into), total(&other));
+    if into.views == other.views || !(ta > 0.0 && tb > 0.0) {
+        into.area_m2 += other.area_m2;
+        return;
+    }
+    for (_, w) in &mut into.views {
+        *w *= into.area_m2 / ta;
+    }
+    for (points, w) in other.views {
+        let w = w * other.area_m2 / tb;
+        match into.views.iter().position(|(p, _)| *p == points) {
+            Some(i) => into.views[i].1 += w,
+            None if into.views.len() < MAX_VIEWS => into.views.push((points, w)),
+            None => {}
+        }
+    }
+    into.area_m2 += other.area_m2;
 }
 
 fn arc(out: &mut Vec<V2>, c: V2, r: f32, from_deg: f64, sweep_deg: f64, steps: u32) {
@@ -188,6 +225,34 @@ pub fn mirrored(profile: &[V2]) -> Vec<V2> {
     p
 }
 
+/// Rows of `[half width, height, shift]` (a loft's stations leaning by their `dx` or `dz`):
+/// the outline from the side, each row's middle moved by its shift.
+pub fn leaning(rows: &[[f32; 3]]) -> Vec<V2> {
+    let mut p: Vec<V2> = rows.iter().map(|q| [q[2] + q[0].max(0.0), q[1]]).collect();
+    p.extend(rows.iter().rev().filter(|q| q[0] > 0.0).map(|q| [q[2] - q[0], q[1]]));
+    p
+}
+
+/// A closed path seen from where it spreads widest: laid on the plane of its two greatest
+/// extents (a ring's circle, a square frame's square).
+pub fn plan(path: &[V3]) -> Vec<V2> {
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for p in path {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let ext = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    let least = (0..3).fold(0, |m, k| if ext[k] < ext[m] { k } else { m });
+    let (i, j) = match least {
+        0 => (2, 1),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    path.iter().map(|p| [p[i], p[j]]).collect()
+}
+
 /// An outline fit to be kept: finite, of three points or more, enclosing something, of at most
 /// [`MAX_VIEW_POINTS`] points (a longer one keeps every second, third... point).
 pub fn kept(points: Vec<V2>) -> Option<Vec<V2>> {
@@ -225,100 +290,175 @@ pub fn half_extents(points: &[V2]) -> V2 {
     [0.5 * (hi[0] - lo[0]).max(0.0), 0.5 * (hi[1] - lo[1]).max(0.0)]
 }
 
-/// A sculpt's outlines: each primitive that adds to it (what a difference takes away does
-/// not: only its first child is what is left), as that primitive is from its own sides, with
-/// the surface it would have alone as its weight. A node's own stretch widens its outlines;
-/// its other modifiers (a twist, a bend, a rounding, a shell) do not change them.
-pub(crate) fn of_sculpt(node: &crate::sdf::SdfNode, out: &mut Vec<(Vec<V2>, f32)>) {
-    use crate::sdf::{Combine, Kind, Prim};
-    const PI: f32 = std::f32::consts::PI;
-    if out.len() >= MAX_VIEWS {
-        return;
+/// What a column is from one side ([`crate::sdf::Prim::Column`]): its sections' half widths
+/// `[half width, along]` from its first end to its last, closed past each end by the cap its
+/// field has there, half an ellipse as wide as the end's section and as high as `caps` (the
+/// end's narrower half, which the field takes as the cap's height).
+pub fn capped(rows: &[V2], caps: [f32; 2]) -> Vec<V2> {
+    let (Some(first), Some(last)) = (rows.first(), rows.last()) else { return Vec::new() };
+    let mut half: Vec<V2> = Vec::with_capacity(rows.len() + 18);
+    // (From the foot of the first cap, on the axis, up its quarter of an ellipse ...)
+    for i in 0..=8 {
+        let (s, c) = dmath::sin_cos_deg(90.0 - 11.25 * f64::from(i));
+        half.push([first[0] * c as f32, first[1] - caps[0] * s as f32]);
     }
+    half.extend(rows.iter().skip(1).take(rows.len().saturating_sub(2)).copied());
+    // (... and over the last.)
+    for i in 0..=8 {
+        let (s, c) = dmath::sin_cos_deg(11.25 * f64::from(i));
+        half.push([last[0] * c as f32, last[1] + caps[1] * s as f32]);
+    }
+    if rows.len() == 1 {
+        // (One section: the two caps meet at it.)
+        half.remove(9);
+    }
+    mirrored(&half)
+}
+
+/// An outline elongated as a sculpt's `elongate` does: `by` inserted at its middle along each
+/// of its two axes (half lengths), so that what was a ball's circle is a stadium.
+fn elongated(points: Vec<V2>, by: [f32; 2]) -> Vec<V2> {
+    if by == [0.0; 2] {
+        return points;
+    }
+    let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+    for p in &points {
+        for k in 0..2 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let mid = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1])];
+    let push = |v: f32, m: f32, e: f32| if v > m { v + e } else if v < m { v - e } else { v };
+    points.into_iter().map(|p| [push(p[0], mid[0], by[0]), push(p[1], mid[1], by[1])]).collect()
+}
+
+/// One outline of a sculpt's primitive while the tree is walked: the outline, the two of the
+/// primitive's own axes it lies along (so that a stretch or an elongation further up is put on
+/// the right ones) and its weight.
+struct Seen {
+    points: Vec<V2>,
+    axes: (usize, usize),
+    weight: f32,
+}
+
+/// A sculpt's outlines (docs/design/FORM.md, "From what the recipe is built of"): each
+/// primitive that adds to it, as that primitive is from its own sides, **weighed by the surface
+/// it makes in the mesh** (`surfaces`, from [`crate::sdf::surface_by_primitive`], in the order
+/// the tree's primitives are met depth first): so a mirror's and a repeat's copies count, an
+/// elongation's length counts, and what an intersection or a difference leaves of a
+/// primitive is what counts of it. What a difference takes away (its second child and after)
+/// is not what the thing is made of, and is left out: the wall it cuts is its surface, and so
+/// is no record's. A half space has no outline. The views stop at [`MAX_VIEWS`]; the
+/// primitives past them are left out with their surface. A node's own stretch and elongation
+/// and every group's above it widen its outlines along their own axes; a node's other
+/// modifiers (a turn, a twist, a bend, a rounding, a shell) do not change them. Also the
+/// surface the outlines speak for.
+pub(crate) fn of_sculpt(node: &crate::sdf::SdfNode, surfaces: &[f32]) -> (Views, f32) {
+    let mut seen = Vec::new();
+    let mut next = 0usize;
+    let mut spoken = 0.0f32;
+    walk(node, surfaces, &mut next, true, &mut seen, &mut spoken);
+    (seen.into_iter().map(|s| (s.points, s.weight)).collect(), spoken)
+}
+
+fn walk(node: &crate::sdf::SdfNode, surfaces: &[f32], next: &mut usize, adds: bool, out: &mut Vec<Seen>, spoken: &mut f32) {
+    use crate::sdf::{Combine, Kind, Prim};
     let s = node.m.stretch;
-    let scale = node.m.scale.abs().max(0.0);
-    // (A view's weight: the primitive's surface, a third of it to each of its three sides.)
-    let mut view = |points: Vec<V2>, axes: (usize, usize), surface: f32, share: f32| {
-        let widened = points.into_iter().map(|p| [p[0] * s[axes.0], p[1] * s[axes.1]]).collect();
-        out.push((widened, surface * scale * scale * share));
+    let e = node.m.elongate;
+    // (A node's stretch and elongation put on outlines along its own axes.)
+    let widen = |seen: &mut Seen| {
+        let (i, j) = seen.axes;
+        let points = std::mem::take(&mut seen.points);
+        seen.points = elongated(points, [e[i], e[j]]).into_iter().map(|p| [p[0] * s[i], p[1] * s[j]]).collect();
     };
     match &node.kind {
-        Kind::Prim(prim) => match prim {
-            Prim::Sphere { radius } => {
-                let a = 4.0 * PI * radius * radius;
-                view(circle(*radius), (0, 1), a, 1.0 / 3.0);
-                view(circle(*radius), (0, 2), a, 1.0 / 3.0);
-                view(circle(*radius), (2, 1), a, 1.0 / 3.0);
+        Kind::Prim(prim) => {
+            let index = *next;
+            *next += 1;
+            let surface = surfaces.get(index).copied().unwrap_or(0.0);
+            if !adds || !(surface.is_finite() && surface > 0.0) || out.len() >= MAX_VIEWS {
+                return;
             }
-            Prim::Ellipsoid { radii } => {
-                let mean = (radii[0] + radii[1] + radii[2]) / 3.0;
-                let a = 4.0 * PI * mean * mean;
-                view(ellipse(radii[0], radii[1]), (0, 1), a, 1.0 / 3.0);
-                view(ellipse(radii[0], radii[2]), (0, 2), a, 1.0 / 3.0);
-                view(ellipse(radii[2], radii[1]), (2, 1), a, 1.0 / 3.0);
-            }
-            Prim::Box { half, round } => {
-                let a = 8.0 * (half[0] * half[1] + half[1] * half[2] + half[0] * half[2]);
-                view(rounded(2.0 * half[0], 2.0 * half[1], *round), (0, 1), a, 1.0 / 3.0);
-                view(rounded(2.0 * half[0], 2.0 * half[2], *round), (0, 2), a, 1.0 / 3.0);
-                view(rounded(2.0 * half[2], 2.0 * half[1], *round), (2, 1), a, 1.0 / 3.0);
-            }
-            Prim::Rounded { half, power, disc } => {
-                let a = 8.0 * (half[0] * half[1] + half[1] * half[2] + half[0] * half[2]);
-                if *disc {
-                    view(circle(half[0]), (0, 2), a, 1.0 / 3.0);
-                } else {
-                    view(superellipse(half[0], half[2], *power), (0, 2), a, 1.0 / 3.0);
+            let mut mine: Vec<Seen> = Vec::new();
+            let mut view = |points: Vec<V2>, axes: (usize, usize), share: f32| mine.push(Seen { points, axes, weight: surface * share });
+            match *prim {
+                Prim::Sphere { radius } => {
+                    view(circle(radius), (0, 1), 1.0 / 3.0);
+                    view(circle(radius), (0, 2), 1.0 / 3.0);
+                    view(circle(radius), (2, 1), 1.0 / 3.0);
                 }
-                view(superellipse(half[0], half[1], *power), (0, 1), a, 1.0 / 3.0);
-                view(superellipse(half[2], half[1], *power), (2, 1), a, 1.0 / 3.0);
+                Prim::Ellipsoid { radii } => {
+                    view(ellipse(radii[0], radii[1]), (0, 1), 1.0 / 3.0);
+                    view(ellipse(radii[0], radii[2]), (0, 2), 1.0 / 3.0);
+                    view(ellipse(radii[2], radii[1]), (2, 1), 1.0 / 3.0);
+                }
+                Prim::Box { half, round } => {
+                    view(rounded(2.0 * half[0], 2.0 * half[1], round), (0, 1), 1.0 / 3.0);
+                    view(rounded(2.0 * half[0], 2.0 * half[2], round), (0, 2), 1.0 / 3.0);
+                    view(rounded(2.0 * half[2], 2.0 * half[1], round), (2, 1), 1.0 / 3.0);
+                }
+                Prim::Rounded { half, power, disc } => {
+                    if disc {
+                        view(circle(half[0]), (0, 2), 1.0 / 3.0);
+                    } else {
+                        view(superellipse(half[0], half[2], power), (0, 2), 1.0 / 3.0);
+                    }
+                    view(superellipse(half[0], half[1], power), (0, 1), 1.0 / 3.0);
+                    view(superellipse(half[2], half[1], power), (2, 1), 1.0 / 3.0);
+                }
+                Prim::Cylinder { radius, radius_top, half_height, round } => {
+                    view(circle(radius.max(radius_top)), (0, 2), 1.0 / 3.0);
+                    // (Its `corner` rounds the two rims: from the side, the corners of its
+                    // trapezoid, by as much.)
+                    let side = trapezoid(radius, radius_top, 2.0 * half_height);
+                    view(if round > 0.0 && radius == radius_top { rounded(2.0 * radius, 2.0 * half_height, round) } else { side }, (0, 1), 2.0 / 3.0);
+                }
+                Prim::Capsule { radius, half_height } => {
+                    view(circle(radius), (0, 2), 1.0 / 3.0);
+                    // (Along Y: the stadium stands on its end.)
+                    view(stadium(2.0 * (half_height + radius), radius).into_iter().map(|p| [p[1], p[0]]).collect(), (0, 1), 2.0 / 3.0);
+                }
+                Prim::Torus { radius, tube } => {
+                    view(circle(radius + tube), (0, 2), 1.0 / 3.0);
+                    view(stadium(2.0 * (radius + tube), tube), (0, 1), 2.0 / 3.0);
+                }
+                Prim::RoundCone { a, b, ra, rb } => {
+                    let len = crate::math3::length(crate::math3::sub(b, a));
+                    view(circle(ra.max(rb)), (0, 2), 1.0 / 3.0);
+                    view(tapered(ra, rb, len), (0, 1), 2.0 / 3.0);
+                }
+                Prim::Column { a, b, sections, count, square, .. } => {
+                    let len = crate::math3::length(crate::math3::sub(b, a));
+                    let rows = &sections[..(count as usize).clamp(1, sections.len())];
+                    let (broad, deep) = rows.iter().fold((0.0f32, 0.0f32), |m, r| (m.0.max(r[1]), m.1.max(r[2])));
+                    let (first, last) = (rows[0], rows[rows.len() - 1]);
+                    // (Each end closes in a cap as high as its section there is narrow.)
+                    let caps = [first[1].min(first[2]), last[1].min(last[2])];
+                    view(superellipse(broad, deep, square), (0, 2), 1.0 / 3.0);
+                    view(capped(&rows.iter().map(|r| [r[1], r[0] * len]).collect::<Vec<V2>>(), caps), (0, 1), 1.0 / 3.0);
+                    view(capped(&rows.iter().map(|r| [r[2], r[0] * len]).collect::<Vec<V2>>(), caps), (2, 1), 1.0 / 3.0);
+                }
+                Prim::HalfSpace { .. } => {}
             }
-            Prim::Cylinder { radius, radius_top, half_height, .. } => {
-                let wide = radius.max(*radius_top);
-                let a = 2.0 * PI * wide * (2.0 * half_height + wide);
-                view(circle(wide), (0, 2), a, 1.0 / 3.0);
-                view(trapezoid(*radius, *radius_top, 2.0 * half_height), (0, 1), a, 2.0 / 3.0);
+            for mut seen in mine {
+                if out.len() >= MAX_VIEWS {
+                    return;
+                }
+                *spoken += seen.weight;
+                widen(&mut seen);
+                out.push(seen);
             }
-            Prim::Capsule { radius, half_height } => {
-                let a = 4.0 * PI * radius * (half_height + radius);
-                view(circle(*radius), (0, 2), a, 1.0 / 3.0);
-                // (Along Y: the stadium stands on its end.)
-                view(stadium(2.0 * (half_height + radius), *radius).into_iter().map(|p| [p[1], p[0]]).collect(), (0, 1), a, 2.0 / 3.0);
-            }
-            Prim::Torus { radius, tube } => {
-                let a = 4.0 * PI * PI * radius * tube;
-                view(circle(radius + tube), (0, 2), a, 1.0 / 3.0);
-                view(stadium(2.0 * (radius + tube), *tube), (0, 1), a, 2.0 / 3.0);
-            }
-            Prim::RoundCone { a, b, ra, rb } => {
-                let len = crate::math3::length(crate::math3::sub(*b, *a));
-                let surface = PI * (ra + rb) * len + 2.0 * PI * (ra * ra + rb * rb);
-                view(circle(ra.max(*rb)), (0, 2), surface, 1.0 / 3.0);
-                view(tapered(*ra, *rb, len), (0, 1), surface, 2.0 / 3.0);
-            }
-            Prim::Column { a, b, sections, count, square, .. } => {
-                let len = crate::math3::length(crate::math3::sub(*b, *a));
-                let rows = &sections[..(*count as usize).min(sections.len())];
-                let (broad, deep) = rows.iter().fold((0.0f32, 0.0f32), |m, r| (m.0.max(r[1]), m.1.max(r[2])));
-                let surface = 2.0 * PI * 0.5 * (broad + deep) * len;
-                view(superellipse(broad, deep, *square), (0, 2), surface, 1.0 / 3.0);
-                view(mirrored(&rows.iter().map(|r| [r[1], r[0] * len]).collect::<Vec<V2>>()), (0, 1), surface, 1.0 / 3.0);
-                view(mirrored(&rows.iter().map(|r| [r[2], r[0] * len]).collect::<Vec<V2>>()), (2, 1), surface, 1.0 / 3.0);
-            }
-            Prim::HalfSpace { .. } => {}
-        },
+        }
         Kind::Group { op, kids, .. } => {
-            let adding = if *op == Combine::Difference { 1 } else { kids.len() };
             let before = out.len();
-            for kid in kids.iter().take(adding) {
-                of_sculpt(kid, out);
+            for (i, kid) in kids.iter().enumerate() {
+                walk(kid, surfaces, next, adds && !(*op == Combine::Difference && i > 0), out, spoken);
             }
-            // (A group's own stretch and scale bear on all it holds.)
-            for (points, weight) in out.iter_mut().skip(before) {
-                *weight *= scale * scale;
-                for p in points.iter_mut() {
-                    *p = [p[0] * s[0].max(s[2]), p[1] * s[1]];
-                }
+            // (A group's own stretch and elongation bear on all it holds, each outline along
+            // its own axes.)
+            for seen in out.iter_mut().skip(before) {
+                widen(seen);
             }
         }
     }
@@ -363,7 +503,7 @@ mod tests {
         assert!(kept(vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]).is_none(), "a line encloses nothing");
         assert!(kept(vec![[0.0, 0.0], [f32::NAN, 0.0], [0.0, 1.0]]).is_none());
         let long: Vec<V2> = (0..1000).map(|i| { let (s, c) = dmath::sin_cos_deg(0.36 * f64::from(i)); [c as f32, s as f32] }).collect();
-        assert!(kept(long).is_some_and(|p| p.len() <= MAX_VIEW_POINTS && p.len() >= 200));
+        assert!(kept(long).is_some_and(|p| p.len() <= MAX_VIEW_POINTS && p.len() >= 100));
         assert_eq!(views(vec![(circle(1.0), 1.0), (circle(1.0), 0.0), (vec![[0.0, 0.0]], 1.0)]).len(), 1);
         assert_eq!(half_extents(&rect(2.0, 1.0, 0.0)), [1.0, 0.5]);
         // A shape's surface.

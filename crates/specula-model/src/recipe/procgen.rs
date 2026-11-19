@@ -344,16 +344,23 @@ impl Ctx<'_> {
     }
 
     /// A shape node with its own `ops` applied.
+    /// (What it records is its surface after its own ops: three copies count three times.)
     fn shape_and_ops(&self, n: &Node, seed: u64) -> Result<Shape, RecipeError> {
+        let mark = self.tally.made.borrow().len();
         let mut s = self.shape(n)?;
         if !matches!(n.op.as_str(), "union" | "difference" | "intersection" | "sdf") {
             s.set_color(self.paint.get());
         }
         if let Some(Val::List(ops)) = n.get("ops") {
+            let recorded = self.tally.made.borrow().len() > mark;
+            let before = if recorded && !ops.is_empty() { crate::made::area(&s) } else { 0.0 };
             for (i, op) in ops.iter().enumerate() {
                 if let Val::Obj(op) = op {
                     self.apply(&mut s, op, stream_seed(seed, &format!("op{i}")))?;
                 }
+            }
+            if before > 0.0 {
+                self.tally.made_scaled(mark, before, crate::made::area(&s));
             }
         }
         Ok(s)
@@ -369,8 +376,10 @@ impl Ctx<'_> {
     }
 
     /// The tree of a boolean node; nested booleans without ops or bevel stay in the same exact
-    /// evaluation. Returns the tree and the triangles its leaves hold.
-    fn csg_tree(&self, n: &Node, depth: usize) -> Result<(CsgTree, usize), RecipeError> {
+    /// evaluation. Returns the tree and the triangles its leaves hold; `leaves` gets, for each
+    /// leaf in the depth-first order the evaluation numbers them in, the records it made (from
+    /// and to, in the tally) and its surface as it went in.
+    fn csg_tree(&self, n: &Node, depth: usize, leaves: &mut Vec<(usize, usize, f32)>) -> Result<(CsgTree, usize), RecipeError> {
         if depth > csg::MAX_DEPTH {
             return Err(e(&n.path, ErrorCode::Limit, format!("booleans nest deeper than {}", csg::MAX_DEPTH)));
         }
@@ -394,10 +403,13 @@ impl Ctx<'_> {
                 self.tally.cutting.set(self.tally.cutting.get() + 1);
             }
             let built = if Self::csg_kind(&k.op).is_some() && plain {
-                self.csg_tree(k, depth + 1)
+                self.csg_tree(k, depth + 1, leaves)
             } else {
+                let mark = self.tally.made.borrow().len();
                 self.shape_and_ops(k, stream_seed(self.seed, &k.path)).map(|s| {
                     let n2 = s.triangle_count();
+                    let end = self.tally.made.borrow().len();
+                    leaves.push((mark, end, if end > mark { crate::made::area(&s) } else { 0.0 }));
                     (CsgTree::Leaf(s), n2)
                 })
             };
@@ -415,14 +427,31 @@ impl Ctx<'_> {
     }
 
     pub(super) fn csg_shape(&self, n: &Node) -> Result<Shape, RecipeError> {
-        let (tree, leaf_tris) = self.csg_tree(n, 0)?;
+        let mut leaves = Vec::new();
+        let (tree, leaf_tris) = self.csg_tree(n, 0, &mut leaves)?;
         let width = self.ranged(n, "bevel", 0.0, 0.0, 100.0)?;
         let segments = self.int(n, "bevel_segments", 1, 1, csg::MAX_ROUND_SEGMENTS as i64)?;
         let bevel = (width > 0.0).then_some(Bevel { width, segments });
         let mut budget = csg::Budget { max_work: self.work_left(&n.path, csg::MAX_WORK)?, ..csg::Budget::default() };
-        let res = csg::evaluate_bevelled(&tree, bevel.as_ref(), &mut budget);
+        let res = csg::evaluate_bevelled_leaves(&tree, bevel.as_ref(), &mut budget);
         self.spend(budget.work);
-        let (shape, st, bs) = res.map_err(|er| csg_err(&n.path, er))?;
+        let (shape, from, st, bs) = res.map_err(|er| csg_err(&n.path, er))?;
+        // Each operand is recorded with what is left of its surface in the result (every face of
+        // the result is a piece of one operand's face): a cut's wall is its cutter's, and a
+        // bevel's strips are its tubes', which no record speaks for.
+        if leaves.iter().any(|(a, b, _)| b > a) {
+            let mut left = vec![0.0f32; leaves.len()];
+            for (t, leaf) in shape.tris.iter().zip(&from) {
+                if let Some(l) = left.get_mut(*leaf as usize) {
+                    *l += crate::made::triangle_area(&shape, *t);
+                }
+            }
+            for ((a, b, given), now) in leaves.iter().zip(&left) {
+                if b > a {
+                    self.tally.made_part_scaled(*a, *b, *given, *now);
+                }
+            }
+        }
         // The leaves were counted as they were built: the result replaces them.
         self.tally.grow(&n.path, leaf_tris, shape.triangle_count())?;
         let mut j = vec![
@@ -769,11 +798,14 @@ impl Ctx<'_> {
         self.spend(st.work);
         self.tally.grow(&n.path, 0, shape.triangle_count())?;
         // What it is built of: its primitives' own outlines (a figure's are a body's limbs and
-        // trunk, read the same way).
-        let mut views = Vec::new();
-        crate::made::of_sculpt(&tree, &mut views);
-        self.made(if figure { "figure" } else { "sdf" }, views);
-        self.tally.made_now(&n.path, crate::made::area(&shape));
+        // trunk, read the same way), each weighed by the surface it makes in the mesh.
+        if !self.coarse && self.tally.cutting.get() == 0 {
+            let (surfaces, work) = sdf::surface_by_primitive(&tree, opts.seed, &shape);
+            self.spend(work);
+            let (views, spoken) = crate::made::of_sculpt(&tree, &surfaces);
+            self.made(if figure { "figure" } else { "sdf" }, views);
+            self.tally.made_now(&n.path, spoken);
+        }
         // A sculpt is round where its tree is: its surface is cut into cells, and round its
         // tightest ball, limb or section a cell turns the surface by the cell over the radius.
         if let Some(radius) = sdf::least_radius(&tree) {
@@ -1195,12 +1227,16 @@ impl Gen<'_, '_> {
         let (places, st) = scatter::scatter(&spec, &ground_fn, c.work_left(&n.path, scatter::MAX_WORK)?).map_err(|er| e(&n.at(er.field), if er.limit { ErrorCode::Limit } else { ErrorCode::OutOfRange }, er.message))?;
         c.spend(st.work);
         self.scattered.push((self.part.name.clone(), places.iter().map(|p| [p.position[0], p.position[2]]).collect()));
-        // Each item's variants, built once.
+        // Each item's variants, built once. (What each records, from and to in the tally, and
+        // its template's surface: recorded below by what was placed of it.)
         let mut built: Vec<Vec<Vec<BuiltPart>>> = Vec::new();
+        let mut records: Vec<Vec<(usize, usize, f32)>> = Vec::new();
         for (ii, it) in items.iter().enumerate() {
             let variants = c.int(it, "variants", 1, 1, MAX_VARIANTS as i64)?;
             let mut vs = Vec::new();
+            let mut rs = Vec::new();
             for v in 0..variants {
+                let mark = self.tally.made.borrow().len();
                 let vseed = stream_seed(self.seed, &format!("item{ii}/variant{v}"));
                 let pieces = if let Some(Val::Obj(sn)) = it.get("shape") {
                     let material = match it.get("material") {
@@ -1234,23 +1270,41 @@ impl Gen<'_, '_> {
                 // Counted as copies below: take the template out of the tally.
                 let t: usize = pieces.iter().map(|p| p.shape.triangle_count()).sum();
                 self.tally.settle(t, 0);
+                let end = self.tally.made.borrow().len();
+                rs.push((mark, end, if end > mark { pieces.iter().map(|p| crate::made::area(&p.shape)).sum::<f32>() } else { 0.0 }));
                 vs.push(pieces);
             }
             built.push(vs);
+            records.push(rs);
         }
         let copies: usize = places.iter().map(|p| { let vs = &built[p.item as usize]; vs[(p.variant % vs.len() as u64) as usize].iter().map(|q| q.shape.triangle_count()).sum::<usize>() }).sum();
         self.tally.grow(&n.path, 0, copies)?;
         // Copies merged by material.
         let mut by_mat: Vec<BuiltPart> = Vec::new();
+        let mut placed: Vec<Vec<f32>> = records.iter().map(|rs| vec![0.0; rs.len()]).collect();
         for p in &places {
             let vs = &built[p.item as usize];
             let t = p.transform();
-            for q in &vs[(p.variant % vs.len() as u64) as usize] {
+            let v = (p.variant % vs.len() as u64) as usize;
+            let recorded = records[p.item as usize][v].1 > records[p.item as usize][v].0;
+            for q in &vs[v] {
                 let mut s = q.shape.clone();
                 s.transform(&t);
+                if recorded {
+                    placed[p.item as usize][v] += crate::made::area(&s);
+                }
                 match by_mat.iter_mut().find(|b| b.material == q.material && b.smooth_angle == q.smooth_angle) {
                     Some(b) => b.shape.merge(&s),
                     None => by_mat.push(BuiltPart { shape: s, ..q.clone() }),
+                }
+            }
+        }
+        // Each item recorded by what was placed of it: a variant placed forty times counts forty
+        // times, and one never placed not at all.
+        for (rs, ps) in records.iter().zip(&placed) {
+            for ((from, to, template), copies) in rs.iter().zip(ps) {
+                if to > from {
+                    self.tally.made_part_scaled(*from, *to, *template, *copies);
                 }
             }
         }
@@ -1288,9 +1342,12 @@ fn build_include(asset: &str, vals: &[(String, f64)], seed: u64, params: &BuildP
     let child = Recipe::parse(text, params.style).map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?;
     let refs: Vec<(&str, f64)> = vals.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     stack.push(asset.to_string());
+    let mark = tally.made.borrow().len();
     let res = build_parts(&child, &refs, seed, params, stack, tally, coarse);
     stack.pop();
-    Ok(res.map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?.0)
+    let built = res.map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?.0;
+    tally.made_included(mark, path, asset);
+    Ok(built)
 }
 
 // ---------------------------------------------------------------------------------------------

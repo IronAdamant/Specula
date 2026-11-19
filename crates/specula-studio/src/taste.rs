@@ -352,6 +352,13 @@ mod tests {
         let unseen = Measured { outlines: Vec::new(), ..ball_of_boxes.clone() };
         assert!(of("[taste]\nshape_language = \"round\"\n", &unseen).is_some_and(|f| f.is_error() && f.message.contains("its silhouettes could not be read")));
         assert!(of("[taste]\nshape_language = \"round\"\n", &Measured { subject: "x".into(), ..Measured::default() }).is_none());
+        // The fix names three shapes at the most, the largest first: of four boxes, not the least.
+        let four = BuiltOf {
+            parts: vec![part("parts[0].shape", "box", 0.4, [0.0, 1.0, 0.0]), part("parts[1].shape", "box", 0.3, [0.0, 1.0, 0.0]), part("parts[2].shape", "cone", 0.2, [0.0, 0.2, 0.8]), part("parts[3].shape", "box", 0.1, [0.0, 1.0, 0.0])],
+            ..boxes.clone()
+        };
+        let f = of("[taste]\nshape_language = \"round\"\nshape_by = \"recipe\"\n", &Measured { built: Some(four), ..ball_of_boxes.clone() }).unwrap();
+        assert!(f.fix.starts_with("its largest shapes that are not round: parts[0].shape (a box, 40% of the surface, square); parts[1].shape (a box, 30% of the surface, square); parts[2].shape (a cone, 20% of the surface, pointed); round each") && !f.fix.contains("parts[3]"), "{}", f.fix);
         // Not asked: no finding.
         assert!(check_subject(&ball_of_boxes, &StyleRules::defaults()).iter().all(|f| f.check != "shape_language"));
     }
