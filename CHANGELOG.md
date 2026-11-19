@@ -349,7 +349,19 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       pointed an asset's outline is, measured on its thumbnail silhouettes and reported with
       its taste measures; a style may ask for one (`[taste] shape_language`), and the
       `storybook` preset asks for round. The last of the five items of "form within an
-      agent's reach". Sepulcra's 56 recipes lead square (41), pointed (13) and round (2).
+      agent's reach". Its first review said not to merge it (it flipped under small turns,
+      called a capsule pointed, and a failed check never reached the critique); it was written
+      again as the net turn of a smoothed outline within a window, with classes that fade
+      into each other, on silhouettes of 256 pixels, and is steady to a tenth over a quarter
+      turn for fourteen known shapes. Sepulcra's 56 recipes lead square (31), pointed (18)
+      and round (7). The form checks and it have their place in the critique.
+    - **A fourth round of reviews** (2026-11-20). *The form views:* merge, with four small
+      findings mended. *The form checks:* faceting still read nothing on the engine's own
+      coarse cylinders, and is **taken out** after three tries: a mesh alone cannot say what
+      was meant to be round; it belongs at build time, from the recipe, and is owed. *Roundness:*
+      far from a rounded needle the solve's first steps gave up; they are taken in a variable
+      in which every equation is nearly a straight line, and take 13 to 18 steps a sample for
+      every shape tried.
     - **A third round of reviews** (2026-11-19, later still). *The form views:* a form
       pipeline that failed in a later build was counted as nothing lost and the next form
       frame compiled it; a sheet's form tile was framed without the reference figure's room;

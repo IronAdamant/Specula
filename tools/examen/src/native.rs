@@ -47,7 +47,7 @@ pub const CHECKS: &[Check] = &[
     },
     Check {
         name: "form_sheet_check",
-        about: "the form views on a contact sheet: each form tile framed as its colour tile, the subject alone on the neutral ground, no pipeline compiled by a frame (docs/design/FORM.md)",
+        about: "the form views on a contact sheet: each form and silhouette tile shows the subject alone where its view's box says, no pipeline compiled by a frame (docs/design/FORM.md)",
         run: form::form_sheet,
     },
 ];

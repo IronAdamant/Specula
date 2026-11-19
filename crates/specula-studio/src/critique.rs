@@ -1,5 +1,5 @@
 //! Critique against the bible, as data: the findings of one subject grouped into the taste
-//! loop's passes (silhouette, value, colour, scale, budget, naming), each with its measures, a
+//! loop's passes (silhouette, form, value, colour, scale, budget, naming), each with its measures, a
 //! verdict and the bible's rules for the subject's category, plus the revise hints in the order
 //! the loop takes them (silhouette first: if it doesn't read as a silhouette, detail won't save
 //! it).
@@ -9,8 +9,11 @@ use crate::Finding;
 use specula_core::Json;
 
 /// The passes, in loop order, and the checks each one owns.
-pub const PASSES: [(&str, &[&str]); 6] = [
-    ("silhouette", &["silhouette_distinct", "thumb_solidity", "px_gameplay", "px_phone"]),
+pub const PASSES: [(&str, &[&str]); 7] = [
+    ("silhouette", &["silhouette_distinct", "thumb_solidity", "px_gameplay", "px_phone", "shape_language"]),
+    // (The mesh's own form, after the outline and before the light: a piece that floats or
+    // an edge that cuts is mended in the shape, not in its colours.)
+    ("form", &["loose_pieces", "razor_edges", "shading_seams", "smeared_creases", "small_relief"]),
     ("value", &["value_contrast", "value_contrast_worst", "flat_lighting"]),
     ("colour", &["palette_distance", "neutral_saturation", "family_forbidden", "emissive_preset"]),
     ("scale", &["height", "width", "depth", "aspect"]),
@@ -22,6 +25,7 @@ pub const PASSES: [(&str, &[&str]); 6] = [
 fn pass_of_aspect(aspect: &str) -> &'static str {
     match aspect {
         "shape" | "silhouette" | "outline" | "tier" => "silhouette",
+        "form" | "edges" | "surface" => "form",
         "value" | "light" | "lighting" | "contrast" => "value",
         "colour" | "color" | "palette" | "emissive" | "material" | "materials" => "colour",
         "proportions" | "size" | "scale" => "scale",

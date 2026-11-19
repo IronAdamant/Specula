@@ -405,6 +405,13 @@ impl Engine {
             if let Some(f) = v.failed.as_ref().filter(|f| f.form && !v.form) {
                 let mut j = Json::parse(&crate::capture::gpu_failure("form_pipelines", &f.error, self.windowed)).unwrap_or(Json::Null);
                 j.set("pipeline", Json::from(f.pipeline.as_str()));
+                // (A way back: the set is asked for again, on a worker, and the next form view
+                // finds it built or failed anew. Without it nothing but a model's reload
+                // brought the form views back.)
+                if j.get("recovery").is_none() {
+                    j.set("recovery", Json::from("the form views' pipelines are being built again: ask again in a moment; the world's own frames are not affected"));
+                }
+                self.gpu.retry_failed_variants();
                 let _ = p.to.reply.send(ToolOutput::error(j.to_string()));
                 return;
             }
@@ -415,8 +422,8 @@ impl Engine {
                 self.gpu.request_form_pipelines();
                 self.captures.form_waits += 1;
                 self.captures.waiting.push_back(Waiting::Next(Box::new(p)));
-                // (The pass ends when nothing else waits, or when a form view comes round a
-                // second time: the next pass looks again.)
+                // (The pass ends when nothing else waits, or at the second form view put back in
+                // it, this one come round again or another: the next pass looks again.)
                 if std::mem::replace(&mut self.captures.form_held, true) || self.captures.waiting.len() == 1 {
                     self.captures.end_pass = true;
                 }

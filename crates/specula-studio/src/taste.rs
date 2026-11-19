@@ -67,11 +67,21 @@ pub struct Measured {
     pub subject: String,
     /// Thumbnail silhouettes, fitted, one per angle (the same angles for every sibling).
     pub silhouettes: Vec<Mask>,
+    /// The same silhouettes at [`crate::shape::PIXELS`], for the outline's shape language
+    /// (a thumbnail's pixels are as large as what it measures). Empty: the thumbnails serve.
+    pub outlines: Vec<Mask>,
     pub gameplay: Option<ShotMeasure>,
     pub phone: Option<ShotMeasure>,
     pub worst: Option<ShotMeasure>,
     /// The subject under the game light (close framing), for flat lighting.
     pub lit: Option<Lightness>,
+}
+
+impl Measured {
+    /// The subject's shape language: from its larger silhouettes when it has them.
+    pub fn shape(&self) -> Option<crate::shape::ShapeLanguage> {
+        crate::shape::of_masks(if self.outlines.is_empty() { &self.silhouettes } else { &self.outlines })
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -108,10 +118,10 @@ pub fn check_subject(m: &Measured, rules: &StyleRules) -> Vec<Finding> {
         let v = thumb.solidity();
         out.push(finding(rules, "thumb_solidity", s, v, t.thumb_min_solidity, Bound::Min, "share", "thumb_min_solidity", format!("only {:.0}% of the {}-px silhouette is thicker than a few pixels: thin parts vanish at thumbnail size", v * 100.0, t.thumb_px), "thicken the thin parts or drop them; read it as a silhouette at 64 px first"));
     }
-    if let (Some(kind), Some(shape)) = (t.shape_language, crate::shape::of_masks(&m.silhouettes)) {
+    if let (Some(kind), Some(shape)) = (t.shape_language, m.shape()) {
         let pc = |x: f32| (x * 100.0).round();
         let fix = match kind {
-            crate::shape::Kind::Round => "round its corners with a radius of a tenth of its size or more (a roundness, a larger corner or round), and build it from balls, capsules and chains rather than boxes",
+            crate::shape::Kind::Round => "round its corners with a radius of a tenth of its size or more (a roundness, a larger corner or round), and build it from balls, capsules and chains rather than boxes (a limb thinner than a sixth of its length ends in a point at this size)",
             crate::shape::Kind::Square => "square it off: flat sides meeting at right angles, bevels kept under a tenth of its size, fewer curves and spikes in the outline",
             crate::shape::Kind::Pointed => "give the outline points: tapers that end in a tip, wedges and spikes whose corners are under 75 degrees, in place of rounded and squared ends",
         };
@@ -206,6 +216,7 @@ mod tests {
         let m = Measured {
             subject: "fence_a".into(),
             silhouettes: vec![comb],
+            outlines: Vec::new(),
             gameplay: Some(ShotMeasure { px_height: 9.0, subject: flat, ring, edge }),
             phone: Some(ShotMeasure { px_height: 4.0, subject: flat, ring, edge }),
             worst: Some(ShotMeasure { px_height: 30.0, subject: flat, ring, edge }),
@@ -224,7 +235,18 @@ mod tests {
     /// no shape (empty) is not checked.
     #[test]
     fn a_style_can_ask_for_a_shape() {
-        let boxy = Measured { subject: "crate_a".into(), silhouettes: vec![rect([8, 14, 48, 36])], ..Measured::default() };
+        // (A box on a silhouette of the size shape language is measured at.)
+        let side = crate::shape::PIXELS;
+        let mut big = Mask::empty(side, side);
+        for y in side / 4..side * 3 / 4 {
+            for x in side / 8..side * 7 / 8 {
+                big.on[(y * side + x) as usize] = true;
+            }
+        }
+        let boxy = Measured { subject: "crate_a".into(), silhouettes: vec![rect([8, 14, 48, 36])], outlines: vec![big], ..Measured::default() };
+        // (The larger silhouettes are the ones read: the thumbnail alone is coarser.)
+        assert!(boxy.shape().is_some_and(|s| s.square > 0.99));
+        assert!(Measured { outlines: Vec::new(), ..boxy.clone() }.shape().is_some_and(|s| s.square > 0.6));
         let of = |toml: &str, m: &Measured| check_subject(m, &StyleRules::parse(toml, "style.toml", &|_| None).unwrap()).into_iter().find(|f| f.check == "shape_language");
         let f = of("[taste]\nshape_language = \"round\"\n", &boxy).unwrap();
         assert!(f.is_error() && f.value < 0.1 && f.limit == 0.5 && f.message.contains("square 100%") && f.fix.contains("round its corners"), "{f:?}");
@@ -234,5 +256,22 @@ mod tests {
         assert!(!f.passed && f.exempt && !f.is_error(), "{f:?}");
         let nothing = Measured { subject: "ghost".into(), silhouettes: vec![Mask::empty(64, 64)], ..Measured::default() };
         assert!(of("[taste]\nshape_language = \"round\"\n", &nothing).is_none());
+
+        // And a failed shape reaches the critique, with what to do (its first review: no pass
+        // owned the check, so the critique said "ok").
+        let rules = StyleRules::parse("[taste]\nshape_language = \"round\"\n", "style.toml", &|_| None).unwrap();
+        let found = check_subject(&boxy, &rules);
+        let refs: Vec<&crate::Finding> = found.iter().collect();
+        let said = crate::critique::critique("crate_a", None, &refs, &rules).to_string();
+        assert!(said.contains("shape_language") && said.contains("round its corners") && !said.contains("\"verdict\":\"ok\"}],\"next\":[]"), "{said}");
+    }
+
+    /// Every taste check and every form check belongs to a pass of the critique: a failure
+    /// no pass owned never reached the critique.
+    #[test]
+    fn every_check_has_a_pass() {
+        for check in CHECKS.iter().chain(&crate::form::CHECKS) {
+            assert!(crate::critique::PASSES.iter().any(|(_, owned)| owned.contains(check)), "{check} is in no pass of the critique");
+        }
     }
 }

@@ -975,7 +975,9 @@ impl Engine {
             // to build is missing here, and a frame drawn without it would show no subject.)
             let v = self.gpu.pipeline_variants();
             if let Some(f) = v.failed.as_ref().filter(|f| f.form && !v.form) {
-                return Err(error("render_unavailable", format!("the form views' pipelines failed to build ({}): {}", f.pipeline, f.error.message)));
+                let said = format!("the form views' pipelines failed to build ({}): {}; they are being built again: ask again in a moment", f.pipeline, f.error.message);
+                self.gpu.retry_failed_variants();
+                return Err(error("render_unavailable", said));
             }
             // (Curvature's scale as a capture's: a twentieth of the view's half height at the
             // subject, so a form reads the same at any framing.)
@@ -1411,7 +1413,9 @@ fn planned_renders(call: &StudioCall, shared: &Shared, agent: &str) -> usize {
         StudioCall::Compare { from: CompareFrom::Pair { .. }, sheet: s, .. } => 2 * sheet(&SheetSpec { subjects: vec![SubjectSpec { spec: ModelSpec::new("x"), label: None }], ..s.clone() }),
         StudioCall::Compare { from: CompareFrom::Mark(name), .. } => shared.marks().spec(agent, name).map_or(0, |s| sheet(&s)),
         // 13 for the subject, 5 per sibling (defaulted siblings: up to MAX_SUBJECTS - 1).
-        StudioCall::Check { siblings, .. } => 13 + 5 * siblings.as_ref().map_or(MAX_SUBJECTS - 1, Vec::len),
+        // (Three thumbnails, three larger silhouettes for its shape, the lit frame and four
+        // shots, each with its silhouette; a sibling: three thumbnails and a shot.)
+        StudioCall::Check { siblings, .. } => 16 + 5 * siblings.as_ref().map_or(MAX_SUBJECTS - 1, Vec::len),
         StudioCall::Style { .. } => 0,
     }
 }
@@ -1646,7 +1650,7 @@ impl Ctx<'_> {
         let at = Vec3::new(-(slo.x + shi.x) * 0.5, 0.0, -(slo.z + shi.z) * 0.5);
         let (slo, shi) = (slo + at, shi + at);
         let (mut lo, mut hi) = (slo, shi);
-        let fig = (refs && !silhouette).then(|| {
+        let fig = refs.then(|| {
             let f = Vec3::new(slo.x - 0.6 - 0.35, 0.0, 0.0);
             let (a, b) = reference_box(f);
             lo = lo.min(a);
@@ -1660,9 +1664,10 @@ impl Ctx<'_> {
             None if silhouette => Light::Silhouette,
             None => Light::Rig(rig, false),
         };
-        // (A form view keeps the room the references take, so that its tile is framed as the
-        // colour tile beside it is, and leaves them out: it shows the subject's shape alone.)
-        let rgba = self.stage_render(&placed, fig.filter(|_| form.is_none()), &cam, tile, tile, light)?;
+        // (A form view and a silhouette keep the room the references take, so that their tiles
+        // are framed as the colour tile beside them is, and leave them out: they show the
+        // subject alone.)
+        let rgba = self.stage_render(&placed, fig.filter(|_| form.is_none() && !silhouette), &cam, tile, tile, light)?;
         let bbox = project_box(&cam.view_proj(1.0), slo, shi, tile, tile);
         Ok((rgba, bbox))
     }
@@ -1689,7 +1694,14 @@ impl Ctx<'_> {
             shots.push((shot.name().to_string(), self.studio_shot(s, shot, tile)?));
         }
         let get = |n: &str| shots.iter().find(|(k, _)| k == n).map(|(_, r)| r.measure);
-        let m = Measured { subject: s.name.clone(), silhouettes, gameplay: get("gameplay"), phone: get("phone"), worst: get("worst_light"), lit: Some(lit.measure.subject) };
+        // The same three silhouettes, larger, for the outline's shape language.
+        let mut outlines = Vec::new();
+        for (az, el) in THUMB_ANGLES {
+            let px = specula_studio::shape::PIXELS;
+            let (rgba, _) = self.studio_angle(s, az, el, &neutral_rig(), px, false, true, None)?;
+            outlines.push(Mask::from_silhouette(&rgba, px, px));
+        }
+        let m = Measured { subject: s.name.clone(), silhouettes, outlines, gameplay: get("gameplay"), phone: get("phone"), worst: get("worst_light"), lit: Some(lit.measure.subject) };
         shots.push(("game_light".into(), lit));
         Ok((m, shots))
     }
@@ -1879,8 +1891,12 @@ impl Ctx<'_> {
                 let (colour, sil, bbox, shot, lod, sw, sh): ViewPixels = match v {
                     View::Angle { az, el, .. } => {
                         let colour = if sheet.passes.iter().any(|p| matches!(p, Pass::Colour | Pass::Value)) { Some(self.studio_angle(s, *az, *el, &rig, tile, sheet.references, false, None)?) } else { None };
-                        let sil = if sheet.passes.contains(&Pass::Silhouette) { Some(self.studio_angle(s, *az, *el, &rig, tile, false, true, None)?.0) } else { None };
-                        let bbox = colour.as_ref().and_then(|c| c.1);
+                        // (Framed as the colour tile is: a silhouette beside a colour tile with the
+                        // references was framed on the subject alone and given the colour tile's box.)
+                        let sil = if sheet.passes.contains(&Pass::Silhouette) { Some(self.studio_angle(s, *az, *el, &rig, tile, sheet.references, true, None)?) } else { None };
+                        let sil_box = sil.as_ref().and_then(|s| s.1);
+                        let sil = sil.map(|s| s.0);
+                        let bbox = colour.as_ref().and_then(|c| c.1).or(sil_box);
                         (colour.map(|c| c.0), sil, bbox, None, 0, tile, tile)
                     }
                     View::Shot(shot) => {
@@ -2292,7 +2308,8 @@ impl Ctx<'_> {
                 ("solidity", Json::arr(measured.silhouettes.iter().map(|m| r3(m.solidity())))),
                 // How round, square or pointed the outline is (the mean over the angles):
                 // reported for every subject, checked when the style asks for one.
-                ("shape", specula_studio::shape::of_masks(&measured.silhouettes).map_or(Json::Null, |s| s.to_json())),
+                ("shape", measured.shape().map_or(Json::Null, |s| s.to_json())),
+                ("shape_px", Json::from(specula_studio::shape::PIXELS)),
             ]),
         );
         let mut packet = Json::obj([

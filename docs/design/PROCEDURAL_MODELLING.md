@@ -152,14 +152,15 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   hard shape, 1 its fully round form (the ellipsoid as wide, as tall and as deep; the ellipse), and
   every value between is a valid shape with flat sides and corners that tighten as the number falls
   (a superquadric, a superellipse: Barr, 1981). The shape keeps its sizes whatever its roundness, so
-  it can be turned up or down without anything else moving. **What it costs:** 1 and 0.5 are the
-  cheap ones (no power to take: six and nine times a plain box's sample); any other value solves
-  for the nearest point with a dozen to thirty powers a sample outside the shape, over twenty times
+  it can be turned up or down without anything else moving. **What it costs:** a roundness
+  of 1 is the cheap one (no power to take: six times a plain box's sample); any other value solves
+  for the nearest point with a dozen to twenty powers a sample outside the shape, over twenty times
   a plain box's. So a cube of roundness 0.3 builds at a resolution of 64 on under half of the work
-  limit and is refused at 96, where the same cube at roundness 1 or 0.5 takes a third and a half of
-  the limit (a test holds this); a thin board has an eighth of a cube's samples at the same
-  resolution. The weight is set by the dearest case found, a box with a small rounded plate cut out
-  of it, whose every sample is outside the plate: at the work limit that takes about 1.3 s here. It is not the modifier `round`
+  limit and is refused at 96, where the same cube at roundness 1 takes a third of the limit (a test
+  holds this); a thin board has an eighth of a cube's samples at the same resolution. The weight is
+  set by the dearest cases found, a box with a rounded plate, a rounded needle or a 4 by 4 repeat
+  of plates cut out of it, whose every sample is outside the rounded shape: at the work limit
+  those take about 1.3 s here. It is not the modifier `round`
   (a swelling by a radius in metres, on any node) nor `corner` (an edge radius in metres, which cannot
   be given with it). A rounded cylinder has one radius. On an outline that is not a `rect` it is
   refused, as `segments` is where it would do nothing.
@@ -178,9 +179,13 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     steps on that one number with each coordinate's own equation solved inside (both curves are
     convex, so those steps cannot pass the answer). **A fourth review** found the sure way alone
     too dear far from the shape (a cut by a rounded plate ran 3.8 s inside the 1.5 s budget) and,
-    at a roundness of 0.05, able to stop early with a step in the field; a test now holds a far
-    sample to fewer steps than a near one, the review's points to the distance, and scans out to
-    100 m for steps. A test holds the field
+    at a roundness of 0.05, able to stop early with a step in the field. **A fifth** found the
+    first steps giving up far from a rounded needle (71 steps a sample, a cut that ran 3.6 s):
+    they are now taken on each share **to the power less one**, in which every equation is
+    nearly a straight line however low the roundness, each from the most its own equation
+    allows. A test holds a plate, a needle, a cube and a board, at six roundnesses, to under 25
+    steps a sample in a 2 m box with no more than one in twenty left to the sure way, the
+    reviews' points to the distance, and scans out to 100 m for steps. A test holds the field
     against a distance found by search, on six shapes to 100:1 at six roundnesses, and swollen
     meshes against the unswollen surface at every roundness, for swellings to three times the
     thinness.

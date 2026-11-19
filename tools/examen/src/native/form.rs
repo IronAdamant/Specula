@@ -3,10 +3,12 @@
 //! recipe; a sheet of it is asked for with a colour pass, two form passes and the reference
 //! figure; and what comes back is held to what the design says:
 //!
-//! - every form tile is framed as the colour tile of its view is (the same box for the subject:
-//!   the references' room is kept, the references left out);
-//! - a form tile shows the subject where its box says, against the form views' neutral ground,
-//!   and nothing of the stage (no floor, no figure);
+//! - a form tile and a silhouette tile are framed as the colour tile of their view is (the
+//!   references' room kept, the references left out): the subject is where the view's box
+//!   says, read from the pixels (the packet gives every tile of a view the one box, so a tile
+//!   framed otherwise shows its subject outside it);
+//! - a form tile shows the subject against the form views' neutral ground and a silhouette
+//!   against white, and nothing of the stage (no floor, no figure);
 //! - clay is a warm grey, lit; normals are colours;
 //! - no frame of the sheet compiled a pipeline (the form views' set is built on a worker).
 
@@ -56,10 +58,10 @@ pub fn form_sheet(cx: &mut Cx) -> Result<String, String> {
     std::fs::create_dir_all(&recipes).and_then(|()| std::fs::write(recipes.join("post.json"), RECIPE)).map_err(|e| format!("{}: {e}", recipes.display()))?;
 
     cx.start(&project, port, &["--lead", "lead"])?;
-    let args = r#"{"recipe": "recipes/post.json", "views": ["front", "three_quarter"], "passes": ["colour", "clay", "normals"], "references": true, "tile": 192, "response_format": "detailed"}"#;
+    let args = r#"{"recipe": "recipes/post.json", "views": ["front", "three_quarter"], "passes": ["colour", "clay", "normals", "silhouette"], "references": true, "tile": 192, "response_format": "detailed"}"#;
     let sheet = cx.call(port, lead, "studio_sheet", args)?;
     let tiles = at(&sheet, "subjects.0.tiles").and_then(Json::as_array).ok_or_else(|| format!("the sheet's answer has no tiles: {}", super::short(&sheet)))?.to_vec();
-    expect(tiles.len() == 6, "a sheet of two views and three passes does not have six tiles", &sheet)?;
+    expect(tiles.len() == 8, "a sheet of two views and four passes does not have eight tiles", &sheet)?;
     let path = text(&sheet, "image.path").ok_or("the sheet's answer has no picture")?.to_owned();
     let bytes = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
     let image = specula_core::png::decode(&bytes).map_err(|e| format!("{path}: {e:?}"))?;
@@ -72,15 +74,15 @@ pub fn form_sheet(cx: &mut Cx) -> Result<String, String> {
     let mut seen = 0;
     for view in ["front", "three_quarter"] {
         let of = |pass: &str| tiles.iter().find(|t| text(t, "view") == Some(view) && text(t, "pass") == Some(pass));
-        let colour = of("colour").ok_or_else(|| format!("no colour tile of the {view} view"))?;
-        let colour_box = rect(colour, "box").ok_or_else(|| format!("the {view} colour tile has no box"))?;
-        for pass in ["clay", "normals"] {
+        of("colour").ok_or_else(|| format!("no colour tile of the {view} view"))?;
+        for pass in ["clay", "normals", "silhouette"] {
+            // (A silhouette is black on white.)
+            let is_ground = |p: [u8; 3]| if pass == "silhouette" { p.iter().all(|c| *c > 200) } else { is_ground(p) };
             let tile = of(pass).ok_or_else(|| format!("no {pass} tile of the {view} view"))?;
             let (at_, in_) = (rect(tile, "tile"), rect(tile, "box"));
             let (Some([tx, ty, tw, th]), Some([bx, by, bw, bh])) = (at_, in_) else { return Err(format!("the {view} {pass} tile has no rectangle or box: {}", super::short(tile))) };
-            // Framed as its colour tile is: the same box for the subject.
-            expect(in_ == Some(colour_box), &format!("the {view} {pass} tile's box is not its colour tile's ({colour_box:?})"), tile)?;
-            // The subject is where the box says, on the neutral ground, with nothing else drawn:
+            // Framed as its colour tile is: the subject is where the view's box says, on its
+            // ground, with nothing else drawn:
             // most of the box's middle column is the subject, and what lies clear of the box
             // (three pixels out) is ground. (The tile's bottom strip holds its label.)
             let (mut inside, mut outside, mut stray) = (0u32, 0u32, 0u32);
@@ -104,6 +106,7 @@ pub fn form_sheet(cx: &mut Cx) -> Result<String, String> {
             let mid = px(tx + bx + bw / 2, ty + by + bh * 3 / 4);
             let right = match pass {
                 "clay" => mid[0] >= mid[2] && mid[1] > 50 && mid[0].abs_diff(mid[1]) < 40,
+                "silhouette" => mid.iter().all(|c| *c < 40),
                 _ => mid[0].abs_diff(mid[1]) > 8 || mid[1].abs_diff(mid[2]) > 8,
             };
             if !right {
@@ -118,5 +121,5 @@ pub fn form_sheet(cx: &mut Cx) -> Result<String, String> {
     let hitched = at(&perf, "errors").and_then(Json::as_array).is_some_and(|e| e.iter().any(|x| super::short(x).contains("pipeline_created_after_warm")));
     expect(!hitched, "a frame compiled a pipeline after the engine was warm", &perf)?;
     cx.stop(port)?;
-    Ok(format!("{seen} form tiles framed as their colour tiles, the subject alone on the neutral ground; no pipeline compiled by a frame ({path})"))
+    Ok(format!("{seen} form and silhouette tiles show the subject alone where their view's box says; no pipeline compiled by a frame ({path})"))
 }

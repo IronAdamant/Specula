@@ -504,15 +504,16 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
     math3::length([1.0, steepest, 0.0])
 }
 
-/// What a rounded box or cylinder costs a sample over a plain primitive, by its power: 2 (an
-/// ellipsoid's own shares, no power to take), 4 (multiplications), and any other (a dozen to
-/// thirty powers a sample outside the shape, where the nearest point is solved for). Set so
-/// that the dearest case found takes under the work limit's 1.5 s at the limit (2026-11-19,
-/// release, meshing at resolution 96 and 64): a cube, a cylinder and a thin board alone run
-/// at 0.2 to 0.45 ns a unit; a 2 m box with a small rounded plate cut out of it, whose every
-/// sample is outside the plate and far from it, at 0.5 to 0.85 (a fourth review found that
-/// case at 4.7 under a weight set from the shapes alone).
-const ROUNDED_COST: [u64; 3] = [300, 520, 1300];
+/// What a rounded box or cylinder costs a sample over a plain primitive: at a power of 2 (an
+/// ellipsoid's own shares, no power to take), and at any other (a dozen to twenty powers a
+/// sample outside the shape, where the nearest point is solved for; a power of 4 is solved
+/// the same way and costs the same). Set so that the dearest cases found take under the work
+/// limit's 1.5 s at the limit (2026-11-20, release, resolution 96): a cube and a thin board
+/// alone run at 0.36 to 0.6 ns a unit, and a 2 m box with a rounded plate, a rounded needle
+/// or a 4 by 4 repeat of plates cut out of it, whose every sample is outside the rounded
+/// shape, at 0.5 to 0.85. (Two reviews found those cuts at 3 to 5 ns a unit under weights
+/// set from the shapes alone.)
+const ROUNDED_COST: [u64; 2] = [300, 1300];
 
 /// A rounded box's or cylinder's field ([`Prim::Rounded`]), in metres.
 ///
@@ -650,37 +651,65 @@ fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, (g, len, plane): (V3, f32, f
     let mut u = start.map(f64::from);
     let mut w = [1.0f64; 3];
     let mut began_again = false;
-    // First, Newton's steps on the shares and `mu` together: one power a coordinate a step,
-    // and the error squared each time from a start as near as these. (Each `mu`'s shares
-    // solved for in full, as below, took three times the powers: a trace of the solve showed
-    // four or five values of `mu`, each with three or four steps a coordinate.) It is not
-    // sure to arrive, so it is only believed when it has: the shares on their equations to a
-    // ten-millionth and on the surface to a millionth of the power. Otherwise the sure way
-    // below takes over from where `mu` started.
+    // First, Newton's steps on everything together: one power a coordinate a step, and the
+    // error squared each time from a start as near as these. (Each `mu`'s shares solved for
+    // in full, as below, took three times the powers.) The unknowns are `mu` and each share
+    // **to the power less one**, `v = u^(power - 1)`, not the share itself: in `v` a
+    // coordinate's equation is `v^(1 / (power - 1)) + c * v = p / half`, a gentle root and a
+    // straight line, and being on the surface is nearly a plain sum, however high the power.
+    // (In the share itself the equation holds `u^39` at the lowest roundness, the steps
+    // overshot and gave up, and the sure way ran: far from a rounded needle 63% of samples
+    // took over forty steps. Fifth review.) It is not sure to arrive, so it is only believed
+    // when it has: every coordinate on its equation to a ten-millionth and the point on the
+    // surface to a millionth of the power. Otherwise the sure way below takes over from
+    // where `mu` started.
     let mut arrived = false;
     if power != 2.0 {
         let (first_mu, first_u) = (mu, u);
-        for _ in 0..8 {
+        // Each starts at the most its own equation allows at the starting `mu`, which is
+        // close above its answer there: the lesser of what the straight term alone allows
+        // (`p / half` over `c`) and what the root alone does (`p / half` to the power, where
+        // that is under one). (From the start's own shares, a coordinate that began near
+        // nothing began at `1e-85` to the power and crept up a millionfold a step: a trace of
+        // the samples that gave up.)
+        let begin = |want: f64, c: f64| -> f64 {
+            let line = if c > 0.0 { want / c } else { f64::MAX };
+            if want < 1.0 {
+                line.min(to(want, e))
+            } else {
+                line.min(4.0)
+            }
+        };
+        let mut v = [0.0f64; 3];
+        for i in 0..n {
+            if big[i] > 0.0 {
+                v[i] = begin(big[i], mu * inv2[i]);
+            }
+        }
+        for _ in 0..10 {
             // (On the surface less one; and the two sums the step on `mu` is made of.)
             let (mut value, mut pull, mut give, mut worst) = (-1.0f64, 0.0f64, 0.0f64, 0.0f64);
             let (mut off, mut stiff, mut lean) = ([0.0f64; 3], [1.0f64; 3], [0.0f64; 3]);
             for i in 0..n {
                 if big[i] <= 0.0 {
-                    u[i] = 0.0;
+                    (u[i], v[i]) = (0.0, 0.0);
                     continue;
                 }
                 steps += 1;
-                let x = u[i].max(1e-12 * big[i]);
-                let xw = if quartic { x * x } else { to(x, power - 2.0) };
-                let (share, c) = (xw * x, mu * inv2[i]);
-                off[i] = x + c * share - big[i];
-                stiff[i] = 1.0 + c * e * xw;
-                lean[i] = inv2[i] * share;
-                value += share * x;
-                pull += power * share * off[i] / stiff[i];
-                give += power * share * lean[i] / stiff[i];
+                let c = mu * inv2[i];
+                // (Never nothing, and never more than either term alone allows.)
+                let most = if c > 0.0 { big[i] / c } else { f64::MAX };
+                let x = v[i].clamp(1e-200, most);
+                let share = to(x, 1.0 / e);
+                off[i] = share + c * x - big[i];
+                stiff[i] = share / (e * x) + c;
+                lean[i] = inv2[i] * x;
+                let turn = power / e * share;
+                value += x * share;
+                pull += turn * off[i] / stiff[i];
+                give += turn * lean[i] / stiff[i];
                 worst = worst.max(off[i].abs() / big[i]);
-                (u[i], w[i]) = (x, xw);
+                (u[i], v[i]) = (share, x);
             }
             if !(value.is_finite() && pull.is_finite() && give.is_finite() && give > 0.0) {
                 break;
@@ -692,7 +721,12 @@ fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, (g, len, plane): (V3, f32, f
             let next = (mu + (value - pull) / give).max(floor);
             for i in 0..n {
                 if big[i] > 0.0 {
-                    u[i] = (u[i] - (off[i] + lean[i] * (next - mu)) / stiff[i]).clamp(0.0, big[i]);
+                    // (A step that would take it to nothing or past what its equation allows
+                    // at the new `mu` begins again from there: left at next to nothing, it
+                    // crept back a millionfold a step and the solve gave up.)
+                    let stepped = v[i] - (off[i] + lean[i] * (next - mu)) / stiff[i];
+                    let c = next * inv2[i];
+                    v[i] = if stepped > 0.0 && (c <= 0.0 || stepped <= big[i] / c) { stepped } else { begin(big[i], c) };
                 }
             }
             mu = next;
@@ -1142,8 +1176,7 @@ fn prim_cost(p: &Prim) -> u64 {
         // one and a half times its slowest. Before the steps they were 27 and 175 ns: what a
         // swelling that is right at a thin board's corners costs.)
         Prim::Rounded { power: 2.0, .. } => ROUNDED_COST[0],
-        Prim::Rounded { power: 4.0, .. } => ROUNDED_COST[1],
-        Prim::Rounded { .. } => ROUNDED_COST[2],
+        Prim::Rounded { .. } => ROUNDED_COST[1],
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 12,
         Prim::Cylinder { .. } => 35,
     }
@@ -2315,15 +2348,15 @@ mod tests {
         }
         assert!(last > 8.0 * 0.3 * 0.2 * 0.1 * 0.93, "at a power of 40 it is nearly the box: {last}");
         let cost = |power: f32| eval_cost(&prim(Prim::Rounded { half, power, disc: false }));
-        assert!(cost(2.0) < cost(4.0) && cost(3.0) > cost(4.0) * 2);
+        assert!(cost(2.0) * 3 < cost(4.0) && cost(3.0) == cost(4.0));
     }
 
     /// What a rounded shape costs to build, said as what builds (third review: the weights
     /// had shrunk it unsaid). The nearest point is solved for at every sample outside a shape
-    /// of a roundness other than 1 and 0.5, a dozen to thirty powers each: a cube of roundness
-    /// 0.3 builds at resolution 64 on under half of the work limit and is refused at 96, by
-    /// its work, with the limit in the error. At roundness 1 and 0.5 (powers 2 and 4: no
-    /// power to take) the same cube's work at 96 is a third and a half of the limit.
+    /// of a roundness other than 1, a dozen to twenty powers each: a cube of roundness 0.3
+    /// builds at resolution 64 on under half of the work limit and is refused at 96, by its
+    /// work, with the limit in the error. At roundness 1 (a power of 2: no power to take) the
+    /// same cube's work at 96 is a third of the limit.
     #[test]
     fn what_a_rounded_shape_costs_to_build() {
         let cube = |power: f32| prim(Prim::Rounded { half: [0.5; 3], power, disc: false });
@@ -2331,10 +2364,8 @@ mod tests {
         assert!(stats.work > MAX_WORK / 3 && stats.work < MAX_WORK / 2, "roundness 0.3 at 64: {} of {MAX_WORK}", stats.work);
         let refused = mesh(&cube(6.67), &opts(96)).unwrap_err();
         assert!(refused.limit && refused.message.contains("work") && refused.max == Some(MAX_WORK as f64), "{refused:?}");
-        for (power, most) in [(2.0f32, MAX_WORK * 2 / 5), (4.0, MAX_WORK * 3 / 5)] {
-            let (_, stats) = mesh(&cube(power), &opts(96)).unwrap();
-            assert!(stats.work < most, "power {power} at 96: {} of {MAX_WORK}", stats.work);
-        }
+        let (_, stats) = mesh(&cube(2.0), &opts(96)).unwrap();
+        assert!(stats.work < MAX_WORK * 2 / 5, "roundness 1 at 96: {} of {MAX_WORK}", stats.work);
     }
 
     /// A rounded shape's surface in `f64`, for the tests below: how far out a point is by the
@@ -2499,8 +2530,8 @@ mod tests {
     /// Far from a rounded shape a sample costs what its work weight allows (the weight was
     /// set near the surface; solved one way only, a far sample took as many steps as the
     /// dearest near one, and a box cut by a rounded plate ran 3.8 s on a little over half of
-    /// the work limit): round a small plate, the samples of a 2 m box take under twenty steps
-    /// each on average, and those just off the plate's own surface under thirty-five.
+    /// the work limit): round thin and thick shapes alike, the samples of a 2 m box take
+    /// under twenty-five steps each on average, at every roundness.
     ///
     /// And it is the distance there too, with no step in it: at the points the review named
     /// (a first guess above the answer threw a share out to where its power overflowed, the
@@ -2515,30 +2546,33 @@ mod tests {
             seed ^= seed << 17;
             (seed >> 11) as f32 / (1u64 << 53) as f32
         };
-        let half = [0.2f32, 0.004, 0.2];
-        for power in [2.5f32, 4.0, 6.67, 40.0] {
-            let (mut near, mut far, mut most_far) = ((0u64, 0u64), (0u64, 0u64), 0u32);
-            for _ in 0..4000 {
-                // Just off the surface: a point of the box, pushed out a few thicknesses.
-                let on = [0, 1, 2].map(|i| (next() * 2.0 - 1.0) * half[i]);
-                let out = 1.0 + next() * 0.2;
-                let (f, steps) = rounded_counted([on[0] * out, on[1] * out + 0.002 + next() * 0.01, on[2] * out], half, power, false);
-                if f > 0.0 {
-                    near = (near.0 + u64::from(steps), near.1 + 1);
+        // (A plate, a needle, a cube and a board, at every kind of roundness. A fifth review
+        // found the needle, which the plate alone had hidden: 71 steps a sample at the lowest
+        // roundness, 63% of them over forty.)
+        for (name, half) in [("a plate", [0.2f32, 0.004, 0.2]), ("a needle", [0.002, 0.4, 0.002]), ("a cube", [0.3, 0.3, 0.3]), ("a board", [0.5, 0.05, 0.3])] {
+            for power in [2.5f32, 3.0, 4.0, 6.67, 20.0, 40.0] {
+                let (mut near, mut far, mut slow) = ((0u64, 0u64), (0u64, 0u64), 0u64);
+                for _ in 0..3000 {
+                    // Just off the surface: a point of the box, pushed out a little.
+                    let on = [0, 1, 2].map(|i| (next() * 2.0 - 1.0) * half[i]);
+                    let out = 1.0 + next() * 0.2;
+                    let (f, steps) = rounded_counted([on[0] * out, on[1] * out + 0.002 + next() * 0.01, on[2] * out], half, power, false);
+                    if f > 0.0 {
+                        near = (near.0 + u64::from(steps), near.1 + 1);
+                    }
+                    // Anywhere in a 2 m box round it.
+                    let (f, steps) = rounded_counted([next() * 2.0 - 1.0, next() * 2.0 - 1.0, next() * 2.0 - 1.0], half, power, false);
+                    if f > 0.0 {
+                        far = (far.0 + u64::from(steps), far.1 + 1);
+                        slow += u64::from(steps > 40);
+                    }
                 }
-                // In a 2 m box round it, away from it.
-                let q = [next() * 2.0 - 1.0, next() * 2.0 - 1.0, next() * 2.0 - 1.0];
-                if q[0].abs().max(q[1].abs()).max(q[2].abs()) > 0.5 {
-                    let (_, steps) = rounded_counted(q, half, power, false);
-                    far = (far.0 + u64::from(steps), far.1 + 1);
-                    most_far = most_far.max(steps);
-                }
+                let (near, far_mean) = (near.0 as f64 / near.1.max(1) as f64, far.0 as f64 / far.1 as f64);
+                // (Under 25 steps a sample in the box and under 30 just off the surface, and
+                // no more than one sample in twenty left to the sure way: the weight was set
+                // at about thirty.)
+                assert!(far_mean < 25.0 && near < 30.0 && slow * 20 <= far.1, "{name}, power {power}: {far_mean:.1} steps a sample in a 2 m box ({slow} of {} over forty), {near:.1} near the surface", far.1);
             }
-            let (near, far) = (near.0 as f64 / near.1 as f64, far.0 as f64 / far.1 as f64);
-            // (Under twenty far away and under thirty-five near, at every roundness: it was
-            // thirty-six to forty-five both ways. The most any one sample can take is bounded
-            // by the solve's own limits.)
-            assert!(far < 20.0 && near < 35.0 && most_far <= 8 * 3 + 12 * 3 * 12, "power {power}: {far:.1} steps a sample far away (at most {most_far}), {near:.1} near the surface");
         }
 
         let plate = [1.0f32, 0.005, 1.0];

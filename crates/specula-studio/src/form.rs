@@ -1,7 +1,9 @@
 //! Form, measured: what a trained eye sees in a mesh's shape, as numbers (the form checks of
-//! docs/design/FORM.md). Loose pieces, edges sharp as a razor, how coarsely a round surface
-//! is faceted, where the shading jumps across an edge that is not a crease, and how much of
-//! the shape's relief is big, medium and small.
+//! docs/design/FORM.md). Loose pieces, edges sharp as a razor, where the shading jumps across
+//! an edge that is not a crease, and how much of the shape's relief is big, medium and small.
+//! (Not how coarsely a round surface is faceted: a mesh alone cannot say what was meant to be
+//! round. Three definitions were tried and reviewed; FORM.md says why each failed and where
+//! the measure belongs.)
 //!
 //! Everything here is read from the finest level of the built mesh alone: positions, normals
 //! and triangles. It says what is there, never whether it is meant: a rule in `style.toml`
@@ -27,13 +29,6 @@ pub const MAX_TRIANGLES: usize = 600_000;
 /// when that would be more than this. Not a cap: every triangle keeps one point, so a mesh of
 /// 600,000 triangles takes 600,000.
 pub const MAX_SAMPLES: f64 = 200_000.0;
-/// An edge shaded as one surface counts toward the faceting of round surfaces when its faces
-/// turn more than this: the diagonals of flat quads, and flat ground, turn nothing and say
-/// nothing of how coarse a dome beside them is.
-pub const CURVED_DEG: f32 = 1.0;
-/// Fewer curved edges than this are no round surface (one stray fold in a flat sheet is not
-/// faceting): `facet_deg` is then 0.
-pub const MIN_CURVED: usize = 3;
 /// Two pieces touch when their bounds come within a hundredth of the shape's size of each
 /// other, and never further apart than this (m): on a large shape a hundredth is metres.
 pub const NEAR_MAX_M: f32 = 0.05;
@@ -47,7 +42,7 @@ pub const MAX_COMPARES: u64 = 50_000_000;
 pub const MAX_LISTED: usize = 8;
 
 /// The form checks `[form.allow]` may exempt.
-pub const CHECKS: [&str; 6] = ["loose_pieces", "razor_edges", "faceting", "shading_seams", "smeared_creases", "small_relief"];
+pub const CHECKS: [&str; 5] = ["loose_pieces", "razor_edges", "shading_seams", "smeared_creases", "small_relief"];
 
 /// A piece of the mesh that touches no other piece and does not reach the ground.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -85,17 +80,6 @@ pub struct FormFacts {
     pub crease_m: f32,
     /// Length of the razors (creases turning more than [`RAZOR_DEG`]), metres.
     pub razor_m: f32,
-    /// How coarsely round surfaces are faceted: the turn, in degrees, that 95% of the length
-    /// of the curved edges stays under. A curved edge is one **shaded as one surface** (its
-    /// two faces share their normals along it, so it is meant to read as round) whose faces
-    /// turn more than [`CURVED_DEG`], however far: a smooth-shaded cylinder of six sides is
-    /// faceted by 60°. Flat ground and the diagonals of flat quads are left out, or a dome on
-    /// a slab would read as smooth; an edge shaded as two faces is a hard edge, not a facet.
-    /// (Without normals: the edges that are not creases.) 0 with fewer than [`MIN_CURVED`]
-    /// curved edges. Above a few degrees an outline reads as a polygon.
-    pub facet_deg: f32,
-    /// The length of those curved edges (m): how much of the shape `facet_deg` speaks for.
-    pub curved_m: f32,
     /// Every vertex has a normal: without them the two measures of shading below are not
     /// taken (and say nothing).
     pub shaded: bool,
@@ -154,8 +138,6 @@ impl FormFacts {
         j.set("crease_m", r3(self.crease_m));
         j.set("razor_m", r3(self.razor_m));
         j.set("razor_share", r3(self.razor_share()));
-        j.set("facet_deg", r3(self.facet_deg));
-        j.set("curved_edge_m", r3(self.curved_m));
         if self.shaded {
             j.set("seam_m", r3(self.seam_m));
             j.set("smeared_crease_m", r3(self.smeared_m));
@@ -324,7 +306,13 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
     let list: Vec<(usize, V3, V3)> = pieces.values().copied().collect();
     let clear: Vec<usize> = (0..list.len()).filter(|i| !(list[*i].1[1] <= near && list[*i].2[1] >= -near)).collect();
     f.clear_of_ground = clear.len();
-    if clear.len() as u64 * list.len() as u64 <= MAX_COMPARES {
+    if list.len() < 2 {
+        // One piece has no other to be apart from. Whether the whole shape may hang clear of
+        // the ground is the `float` check's to say, which knows the band its category allows
+        // (a second review asked for it to count as loose; a third found that a flyer built
+        // of one piece then failed whatever its band).
+        f.loose_count = Some(0);
+    } else if clear.len() as u64 * list.len() as u64 <= MAX_COMPARES {
         let mut loose = Vec::new();
         for i in clear {
             let (count, a_lo, a_hi) = list[i];
@@ -335,7 +323,6 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
                     gap = gap.min(length(d));
                 }
             }
-            // (A piece alone, clear of the ground, touches nothing either.)
             if gap > near {
                 let mid = [0, 1, 2].map(|k| 0.5 * (a_lo[k] + a_hi[k]));
                 // How far it is from anything: another piece, or the ground.
@@ -356,7 +343,9 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
     // ---- edges
     // (Shading is measured only when every vertex has a normal: with none, every crease
     // would read as shaded round.)
-    f.shaded = m.normals.len() >= m.positions.len();
+    // (A normal of no length is no normal either: such a mesh read as shaded round at every
+    // crease. Third review.)
+    f.shaded = m.normals.len() >= m.positions.len() && m.normals.iter().all(|n| length(*n) > 1e-6);
     let normal = |i: u32| m.normals.get(i as usize).copied().unwrap_or([0.0; 3]);
     let mut edges: BTreeMap<(u32, u32), Vec<Side>> = BTreeMap::new();
     for (i, (w, raw, face)) in tris.iter().enumerate() {
@@ -366,13 +355,10 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
             edges.entry(key).or_default().push(Side { tri: i as u32, face: *face, shade });
         }
     }
-    // (The turns across curved edges, with each edge's length, for the 95th percentile by
-    // length. Lengths are summed in f64: in f32 six hundred thousand of them came out 0.6% off.)
-    let mut turns: Vec<(f32, f32)> = Vec::new();
+    // (Lengths are summed in f64: in f32 six hundred thousand of them came out 0.6% off.)
     let (mut edge, mut open, mut tangled, mut crease, mut razor, mut smeared, mut seam) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
     for ((a, b), sides) in &edges {
-        let len = length(sub(points[*a as usize], points[*b as usize]));
-        let long = f64::from(len);
+        let long = f64::from(length(sub(points[*a as usize], points[*b as usize])));
         match sides.as_slice() {
             [_] => open += long,
             [s, t] => {
@@ -391,29 +377,11 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
                 } else if f.shaded && jump > SEAM_DEG {
                     seam += long;
                 }
-                // A curved edge: shaded as one surface (so meant to read as round), however
-                // far its faces turn; without normals, one that is not a crease.
-                let as_one = if f.shaded { jump < 1.0 } else { turn <= CREASE_DEG };
-                if as_one && turn > CURVED_DEG {
-                    turns.push((turn, len));
-                }
             }
             _ => tangled += long,
         }
     }
     (f.edge_m, f.open_m, f.tangled_m, f.crease_m, f.razor_m, f.smeared_m, f.seam_m) = (edge as f32, open as f32, tangled as f32, crease as f32, razor as f32, smeared as f32, seam as f32);
-    turns.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    let total: f64 = turns.iter().map(|t| f64::from(t.1)).sum();
-    // (An empty sum is minus nothing.)
-    f.curved_m = total as f32 + 0.0;
-    let mut run = 0.0f64;
-    for (turn, len) in turns.iter().filter(|_| turns.len() >= MIN_CURVED) {
-        run += f64::from(*len);
-        if run >= 0.95 * total {
-            f.facet_deg = *turn;
-            break;
-        }
-    }
 
     // ---- relief, at three sizes
     // How much the surface's facing varies within a box of each size: 0 where every face in
@@ -602,8 +570,6 @@ mod tests {
         assert!((f.crease_m - 4.0 * (2.0 + 1.0 + 0.5)).abs() < 1e-4 && (f.razor_m - f.crease_m).abs() < 1e-4, "{f:?}");
         assert_eq!(f.razor_share(), 1.0);
         assert!(f.open_m == 0.0 && f.tangled_m == 0.0 && f.seam_m == 0.0 && f.smeared_m == 0.0, "{f:?}");
-        // Its faces' own diagonals turn nothing.
-        assert_eq!(f.facet_deg, 0.0);
     }
 
     /// The same box shaded as if it were round (one normal a corner) is all smeared creases;
@@ -639,14 +605,12 @@ mod tests {
         assert!((f.open_m - 6.0).abs() < 1e-5, "an open sheet has a rim: {f:?}");
     }
 
-    /// A ball has no crease; how coarsely it is faceted is the turn between its bands, which
-    /// halves when the bands double; and all of its relief is big.
+    /// A ball has no crease, and all of its relief is big.
     #[test]
-    fn a_ball_is_faceted_by_its_bands() {
+    fn a_ball_has_no_crease_and_big_relief() {
         let coarse = measure(&ball(1.0, 8, [0.0; 3]));
         let fine = measure(&ball(1.0, 32, [0.0; 3]));
         assert!(coarse.crease_m == 0.0 && fine.crease_m == 0.0 && coarse.seam_m == 0.0, "{coarse:?}");
-        assert!((coarse.facet_deg - 22.5).abs() < 1.5 && (fine.facet_deg - 5.625).abs() < 0.6, "{} and {}", coarse.facet_deg, fine.facet_deg);
         assert!(fine.relief[0] > 0.8 && fine.relief[2] < 0.05, "{:?}", fine.relief);
         assert!((fine.relief.iter().sum::<f32>() - 1.0).abs() < 1e-5);
     }
@@ -698,8 +662,7 @@ mod tests {
     /// uses, however far off or at infinity, changes no measure (the shape's size was taken
     /// from every vertex: a stray one a kilometre up made a floating block "near" the rest,
     /// and one at infinity dropped every triangle, so the loose check passed on nothing); a
-    /// coarse dome on a wide flat slab is as faceted as the dome alone (the slab's flat edges
-    /// swamped it: it read 0); a piece wholly under the ground is loose (it rests on nothing);
+    /// piece wholly under the ground is loose (it rests on nothing);
     /// a mesh with no normals has its shading left unmeasured, not called smeared; too many
     /// pieces to compare is said, not passed over; and a measure can be given up.
     #[test]
@@ -724,19 +687,6 @@ mod tests {
         let got = measure(&with);
         assert_eq!((got.pieces, got.loose_count, got.relief), (plain.pieces, plain.loose_count, plain.relief));
 
-        let dome = ball(0.5, 4, [0.0, 0.5, 0.0]);
-        let alone = measure(&dome).facet_deg;
-        let slab: Vec<[V3; 4]> = (0..12)
-            .flat_map(|i| (0..12).map(move |j| (i, j)))
-            .map(|(i, j)| {
-                let (x, z) = (-5.0 + i as f32 * 10.0 / 12.0, -5.0 + j as f32 * 10.0 / 12.0);
-                let s = 10.0 / 12.0;
-                [[x, 0.0, z + s], [x + s, 0.0, z + s], [x + s, 0.0, z], [x, 0.0, z]]
-            })
-            .collect();
-        let on_slab = measure(&joined(&dome, &flat(&slab))).facet_deg;
-        assert!(alone > 15.0 && (on_slab - alone).abs() < 0.5, "a dome's faceting: {alone} alone, {on_slab} on a slab");
-        assert_eq!(measure(&flat(&slab)).facet_deg, 0.0, "a flat slab has no curved edge");
         // (A mesh of nothing but slivers, or of none: nothing measured, and nothing loose.)
         let mut slivers = MeshData::default();
         slivers.positions.extend_from_slice(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
@@ -780,7 +730,7 @@ mod tests {
         for (a, b) in [(was.edge_m, now.edge_m), (was.crease_m, now.crease_m), (was.razor_m, now.razor_m), (was.seam_m, now.seam_m), (was.smeared_m, now.smeared_m)] {
             assert!((a - b).abs() <= 1e-3 * a.max(1.0), "{was:?} turned is {now:?}");
         }
-        assert!((was.facet_deg - now.facet_deg).abs() < 0.05 && was.pieces == now.pieces, "{was:?} turned is {now:?}");
+        assert!(was.pieces == now.pieces, "{was:?} turned is {now:?}");
         for k in 0..3 {
             assert!((was.relief[k] - now.relief[k]).abs() < 0.2, "relief {:?} turned is {:?}", was.relief, now.relief);
         }
@@ -806,80 +756,16 @@ mod tests {
         assert!(got.skipped.is_some_and(|w| w.contains("out of time")) && got.pieces == 0 && got.loose_count.is_none());
     }
 
-    /// What the second review of the form checks found, each as it should be.
-    ///
-    /// Faceting goes up with coarseness, whatever the turn: a cylinder shaded as one round
-    /// surface is faceted by a whole turn over its sides, at 6 sides as at 64 (edges turning
-    /// more than 30 degrees were left out as creases: a 10-sided cylinder read 0 and passed a
-    /// limit a 64-sided one failed). The same cylinder shaded as flat faces has hard edges and
-    /// no facets. One fold in a flat sheet is not faceting.
+    /// What the second and third reviews of the form checks found, each as it should be.
     ///
     /// A far triangle is part of the shape and does not void the loose check (the sliver's
     /// floor and "near" both went by the shape's size: with one corner a kilometre off, a
     /// block floating beside a box was no longer loose; with one a thousand kilometres off,
     /// the box itself was a sliver). A corner past a million kilometres is no place at all.
-    /// And one piece alone, clear of the ground, is loose.
+    /// One piece alone is never loose: whether a whole shape may hover is the `float`
+    /// check's to say. And normals of no length are no normals: the shading is not measured.
     #[test]
-    fn the_second_review_of_the_form_checks() {
-        // A cylinder's side, of `n` faces: shaded round (each corner's normal points out from
-        // the axis) or flat (each face's own).
-        let side = |n: u32, round: bool| -> MeshData {
-            let mut m = MeshData::default();
-            let at = |i: u32| {
-                let a = std::f32::consts::TAU * (i % n) as f32 / n as f32;
-                [specula_core::dmath::cos(a), specula_core::dmath::sin(a)]
-            };
-            for i in 0..n {
-                let (a, b) = (at(i), at(i + 1));
-                let face = {
-                    let mid = [a[0] + b[0], a[1] + b[1]];
-                    let l = (mid[0] * mid[0] + mid[1] * mid[1]).sqrt();
-                    [mid[0] / l, 0.0, mid[1] / l]
-                };
-                let first = m.positions.len() as u32;
-                for (p, y) in [(a, 0.0f32), (b, 0.0), (b, 1.0), (a, 1.0)] {
-                    m.positions.push([p[0], y, p[1]]);
-                    m.normals.push(if round { [p[0], 0.0, p[1]] } else { face });
-                }
-                m.indices.extend_from_slice(&[first, first + 2, first + 1, first, first + 3, first + 2]);
-            }
-            m
-        };
-        for n in [6u32, 8, 10, 11, 12, 16, 64] {
-            let (round, flat_faced) = (measure(&side(n, true)), measure(&side(n, false)));
-            let turn = 360.0 / n as f32;
-            assert!((round.facet_deg - turn).abs() < 0.05 && (round.curved_m - n as f32).abs() < 1e-3, "{n} sides, shaded round: {round:?}");
-            assert_eq!((flat_faced.facet_deg, flat_faced.curved_m), (0.0, 0.0), "{n} sides, shaded flat: hard edges, no facets");
-            // (What turns more than 30 degrees is a crease too, and shaded round a smeared one.)
-            if n != 12 {
-                assert_eq!(round.crease_m > 0.0, turn > CREASE_DEG, "{n} sides: {round:?}");
-            }
-            let all: f32 = round.relief.iter().sum();
-            assert!((all - 1.0).abs() < 1e-4 || all == 0.0, "{n} sides: relief {:?}", round.relief);
-        }
-        // A flat sheet of 20 by 20 squares with one diagonal folded up by 25 degrees.
-        let mut sheet = MeshData::default();
-        for j in 0..=20u32 {
-            for i in 0..=20u32 {
-                sheet.positions.push([i as f32 * 0.05, 0.0, j as f32 * 0.05]);
-                sheet.normals.push([0.0, 1.0, 0.0]);
-            }
-        }
-        for j in 0..20u32 {
-            for i in 0..20u32 {
-                let a = j * 21 + i;
-                sheet.indices.extend_from_slice(&[a, a + 21, a + 1, a + 1, a + 21, a + 22]);
-            }
-        }
-        // (The corner at (10, 10) lifted: the edges round it fold, two of them by the most.)
-        let flat_sheet = measure(&sheet);
-        assert_eq!((flat_sheet.facet_deg, flat_sheet.curved_m), (0.0, 0.0));
-        let mut folded = sheet.clone();
-        let corner = folded.indices[0] as usize;
-        folded.positions[corner][1] = 0.05 * 25.0f32.to_radians().tan();
-        let f = measure(&folded);
-        assert!(f.curved_m > 0.0 && f.curved_m < 0.2 && f.facet_deg == 0.0, "one fold at a sheet's corner is not faceting: {f:?}");
-
+    fn the_later_reviews_of_the_form_checks() {
         let body = flat(&box_quads([0.0; 3], [1.0; 3]));
         let adrift = joined(&body, &flat(&box_quads([0.2, 1.5, 0.2], [0.4, 1.7, 0.4])));
         for far in [1.0e3f32, 1.0e6] {
@@ -902,9 +788,18 @@ mod tests {
         assert_eq!((got.pieces, got.loose_count), (2, Some(1)), "a corner past any place is left out with its triangle: {got:?}");
 
         let alone = measure(&flat(&box_quads([0.0, 2.0, 0.0], [1.0, 3.0, 1.0])));
-        assert_eq!((alone.pieces, alone.clear_of_ground, alone.loose_count), (1, 1, Some(1)));
-        assert!((alone.loose[0].gap_m - 2.0).abs() < 1e-5, "it is 2 m from anything: the ground: {:?}", alone.loose);
+        assert_eq!((alone.pieces, alone.clear_of_ground, alone.loose_count), (1, 1, Some(0)), "one piece alone, hovering, is the float check's");
         assert_eq!(measure(&body).loose_count, Some(0), "one piece standing on the ground is not loose");
+        // (Two pieces, both hovering and apart: each is loose, and says how far it is from
+        // anything, the ground among them.)
+        let pair = measure(&joined(&flat(&box_quads([0.0, 2.0, 0.0], [1.0, 3.0, 1.0])), &flat(&box_quads([5.0, 2.0, 0.0], [6.0, 3.0, 1.0]))));
+        assert_eq!(pair.loose_count, Some(2));
+        assert!((pair.loose[0].gap_m - 2.0).abs() < 1e-5, "{:?}", pair.loose);
+
+        let mut unlit = flat(&box_quads([0.0; 3], [1.0; 3]));
+        unlit.normals.fill([0.0; 3]);
+        let got = measure(&unlit);
+        assert!(!got.shaded && got.smeared_m == 0.0 && got.seam_m == 0.0 && (got.crease_m - 12.0).abs() < 1e-4, "{got:?}");
     }
 
     /// A piece that touches nothing and hangs in the air is loose, with where it is and how

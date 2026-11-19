@@ -91,9 +91,6 @@ fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
     if let Some(max) = limits.max_razor_share {
         push("razor_edges", f64::from(m.razor_share()), f64::from(max), "share", "max_razor_share", format!("{:.0}% of its {:.2} m of creases turn more than {RAZOR_DEG}° with no bevel", m.razor_share() * 100.0, m.crease_m), "bevel the hard edges (a \"bevel\" on the outline, a \"corner\" or \"roundness\" on the box): no made thing has an edge that sharp");
     }
-    if let Some(max) = limits.max_facet_deg {
-        push("faceting", f64::from(m.facet_deg), f64::from(max), "degrees", "max_facet_deg", format!("its round surfaces turn up to {:.1}° from one face to the next", m.facet_deg), "more segments or a higher resolution where it is round: above a few degrees an outline reads as a polygon");
-    }
     let size = f.size_m[0].max(f.size_m[1]).max(f.size_m[2]).max(1e-6);
     if let Some(max) = limits.max_seam_share {
         push("shading_seams", f64::from(m.seam_m / size), f64::from(max), "of its size", "max_seam_share", format!("{:.2} m of edges that are not creases are shaded more than {SEAM_DEG}° apart on their two sides: a line in the light where the surface has none", m.seam_m), "let the two sides share their normals there (one part, or a smooth step), or make the edge a real crease");
@@ -467,7 +464,6 @@ categories = ["stone", "enemy"]
             loose: vec![Loose { triangles: 12, at: [0.5, 2.0, 0.5], size_m: 0.1, gap_m: 0.95 }],
             crease_m: 4.0,
             razor_m: 3.0,
-            facet_deg: 12.0,
             seam_m: 0.6,
             smeared_m: 1.0,
             relief: [0.2, 0.2, 0.6],
@@ -481,7 +477,6 @@ categories = ["stone", "enemy"]
         r.form = crate::rules::FormRules {
             max_loose_pieces: Some(1),
             max_razor_share: Some(0.5),
-            max_facet_deg: Some(15.0),
             max_seam_share: Some(0.1),
             max_smeared_share: Some(0.5),
             max_small_relief: Some(0.5),
@@ -489,8 +484,8 @@ categories = ["stone", "enemy"]
         };
         let found = of_form(&check(&f, &r, &palette(&r)));
         let by = |name: &str| found.iter().find(|x| x.check == name).unwrap_or_else(|| panic!("{name} was checked"));
-        assert_eq!(found.len(), 6);
-        assert!(by("loose_pieces").passed && by("faceting").passed && by("smeared_creases").passed);
+        assert_eq!(found.len(), 5);
+        assert!(by("loose_pieces").passed && by("smeared_creases").passed);
         // 3 of 4 m of creases are razors; 0.6 m of seams on a shape 2.4 m tall is a quarter of its size.
         assert!(by("razor_edges").is_error() && (by("razor_edges").value - 0.75).abs() < 1e-6);
         assert!(by("shading_seams").is_error() && (by("shading_seams").value - 0.25).abs() < 1e-6);

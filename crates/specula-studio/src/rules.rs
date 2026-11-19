@@ -225,8 +225,6 @@ pub struct FormRules {
     pub max_loose_pieces: Option<u32>,
     /// The share of the creases' length that is razor-sharp (unbevelled).
     pub max_razor_share: Option<f32>,
-    /// The turn between neighbouring faces of a round surface, degrees.
-    pub max_facet_deg: Option<f32>,
     /// Length of the shading seams, as a share of the shape's size.
     pub max_seam_share: Option<f32>,
     /// Length of the creases shaded as round, as a share of the creases' length.
@@ -239,7 +237,7 @@ pub struct FormRules {
 
 impl Default for FormRules {
     fn default() -> Self {
-        FormRules { max_loose_pieces: Some(0), max_razor_share: None, max_facet_deg: None, max_seam_share: None, max_smeared_share: None, max_small_relief: None, allow: Vec::new() }
+        FormRules { max_loose_pieces: Some(0), max_razor_share: None, max_seam_share: None, max_smeared_share: None, max_small_relief: None, allow: Vec::new() }
     }
 }
 
@@ -619,14 +617,13 @@ impl StyleRules {
                     }
                 }
                 "form" => {
-                    keys(v, "form", &["max_loose_pieces", "max_razor_share", "max_facet_deg", "max_seam_share", "max_smeared_share", "max_small_relief", "allow"])?;
+                    keys(v, "form", &["max_loose_pieces", "max_razor_share", "max_seam_share", "max_smeared_share", "max_small_relief", "allow"])?;
                     let f = &mut r.form;
                     if let Some(x) = v.get("max_loose_pieces") {
                         f.max_loose_pieces = Some(int(x, "form.max_loose_pieces", 0, 100_000)?);
                     }
                     for (key, slot, hi) in [
                         ("max_razor_share", &mut f.max_razor_share, 1.0),
-                        ("max_facet_deg", &mut f.max_facet_deg, 180.0),
                         ("max_seam_share", &mut f.max_seam_share, 1000.0),
                         ("max_smeared_share", &mut f.max_smeared_share, 1.0),
                         ("max_small_relief", &mut f.max_small_relief, 1.0),
@@ -820,7 +817,6 @@ impl StyleRules {
                     [
                         ("max_loose_pieces", self.form.max_loose_pieces.map(Json::from)),
                         ("max_razor_share", self.form.max_razor_share.map(Json::from)),
-                        ("max_facet_deg", self.form.max_facet_deg.map(Json::from)),
                         ("max_seam_share", self.form.max_seam_share.map(Json::from)),
                         ("max_smeared_share", self.form.max_smeared_share.map(Json::from)),
                         ("max_small_relief", self.form.max_small_relief.map(Json::from)),
@@ -916,24 +912,31 @@ max_triangles = 3000
         let r = StyleRules::parse("[form]
 max_loose_pieces = 2
 max_razor_share = 0.25
-max_facet_deg = 12
 max_seam_share = 0.5
 max_smeared_share = 0.1
 max_small_relief = 0.4
 allow = { \"wraith*\" = [\"loose_pieces\"] }
 ", "s", &pal).unwrap();
-        assert_eq!((r.form.max_loose_pieces, r.form.max_razor_share, r.form.max_facet_deg), (Some(2), Some(0.25), Some(12.0)));
+        assert_eq!((r.form.max_loose_pieces, r.form.max_razor_share), (Some(2), Some(0.25)));
         assert_eq!((r.form.max_seam_share, r.form.max_smeared_share, r.form.max_small_relief), (Some(0.5), Some(0.1), Some(0.4)));
-        assert!(r.form.allows("wraith tier=2", "loose_pieces") && !r.form.allows("wraith", "faceting") && !r.form.allows("stone", "loose_pieces"));
+        assert!(r.form.allows("wraith tier=2", "loose_pieces") && !r.form.allows("wraith", "razor_edges") && !r.form.allows("stone", "loose_pieces"));
         let j = r.to_json();
-        assert_eq!(j.get("form").and_then(|f| f.get("max_facet_deg")).and_then(Json::as_f64), Some(12.0));
-        assert!(d.to_json().get("form").is_some_and(|f| f.get("max_facet_deg").is_none() && f.get("max_loose_pieces").is_some()));
+        assert_eq!(j.get("form").and_then(|f| f.get("max_razor_share")).and_then(Json::as_f64), Some(0.25));
+        assert!(d.to_json().get("form").is_some_and(|f| f.get("max_razor_share").is_none() && f.get("max_loose_pieces").is_some()));
         for (bad, code) in [
             ("[form]
 max_razor_share = 1.5
 ", "out_of_range"),
+            // (Faceting is not a form check: a mesh alone cannot say what was meant to be
+            // round. Its limit is an unknown key, and its name an unknown check.)
             ("[form]
-max_facet_deg = -1
+max_facet_deg = 12
+", "unknown_key"),
+            ("[form]
+allow = { \"x\" = [\"faceting\"] }
+", "unknown_check"),
+            ("[form]
+max_seam_share = -1
 ", "out_of_range"),
             ("[form]
 max_loose_pieces = 0.5

@@ -453,8 +453,13 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       weight (a box with a rounded plate cut out of it ran 3.8 s inside the 1.5 s budget),
       and at roundness 0.05 the solve could stop early with a step in the field. The solve
       now goes by Newton's steps on everything at once, in double precision, with the sure
-      way as its fallback: that cut runs at a seventh of the time, a test holds a far sample
-      to under twenty steps, and scans to 100 m find no step. **This is not reviewed yet.** Two
+      way as its fallback. **A fifth reviewer said not to merge that**: the accuracy and the
+      continuity held everywhere it looked, and far from a rounded needle the first steps
+      gave up (71 steps a sample; a cut that ran 3.6 s). They are now taken on each share to
+      the power less one, where every equation is nearly a straight line: 13 to 18 steps a
+      sample for a plate, a needle, a cube and a board at six roundnesses (a test), and the
+      cuts the reviews found run inside the budget. A roundness of 0.5 is no longer a cheap
+      one. **This is not reviewed yet.** Two
       limits of the same kind are written down and not mended: inside a rounded shape the
       field is a bound, so a `shell` or a shrinking of one is thinner than asked beside its
       corners; and a column's field is in units of its narrower half size, so `round` and a
@@ -501,9 +506,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       nothing lost (the next form frame compiled it), a sheet's form tile was framed without
       the reference figure's room, and a waiting form capture held the others. Mended, each a
       test shown to fail on its fault; a frame now only looks a form pipeline up; the sheets
-      have a live check in Rust (`form_sheet_check`). **These mends are not reviewed yet.**
-    - **The form checks: built** (2026-11-18; FORM.md): loose pieces, razor edges, faceting,
-      shading seams, smeared creases and relief by size, measured from the mesh alone and in
+      have a live check in Rust (`form_sheet_check`). **A fourth reviewer said merge**, with
+      four small findings, mended (a sheet's silhouette tile framed as its colour tile; the
+      live check says what it holds; a failed form set is asked for again).
+    - **The form checks: built, but for faceting** (2026-11-18; FORM.md): loose pieces, razor
+      edges, shading seams, smeared creases and relief by size, measured from the mesh alone and in
       every asset's facts; `style.toml`'s `[form]` gives limits (only loose pieces are checked
       unless it does). **The first run found a fault in an approved prop**: one of
       `pediment_fallen`'s rubble blocks hangs about 5 cm over the ground. It is one of the 33
@@ -515,15 +522,27 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       minor findings beside. All mended, each case a test. **A second reviewer said not to
       merge the mends**: faceting left out every edge that turns more than 30 degrees (a
       ten-sided smooth cylinder read 0), a far triangle still voided the loose check, one
-      floating piece was never loose, a mesh too large to measure passed. Mended: faceting is
-      measured over edges shaded as one surface, however far they turn; relief is said plainly
-      to be a coarse measure (a turned shape moves a share by up to a quarter). **These mends
-      are not reviewed yet.**
+      floating piece was never loose, a mesh too large to measure passed. Mended; relief is
+      said plainly to be a coarse measure (a turned shape moves a share by up to a quarter).
+      **A third reviewer said not to merge those**: faceting, measured over edges shaded as
+      one surface, still read 0 on the engine's own coarse cylinders (the modeller hard-shades
+      them) and 90 degrees on a smooth-shaded box. **Faceting is taken out** after three
+      tries: a mesh alone cannot say what was meant to be round (a box and a four-sided
+      cylinder are one mesh). It belongs at build time, from what a recipe says is round
+      (segments, subdivisions, a field's resolution against its radii): **not built, and owed**
+      (the owner asked for every form check). **These mends are not reviewed yet.**
     - **Shape language: built** (2026-11-19; FORM.md, "Shape language"): how round, square
       or pointed an asset's outline is, in every asset's taste measures; a style may ask for
       one (`[taste] shape_language`), and the `storybook` preset asks for round. With it the
-      five items of "form within an agent's reach" are all built. Sepulcra's recipes lead
-      square (41 of 56), pointed (13) and round (2): no check is asked of it. Not reviewed.
+      five items of "form within an agent's reach" are all built. **Its first reviewer said
+      not to merge it**: counting the corners of a polygon, with hard lines between the
+      classes, it flipped under small turns, called a capsule pointed, and a failed check
+      never reached the critique. **Written again** as the net turn of a smoothed outline
+      within a window, with classes that fade into each other, on silhouettes of 256 pixels:
+      steady to a tenth over a quarter turn for fourteen known shapes (a test). Sepulcra's
+      recipes lead square (31 of 56), pointed (18) and round (7): no check is asked of it.
+      The form checks and it now have their place in the critique. **The rewrite is not
+      reviewed yet.**
     - **Where its verification stands** (2026-11-20): the full gate passed on `1a19d379`,
       and seven live checks on it (window, sight, terrain, GI, studio, procgen, and the new
       `form_sheet_check`), the window's pictures looked at on both adapters. The gate before
@@ -531,6 +550,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       state a GPU worker brings about (the cause was found by reproducing it: one run in
       eight); the test now waits on the state. Three reviewers are on the last mends and on
       shape language. Nothing of part 4 is pushed.
+    - **Owed from the form checks:** faceting, from what a recipe says is round (above).
     - **Then:** the light report; the same in 2D; `form`
       on `sight_compare` and the line-up. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
