@@ -152,16 +152,22 @@ impl Engine {
         if self.steps.last_session_check.is_none_or(|t| now - t >= SESSION_CHECK) {
             self.steps.last_session_check = Some(now);
             let alive = self.open_session_ids(server.all_sessions());
-            for e in std::mem::take(&mut self.steps.queue) {
-                if e.cancel_on_close && !alive.contains(&e.session) {
-                    let _ = e.reply.send(stopped("session_closed", &format!("the session closed; its {} was dropped", e.job.kind())));
-                } else {
-                    self.steps.queue.push_back(e);
-                }
-            }
+            self.drop_closed_steps(&alive);
         }
         self.steps.credit_ms = (self.steps.credit_ms + earned).min(MAX_CREDIT_MS);
         self.run_steps();
+    }
+
+    /// Drops the queued jobs of sessions not in `alive` (`session_closed`), whatever they were
+    /// doing: one that waits ([`Step::Wait`]) is dropped as one with more to do is.
+    pub(crate) fn drop_closed_steps(&mut self, alive: &BTreeSet<String>) {
+        for e in std::mem::take(&mut self.steps.queue) {
+            if e.cancel_on_close && !alive.contains(&e.session) {
+                let _ = e.reply.send(stopped("session_closed", &format!("the session closed; its {} was dropped", e.job.kind())));
+            } else {
+                self.steps.queue.push_back(e);
+            }
+        }
     }
 
     /// The queued jobs' slices for this pass, within the credit earned.

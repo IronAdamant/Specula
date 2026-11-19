@@ -23,9 +23,14 @@ argument optional; the view is `sight_frame`'s, by the same parser, `include_ui`
 2. For each feature that is on, draws the view **with that one feature left out**, and once
    more with all of them out (when more than one is on).
 3. Does that in **alternating rounds**, `frames` of them (5 to 16, 9 unless given), after one
-   round that is drawn and not counted. Every round draws each variant once, the view as it is
-   first, and **every second round is drawn backwards**, so that the frames of one round are
-   near each other in time and a machine whose times drift moves both orders alike.
+   round that is drawn and not counted. Every round draws each variant once. Rounds go in
+   pairs, and **the second of a pair draws the first's order backwards**, so that the frames
+   of one round are near each other in time and a machine whose times drift moves both
+   orders alike. **The order changes from pair to pair**, the view as it is with it, by a
+   fixed sequence (`light_noise::variant_at`: the same report draws in the same order every
+   time, on every machine), so that a load that keeps step with the rounds does not fall on
+   the same variants every round. (The first round draws the view as it is first: its first
+   render says which variants there are.)
 4. Takes each render's GPU time from **the adapter's own timestamps** (first pass start to last
    pass end; the ID buffer is not drawn), and answers the median of each variant. **A feature's
    cost is read from pairs**: the view as it is less the view without it, frame by frame of the
@@ -69,7 +74,7 @@ is the answer.)
 | `without_all` | every feature that is on left out: what is left is the scene's own drawing |
 | `features` | one row for each of `shadows`, `ssao`, `bloom`, `fxaa`, `fog`, `sky`, `grading`, `gi`, `point_lights`, the costliest first: `on`; and when it is on, `cost_ms` (the middle of the differences between the view as it is and the view without it, frame by frame of the same round), `share` of the frame, `without_ms` (that variant's median), `noise_ms`, `told_from_noise`, and `to_change` (the call that switches it off or turns it down) |
 | `passes` | the view's dearest passes as it is, by name (`shadow`, `scene`, `ssao`, `post_bloom`, ...) |
-| `to_hold_budget` | only when the budget is not held. `advised: true`: which features to `give_up`, costliest first, the `estimate_ms` that leaves, whether that is `enough`, and a `note`. `advised: false`: no advice, `why` (`too_few_frames`: fewer than five rounds counted; `busy`: the machine was busy by turns) and a `note` |
+| `to_hold_budget` | only when the budget is not held. `advised: true`: which features to `give_up`, costliest first, the `estimate_ms` that leaves, whether that is `enough`, and a `note`. `advised: false`: no advice, `why` (`too_few_frames`: fewer than five rounds counted; `busy`: the frames were too uneven to advise on) and a `note` |
 | `load` | whether the machine was `steady` while it was measured: how many of all the `frames` were `late_frames` (more than a twentieth over the mean of their own variant's quickest third), and `what` that means |
 | `waited` | why the wait for what the view was loading ended: `not_needed`, `ready`, `limit` (ten seconds) or `call_time` |
 | `partial` | only when the call's time ran short: `rounds_counted`, `rounds_asked`, `why` |
@@ -92,10 +97,15 @@ is the answer.)
   mended, second round". (The least frame to the most was tried first: one frame of nine
   0.3 ms late hid every cost under 0.3 ms. Then two separate medians, each with its own scatter:
   it called a costless feature a cost up to one time in ten on a machine busy by turns.)
-- **A busy machine is said, not advised on.** When a fifth or more of all the frames are late
-  (above), `load.steady` is false and `to_hold_budget` gives no advice: a feature that costs
-  nothing named as the one to give up is the worst thing this tool could say. The costs are
-  still answered, each with whether it is told.
+- **Frames too uneven are said, not advised on.** When a fifth or more of all the frames are
+  late (above), `load.steady` is false and `to_hold_budget` gives no advice: a feature that
+  costs nothing named as the one to give up is the worst thing this tool could say. The costs
+  are still answered, each with whether it is told. `load.what` says what that may be (another
+  program on the GPU, a clock that moved, or the machine's own unevenness from frame to frame)
+  and that the frames alone do not say which: a machine whose frames scatter by 3% of the frame
+  with no load at all is called not steady in most reports, though the rule is sound there
+  (the orders' table below). More frames do not change that (the share of late frames is the
+  machine's, not the run's).
 - **A feature that is off has no cost made up for it.** It is listed as off. To know what
   turning it on would cost, turn it on and ask again.
 - **`to_hold_budget` is an estimate**: costs measured apart do not add up exactly (shadows cost
@@ -181,8 +191,14 @@ step, and by the call's own time (above). The answer is a few kilobytes whatever
   machine give no advice and say why); the noise rule on pairs by hand
   (`light_noise::a_cost_is_read_from_pairs_of_the_same_round`) and on fixed simulated sequences,
   where it holds and the rule before it did not
-  (`the_noise_rule_holds_when_the_machine_is_busy_by_turns`); and the table below, recomputed by
-  an ignored test (`the_noise_table_in_light_md`, run with `--ignored`).
+  (`the_noise_rule_holds_when_the_machine_is_busy_by_turns`, which also holds a load in step
+  with the rounds: a third of costless features told in one order every pair, under 8% in the
+  order now); the line for a late frame by hand (6% over is late, 4% is not); the rounds' order
+  (`the_rounds_order_changes_from_pair_to_pair_and_mirrors_within_one`: each round draws every
+  variant once, a pair's second round is its first backwards, the order and the view as it is
+  move from pair to pair, two pairs' orders pinned); and the tables under "What was mended",
+  recomputed by ignored tests (`the_noise_table_in_light_md`, `the_orders_table_in_light_md`,
+  run with `--ignored`).
 - With one (skips cleanly without): a small world with shadows, ambient occlusion, bloom and
   FXAA on is measured; the report has those four on and the other five off, each measured alone
   and all together, in the rounds asked for and one more; and **the world is as it was** (the
@@ -192,10 +208,16 @@ step, and by the call's own time (above). The answer is a few kilobytes whatever
   and counted, never a time. Two jobs of two views stepped in turn both finish with their own
   timings; a job whose time runs out part-way through its fourth round answers with three whole
   rounds and `partial`; one whose time is out at its first step answers `measured_nothing`.
+  Every job in these tests is stepped by `step_once`, which steps again at once after a render
+  is submitted, as a pass of the engine would, and fails when a step finds its render still on
+  the GPU and answers anything but `Step::Wait`.
 - With one, the wait (`a_view_whose_sprite_is_loading_waits_for_it_and_no_longer`): a 2D view
   with a sprite nobody has loaded waits until the picture is in (`waited: ready`, no warning),
   asking freshly once (`TwoDGpu::fresh_checks`); a view that is ready does not wait; a view still
-  loading when its wait runs out is measured and says so (`waited: limit`).
+  loading when its wait runs out is measured and says so (`waited: limit`); a call whose time
+  would not hold a whole wait measures at once and says `call_time` (by the job's state: its
+  deadline is under a whole wait at its first step); and a picture that failed to load is in
+  `warnings` as `sight_frame` says it.
 
 ## Its first review
 
@@ -271,9 +293,10 @@ where it could, found its cause, and mended it there. On a busy machine (other a
    step and left out its first step (built models uploaded, readiness refreshed). *Mend*:
    **one way to wait, shared**: `Engine::capture_sync` and `Engine::views_waiting`, which
    `sight_frame`, its parked captures and `perf_light` all call; the job asks freshly once, at
-   its first look, then only looks. (`sight_frame` itself changed in one way: it used to stop
-   asking at the first thing not ready, so with a model building its texture files were never
-   checked freshly; every part is asked now.) `waited` says why the wait ended. *Tests*: a
+   its first look, then only looks. (`sight_frame` itself changed in one way: at the request it
+   asked streaming, then the models, and asked nothing more while a model was building, so
+   with a model building its texture files were not checked freshly; every part is asked
+   now.) `waited` says why the wait ended. *Tests*: a
    sprite view waits until the picture is in and its wait ends `ready`, with one fresh check
    (the count, `TwoDGpu::fresh_checks`, not a time); a ready view does not wait; a view still
    loading when the wait runs out ends `limit`, with the warning. *What remains*: the one fresh
@@ -327,7 +350,9 @@ where it could, found its cause, and mended it there. On a busy machine (other a
    | bursts, half the time, ~40 renders | 6.7 (56.7) 42.0/72.8/89.3/89.9 | 6.9 (68.8) 53.1/80.5/89.5/89.7 | 5.9 (75.1) 56.4/78.7/83.3/83.4 | 0.8 (87.9) 35.4/52.1/57.8/60.2 |
    | a slow drift of a tenth | 0.0 (70.3) 0.0/0.0/0.0/0.0 | 0.0 (100.0) 0.0/0.0/0.0/55.4 | 0.0 (100.0) 0.0/0.0/1.8/100.0 | 0.0 (100.0) 0.0/0.0/0.0/100.0 |
 
-   The rule now (pairs, rounds turning back, busy said):
+   The rule chosen (pairs, rounds turning back, busy said), in this round's order (every pair
+   of rounds in one order; the third round changed the order, and its table is under "What was
+   mended, third round"):
 
    | Noise | 5 frames | 7 frames | 9 frames | 16 frames |
    |---|---|---|---|---|
@@ -418,4 +443,5 @@ Not settled: whether any real load keeps step with the rounds; a release build (
 was a debug build). Not checked: an engine with a window; a session closing while the job
 waits; models still building during a report. Seen and older than this round: while a
 render is still on the graphics card the job asks to be stepped again within its step's
-credit, up to 12 ms a pump, where it could wait. **None of this is mended yet.**
+credit, up to 12 ms a pump, where it could wait. **None of this is mended yet.** (As found;
+mended since: the next section.)
