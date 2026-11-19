@@ -487,3 +487,213 @@ fn a_short_stalk_is_not_its_rims_corner_at_any_degree() {
         assert!(s.leads(R) && s.lo[R] >= 0.95 && s.hi[P] < 0.05, "{name}: {s:?}");
     }
 }
+
+fn cone(x: f32, y: f32, a: [f32; 2], b: [f32; 2], ra: f32, rb: f32) -> bool {
+    let (abx, aby) = (b[0] - a[0], b[1] - a[1]);
+    let t = (((x - a[0]) * abx + (y - a[1]) * aby) / (abx * abx + aby * aby)).clamp(0.0, 1.0);
+    (x - a[0] - t * abx).hypot(y - a[1] - t * aby) < ra + (rb - ra) * t
+}
+fn ell(x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32) -> bool {
+    ((x - cx) / rx).hypot((y - cy) / ry) < 1.0
+}
+
+/// **The held-out corpus**: common game assets as silhouettes, each with the lead a person
+/// would give it, written down before the measure was run on them (the commit that added
+/// them came before any reading of them). `R`, `S`, `P`: round, square, pointed; two letters
+/// where a person could say either (a chest, a barrel, a kite shield). From the fifth
+/// review's probe (39), the fourth review's (24 not among the families) and the sixth
+/// version's own (40), across weapons, tools, containers, plants, animals, characters,
+/// vehicles, buildings, pickups and effects. It is not tuned against: what it reads is a
+/// rate (`the_corpus_reads_as_a_person_would`).
+fn corpus() -> Vec<(&'static str, &'static str, F)> {
+    let mut v: Vec<(&'static str, &'static str, F)> = Vec::new();
+    let mut p = |n: &'static str, lead: &'static str, f: F| v.push((n, lead, f));
+    // The fifth review's assets.
+    p("sword (round guard, pommel)", "P", Box::new(|x, y| within(&[[-0.035, -0.10], [0.035, -0.10], [0.035, 0.34], [0.0, 0.44], [-0.035, 0.34]], x, y) || rounded(x, y + 0.12, 0.15, 0.02, 0.01) || (x.abs() < 0.02 && (-0.36..-0.10).contains(&y)) || x.hypot(y + 0.39) < 0.04));
+    p("round shield", "R", Box::new(|x, y| x.hypot(y) < 0.43));
+    p("kite shield", "SP", Box::new(|x, y| within(&[[-0.3, -0.38], [0.3, -0.38], [0.3, 0.0], [0.0, 0.44], [-0.3, 0.0]], x, y)));
+    p("potion", "R", Box::new(|x, y| x.hypot(y - 0.12) < 0.3 || (x.abs() < 0.07 && (-0.36..-0.1).contains(&y)) || rounded(x, y + 0.38, 0.09, 0.04, 0.02)));
+    p("tree of three balls", "R", Box::new(|x, y| x.hypot(y + 0.14) < 0.22 || (x - 0.17).hypot(y + 0.02) < 0.16 || (x + 0.17).hypot(y + 0.02) < 0.16 || (x.abs() < 0.05 && (0.0..0.44).contains(&y))));
+    p("rock (low polygon)", "RS", Box::new(|x, y| within(&[[-0.40, 0.2], [-0.33, -0.12], [-0.12, -0.30], [0.15, -0.27], [0.38, -0.08], [0.42, 0.2], [0.0, 0.28]], x, y)));
+    p("house, 45 degree roof", "S", Box::new(|x, y| within(&[[-0.3, 0.4], [-0.3, 0.0], [-0.36, 0.0], [0.0, -0.42], [0.36, 0.0], [0.3, 0.0], [0.3, 0.4]], x, y)));
+    p("chest, round lid", "SR", Box::new(|x, y| (x.abs() < 0.36 && (-0.05..0.28).contains(&y)) || (x.abs() < 0.36 && (y > -0.26 && y < -0.05) && ((x / 0.36).hypot((y + 0.05) / 0.21) < 1.0))));
+    p("barrel", "RS", Box::new(|x, y| y.abs() < 0.4 && x.abs() < 0.25 + 0.06 * (1.0 - (y / 0.4).powi(2))));
+    p("key", "RS", Box::new(|x, y| (0.05..0.13).contains(&(x + 0.3).hypot(y)) || (x > -0.18 && x < 0.42 && y.abs() < 0.03) || (x > 0.33 && x < 0.39 && y > 0.0 && y < 0.12) || (x > 0.22 && x < 0.28 && y > 0.0 && y < 0.09)));
+    p("skull", "R", Box::new(|x, y| x.hypot(y + 0.08) < 0.3 || rounded(x, y - 0.24, 0.17, 0.12, 0.05)));
+    p("heart", "R", Box::new(|x, y| (x - 0.15).hypot(y + 0.14) < 0.2 || (x + 0.15).hypot(y + 0.14) < 0.2 || within(&[[-0.33, -0.06], [0.33, -0.06], [0.0, 0.40]], x, y)));
+    p("star", "P", Box::new(|x, y| within(&star(5, 0.45, 0.19), x, y)));
+    p("gem", "PS", Box::new(|x, y| within(&[[-0.2, -0.3], [0.2, -0.3], [0.38, -0.12], [0.0, 0.40], [-0.38, -0.12]], x, y)));
+    p("mushroom, oval cap", "R", Box::new(|x, y| ((x / 0.42).hypot((y + 0.02) / 0.32) < 1.0 && y < -0.02) || rounded(x, y - 0.18, 0.1, 0.2, 0.05)));
+    p("cumulus cloud", "R", Box::new(|x, y| (x / 0.4).hypot((y - 0.08) / 0.12) < 1.0 || (x + 0.12).hypot(y + 0.02) < 0.16 || (x - 0.12).hypot(y + 0.06) < 0.19));
+    p("fish", "R", Box::new(|x, y| ell(x, y, -0.06, 0.0, 0.3, 0.16) || within(&[[0.18, 0.0], [0.44, -0.18], [0.44, 0.18]], x, y)));
+    p("bird", "PR", Box::new(|x, y| ell(x, y, 0.0, 0.05, 0.25, 0.13) || (x + 0.24).hypot(y + 0.06) < 0.09 || within(&[[-0.40, -0.06], [-0.30, -0.08], [-0.30, -0.03]], x, y) || within(&[[-0.05, 0.0], [0.15, 0.0], [0.25, -0.38]], x, y) || within(&[[0.2, 0.05], [0.44, -0.04], [0.44, 0.12]], x, y)));
+    p("cat sitting", "R", Box::new(|x, y| ell(x, y, 0.0, 0.14, 0.2, 0.26) || x.hypot(y + 0.22) < 0.14 || within(&[[-0.13, -0.28], [-0.04, -0.34], [-0.12, -0.42]], x, y) || within(&[[0.13, -0.28], [0.04, -0.34], [0.12, -0.42]], x, y) || capsule(x, y, [0.15, 0.36], [0.38, 0.1], 0.03)));
+    p("robot", "S", Box::new(|x, y| (x.abs() < 0.1 && (-0.42..-0.24).contains(&y)) || (x.abs() < 0.18 && (-0.22..0.1).contains(&y)) || (((x.abs() - 0.24).abs() < 0.04) && (-0.2..0.08).contains(&y)) || (((x.abs() - 0.09).abs() < 0.05) && (0.1..0.42).contains(&y))));
+    p("car", "SR", Box::new(|x, y| rounded(x, y - 0.04, 0.44, 0.09, 0.04) || within(&[[-0.24, -0.05], [-0.14, -0.2], [0.14, -0.2], [0.26, -0.05]], x, y) || (x + 0.26).hypot(y - 0.14) < 0.08 || (x - 0.26).hypot(y - 0.14) < 0.08));
+    p("rocket", "P", Box::new(|x, y| rounded(x, y - 0.06, 0.1, 0.26, 0.03) || within(&[[-0.1, -0.2], [0.1, -0.2], [0.0, -0.44]], x, y) || within(&[[-0.1, 0.12], [-0.22, 0.38], [-0.1, 0.30]], x, y) || within(&[[0.1, 0.12], [0.22, 0.38], [0.1, 0.30]], x, y)));
+    p("hammer", "S", Box::new(|x, y| (x.abs() < 0.035 && (-0.2..0.44).contains(&y)) || rounded(x, y + 0.29, 0.22, 0.09, 0.01)));
+    p("crown", "P", Box::new(|x, y| (x.abs() < 0.36 && (0.05..0.25).contains(&y)) || (0..5).any(|k| { let cx = -0.30 + 0.15 * k as f32; within(&[[cx - 0.07, 0.06], [cx + 0.07, 0.06], [cx, -0.28]], x, y) })));
+    p("bone", "R", Box::new(|x, y| capsule(x, y, [-0.3, 0.0], [0.3, 0.0], 0.05) || (x + 0.33).hypot(y + 0.06) < 0.08 || (x + 0.33).hypot(y - 0.06) < 0.08 || (x - 0.33).hypot(y + 0.06) < 0.08 || (x - 0.33).hypot(y - 0.06) < 0.08));
+    p("leaf with a stem", "PR", Box::new(|x, y| ((x - 0.3).hypot(y) < 0.48 && (x + 0.3).hypot(y) < 0.48 && y.abs() < 0.40) || (x.abs() < 0.008 && (0.30..0.44).contains(&y))));
+    p("flame", "P", Box::new(|x, y| (x.hypot(y - 0.16) < 0.22) || within(&[[-0.21, 0.10], [-0.08, -0.15], [-0.12, -0.32], [0.02, -0.16], [0.06, -0.44], [0.16, -0.12], [0.21, 0.10]], x, y)));
+    p("drop", "RP", Box::new(|x, y| x.hypot(y - 0.15) < 0.25 || within(&[[0.0, -0.44], [0.212, 0.018], [-0.212, 0.018]], x, y)));
+    p("bomb", "R", Box::new(|x, y| x.hypot(y - 0.08) < 0.33 || capsule(x, y, [0.05, -0.24], [0.14, -0.40], 0.015)));
+    p("coin", "R", Box::new(|x, y| x.hypot(y) < 0.4));
+    p("ghost, scalloped hem", "R", Box::new(|x, y| (x.hypot(y + 0.1) < 0.3 && y < -0.1) || (x.abs() < 0.3 && y >= -0.1 && y < 0.25 + 0.08 * ((x + 0.3) / 0.6 * 4.0 * PI).cos().abs())));
+    p("double axe", "PS", Box::new(|x, y| (x.abs() < 0.025 && y.abs() < 0.44) || (x.abs() < 0.32 && { let t = ((x.abs() - 0.02) / 0.30).clamp(0.0, 1.0); (y + 0.18).abs() < 0.04 + 0.14 * t * t })));
+    p("arrow", "P", Box::new(|x, y| (x.abs() < 0.012 && (-0.30..0.36).contains(&y)) || within(&[[0.0, -0.44], [0.06, -0.28], [-0.06, -0.28]], x, y) || within(&[[-0.012, 0.26], [-0.06, 0.40], [-0.012, 0.36]], x, y) || within(&[[0.012, 0.26], [0.06, 0.40], [0.012, 0.36]], x, y)));
+    p("lightning bolt", "P", Box::new(|x, y| within(&[[0.10, -0.44], [-0.18, 0.04], [0.0, 0.04], [-0.10, 0.44], [0.20, -0.06], [0.02, -0.06], [0.16, -0.44]], x, y)));
+    p("bell", "R", Box::new(|x, y| (y > -0.3 && y < 0.3 && x.abs() < 0.12 + 0.24 * ((y + 0.3) / 0.6).powi(2)) || x.hypot(y + 0.3) < 0.12 || x.hypot(y - 0.34) < 0.06));
+    p("carrot", "P", Box::new(|x, y| within(&[[-0.1, -0.2], [0.1, -0.2], [0.0, 0.44]], x, y) || x.hypot(y + 0.2) < 0.1 || within(&[[-0.02, -0.25], [-0.12, -0.44], [0.0, -0.3], [0.12, -0.44], [0.02, -0.25]], x, y)));
+    p("crate", "S", Box::new(|x, y| x.abs() < 0.34 && y.abs() < 0.34));
+    p("tombstone, round top", "RS", Box::new(|x, y| (x.abs() < 0.22 && (-0.18..0.40).contains(&y)) || x.hypot(y + 0.18) < 0.22));
+    p("pine tree", "P", Box::new(|x, y| within(&[[0.0, -0.44], [0.3, 0.26], [-0.3, 0.26]], x, y) || (x.abs() < 0.05 && (0.2..0.42).contains(&y))));
+    // The fourth review's game shapes that are not among the families.
+    p("crate, bevelled", "S", Box::new(|x, y| x.abs() < 0.3 && y.abs() < 0.3 && x.abs() + y.abs() < 0.6 - 0.03));
+    p("crate, rounded a twentieth", "S", Box::new(|x, y| rounded(x, y, 0.3, 0.3, 0.03)));
+    p("crate, rounded a twelfth", "S", Box::new(|x, y| rounded(x, y, 0.3, 0.3, 0.05)));
+    p("tree, cone on a trunk", "P", Box::new(|x, y| within(&[[0.0, -0.44], [0.24, 0.28], [-0.24, 0.28]], x, y) || (x.abs() < 0.04 && (0.2..0.44).contains(&y))));
+    p("gear, wavy teeth", "R", Box::new(|x, y| { let r = x.hypot(y); let a = y.atan2(x); r < 0.32 + 0.10 * (0.5 + 0.5 * (a * 10.0).cos()) }));
+    p("leaf (lens)", "PR", Box::new(|x, y| (x - 0.25).hypot(y) < 0.40 && (x + 0.25).hypot(y) < 0.40));
+    p("leaf and stem", "PR", Box::new(|x, y| ((x - 0.2).hypot(y + 0.06) < 0.34 && (x + 0.2).hypot(y + 0.06) < 0.34) || (x.abs() < 0.012 && (0.2..0.44).contains(&y))));
+    p("crescent moon, thick", "P", Box::new(|x, y| x.hypot(y) < 0.42 && (x - 0.2).hypot(y) > 0.34));
+    p("cloud, flat base", "R", Box::new(|x, y| y < 0.12 && (x.hypot(y) < 0.22 || (x - 0.22).hypot(y - 0.03) < 0.15 || (x + 0.22).hypot(y - 0.03) < 0.15 || (x.abs() < 0.3 && y > -0.02))));
+    p("speech bubble, oval", "R", Box::new(|x, y| (x / 0.42).hypot(y / 0.28) < 1.0 || within(&[[-0.15, 0.20], [-0.02, 0.22], [-0.25, 0.42]], x, y)));
+    p("speech bubble, box", "RS", Box::new(|x, y| rounded(x, y + 0.05, 0.42, 0.25, 0.08) || within(&[[-0.15, 0.15], [-0.02, 0.15], [-0.25, 0.40]], x, y)));
+    p("block arrow", "P", Box::new(|x, y| within(&[[0.44, 0.0], [0.14, -0.2], [0.14, -0.06], [-0.42, -0.06], [-0.42, 0.06], [0.14, 0.06], [0.14, 0.2]], x, y)));
+    p("bone, flat shaft", "R", Box::new(|x, y| (x.abs() < 0.30 && y.abs() < 0.05) || (x.abs() - 0.32).hypot(y.abs() - 0.07) < 0.08));
+    p("arch gate", "RS", Box::new(|x, y| ((x.abs() < 0.36 && (-0.05..0.30).contains(&y)) || x.hypot(y + 0.05) < 0.36) && !((x.abs() < 0.22 && (-0.05..0.41).contains(&y)) || x.hypot(y + 0.05) < 0.22)));
+    p("cross pattee", "SP", Box::new(|x, y| { let (u, w) = (x.abs(), y.abs()); let (a, b) = if u > w { (u, w) } else { (w, u) }; a < 0.42 && b < 0.04 + 0.12 * (a / 0.42) }));
+    p("grave cross", "S", Box::new(|x, y| (x.abs() < 0.05 && (-0.42..0.44).contains(&y)) || (y > -0.26 && y < -0.16 && x.abs() < 0.24)));
+    p("ring", "R", Box::new(|x, y| (0.25..0.42).contains(&x.hypot(y))));
+    p("horseshoe", "RS", Box::new(|x, y| ((0.22..0.40).contains(&x.hypot(y + 0.04)) && y < 0.0) || (x.abs() > 0.22 && x.abs() < 0.40 && (-0.04..0.26).contains(&y))));
+    p("mushroom, rounded stem", "R", Box::new(|x, y| (x.hypot(y) < 0.40 && y < 0.0) || rounded(x, y - 0.18, 0.09, 0.2, 0.06)));
+    p("candle and flame", "S", Box::new(|x, y| (x.abs() < 0.08 && (-0.1..0.42).contains(&y)) || x.hypot(y + 0.2) < 0.06 || within(&[[0.0, -0.40], [0.058, -0.21], [-0.058, -0.21]], x, y)));
+    p("disc, sixteen hairs", "R", Box::new(|x, y| x.hypot(y) < 0.3 || ((0..8).any(|k| { let a = PI * k as f32 / 8.0; (x * a.sin() - y * a.cos()).abs() < 0.001 }) && x.hypot(y) < 0.45)));
+    p("sun of twelve rays", "P", Box::new(|x, y| x.hypot(y) < 0.22 || ((0..12).any(|k| { let a = TAU * k as f32 / 12.0; let (u, w) = (x * a.cos() + y * a.sin(), -x * a.sin() + y * a.cos()); u > 0.2 && u < 0.44 && w.abs() < 0.03 * (0.44 - u) / 0.24 }))));
+    p("hedgehog", "P", Box::new(|x, y| (y < 0.1 && (x / 0.36).hypot((y - 0.1) / 0.24) < 1.0) || (y < 0.1 && (0..20).any(|k| { let a = PI + PI * (k as f32 + 0.5) / 20.0; let (u, w) = (x * a.cos() + (y - 0.1) * a.sin(), -x * a.sin() + (y - 0.1) * a.cos()); u > 0.2 && u < 0.40 && w.abs() < 0.012 * (0.40 - u) / 0.2 }))));
+    p("grass tuft", "P", Box::new(|x, y| (y > 0.25 && y < 0.32 && x.abs() < 0.3) || (0..7).any(|k| { let bx = -0.27 + 0.09 * k as f32; let top = -0.40 + 0.05 * ((k as f32 - 3.0).abs()); within(&[[bx - 0.025, 0.30], [bx + 0.025, 0.30], [bx + 0.02 * (k as f32 - 3.0) / 3.0, top]], x, y) })));
+    // The sixth version's own. Weapons and tools.
+    p("spear", "P", Box::new(|x, y| (x.abs() < 0.012 && (-0.2..0.45).contains(&y)) || within(&[[0.0, -0.45], [0.05, -0.3], [0.03, -0.2], [-0.03, -0.2], [-0.05, -0.3]], x, y)));
+    p("shuriken", "P", Box::new(|x, y| within(&star(4, 0.44, 0.12), x, y)));
+    p("trident", "P", Box::new(|x, y| (x.abs() < 0.015 && (-0.18..0.45).contains(&y)) || (x.abs() < 0.155 && (-0.21..-0.16).contains(&y)) || [-0.13f32, 0.0, 0.13].iter().any(|cx| within(&[[cx - 0.025, -0.18], [cx + 0.025, -0.18], [*cx, -0.44]], x, y))));
+    p("club", "R", Box::new(|x, y| cone(x, y, [0.0, 0.4], [0.0, -0.25], 0.03, 0.1) || x.hypot(y + 0.25) < 0.1));
+    p("pickaxe", "P", Box::new(|x, y| (x.abs() < 0.02 && (-0.24..0.44).contains(&y)) || within(&[[-0.42, -0.1], [-0.2, -0.28], [0.0, -0.33], [0.2, -0.28], [0.42, -0.1], [0.18, -0.21], [0.0, -0.24], [-0.18, -0.21]], x, y)));
+    p("saw", "PS", Box::new(|x, y| (x > -0.4 && x < 0.3 && (-0.1..0.05).contains(&y)) || (y >= 0.05 && y < 0.1 && x > -0.4 && x < 0.3 && { let t = ((x + 0.4) / 0.06).fract(); y - 0.05 < 0.05 * (1.0 - (2.0 * t - 1.0).abs()) }) || rounded(x - 0.37, y + 0.02, 0.07, 0.1, 0.03)));
+    p("frying pan", "R", Box::new(|x, y| (x - 0.12).hypot(y) < 0.28 || capsule(x, y, [-0.44, 0.0], [-0.1, 0.0], 0.03)));
+    // Containers.
+    p("bucket", "S", Box::new(|x, y| within(&[[-0.3, -0.1], [0.3, -0.1], [0.22, 0.42], [-0.22, 0.42]], x, y) || ((0.27..0.31).contains(&x.hypot(y + 0.1)) && y < -0.1)));
+    p("jar", "R", Box::new(|x, y| rounded(x, y - 0.06, 0.25, 0.32, 0.15) || rounded(x, y + 0.31, 0.17, 0.06, 0.03)));
+    p("sack", "R", Box::new(|x, y| x.hypot(y - 0.12) < 0.3 || within(&[[-0.1, -0.12], [0.1, -0.12], [0.03, -0.27], [-0.03, -0.27]], x, y) || ell(x, y, 0.0, -0.31, 0.1, 0.06)));
+    p("cauldron", "R", Box::new(|x, y| (x.hypot(y + 0.02) < 0.34 && y > -0.2) || rounded(x, y + 0.22, 0.38, 0.04, 0.03) || capsule(x, y, [-0.2, 0.24], [-0.22, 0.36], 0.035) || capsule(x, y, [0.2, 0.24], [0.22, 0.36], 0.035)));
+    // Plants.
+    p("cactus", "R", Box::new(|x, y| capsule(x, y, [0.0, -0.34], [0.0, 0.36], 0.09) || capsule(x, y, [-0.26, -0.2], [-0.26, 0.04], 0.06) || capsule(x, y, [-0.26, 0.04], [0.0, 0.04], 0.06) || capsule(x, y, [0.26, -0.28], [0.26, -0.06], 0.06) || capsule(x, y, [0.26, -0.06], [0.0, -0.06], 0.06)));
+    p("flower of six petals", "R", Box::new(|x, y| x.hypot(y) < 0.12 || (0..6).any(|k| { let a = TAU * k as f32 / 6.0; (x - 0.25 * a.cos()).hypot(y - 0.25 * a.sin()) < 0.13 })));
+    p("bush", "R", Box::new(|x, y| y < 0.25 && (x.hypot(y + 0.08) < 0.24 || (x - 0.22).hypot(y - 0.06) < 0.19 || (x + 0.22).hypot(y - 0.06) < 0.19 || (x - 0.1).hypot(y + 0.2) < 0.15)));
+    // Animals.
+    p("turtle", "R", Box::new(|x, y| (ell(x, y, 0.0, 0.05, 0.32, 0.26) && y < 0.08) || (x.abs() < 0.34 && (0.04..0.11).contains(&y)) || (x - 0.38).hypot(y - 0.02) < 0.08 || [-0.2f32, 0.2].iter().any(|lx| capsule(x, y, [*lx, 0.1], [*lx, 0.2], 0.05))));
+    p("whale", "R", Box::new(|x, y| ell(x, y, -0.06, 0.04, 0.36, 0.18) || within(&[[0.26, 0.0], [0.44, -0.16], [0.40, 0.02], [0.44, 0.18]], x, y)));
+    p("snail", "R", Box::new(|x, y| (x - 0.05).hypot(y + 0.06) < 0.25 || capsule(x, y, [-0.32, 0.2], [0.32, 0.2], 0.07) || capsule(x, y, [-0.3, 0.18], [-0.36, 0.0], 0.02)));
+    p("shark", "P", Box::new(|x, y| ell(x, y, -0.04, 0.04, 0.36, 0.11) || within(&[[-0.1, -0.04], [0.06, -0.04], [-0.06, -0.3]], x, y) || within(&[[0.28, 0.04], [0.45, -0.18], [0.38, 0.05], [0.44, 0.2]], x, y)));
+    p("bat", "P", Box::new(|x, y| ell(x, y, 0.0, 0.0, 0.07, 0.12) || within(&[[0.0, -0.06], [0.44, -0.2], [0.36, 0.0], [0.27, -0.03], [0.2, 0.08], [0.12, 0.02], [0.0, 0.08], [-0.12, 0.02], [-0.2, 0.08], [-0.27, -0.03], [-0.36, 0.0], [-0.44, -0.2]], x, y)));
+    // Characters.
+    p("gingerbread man", "R", Box::new(|x, y| x.hypot(y + 0.28) < 0.12 || capsule(x, y, [0.0, -0.12], [0.0, 0.1], 0.13) || capsule(x, y, [-0.1, -0.08], [-0.34, -0.04], 0.06) || capsule(x, y, [0.1, -0.08], [0.34, -0.04], 0.06) || capsule(x, y, [-0.07, 0.1], [-0.16, 0.38], 0.065) || capsule(x, y, [0.07, 0.1], [0.16, 0.38], 0.065)));
+    p("knight, box helm", "S", Box::new(|x, y| rounded(x, y + 0.31, 0.09, 0.1, 0.01) || (x.abs() < 0.17 && (-0.21..0.1).contains(&y)) || ((x.abs() - 0.23).abs() < 0.05 && (-0.2..0.06).contains(&y)) || ((x.abs() - 0.08).abs() < 0.06 && (0.1..0.42).contains(&y))));
+    p("wizard", "P", Box::new(|x, y| within(&[[0.0, -0.45], [0.14, -0.2], [-0.14, -0.2]], x, y) || (x.abs() < 0.2 && (-0.22..-0.18).contains(&y)) || x.hypot(y + 0.12) < 0.08 || within(&[[0.0, -0.08], [0.26, 0.42], [-0.26, 0.42]], x, y)));
+    // Vehicles.
+    p("tank", "S", Box::new(|x, y| within(&[[-0.42, 0.04], [0.42, 0.04], [0.36, 0.22], [-0.36, 0.22]], x, y) || (x.abs() < 0.18 && (-0.1..0.05).contains(&y)) || (x > 0.1 && x < 0.45 && (-0.07..-0.03).contains(&y))));
+    p("truck", "S", Box::new(|x, y| (x > -0.4 && x < 0.16 && (-0.22..0.12).contains(&y)) || (x >= 0.16 && x < 0.42 && (-0.1..0.12).contains(&y)) || (x + 0.28).hypot(y - 0.14) < 0.08 || (x - 0.28).hypot(y - 0.14) < 0.08));
+    p("aeroplane from above", "P", Box::new(|x, y| capsule(x, y, [0.0, -0.4], [0.0, 0.38], 0.05) || within(&[[0.0, -0.1], [0.44, 0.1], [0.44, 0.15], [0.0, 0.06], [-0.44, 0.15], [-0.44, 0.1]], x, y) || within(&[[0.0, 0.26], [0.16, 0.38], [0.16, 0.42], [-0.16, 0.42], [-0.16, 0.38]], x, y)));
+    p("sailing boat", "PS", Box::new(|x, y| within(&[[-0.42, 0.18], [0.42, 0.18], [0.3, 0.36], [-0.3, 0.36]], x, y) || (x.abs() < 0.015 && (-0.42..0.18).contains(&y)) || within(&[[0.03, -0.4], [0.3, 0.12], [0.03, 0.12]], x, y)));
+    // Buildings.
+    p("castle tower", "S", Box::new(|x, y| (x.abs() < 0.22 && (-0.3..0.44).contains(&y)) || (y > -0.42 && y <= -0.3 && x.abs() < 0.26 && ((x + 0.26) / 0.104).fract() < 0.6)));
+    p("church with a spire", "SP", Box::new(|x, y| (x.abs() < 0.28 && (0.0..0.38).contains(&y)) || (x.abs() < 0.1 && (-0.2..0.0).contains(&y)) || within(&[[0.0, -0.45], [0.1, -0.2], [-0.1, -0.2]], x, y)));
+    p("igloo", "R", Box::new(|x, y| (ell(x, y, 0.0, 0.2, 0.42, 0.42) && y < 0.2) || rounded(x - 0.32, y - 0.14, 0.12, 0.06, 0.06)));
+    p("skyscraper", "S", Box::new(|x, y| (x.abs() < 0.12 && (-0.36..0.44).contains(&y)) || (x.abs() < 0.06 && (-0.44..-0.36).contains(&y))));
+    p("tent", "P", Box::new(|x, y| within(&[[0.0, -0.38], [0.38, 0.26], [-0.38, 0.26]], x, y)));
+    // Pickups and effects.
+    p("diamond", "P", Box::new(|x, y| x.abs() / 0.3 + y.abs() / 0.44 < 1.0));
+    p("battery", "S", Box::new(|x, y| rounded(x, y - 0.04, 0.16, 0.36, 0.03) || (x.abs() < 0.07 && (-0.38..-0.3).contains(&y))));
+    p("anvil", "SP", Box::new(|x, y| within(&[[-0.44, -0.2], [-0.2, -0.24], [0.32, -0.24], [0.32, -0.08], [0.12, -0.04], [0.12, 0.14], [0.26, 0.14], [0.26, 0.24], [-0.22, 0.24], [-0.22, 0.14], [-0.1, 0.14], [-0.1, -0.04], [-0.2, -0.1]], x, y)));
+    p("explosion", "P", Box::new(|x, y| { let a = y.atan2(x); let k = ((a / TAU + 0.5) * 10.0).floor() as i32; let t = ((a / TAU + 0.5) * 10.0).fract(); let r0 = 0.3 + 0.12 * (0.5 + hash(k)); x.hypot(y) < 0.18 + (r0 - 0.18) * (1.0 - (2.0 * t - 1.0).abs()) }));
+    p("sparkle", "P", Box::new(|x, y| { let (u, w) = (x.abs() / 0.44, y.abs() / 0.44); u.sqrt() + w.sqrt() < 1.0 }));
+    p("smoke puff", "R", Box::new(|x, y| x.hypot(y) < 0.2 || (x - 0.2).hypot(y - 0.08) < 0.16 || (x + 0.2).hypot(y - 0.1) < 0.15 || (x - 0.08).hypot(y + 0.2) < 0.15 || (x + 0.14).hypot(y + 0.14) < 0.13));
+    p("heart pickup, plump", "R", Box::new(|x, y| (x - 0.17).hypot(y + 0.1) < 0.22 || (x + 0.17).hypot(y + 0.1) < 0.22 || (y > -0.1 && y < 0.38 && x.abs() < 0.36 * (1.0 - ((y + 0.1) / 0.48).powf(1.6)).max(0.0))));
+    p("health cross", "S", Box::new(|x, y| (x.abs() < 0.4 && y.abs() < 0.13) || (x.abs() < 0.13 && y.abs() < 0.4)));
+    p("shield, round bottom", "RS", Box::new(|x, y| (x.abs() < 0.3 && (-0.36..0.04).contains(&y)) || (ell(x, y, 0.0, 0.04, 0.3, 0.38) && y >= 0.04)));
+    drop(p);
+    v
+}
+
+/// The corpus swept every `step` degrees: each shape's name, the leads a person would give,
+/// and its sweep.
+fn corpus_swept(step: u32) -> Vec<(&'static str, &'static str, Sweep)> {
+    let all = corpus();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let out = std::sync::Mutex::new(Vec::new());
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(12);
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Some((name, lead, f)) = all.get(i) else { break };
+                let r = sweep(&**f, step);
+                out.lock().unwrap().push((i, *name, *lead, r));
+            });
+        }
+    });
+    let mut out = out.into_inner().unwrap();
+    out.sort_by_key(|r| r.0);
+    out.into_iter().map(|(_, n, l, r)| (n, l, r)).collect()
+}
+
+/// Whether a sweep leads, in every mask, one of the kinds a person would give (`R`, `S`, `P`).
+fn reads_as(s: &Sweep, lead: &str) -> bool {
+    s.none == 0 && (0..3).all(|k| s.lead[k] == 0 || lead.contains(["R", "S", "P"][k]))
+}
+/// Whether a sweep leads one of those kinds in most masks.
+fn mostly_reads_as(s: &Sweep, lead: &str) -> bool {
+    let total: usize = s.lead.iter().sum();
+    let right: usize = (0..3).filter(|k| lead.contains(["R", "S", "P"][*k])).map(|k| s.lead[k]).sum();
+    2 * right > total
+}
+
+/// (For whoever tunes the measure: the corpus's readings written to `specula-shape-corpus.txt`
+/// in the temporary folder, or `OUT`, every `STEP` degrees, 3 unless given.)
+#[test]
+#[ignore = "writes the corpus's table"]
+fn corpus_table() {
+    let step: u32 = std::env::var("STEP").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+    let all = corpus_swept(step);
+    let mut out = String::new();
+    let (mut right, mut mostly) = (0, 0);
+    for (name, lead, s) in &all {
+        let (r, m) = (reads_as(s, lead), mostly_reads_as(s, lead));
+        right += usize::from(r);
+        mostly += usize::from(m);
+        out += &format!(
+            "{name:30} {lead:2} {} lead R/S/P {:3?} none {:3} mean r{:.2} s{:.2} p{:.2} | r {:.2}-{:.2} s {:.2}-{:.2} p {:.2}-{:.2}\n",
+            if r { "ok  " } else if m { "most" } else { "NO  " },
+            s.lead, s.none, s.mean[0], s.mean[1], s.mean[2], s.lo[0], s.hi[0], s.lo[1], s.hi[1], s.lo[2], s.hi[2]
+        );
+    }
+    out += &format!("{right} of {} lead as a person would in every mask; {mostly} in most\n", all.len());
+    let path = std::env::var("OUT").map_or_else(|_| std::env::temp_dir().join("specula-shape-corpus.txt"), std::path::PathBuf::from);
+    std::fs::write(&path, out).unwrap();
+}
+
+/// No corpus shape reaches the picture's edge at any angle (a shape that did would be cut).
+#[test]
+fn the_corpus_fits_its_pictures() {
+    let mut bad = Vec::new();
+    for (name, _, f) in corpus() {
+        for deg in [0.0f32, 30.0, 45.0, 60.0] {
+            let m = render(512, &*f, deg, false, (0.37, 0.71));
+            let edge = (0..512usize).any(|i| m.on[i] || m.on[511 * 512 + i] || m.on[i * 512] || m.on[i * 512 + 511]);
+            if edge {
+                bad.push(format!("{name} at {deg}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "reach the edge: {bad:?}");
+}
