@@ -752,7 +752,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       no record; a long taper's middle gets steeper when shortened; a crescent and a
       strongly squared oval past 8 to 1 read differently at the two picture sizes; the
       reading of Sepulcra's slowest asset went from 223 to 309 ms, unexplained on a busy
-      machine. **Not reviewed yet: a third review is running.**
+      machine. **Its reviewer said merge** (2026-11-20; FORM.md, "Its third review"): the
+      first "merge" either shape measure has had. It held the tie against a truth of its
+      own (78 random trees of booleans with every operation, each record exact; 78 more
+      recipes bit for bit the same built twice), showed that no mesh changed (88 recipes
+      hash the same with the record switched off), and reproduced Sepulcra's counts. It
+      found one rule no test holds (the snap of five degrees to a side: small in effect),
+      that a long rod with wobbling sides reads round when pressed (57% to 66% round at
+      30 to 1 where it is square at its own length; nothing of Sepulcra's), and two tests
+      weaker than they say. **Those three are small and not mended yet: they are the
+      first job of the agent that mends faceting**, which builds on the same tie.
     - **Where its verification stands** (2026-11-19, night): the full gate passed on
       `bec48409` (everything of part 4 up to the form views in a before and after and in
       the line-up: 3,298 tests, the repeats, the slow-worker run, the speed budgets, clippy

@@ -1176,3 +1176,34 @@ and **checked only when a style asks** for one.
     cone's convention (an extruded blade is its outline and two slabs, a cone its circle and
     a triangle), and a spear of a column and a cone reads round (a column is capped); the
     barrel, mug, bucket and rounded console disagree as before.
+  - **Its third review** (another model, 2026-11-20, of `299d8639`) **said merge**: the
+    first of this measure's reviews to. It held the tie between triangles and records
+    against a truth of its own, not the author's: 78 random trees of unions, differences
+    and intersections, nested, with their own operations, mirrors, arrays and radials,
+    each operand's record against four or five other builds by set algebra (the worst
+    error nothing); 78 recipes of single shapes under subdivisions, welds, tapers, mirrors,
+    arrays and a finish against the surface of each colour (none off, and bit for bit the
+    same built twice); includes of includes and scatters. **No mesh changed**: with the
+    record switched off in its worktree, 52 of Sepulcra's recipes and 36 random ones hash
+    the same as with it. Both earlier reviews' probes pass; Sepulcra's counts are
+    reproduced; past 16,384 triangles a share moved by at most 0.2% of the whole; and no
+    lead flipped between 384 and 512 pixels or under turns for S-curves, ladles, bones,
+    keys, L and T shapes, rods, spikes and rings from 4 to 1 to 200 to 1. What it found:
+    1. **A stated rule no test holds: the snap of five degrees.** A long outline is laid
+       along a side within five degrees of its long axis; with that set to half a degree
+       or to nothing every test passes. Its effect is small (an L at 30 to 1 is pressed
+       half a percent longer; no lead changed).
+    2. *Minor:* **a long rod whose sides wobble reads round when pressed.** Sides wobbling
+       by 6% of the width: at 30 to 1 it reads 57% round at 384 pixels and 66% at 512, where
+       at its own length it reads wholly square; at 3% and 20 to 1 a share moves by 0.37
+       between the two sizes with the same lead. The documents said only that a taper's
+       middle gets steeper. Tapered poles, a column's swelling and a spindle with rings are
+       steady from 10 to 1 to 45 to 1, and nothing of Sepulcra's is touched by it.
+    3. *Minor:* two tests are weaker than they say: an overlapping union's operand is held
+       only to "no more than alone", which a record of nothing passes, and the cap of
+       16,384 is held by comparing the constant with itself.
+    Not this measure's, and listed apart: a sword's outline that is not pressed at all
+    flips from 82% pointed at 384 pixels to 51% square at 512 (the silhouette reader's).
+    Not settled: why reading time rose (every asset rose by a like share and the outlines
+    counted did not change, which points away from the press). **These three are not
+    mended yet.**

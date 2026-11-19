@@ -371,7 +371,9 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       surface is measured on its own triangles in the finished model; a long outline keeps
       both ends and loses length only where its sides run straight; the record never
       refuses a build; each record is held against the same shape built alone (FORM.md,
-      "What was mended, second round"). Not reviewed yet.
+      "What was mended, second round"). Its review said merge (FORM.md, "Its third
+      review"): every record exact against a truth of the reviewer's own, no mesh changed;
+      one rule held by no test and a long wobbling rod that reads round, both small.
     - **Shape language, a sixth version** (2026-11-20, by an agent that wrote none before,
       on the fifth review's findings and a changed way of holding the measure): 103 common
       assets with the lead a person would give each, written before measuring, and the
