@@ -496,5 +496,30 @@ mod tests {
             let w = f64::from(greatest_width(&pts));
             assert!(w <= brute * (1.0 + 1e-6) && w >= brute * (1.0 - 2e-6), "case {case}: {w} against {brute}");
         }
+        // Small clouds where sweeps alone stop short from every start (counted here, by sweeps
+        // of this test's own): the pairs compared after them find the greatest.
+        let dist = |a: &[f32; 3], b: &[f32; 3]| ((0..3).map(|i| f64::from(a[i] - b[i]) * f64::from(a[i] - b[i])).sum::<f64>()).sqrt();
+        let mut short = 0;
+        for case in 0..3000 {
+            let pts: Vec<[f32; 3]> = (0..7).map(|_| [f() as f32, f() as f32, (0.3 * f()) as f32]).collect();
+            let brute = pts.iter().flat_map(|a| pts.iter().map(move |b| dist(a, b))).fold(0.0f64, f64::max);
+            let swept = (0..pts.len())
+                .map(|start| {
+                    let (mut from, mut best) = (start, 0.0f64);
+                    for _ in 0..4 {
+                        let (far, d) = pts.iter().enumerate().map(|(i, q)| (i, dist(&pts[from], q))).fold((from, 0.0), |m, x| if x.1 > m.1 { x } else { m });
+                        best = best.max(d);
+                        from = far;
+                    }
+                    best
+                })
+                .fold(f64::INFINITY, f64::min);
+            if swept < brute * (1.0 - 1e-3) {
+                short += 1;
+            }
+            let w = f64::from(greatest_width(&pts));
+            assert!(w >= brute * (1.0 - 2e-6), "small case {case}: {w} against {brute}");
+        }
+        assert!(short >= 10, "the sweeps stopped short in only {short} clouds: the pairs were not put to the test");
     }
 }

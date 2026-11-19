@@ -649,12 +649,24 @@ once. Not reviewed yet.)
    distances, so a pair whose sum is within a millionth of the best found is not looked at, nor
    any after it. It costs the sweeps (eight passes), a sort, and the pairs left (none for a ball
    or a box), at most 20 million; past them it is never less than the sweeps'. It depends on
-   distances only. Held by the plus and by sixty drawn clouds (bars, crosses, stars) against
-   every pair.
+   distances only. Held by the plus, by sixty drawn clouds (bars, crosses, stars), and by 3,000
+   small clouds of which the test counts those where sweeps from every start stop short, all
+   against every pair.
 6. **The counts are true whatever is kept**: `round_shapes`, and `not_measured` from the
    model's own count (`ModelExtras::round_not_measured`); and item 1 of the first round now
    says 3.1 to 4.4 for the sphere, and no longer that a ring's measure was exact under any
    linear map.
+
+**Seeded back, each once, and what caught it:** faces' normals carried by the map and not its
+inverse transpose (the drawn chains, the named cases, the seeded copies); the narrower of two
+alike profile edges kept (the drawn chains, by a torus); a cylinder's first vertex put at a
+lathe's (`a_ring_knows_where_it_starts_at_any_count`); a count named without being measured to
+hold (all three advice tests); a sphere measured again without its maps (the sphere's advice); a
+shape not measured said only when the measured ones pass (the check's test); the rod's line at
+1.7% (the rod's test); the not-measured count capped at eight (`what_cannot_be_measured_says_so`);
+the answers cut at 64 (`the_answer_is_kept_however_many_shapes_are_answers`); the pairs after the
+sweeps left out (first not caught: the second sweep found the plus and the drawn clouds; caught
+since by the small clouds).
 
 **The kept order could drop the answer, and no longer can.** Built: seventy six-sided discs on
 one spot, each leant a little more and scaled a little smaller than the one before, so that
