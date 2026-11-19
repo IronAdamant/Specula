@@ -11,22 +11,33 @@
 //! reads each outline with the measure it reads silhouettes with, and weighs it by the shape's
 //! surface (`specula-studio`, `built`).
 //!
-//! **A record's surface is that shape's own surface in the finished model, and what no record
-//! speaks for is [`crate::ModelExtras::made_rest_m2`]:**
+//! **A record's surface is measured, not reckoned: every triangle of the finest level knows
+//! what it was made as ([`crate::Shape::owners`]), through every operation, and a record's
+//! surface is the sum of its own triangles in the finished model** ([`gather`]). What no
+//! record speaks for is [`crate::ModelExtras::made_rest_m2`].
 //! - Each shape generator of a part, each operand of a boolean and each primitive of a sculpt
 //!   (`sdf`) that adds to it is recorded; what a boolean or a sculpt takes away (the second
 //!   operand of a `difference` and after) is not what the thing is made of, and is left out.
 //!   **The wall a cut makes is its cutter's surface**, and so no record's.
-//! - A boolean operand is recorded with what is left of its surface in the result (the
-//!   boolean says which operand each triangle came from); a sculpt's primitives with the
-//!   surface each makes in its mesh ([`crate::sdf::surface_by_primitive`]).
+//! - A boolean's every face is a piece of one operand's face and keeps what that was made as;
+//!   a sculpt's triangles are each given to the primitive that made them
+//!   ([`crate::sdf::primitive_of_triangles`]), and its primitives' outlines are weighed by
+//!   their own triangles.
 //! - The outlines are the shape's as it is generated. Its own `ops`, its part's and the
 //!   recipe's `finish` then move, turn, scale, copy, bend and tint it: the outlines are not
-//!   changed by them, the surface is, by what they did to its pieces (three copies count three
-//!   times; a taper does not make a box's outline a wedge's: said in the document as a limit).
+//!   changed by them (a taper does not make a box's outline a wedge's: said in the document as
+//!   a limit); the surface is, and is measured after them: three copies count three times, and
+//!   a scale by `[1, 0.05, 1]` changes a box and a ball by their own factors.
+//! - **Where the tie is not kept, the surface is the rest's**: a bevel's strips (its tubes');
+//!   triangles of a sculpt not asked within [`crate::sdf::MAX_OWNER_BUILD_WORK`]. Where it is
+//!   kept but blurred: inside one boolean, coplanar pieces of one operand, one colour and one
+//!   tag are joined into one face before they are cut into triangles, and the face is its first
+//!   piece's (only an operand that holds several shapes can blur so: a nested boolean with its
+//!   own ops, a sculpt); a sculpt past [`crate::sdf::MAX_OWNER_ASKED`] triangles is asked at
+//!   every so many. The finest level is measured before its parts are welded at 10 µm.
 //! - An include's records carry the including part's path, as its errors do
 //!   (`parts[1].include(gem).parts[0].shape`); a scatter's items are recorded by what was
-//!   placed of each. One record a path.
+//!   placed of each (a variant's copies carry what it was made as). One record a path.
 //! - A terrain, a building and an imported mesh record nothing.
 
 use crate::dmath;
@@ -45,9 +56,29 @@ pub struct Made {
     pub area_m2: f32,
     /// Its outlines along its own axes (closed, in any units: only their shape is read), each
     /// with its weight among them. At most [`MAX_VIEW_POINTS`] points each. One of no points is
-    /// the weight of outlines the record had no room for ([`MAX_RECORD_VIEWS`]): not read.
+    /// the weight of outlines the record had no room for ([`MAX_VIEWS`], [`MAX_RECORD_VIEWS`]):
+    /// not read.
     pub views: Vec<(Vec<V2>, f32)>,
 }
+
+/// A shape a recipe names, while the model is built: where, and what.
+#[derive(Clone, Debug)]
+pub(crate) struct Record {
+    pub path: String,
+    pub what: &'static str,
+}
+
+/// Outlines of one record, while the model is built, and what triangles carry
+/// ([`crate::Shape::owners`]): a plain shape has one slot, a sculpt one for each primitive that
+/// adds to it. What a slot weighs is its triangles' surface in the finished model.
+#[derive(Clone, Debug)]
+pub(crate) struct Slot {
+    pub record: u32,
+    pub views: Views,
+}
+
+/// Slots in one build (past them, a shape's triangles are no record's).
+pub(crate) const MAX_SLOTS: usize = 8192;
 
 /// A shape's outlines, each with its weight among them.
 pub type Views = Vec<(Vec<V2>, f32)>;
@@ -91,28 +122,97 @@ pub fn triangle_area(s: &Shape, t: [u32; 3]) -> f32 {
     }
 }
 
-/// Two records of one path made one (a scatter item's variants): the surfaces summed, and
-/// each one's outlines weighed by its share of them (an outline both have, once; past
-/// [`MAX_VIEWS`], the later one's left out).
-pub fn merge(into: &mut Made, other: Made) {
-    let total = |m: &Made| m.views.iter().map(|(_, w)| *w).sum::<f32>();
-    let (ta, tb) = (total(into), total(&other));
-    if into.views == other.views || !(ta > 0.0 && tb > 0.0) {
-        into.area_m2 += other.area_m2;
-        return;
-    }
-    for (_, w) in &mut into.views {
-        *w *= into.area_m2 / ta;
-    }
-    for (points, w) in other.views {
-        let w = w * other.area_m2 / tb;
-        match into.views.iter().position(|(p, _)| *p == points) {
-            Some(i) => into.views[i].1 += w,
-            None if into.views.len() < MAX_VIEWS => into.views.push((points, w)),
-            None => {}
+/// What a model is built of, measured: each slot's surface is the sum of the triangles of
+/// `shapes` (the finished parts) that carry it, a record's the sum of its slots', and its
+/// outlines are its slots' each weighed by its slot's surface (an outline an earlier slot of
+/// the same record has, once). **One record a path**: a scatter item's variants (one path,
+/// built once each) are one shape. A shape with no surface left (cut away, never placed) is not
+/// kept. A record keeps at most [`MAX_VIEWS`] outlines, its largest slots' first, and the
+/// weight of the rest as one outline of no points (not read); the [`crate::MAX_MADE`] records
+/// with the most surface are kept, and at most [`MAX_RECORD_VIEWS`] outlines in all, the
+/// largest records' first (one whose outlines do not all fit keeps its heaviest that do, and
+/// the rest's weight as one of no points). Also the share of `surface` no kept record speaks
+/// for.
+pub(crate) fn gather(records: &[Record], slots: &[Slot], shapes: &[&Shape], surface: f32) -> (Vec<Made>, f32) {
+    let mut area = vec![0.0f64; slots.len()];
+    for s in shapes {
+        for (t, &o) in s.tris.iter().zip(&s.owners) {
+            if let Some(a) = area.get_mut(o as usize) {
+                *a += f64::from(triangle_area(s, *t));
+            }
         }
     }
-    into.area_m2 += other.area_m2;
+    // (By path, in the order built.)
+    let mut by_path: std::collections::BTreeMap<&str, (&'static str, Vec<usize>)> = std::collections::BTreeMap::new();
+    for (i, slot) in slots.iter().enumerate() {
+        let Some(r) = records.get(slot.record as usize) else { continue };
+        if area[i].is_finite() && area[i] > 0.0 {
+            by_path.entry(r.path.as_str()).or_insert((r.what, Vec::new())).1.push(i);
+        }
+    }
+    let mut out: Vec<Made> = by_path
+        .into_iter()
+        .map(|(path, (what, mine))| Made { path: path.to_string(), what, area_m2: mine.iter().map(|&i| area[i]).sum::<f64>() as f32, views: outlines(&mine, slots, &area) })
+        .filter(|m| m.area_m2 > 0.0)
+        .collect();
+    out.sort_by(|a, b| b.area_m2.total_cmp(&a.area_m2).then_with(|| a.path.cmp(&b.path)));
+    out.truncate(crate::MAX_MADE);
+    let mut room = MAX_RECORD_VIEWS;
+    for m in &mut out {
+        let mut drawn: Vec<(Vec<V2>, f32)> = Vec::new();
+        let mut unread = 0.0f32;
+        for v in std::mem::take(&mut m.views) {
+            if v.0.is_empty() {
+                unread += v.1;
+            } else {
+                drawn.push(v);
+            }
+        }
+        if drawn.len() > room {
+            drawn.sort_by(|a, b| b.1.total_cmp(&a.1));
+            unread += drawn[room..].iter().map(|v| v.1).sum::<f32>();
+            drawn.truncate(room);
+        }
+        room -= drawn.len();
+        if unread > 0.0 {
+            drawn.push((Vec::new(), unread));
+        }
+        m.views = drawn;
+    }
+    let spoken: f32 = out.iter().map(|m| m.area_m2).sum();
+    (out, (surface - spoken).max(0.0))
+}
+
+/// A record's outlines from its slots (`mine`, in the order built): the largest slots' chosen
+/// first while there is room, kept in the order built, each weighed by its slot's surface.
+fn outlines(mine: &[usize], slots: &[Slot], area: &[f64]) -> Views {
+    let mut order = mine.to_vec();
+    order.sort_by(|&a, &b| area[b].total_cmp(&area[a]).then(a.cmp(&b)));
+    // (Each kept outline with its weight and where it was first met.)
+    let mut kept: Vec<(&Vec<V2>, f64, (usize, usize))> = Vec::new();
+    let mut unread = 0.0f64;
+    for &i in &order {
+        let total: f64 = slots[i].views.iter().map(|v| f64::from(v.1)).sum();
+        if total.is_nan() || total <= 0.0 {
+            continue;
+        }
+        for (j, (points, w)) in slots[i].views.iter().enumerate() {
+            let weight = area[i] * f64::from(*w) / total;
+            if let Some(k) = kept.iter_mut().find(|k| k.2 .0 != i && k.0 == points) {
+                k.1 += weight;
+            } else if kept.len() < MAX_VIEWS {
+                kept.push((points, weight, (i, j)));
+            } else {
+                unread += weight;
+            }
+        }
+    }
+    kept.sort_by_key(|k| k.2);
+    let mut views: Views = kept.into_iter().map(|(p, w, _)| (p.clone(), w as f32)).collect();
+    if unread > 0.0 {
+        views.push((Vec::new(), unread as f32));
+    }
+    views
 }
 
 fn arc(out: &mut Vec<V2>, c: V2, r: f32, from_deg: f64, sweep_deg: f64, steps: u32) {
@@ -344,35 +444,47 @@ fn elongated(points: Vec<V2>, by: [f32; 2]) -> Vec<V2> {
 }
 
 /// One outline of a sculpt's primitive while the tree is walked: the outline, the two of the
-/// primitive's own axes it lies along (so that a stretch or an elongation further up is put on
-/// the right ones) and its weight.
+/// tree's axes it lies along (so that a stretch or an elongation further up is put on the right
+/// ones) and its share of the primitive's outlines.
 struct Seen {
     points: Vec<V2>,
     axes: (usize, usize),
     weight: f32,
 }
 
-/// A sculpt's outlines (docs/design/FORM.md, "From what the recipe is built of"): each
-/// primitive that adds to it, as that primitive is from its own sides, **weighed by the surface
-/// it makes in the mesh** (`surfaces`, from [`crate::sdf::surface_by_primitive`], in the order
-/// the tree's primitives are met depth first): so a mirror's and a repeat's copies count, an
-/// elongation's length counts, and what an intersection or a difference leaves of a
-/// primitive is what counts of it. What a difference takes away (its second child and after)
-/// is not what the thing is made of, and is left out: the wall it cuts is its surface, and so
-/// is no record's. A half space has no outline. The views stop at [`MAX_VIEWS`]; the
-/// primitives past them are left out with their surface. A node's own stretch and elongation
-/// and every group's above it widen its outlines along their own axes; a node's other
-/// modifiers (a turn, a twist, a bend, a rounding, a shell) do not change them. Also the
-/// surface the outlines speak for.
-pub(crate) fn of_sculpt(node: &crate::sdf::SdfNode, surfaces: &[f32]) -> (Views, f32) {
-    let mut seen = Vec::new();
-    let mut next = 0usize;
-    let mut spoken = 0.0f32;
-    walk(node, surfaces, &mut next, true, &mut seen, &mut spoken);
-    (seen.into_iter().map(|s| (s.points, s.weight)).collect(), spoken)
+/// The axis a segment from `a` to `b` runs on the most, and one other (the lower of the two
+/// left, Y before Z for one along X).
+fn along(a: V3, b: V3) -> (usize, usize) {
+    let d = crate::math3::sub(b, a);
+    let k = (0..3).fold(0, |m, i| if d[i].abs() > d[m].abs() { i } else { m });
+    (k, if k == 1 { 0 } else { 1 })
 }
 
-fn walk(node: &crate::sdf::SdfNode, surfaces: &[f32], next: &mut usize, adds: bool, out: &mut Vec<Seen>, spoken: &mut f32) {
+/// The two axes other than `k`, the lower first.
+fn across(k: usize) -> (usize, usize) {
+    match k {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    }
+}
+
+/// A sculpt's outlines (docs/design/FORM.md, "From what the recipe is built of"): for each of
+/// its primitives, in the order the tree's are met depth first, its outlines as it is from its
+/// own sides with their shares among them, or none for one that does not add to it (what a
+/// difference takes away, its second child and after, and a half space, which has no outline).
+/// What each primitive weighs is the surface its own triangles have in the finished model
+/// ([`crate::sdf::primitive_of_triangles`], [`gather`]). A node's own stretch and elongation and
+/// every group's above it widen its outlines along the axes they lie on (a round cone's and a
+/// column's along the axis they run on the most); a node's other modifiers (a turn, a twist, a
+/// bend, a rounding, a shell) do not change them.
+pub(crate) fn of_sculpt(node: &crate::sdf::SdfNode) -> Vec<Option<Views>> {
+    let mut out: Vec<Option<Vec<Seen>>> = Vec::new();
+    walk(node, true, &mut out);
+    out.into_iter().map(|seen| seen.map(|s| s.into_iter().map(|s| (s.points, s.weight)).collect())).collect()
+}
+
+fn walk(node: &crate::sdf::SdfNode, adds: bool, out: &mut Vec<Option<Vec<Seen>>>) {
     use crate::sdf::{Combine, Kind, Prim};
     let s = node.m.stretch;
     let e = node.m.elongate;
@@ -384,14 +496,12 @@ fn walk(node: &crate::sdf::SdfNode, surfaces: &[f32], next: &mut usize, adds: bo
     };
     match &node.kind {
         Kind::Prim(prim) => {
-            let index = *next;
-            *next += 1;
-            let surface = surfaces.get(index).copied().unwrap_or(0.0);
-            if !adds || !(surface.is_finite() && surface > 0.0) || out.len() >= MAX_VIEWS {
+            if !adds {
+                out.push(None);
                 return;
             }
             let mut mine: Vec<Seen> = Vec::new();
-            let mut view = |points: Vec<V2>, axes: (usize, usize), share: f32| mine.push(Seen { points, axes, weight: surface * share });
+            let mut view = |points: Vec<V2>, axes: (usize, usize), weight: f32| mine.push(Seen { points, axes, weight });
             match *prim {
                 Prim::Sphere { radius } => {
                     view(circle(radius), (0, 1), 1.0 / 3.0);
@@ -435,39 +545,43 @@ fn walk(node: &crate::sdf::SdfNode, surfaces: &[f32], next: &mut usize, adds: bo
                 }
                 Prim::RoundCone { a, b, ra, rb } => {
                     let len = crate::math3::length(crate::math3::sub(b, a));
-                    view(circle(ra.max(rb)), (0, 2), 1.0 / 3.0);
-                    view(tapered(ra, rb, len), (0, 1), 2.0 / 3.0);
+                    // (Laid along the axis it runs on the most: its length along that axis, its
+                    // width along another.)
+                    let (k, w) = along(a, b);
+                    view(circle(ra.max(rb)), across(k), 1.0 / 3.0);
+                    view(tapered(ra, rb, len), (k, w), 2.0 / 3.0);
                 }
-                Prim::Column { a, b, sections, count, square, .. } => {
+                Prim::Column { a, b, side, sections, count, square } => {
                     let len = crate::math3::length(crate::math3::sub(b, a));
                     let rows = &sections[..(count as usize).clamp(1, sections.len())];
                     let (broad, deep) = rows.iter().fold((0.0f32, 0.0f32), |m, r| (m.0.max(r[1]), m.1.max(r[2])));
                     let (first, last) = (rows[0], rows[rows.len() - 1]);
                     // (Each end closes in a cap as high as its section there is narrow.)
                     let caps = [first[1].min(first[2]), last[1].min(last[2])];
-                    view(superellipse(broad, deep, square), (0, 2), 1.0 / 3.0);
-                    view(capped(&rows.iter().map(|r| [r[1], r[0] * len]).collect::<Vec<V2>>(), caps), (0, 1), 1.0 / 3.0);
-                    view(capped(&rows.iter().map(|r| [r[2], r[0] * len]).collect::<Vec<V2>>(), caps), (2, 1), 1.0 / 3.0);
+                    // (Along the axis it runs on the most; its breadth toward the axis its
+                    // `side` points along the most of the two left, its depth along the other.)
+                    let (k, _) = along(a, b);
+                    let (p, q) = across(k);
+                    let (bx, dx) = if side[p].abs() >= side[q].abs() { (p, q) } else { (q, p) };
+                    view(superellipse(broad, deep, square), (bx, dx), 1.0 / 3.0);
+                    view(capped(&rows.iter().map(|r| [r[1], r[0] * len]).collect::<Vec<V2>>(), caps), (bx, k), 1.0 / 3.0);
+                    view(capped(&rows.iter().map(|r| [r[2], r[0] * len]).collect::<Vec<V2>>(), caps), (dx, k), 1.0 / 3.0);
                 }
                 Prim::HalfSpace { .. } => {}
             }
-            for mut seen in mine {
-                if out.len() >= MAX_VIEWS {
-                    return;
-                }
-                *spoken += seen.weight;
-                widen(&mut seen);
-                out.push(seen);
+            for seen in &mut mine {
+                widen(seen);
             }
+            out.push((!mine.is_empty()).then_some(mine));
         }
         Kind::Group { op, kids, .. } => {
             let before = out.len();
             for (i, kid) in kids.iter().enumerate() {
-                walk(kid, surfaces, next, adds && !(*op == Combine::Difference && i > 0), out, spoken);
+                walk(kid, adds && !(*op == Combine::Difference && i > 0), out);
             }
             // (A group's own stretch and elongation bear on all it holds, each outline along
             // its own axes.)
-            for seen in out.iter_mut().skip(before) {
+            for seen in out.iter_mut().skip(before).flatten().flatten() {
                 widen(seen);
             }
         }
@@ -513,7 +627,8 @@ mod tests {
         assert!(kept(vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]).is_none(), "a line encloses nothing");
         assert!(kept(vec![[0.0, 0.0], [f32::NAN, 0.0], [0.0, 1.0]]).is_none());
         let long: Vec<V2> = (0..1000).map(|i| { let (s, c) = dmath::sin_cos_deg(0.36 * f64::from(i)); [c as f32, s as f32] }).collect();
-        assert!(kept(long).is_some_and(|p| p.len() <= MAX_VIEW_POINTS && p.len() >= 100));
+        // (A thousand points are kept as every eighth: at most 128.)
+        assert!(kept(long).is_some_and(|p| p.len() == 125 && p.len() <= MAX_VIEW_POINTS));
         assert_eq!(views(vec![(circle(1.0), 1.0), (circle(1.0), 0.0), (vec![[0.0, 0.0]], 1.0)]).len(), 1);
         assert_eq!(half_extents(&rect(2.0, 1.0, 0.0)), [1.0, 0.5]);
         // A shape's surface.

@@ -573,6 +573,8 @@ struct Src {
     col: [Rgba; 3],
     tag: u8,
     leaf: u32,
+    /// What it was made as ([`Shape::owners`]).
+    owner: u32,
 }
 
 /// The grid: metres = `origin + grid · step`.
@@ -621,7 +623,7 @@ fn leaf_polys(shape: &Shape, leaf: u32, grid: &Grid, srcs: &mut Vec<Src>, budget
             budget.dropped += 1;
             continue;
         };
-        srcs.push(Src { pos: p, col: t.map(|i| shape.colors[i as usize]), tag: shape.tags.get(ti).copied().unwrap_or(TAG_FACE), leaf });
+        srcs.push(Src { pos: p, col: t.map(|i| shape.colors[i as usize]), tag: shape.tags.get(ti).copied().unwrap_or(TAG_FACE), leaf, owner: shape.owners.get(ti).copied().unwrap_or(crate::shape::NO_OWNER) });
         let src = (srcs.len() - 1) as u32;
         let v = (0..3).map(|k| Vtx { edge: edges[k], p: g[k].map(|c| c as f64) }).collect();
         out.push(Poly::new(support, v, src));
@@ -1642,6 +1644,7 @@ fn to_shape(polys: &[Poly], grid: &Grid, srcs: &[Src], budget: &mut Budget) -> R
     let mut s = Shape { positions: points.iter().map(|p| grid.metres(*p)).collect(), ..Shape::default() };
     let mut colors: Vec<Option<Rgba>> = vec![None; s.positions.len()];
     let mut leaf = Vec::with_capacity(tris.len());
+    let owned = srcs.iter().any(|s| s.owner != crate::shape::NO_OWNER);
     // A vertex shared by pieces of different sources takes the first one's colour; pieces with
     // other colours get their own vertex.
     let mut dup: HashMap<(u32, [u32; 4]), u32> = HashMap::new();
@@ -1667,6 +1670,11 @@ fn to_shape(polys: &[Poly], grid: &Grid, srcs: &[Src], budget: &mut Budget) -> R
         s.tris.push(tri);
         s.tags.push(src.tag);
         leaf.push(src.leaf);
+        // (What it was made as: its piece's input triangle's. A face merged from pieces of one
+        // operand on one plane is triangulated as one, and all of it is its first piece's.)
+        if owned {
+            s.owners.push(src.owner);
+        }
     }
     s.colors = colors.into_iter().map(|c| c.unwrap_or([1.0; 4])).collect();
     Ok((s, leaf, Cleanup { t_junctions, non_manifold_edges: non_manifold, slivers }))

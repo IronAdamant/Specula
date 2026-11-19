@@ -640,7 +640,7 @@ fn what_a_recipe_is_built_of_is_recorded_with_its_surface() {
     // A box: three rectangles, and its own surface.
     let c = of("parts[0].shape");
     assert_eq!((c.what, c.views.len()), ("box", 3));
-    assert!(c.views.iter().all(|(p, w)| p.len() == 4 && *w == 1.0) && near(c.area_m2, 22.0, 1e-3), "{c:?}");
+    assert!(c.views.iter().all(|(p, w)| p.len() == 4 && *w == c.views[0].1) && near(c.area_m2, 22.0, 1e-3), "{c:?}");
     // Three copies of a box of half a metre: three times its surface, and one record.
     let p = of("parts[1].shape");
     assert!(near(p.area_m2, 3.0 * 1.5, 1e-3), "three copies: {}", p.area_m2);
@@ -650,7 +650,8 @@ fn what_a_recipe_is_built_of_is_recorded_with_its_surface() {
     assert!(near(b.area_m2, 4.0 * std::f32::consts::PI, 0.03), "a ball of radius 1 as built: {}", b.area_m2);
     // A cone: its section (twenty-four sides: a circle) and a triangle, the triangle twice.
     let s = of("parts[3].shape");
-    assert_eq!((s.what, s.views.len(), s.views[1].0.len(), s.views[1].1), ("cone", 2, 3, 2.0));
+    assert_eq!((s.what, s.views.len(), s.views[1].0.len()), ("cone", 2, 3));
+    assert!(near(s.views[1].1, 2.0 * s.views[0].1, 1e-5), "{:?}", s.views.iter().map(|v| v.1).collect::<Vec<_>>());
     // A box with a hole cut through it: the box is recorded, the cylinder that cut it is not,
     // and the record's surface is what is left of the box (its faces less the two discs). The
     // hole's wall is the cylinder's surface, and no record speaks for it.
@@ -673,4 +674,30 @@ fn what_a_recipe_is_built_of_is_recorded_with_its_surface() {
     assert!(model.extras.made_rest_m2 >= 0.97 * wall && model.extras.made_rest_m2 <= wall + 0.6, "of {spoken} m2, {} is spoken for by nothing", model.extras.made_rest_m2);
     // The same recipe says the same.
     assert_eq!(build_with(&text, &[]).unwrap().extras.made, *made);
+}
+
+/// While a model is built, at most 512 shapes are recorded and 8,192 slots of outlines kept
+/// (a sculpt has one for each primitive): a shape past them is no record's, and its triangles
+/// say so.
+#[test]
+fn the_tallys_record_is_bounded() {
+    let tally = Tally::default();
+    let views = || vec![(made::circle(1.0), 1.0)];
+    for i in 0..600 {
+        let mut s = Shape::cuboid([1.0; 3], 0.0).unwrap();
+        tally.making.replace(Some(("box", views())));
+        tally.made_now(&format!("parts[{i}].shape"), &mut s);
+        assert_eq!(s.owners.is_empty(), i >= 512, "shape {i}");
+    }
+    assert_eq!(tally.made.borrow().len(), 512);
+    // (Sculpts of 127 primitives: 64 fill 8,128 slots, the 65th 64 of its 127.)
+    let tally = Tally::default();
+    let mut ball = Shape::cuboid([1.0; 3], 0.0).unwrap();
+    let of: Vec<u32> = (0..ball.tris.len() as u32).map(|t| t * 10).collect();
+    for i in 0..66 {
+        tally.made_sculpt(&format!("parts[{i}].shape"), "sdf", (0..127).map(|_| Some(views())).collect(), &of, &mut ball);
+    }
+    assert_eq!(tally.slots.borrow().len(), 8192);
+    assert_eq!(tally.made.borrow().len(), 65, "the 66th sculpt has no slot left");
+    assert_eq!(ball.owners.iter().filter(|&&o| o != crate::shape::NO_OWNER).count(), 0, "{:?}", ball.owners);
 }

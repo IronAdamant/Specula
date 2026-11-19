@@ -780,17 +780,19 @@ and **checked only when a style asks** for one.
   rectangle; a cone's, a triangle), an extruded outline and the box it is raised to, a lathe's
   section and its profile mirrored, a sweep's profile and its path laid out straight (a horn
   that narrows to nothing comes to a point), each primitive of a sculpt. What a boolean or a
-  sculpt takes away is not recorded; a part's operations change the surface (three copies
-  count three times; a box with a hole cut through it has the hole's wall too) and not the
-  outlines. The studio reads each outline with the measure above (drawn on 384 pixels), weighs
+  sculpt takes away is not recorded, and the wall a cut makes is its cutter's surface, which
+  no record speaks for; a part's operations change the surface (three copies count three
+  times; since the second round of mends it is measured on each shape's own triangles after
+  them) and not the outlines. The studio reads each outline with the measure above (drawn on 384 pixels), weighs
   a shape's outlines as the recipe weighed them and **the shapes by their surface**, and
   answers `built_of` in `studio_check` (`measures.thumbnails.built_of`): the three shares,
   the share of the surface that was read, and the eight shapes with the most surface, each
   with its path in the recipe, what it was made as, its share and what it reads as.
   - **What it says that a silhouette cannot**: which part is what, so a failed check names
     what to change; and it is not moved by the angle the asset is seen from.
-  - **What it cannot say**: anything of an imported mesh or a generated part (terrain, a
-    scatter, a building: `read_share` says how much was read); what a part's operations did
+  - **What it cannot say**: anything of an imported mesh, a terrain or a building
+    (`read_share` says how much was read; a scatter's items are recorded by what was
+    placed of each); what a part's operations did
     to its form (a taper does not make a box's outline a wedge's); how the parts are put
     together. **A straight-sided cylinder is a third round and two thirds square** by it, as
     it is in silhouette from the side: a can is not a ball. (Since the mends below this holds
@@ -899,7 +901,7 @@ and **checked only when a style asks** for one.
        past each end, as high as the end's section is narrow), where it had flat ends. With
        the weights of (2) (the boxes the figure cuts its hands and feet with, recorded whole
        by an intersection before, are what is left of them: nearly nothing), **a measured
-       figure reads 97% to 98% round** (it read 98% square). A person reads round by this measure:
+       figure reads 96% to 98% round** (it read 98% square; the whole male figure 96%, the female body 98%: corrected after the second review, which measured them; since the second round, 96% and 97%). A person reads round by this measure:
        it is made of limbs, a trunk and a head, each a column, a ball or a round cone.
     8. A group's stretch and elongation are put on each outline along its own axes.
     9. **The cost has a ceiling.** The record keeps at most 256 outlines of 128 points in all
@@ -966,3 +968,78 @@ and **checked only when a style asks** for one.
     given to the right operand exactly; operand ops, nested booleans, includes of every kind
     and scatters on cases of its own; the cost's ceiling; the determinism; Sepulcra's counts;
     and 15 of 23 ordinary recipes read as a person would.
+  - **What was mended, second round** (2026-11-20, by a model that wrote neither the measure
+    nor the first mends; each finding seen first with the second reviewer's probe, each mend
+    held by a test that fails without it, and each such fault seeded back once to see its
+    test fail). Not reviewed yet.
+    1. **A record's surface is measured, not reckoned.** Every triangle of the finest level
+       carries what it was made as (`Shape::owners`, a slot of the build's record), through
+       every operation: a move, a turn, a scale by a vector, a taper, a twist, a bend leave
+       it; a copy copies it; a subdivision gives a triangle's four pieces its owner; a weld
+       drops it with the triangles it drops; every face a boolean makes keeps its input
+       triangle's. A record's surface is summed from its own triangles in the finished model,
+       once, at the end. No ratio is applied anywhere. The flattened union of the review is
+       now exact (the box 1.080 m², the ball 1.578, as built alone), and so is the box beside
+       an included terrain (0.096). A test builds 28 recipes drawn from a fixed sequence
+       (shapes with their own ops; part ops that scale by vectors, taper, twist, mirror, copy,
+       subdivide and bend; unions; includes; a finish) and holds every record against the
+       same shape built alone, measured on that model's mesh: within a part in ten thousand,
+       and in a thousand for a union's operand (whose truth is a union of it alone, since a
+       boolean cuts faces into triangles of its own). **What cannot keep the tie**: inside one
+       boolean, coplanar pieces of one operand, one colour and one tag are joined into one
+       face before they are cut into triangles, and the face is its first piece's (only an
+       operand that holds several shapes, a nested boolean with ops of its own or a sculpt,
+       can blur so); a bevel's strips and a cut's walls belong to no shape (the rest). The
+       far level and the LODs carry nothing and cost nothing for it.
+    2. **A long outline keeps both its ends.** It is turned to the axis it is longest along
+       (its area's moments, laid along a side of a quarter of its length or more within five
+       degrees of that axis), and its length is taken out of its straight stretches, found
+       from its geometry (its two sides straight and level within a fiftieth of its width,
+       however many points lie on them), from all of them by what each can give. What is
+       still too long (an oval, a taper, a horn, a round cone) is pressed evenly between its
+       two ends, each as long as it is wide, which are kept as they are. Six to one stays the
+       line: past it the readings of ordinary outlines at their own length begin to differ
+       between 384 and 512 pixels (a horn at eight, a cut rectangle, a bottle and a club at
+       twelve). The stadium with one more point reads round, columns of any number of
+       sections round, the blade 61% pointed as at its own length; rods, stadia, columns and
+       spikes at 10 to 45 degrees read as lying flat (they were not read past about forty to
+       one, and flipped between sizes nearer). **What it cannot do**: a taper's middle is
+       steeper after the press; a crescent of eight to one and more, and a superellipse of
+       power 6, read differently at the two sizes (the latter at its own length too); the
+       measure reads a round cone's round share unsteadily, at its own length as after.
+    3. **The record never refuses a build.** Asking which primitive made each triangle spends
+       a limit of its own for the build (120 million units, about an eighth of a second on
+       the reference laptop at the most: a figure's tree takes about a nanosecond a unit),
+       never the build's, and never passes it; a triangle not asked within it is the rest,
+       and the sculpt's stat says how many (`owners_unanswered`). The review's 52 sculpts
+       build, with 11% of their triangles unasked.
+    4. **A round cone's and a column's outlines are laid along the axis they run on the most**
+       (a column's breadth toward the axis its `side` points along), so a group's stretch
+       lands on its length (tests: a round cone along Y stretched along Y, a column along X
+       stretched along X).
+    5. **Every triangle of a sculpt is asked, up to 16,384**, and every so many past that, each
+       answer standing for the triangles after it (the mesher writes them block by block).
+       The thirty displaced balls were sampling: the displacement's cost had cut the sample
+       to about a hundred of 11,664 triangles, each standing for a hundred and twenty; with
+       every triangle asked their shares are those of the plain balls. Asked every other
+       triangle (a mesh of up to twice the count), a measured figure's primitives' shares of
+       the surface move by at most 0.13% of the whole (8% of a primitive's own, for one of 1%
+       or more): a test holds 0.2%.
+    6. **A sculpt keeps its largest primitives' outlines** (by their own triangles' surface),
+       up to 96; the rest's weight is an outline of no points, not read. Forty small balls
+       before a large box keep the box's three rectangles.
+    7. Long outlines on a diagonal: see 2.
+    8. **Every cap is held by a test that fails when it moves either way**: 64 shapes kept,
+       96 outlines a shape, 256 a record, 128 points an outline, 32 outlines read, 512 shapes
+       and 8,192 slots while building, 16,384 triangles asked, the asking's limit. The
+       twelve cones are twelve (within a part in a thousand of the alone truth).
+    9. The sentences above that the second review found false are corrected where they
+       stand (the cut's wall, scatters, the figure's share).
+    **By the record now, Sepulcra is as it was: 42 lead square, 11 round, 1 pointed, 2
+    unread**, and no recipe's reading moved by more than 0.01 (`rune_column`, whose includes
+    are scaled by `["k", "k", 1]`, reads 46% round and 54% square before and after: every
+    shape it records is a box, and surface moved between boxes moves the shares little). Of 23 ordinary
+    recipes read as a person would, the swords now read square by the extrude's and the
+    cone's convention (an extruded blade is its outline and two slabs, a cone its circle and
+    a triangle), and a spear of a column and a cone reads round (a column is capped); the
+    barrel, mug, bucket and rounded console disagree as before.

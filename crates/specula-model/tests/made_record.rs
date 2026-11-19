@@ -67,6 +67,165 @@ fn adds_up(m: &Model) {
     assert!(paths.windows(2).all(|w| w[0] != w[1]), "a path twice: {paths:?}");
 }
 
+/// A small fixed sequence of numbers (an LCG: the recipes below are the same on every run).
+struct Seq(u64);
+
+impl Seq {
+    fn next(&mut self) -> f32 {
+        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        ((self.0 >> 40) as f32) / (1u64 << 24) as f32
+    }
+    fn within(&mut self, lo: f32, hi: f32) -> f32 {
+        let v = lo + (hi - lo) * self.next();
+        specula_model::dmath::round(v * 1000.0) / 1000.0
+    }
+    fn pick(&mut self, n: usize) -> usize {
+        ((self.next() * n as f32) as usize).min(n - 1)
+    }
+}
+
+/// A shape node standing on y = 0 and one metre tall (so that a part's taper, which reaches
+/// from the bottom of what it tapers to its top, is the same on it alone as among others),
+/// and its own ops: moved along X and Z, turned about Y, scaled along X and Z. `level`: one that
+/// reaches y = 0 and y = 1 exactly (not a ball: its points miss its poles), for a union, whose
+/// taper reaches from the lowest of its operands to the highest.
+fn a_shape(s: &mut Seq, level: bool) -> (String, String) {
+    let kind = if level { [0, 1, 2, 4, 5][s.pick(5)] } else { s.pick(6) };
+    let shape = match kind {
+        0 => format!(r#"{{"op":"box","size":[{},1,{}]}}"#, s.within(0.2, 1.0), s.within(0.2, 1.0)),
+        1 => format!(r#"{{"op":"cylinder","radius":{},"height":1,"sides":{}}}"#, s.within(0.1, 0.5), 6 + s.pick(20)),
+        2 => format!(r#"{{"op":"cone","radius":{},"height":1,"sides":{}}}"#, s.within(0.1, 0.5), 3 + s.pick(20)),
+        3 => format!(r#"{{"op":"sphere","radius":0.5,"subdivisions":{}}}"#, 1 + s.pick(3)),
+        4 => format!(r#"{{"op":"capsule","radius":{},"height":1}}"#, s.within(0.1, 0.4)),
+        _ => format!(r#"{{"op":"lathe","profile":[[0,0],[{},0],[{},0.5],[{},1],[0,1]],"segments":{}}}"#, s.within(0.2, 0.5), s.within(0.1, 0.6), s.within(0.05, 0.3), 6 + s.pick(18)),
+    };
+    let mut own = vec![if shape.contains("sphere") { r#"{"op":"move","by":[0,0.5,0]}"#.to_string() } else { String::new() }];
+    if s.next() < 0.5 {
+        own.push(format!(r#"{{"op":"scale","by":[{},1,{}]}}"#, s.within(0.3, 2.5), s.within(0.3, 2.5)));
+    }
+    if s.next() < 0.5 {
+        own.push(format!(r#"{{"op":"rotate","deg":[0,{},0]}}"#, s.within(-90.0, 90.0)));
+    }
+    own.retain(|o| !o.is_empty());
+    (shape, own.join(","))
+}
+
+/// A part's ops: a scale by a vector, a taper, a twist, a mirror, an array, a subdivision, in
+/// that order where drawn, and a bend last (a bend moves the bottoms and tops of what it bends
+/// apart, so nothing that reaches between them may follow it).
+fn part_ops(s: &mut Seq) -> String {
+    let mut ops = Vec::new();
+    if s.next() < 0.6 {
+        ops.push(format!(r#"{{"op":"scale","by":[{},{},{}]}}"#, s.within(0.2, 2.0), s.within(0.03, 2.0), s.within(0.2, 2.0)));
+    }
+    if s.next() < 0.4 {
+        ops.push(format!(r#"{{"op":"taper","axis":"y","from":{},"to":{}}}"#, s.within(0.5, 1.5), s.within(0.0, 1.2)));
+    }
+    if s.next() < 0.3 {
+        ops.push(format!(r#"{{"op":"twist","deg_per_m":{}}}"#, s.within(-90.0, 90.0)));
+    }
+    if s.next() < 0.3 {
+        ops.push(r#"{"op":"mirror","axis":"z","keep":true}"#.to_string());
+    }
+    if s.next() < 0.3 {
+        ops.push(format!(r#"{{"op":"array","count":{},"offset":[0,0,{}]}}"#, 2 + s.pick(3), s.within(3.0, 6.0)));
+    }
+    if s.next() < 0.2 {
+        ops.push(r#"{"op":"subdivide","levels":1}"#.to_string());
+    }
+    if s.next() < 0.3 {
+        ops.push(format!(r#"{{"op":"bend","deg_per_m":{}}}"#, s.within(-60.0, 60.0)));
+    }
+    ops.join(",")
+}
+
+fn joined(lists: &[&str]) -> String {
+    lists.iter().filter(|l| !l.is_empty()).copied().collect::<Vec<_>>().join(",")
+}
+
+/// **Each shape's record is its own surface, held against a truth that does not come from the
+/// record**: the same shape built alone, as the only part of a recipe of its own, with the same
+/// operations (its own, its part's, an include's, the finish), measured on that model's mesh.
+/// Recipes drawn from a fixed sequence: shapes with their own ops; part ops that scale by a
+/// vector, taper, twist, mirror, copy, subdivide and bend; unions of shapes apart (nothing
+/// hidden, so exact up to the boolean's grid; an operand alone is a union of it alone, since a
+/// boolean cuts faces into triangles of its own) and of shapes that overlap (what is hidden is
+/// gone: never more than alone, and nothing lost, as a union has no cutter); includes with ops
+/// of their own and the including part's; a finish that scales by a vector and twists.
+#[test]
+fn every_record_is_its_shape_alone() {
+    let mut s = Seq(20_261_120);
+    let mut checked = (0usize, 0usize);
+    for round in 0..28 {
+        // (One to three parts, each a shape, a union or an include; and a finish.)
+        let mut lib = BTreeMap::new();
+        let mut parts = Vec::new();
+        // (Each named shape: its path, its node, the ops it goes through in order, and whether
+        // a union may hide some of it.)
+        let mut named: Vec<(String, String, Vec<String>, bool)> = Vec::new();
+        for k in 0..1 + s.pick(3) {
+            let ops = part_ops(&mut s);
+            let x = 8.0 * k as f32;
+            let place = format!(r#"{{"op":"move","by":[{x},0,0]}}"#);
+            match s.pick(3) {
+                0 => {
+                    let (shape, own) = a_shape(&mut s, false);
+                    parts.push(format!(r#"{{ "name": "p{k}", "material": "stone", "shape": {shape}, "ops": [{}] }}"#, joined(&[&own, &ops, &place])));
+                    named.push((format!("parts[{k}].shape"), shape, vec![own, ops, place], false));
+                }
+                1 => {
+                    let overlap = s.next() < 0.4;
+                    let mut of = Vec::new();
+                    for i in 0..2 + s.pick(2) {
+                        let (shape, own) = a_shape(&mut s, true);
+                        let apart = if overlap { format!(r#"{{"op":"move","by":[{},0,0]}}"#, 0.3 * i as f32) } else { format!(r#"{{"op":"move","by":[{},0,0]}}"#, 2.5 * i as f32) };
+                        let own = joined(&[&own, &apart]);
+                        of.push(format!(r#"{},"ops":[{own}]}}"#, &shape[..shape.len() - 1]));
+                        named.push((format!("parts[{k}].shape.of[{i}]"), format!(r#"{{"op":"union","of":[{}]}}"#, of[i]), vec![ops.clone(), place.clone()], overlap));
+                    }
+                    parts.push(format!(r#"{{ "name": "p{k}", "material": "stone", "shape": {{"op":"union","of":[{}]}}, "ops": [{}] }}"#, of.join(","), joined(&[&ops, &place])));
+                }
+                _ => {
+                    let mut kid = Vec::new();
+                    let name = format!("kid{k}");
+                    for j in 0..2 {
+                        let (shape, own) = a_shape(&mut s, false);
+                        let inner = format!(r#"{{"op":"scale","by":[{},1,{}]}},{{"op":"move","by":[{},0,0]}}"#, s.within(0.5, 1.5), s.within(0.5, 1.5), 3.0 * j as f32);
+                        kid.push(format!(r#"{{ "name": "q{j}", "material": "stone", "shape": {shape}, "ops": [{}] }}"#, joined(&[&own, &inner])));
+                        named.push((format!("parts[{k}].include({name}).parts[{j}].shape"), shape, vec![own, inner, ops.clone(), place.clone()], false));
+                    }
+                    lib.insert(name.clone(), format!(r#"{{ "name": "{name}", "parts": [{}] }}"#, kid.join(", ")));
+                    parts.push(format!(r#"{{ "name": "p{k}", "include": "{name}", "ops": [{}] }}"#, joined(&[&ops, &place])));
+                }
+            }
+        }
+        let finish = if s.next() < 0.5 { format!(r#"{{"op":"scale","by":[{},{},{}]}},{{"op":"twist","deg_per_m":{}}}"#, s.within(0.5, 2.0), s.within(0.1, 2.0), s.within(0.5, 2.0), s.within(-45.0, 45.0)) } else { String::new() };
+        let text = format!(r#"{{ "name": "t{round}", "parts": [{}], "finish": [{finish}] }}"#, parts.join(", "));
+        let m = make_with(&text, &lib);
+        let spoken: f32 = m.extras.made.iter().map(|x| x.area_m2).sum();
+        let whole = surface(&m);
+        // (Nothing here is cut, bevelled or generated: every triangle is a named shape's.)
+        assert!(near(spoken, whole, 1e-3) && m.extras.made_rest_m2 <= 1e-3 * whole, "{text}: records {spoken} of {whole} m2");
+        for (path, shape, ops, overlap) in &named {
+            let alone = make(&format!(r#"{{ "name": "a", "parts": [ {{ "name": "a", "material": "stone", "shape": {shape}, "ops": [{}] }} ], "finish": [{finish}] }}"#, joined(&ops.iter().map(String::as_str).collect::<Vec<_>>())));
+            let truth = surface(&alone);
+            let said = m.extras.made.iter().find(|x| &x.path == path).map_or(0.0, |x| x.area_m2);
+            if *overlap {
+                assert!(said <= truth * 1.01, "{path} in {text}: {said} m2, more than alone ({truth})");
+                checked.1 += 1;
+            } else {
+                // (A union operand's truth is the union of it alone, so that its faces are cut into
+                // the triangles the boolean makes of them, which a taper, a twist or a bend after it
+                // then bends: within a part in a thousand (the boolean's grid); a shape alone, in
+                // ten thousand.)
+                assert!(near(said, truth, if path.contains(".of[") { 1e-3 } else { 1e-4 }), "{path} in {text}: recorded {said} m2, alone {truth}");
+                checked.0 += 1;
+            }
+        }
+    }
+    assert!(checked.0 >= 40 && checked.1 >= 4, "{checked:?} shapes checked exactly and hidden");
+}
+
 /// A boolean operand's own ops count in its surface: a ball its own ops scale by twenty has
 /// the surface it has as a part of its own, and a cone its own ops copy twelve times counts
 /// twelve times (less what the slab takes of each).
@@ -78,10 +237,11 @@ fn a_boolean_operand_counts_after_its_own_ops() {
     assert!(near(ball, ball_alone, 0.02), "a ball scaled by its own ops: {ball} against {ball_alone} as a part");
     adds_up(&union);
     let row = one(r#"{"op":"union","of":[{"op":"box","size":[6,0.2,1]},{"op":"cone","radius":0.2,"height":1,"sides":24,"ops":[{"op":"move","by":[-2.75,0.1,0]},{"op":"array","count":12,"offset":[0.5,0,0]}]}]}"#, "");
-    let cone = one(r#"{"op":"cone","radius":0.2,"height":1,"sides":24}"#, "");
-    let (cones, single) = (of(&row, "parts[0].shape.of[1]").area_m2, of(&cone, "parts[0].shape").area_m2);
-    // (Each cone loses its base, a sixth of it, and the slab hides a fifth of what is left.)
-    assert!(cones > 7.0 * single && cones < 12.0 * single, "twelve cones: {cones} m2, one {single} m2");
+    // (The slab with one cone where the first stands: each of the twelve stands on the slab as
+    // it does, and loses as much to it.)
+    let first = one(r#"{"op":"union","of":[{"op":"box","size":[6,0.2,1]},{"op":"cone","radius":0.2,"height":1,"sides":24,"ops":[{"op":"move","by":[-2.75,0.1,0]}]}]}"#, "");
+    let (cones, single) = (of(&row, "parts[0].shape.of[1]").area_m2, of(&first, "parts[0].shape.of[1]").area_m2);
+    assert!(near(cones, 12.0 * single, 1e-3), "twelve cones: {cones} m2, one {single} m2");
     adds_up(&row);
 }
 
@@ -281,19 +441,117 @@ fn a_finish_scales_what_was_recorded() {
 fn the_record_is_bounded() {
     let many: Vec<String> = (0..70).map(|i| part(&format!("b{i}"), &format!(r#"{{"op":"box","size":[{},1,1]}}"#, 1.0 + 0.1 * i as f32), &format!(r#"{{"op":"move","by":[{},0,0]}}"#, 20 * i))).collect();
     let m = parts(&many);
-    assert_eq!(m.extras.made.len(), specula_model::MAX_MADE);
+    assert_eq!(m.extras.made.len(), 64, "the 64 largest shapes are kept");
     // (The six smallest left out: boxes of 1 to 1.5 m.)
     let left: f32 = (0..6).map(|i| { let x = 1.0 + 0.1 * i as f32; 2.0 + 4.0 * x }).sum();
     assert!(near(m.extras.made_rest_m2, left, 0.01) && m.extras.made.iter().all(|x| x.path != "parts[0].shape"), "{}", m.extras.made_rest_m2);
     adds_up(&m);
-    // Sculpts of many primitives: outlines in all at most the record's.
-    let balls: Vec<String> = (0..24).map(|i| format!(r#"{{"op":"ellipsoid","radii":[0.1,{},0.1],"at":[{},0,0]}}"#, 0.1 + 0.01 * i as f32, 0.3 * i as f32)).collect();
-    let tree = format!(r#"{{"op":"sdf","resolution":24,"tree":{{"op":"union","of":[{}]}}}}"#, balls.join(","));
-    let sculpts: Vec<String> = (0..6).map(|i| part(&format!("s{i}"), &tree, &format!(r#"{{"op":"move","by":[0,{},0]}}"#, 3 * i))).collect();
+    // Sculpts of many primitives, every outline different: 6 of 16 ellipsoids, 288 outlines (each
+    // sculpt larger than the one before); 256 in all are kept, the largest sculpts' first, and
+    // the rest is an outline of no points.
+    let sculpts: Vec<String> = (0..6)
+        .map(|s| {
+            let balls: Vec<String> = (0..16).map(|i| format!(r#"{{"op":"ellipsoid","radii":[{},{},{}],"at":[{},0,0]}}"#, 0.1 + 0.002 * i as f32 + 0.03 * s as f32, 0.1 + 0.01 * i as f32, 0.12 + 0.003 * i as f32, 0.3 * i as f32)).collect();
+            part(&format!("s{s}"), &format!(r#"{{"op":"sdf","resolution":64,"tree":{{"op":"union","of":[{}]}}}}"#, balls.join(",")), &format!(r#"{{"op":"move","by":[0,{},0]}}"#, 3 * s))
+        })
+        .collect();
     let m = parts(&sculpts);
-    // (One past them is kept as an outline of no points, with the weight of what was left out.)
     let total: usize = m.extras.made.iter().map(|x| x.views.iter().filter(|v| !v.0.is_empty()).count()).sum();
-    let short = m.extras.made.iter().filter(|x| x.views.iter().any(|v| v.0.is_empty())).count();
-    assert!(total == MAX_RECORD_VIEWS && short > 0 && m.extras.made.iter().all(|x| x.views.len() <= MAX_VIEWS + 1), "{total} outlines, {short} shapes cut short");
+    let short: Vec<&str> = m.extras.made.iter().filter(|x| x.views.iter().any(|v| v.0.is_empty())).map(|x| x.path.as_str()).collect();
+    assert!(total == 256 && total == MAX_RECORD_VIEWS && short == ["parts[0].shape"], "{total} outlines; cut short: {short:?}");
+    // (Six of 48 outlines: the five largest sculpts keep all of theirs, the smallest 16 of 48.)
     adds_up(&m);
+}
+
+/// A sculpt keeps the outlines of its largest primitives, by the surface their own triangles
+/// have, wherever they are in its tree; what is past [`MAX_VIEWS`] (96) is one outline of no
+/// points, not read. Forty small balls before a large box: the box's three rectangles are kept.
+#[test]
+fn a_sculpt_keeps_its_largest_outlines() {
+    let mut kids: Vec<String> = (0..40).map(|i| format!(r#"{{"op":"sphere","radius":{},"at":[{},0,{}]}}"#, 0.06 + 0.0005 * i as f32, 0.15 * (i % 8) as f32, 0.15 * (i / 8) as f32)).collect();
+    kids.push(r#"{"op":"box","size":[1.5,1.5,1.5],"at":[3,0,0]}"#.to_string());
+    let m = one(&format!(r#"{{"op":"sdf","resolution":64,"tree":{{"op":"union","of":[{}]}}}}"#, kids.join(",")), "");
+    let r = of(&m, "parts[0].shape");
+    let drawn: Vec<&(Vec<[f32; 2]>, f32)> = r.views.iter().filter(|v| !v.0.is_empty()).collect();
+    let squares = drawn.iter().filter(|v| v.0.len() == 4).count();
+    let unread: f32 = r.views.iter().filter(|v| v.0.is_empty()).map(|v| v.1).sum();
+    assert!(drawn.len() == 96 && drawn.len() == MAX_VIEWS && squares == 3, "{} outlines, {squares} of them the box's", drawn.len());
+    // (The outlines left out are the smallest balls': their weight, and nothing of the box's.)
+    let total: f32 = r.views.iter().map(|v| v.1).sum();
+    assert!(unread > 0.0 && unread < 0.1 * total && near(r.area_m2, surface(&m), 1e-3), "unread {unread} of {total}; {} of {}", r.area_m2, surface(&m));
+}
+
+/// No more than the first 512 shapes built are recorded (the record of a build is bounded
+/// before the largest are chosen): three includes of a row of 200 boxes, each box larger than
+/// the one before and each include's three times the last's, keep the 64 largest of the first
+/// 512 (the third include's first 112).
+#[test]
+fn the_shapes_recorded_while_building_are_bounded() {
+    let row: Vec<String> = (0..200).map(|i| part(&format!("b{i}"), &format!(r#"{{"op":"box","size":["k * {}",0.1,0.1]}}"#, 0.1 + 0.01 * i as f32), &format!(r#"{{"op":"move","by":[{},0,0]}}"#, 10 * i))).collect();
+    let mut lib = BTreeMap::new();
+    lib.insert("row".to_string(), format!(r#"{{ "name": "row", "params": {{ "k": {{ "default": 1, "min": 1, "max": 9 }} }}, "parts": [{}] }}"#, row.join(", ")));
+    let includes: Vec<String> = (0..3).map(|i| format!(r#"{{ "name": "r{i}", "include": "row", "params": {{ "k": {} }}, "ops": [{{"op":"move","by":[0,0,{}]}}] }}"#, 3u32.pow(i), 5 * i)).collect();
+    let m = make_with(&format!(r#"{{ "name": "t", "parts": [{}] }}"#, includes.join(", ")), &lib);
+    let largest = m.extras.made.iter().map(|x| x.path.as_str()).next();
+    assert_eq!(largest, Some("parts[2].include(row).parts[111].shape"), "the last shape recorded is the 512th");
+    assert_eq!(m.extras.made.len(), 64);
+}
+
+/// **The record never refuses a build**: 52 sculpts of 32 ellipsoids each (a recipe that built
+/// before the record asked its triangles anything, and was refused by the second version for
+/// work) builds. Asking which primitive made each triangle spends a limit of its own, 120
+/// million units, and never passes it (within one question's work of it); the triangles not asked
+/// within it are no record's, the rest.
+#[test]
+fn the_record_never_refuses_a_build() {
+    let mut ps = Vec::new();
+    for i in 0..52 {
+        let kids: Vec<String> = (0..32).map(|j| format!(r#"{{"op":"ellipsoid","radii":[{},{},{}],"at":[{},0,0]}}"#, 0.05 + 0.001 * j as f32, 0.05 + 0.0013 * (i * 32 + j) as f32 / 64.0, 0.06 + 0.0007 * j as f32, 0.06 * j as f32)).collect();
+        ps.push(part(&format!("s{i}"), &format!(r#"{{"op":"sdf","resolution":48,"tree":{{"op":"union","of":[{}]}}}}"#, kids.join(",")), &format!(r#"{{"op":"move","by":[0,{},0]}}"#, i as f32 * 0.3)));
+    }
+    let m = parts(&ps);
+    let sum = |key: &str| m.extras.stats.iter().map(|(_, j)| j.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)).sum::<f64>();
+    let (work, unanswered) = (sum("owners_work"), sum("owners_unanswered"));
+    // (One question costs what the tree's 32 ellipsoids and their group cost to evaluate.)
+    assert!(work > 120e6 - 4_000.0 && work <= 120e6, "{work} units spent asking");
+    assert!(unanswered > 0.0 && m.extras.made_rest_m2 > 0.0, "{unanswered} triangles unanswered, rest {}", m.extras.made_rest_m2);
+    adds_up(&m);
+}
+
+/// A group's stretch is put on a round cone's and a column's outlines along the axis they run
+/// on: a round cone standing along Y in a group stretched three times along Y is from the side
+/// three times as long, as the same cone built three times as long is; a column lying along X
+/// in a group stretched along X the same.
+#[test]
+fn a_groups_stretch_lands_on_the_axis_a_limb_runs_on() {
+    let side = |tree: &str| -> [f32; 2] {
+        let m = one(&format!(r#"{{"op":"sdf","resolution":40,"tree":{tree}}}"#), "");
+        let v = &of(&m, "parts[0].shape").views;
+        half_extents(&v[1].0)
+    };
+    let stretched = side(r#"{"op":"union","stretch":[1,3,1],"of":[{"op":"round_cone","from":[0,0,0],"to":[0,0.5,0],"radius":0.1,"radius_to":0.02}]}"#);
+    let plain = side(r#"{"op":"round_cone","from":[0,0,0],"to":[0,0.5,0],"radius":0.1,"radius_to":0.02}"#);
+    // (Along: its length and the two balls, 0.5 + 0.1 + 0.02, three times; across: as it was.)
+    assert!(near(stretched[0], 3.0 * plain[0], 0.01) && near(stretched[1], plain[1], 0.01), "{stretched:?} against {plain:?}");
+    let col = |stretch: &str| side(&format!(r#"{{"op":"union","stretch":{stretch},"of":[{{"op":"column","from":[0,0,0],"to":[1,0,0],"side":[0,0,1],"sections":[[0,0.1,0.05],[1,0.1,0.05]]}}]}}"#));
+    let (one_, three) = (col("[1,1,1]"), col("[3,1,1]"));
+    // (Its first side, toward `side` (Z) and along X: three times as long, as wide as it was.)
+    assert!(near(three[1], 3.0 * one_[1], 0.01) && near(three[0], one_[0], 0.01), "{three:?} against {one_:?}");
+}
+
+/// A mirror that keeps both halves drops the faces that lie on its plane, and each shape's
+/// record keeps to its own triangles past them: a box standing with a face on the plane and
+/// a ball beside it, in one union, mirrored, each have what they have alone (a union of one).
+#[test]
+fn a_mirror_keeps_each_shape_to_its_own() {
+    let boxed = r#"{"op":"box","size":[1,1,1],"ops":[{"op":"move","by":[0,0,0.5]}]}"#;
+    let ball = r#"{"op":"sphere","radius":0.4,"subdivisions":2,"ops":[{"op":"move","by":[3,0.5,1]}]}"#;
+    let mirror = r#"{"op":"mirror","axis":"z","keep":true}"#;
+    let m = one(&format!(r#"{{"op":"union","of":[{boxed},{ball}]}}"#), mirror);
+    for (path, shape) in [("parts[0].shape.of[0]", boxed), ("parts[0].shape.of[1]", ball)] {
+        let alone = surface(&one(&format!(r#"{{"op":"union","of":[{shape}]}}"#), mirror));
+        assert!(near(of(&m, path).area_m2, alone, 1e-3), "{path}: {} against {alone} alone", of(&m, path).area_m2);
+    }
+    // (The box's face on the plane is gone: two boxes back to back, ten faces of 1 m2.)
+    assert!(near(of(&m, "parts[0].shape.of[0]").area_m2, 10.0, 1e-3));
 }

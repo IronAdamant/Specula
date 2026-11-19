@@ -40,7 +40,16 @@ pub struct Shape {
     pub tags: Vec<u8>,
     /// Colour blended into bevel faces at [`Shape::finalize`]: (colour, amount 0..1).
     pub bevel_tint: Option<(Rgba, f32)>,
+    /// What each triangle was made as: one number a triangle, the shape it belongs to in the
+    /// build's record of what a recipe is built of ([`crate::made`]), [`NO_OWNER`] for none.
+    /// **Empty when nothing asked** (every generator's output, the far level, an LOD), which
+    /// costs nothing; otherwise as long as `tris`. Every operation that makes, copies, drops
+    /// or splits triangles keeps it beside them; it never changes the mesh.
+    pub owners: Vec<u32>,
 }
+
+/// A triangle no record speaks for ([`Shape::owners`]).
+pub const NO_OWNER: u32 = u32::MAX;
 
 /// A ring of a ring stack: several points, or one point (an apex).
 type Ring = Vec<V3>;
@@ -99,6 +108,14 @@ impl Shape {
     fn push_tri(&mut self, t: [u32; 3], tag: u8) {
         self.tris.push(t);
         self.tags.push(tag);
+        if !self.owners.is_empty() {
+            self.owners.push(NO_OWNER);
+        }
+    }
+
+    /// Every triangle made as `owner` ([`Shape::owners`]).
+    pub fn own(&mut self, owner: u32) {
+        self.owners = vec![owner; self.tris.len()];
     }
 
     /// Bounds of the positions.
@@ -425,7 +442,7 @@ impl Shape {
         }
         let positions: Vec<V3> = pos.iter().map(|p| [p[0] * radius, p[1] * radius + radius, p[2] * radius]).collect();
         let n = tris.len();
-        let mut s = Shape { colors: vec![WHITE; positions.len()], positions, tris, tags: vec![TAG_FACE; n], bevel_tint: None };
+        let mut s = Shape { colors: vec![WHITE; positions.len()], positions, tris, tags: vec![TAG_FACE; n], bevel_tint: None, owners: Vec::new() };
         s.orient_outward_if_closed();
         s
     }
@@ -625,6 +642,15 @@ impl Shape {
     /// Appends `other`. The bevel tint of `self` wins (else `other`'s).
     pub fn merge(&mut self, other: &Shape) {
         let base = self.positions.len() as u32;
+        // (What each triangle was made as: the side that has none says none.)
+        if !(self.owners.is_empty() && other.owners.is_empty()) {
+            self.owners.resize(self.tris.len(), NO_OWNER);
+            if other.owners.is_empty() {
+                self.owners.resize(self.tris.len() + other.tris.len(), NO_OWNER);
+            } else {
+                self.owners.extend_from_slice(&other.owners);
+            }
+        }
         self.positions.extend_from_slice(&other.positions);
         self.colors.extend_from_slice(&other.colors);
         self.tris.extend(other.tris.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
@@ -647,6 +673,10 @@ impl Shape {
             self.tris.retain(|_| *k.next().unwrap());
             let mut k = keep.iter();
             self.tags.retain(|_| *k.next().unwrap());
+            if !self.owners.is_empty() {
+                let mut k = keep.iter();
+                self.owners.retain(|_| *k.next().unwrap());
+            }
         }
         let mut copy = self.clone();
         copy.transform(&Affine::scale(s));
@@ -714,7 +744,9 @@ impl Shape {
     fn remap_tris(&mut self, remap: &[u32]) {
         let mut tris = Vec::with_capacity(self.tris.len());
         let mut tags = Vec::with_capacity(self.tris.len());
-        for (t, &tag) in self.tris.iter().zip(&self.tags) {
+        let owned = !self.owners.is_empty();
+        let mut owners = Vec::with_capacity(if owned { self.tris.len() } else { 0 });
+        for (i, (t, &tag)) in self.tris.iter().zip(&self.tags).enumerate() {
             let m = [remap[t[0] as usize], remap[t[1] as usize], remap[t[2] as usize]];
             if m[0] == m[1] || m[1] == m[2] || m[0] == m[2] {
                 continue;
@@ -725,9 +757,13 @@ impl Shape {
             }
             tris.push(m);
             tags.push(tag);
+            if owned {
+                owners.push(self.owners.get(i).copied().unwrap_or(NO_OWNER));
+            }
         }
         self.tris = tris;
         self.tags = tags;
+        self.owners = owners;
     }
 
     /// Splits every triangle into four, `levels` times (midpoints are shared, so closed shells
@@ -756,6 +792,10 @@ impl Shape {
             }
             self.tris = tris;
             self.tags = tags;
+            // (The four pieces of a triangle are what it was made as.)
+            if !self.owners.is_empty() {
+                self.owners = self.owners.iter().flat_map(|&o| [o; 4]).collect();
+            }
         }
     }
 

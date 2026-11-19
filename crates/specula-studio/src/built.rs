@@ -169,63 +169,230 @@ pub const MAX_ASPECT: f32 = 6.0;
 /// 0.27 s on the reference laptop while other builds ran (an outline 8 ms there).
 pub const MAX_READS: usize = 32;
 
-/// An outline longer than [`MAX_ASPECT`] times its width, shortened to that. Drawn at its own
-/// length a thin one is too thin for the measure to read (under [`crate::shape::MIN_THICK`]
-/// pixels: about forty to one at [`PIXELS`]) or is read wrongly near that, and differently at
-/// another size. A recorded outline is one part's:
-/// - **straight along its middle** (no corner of it between its two ends, each as long as the
-///   outline is wide: a rod's rectangle, a capsule's stadium, a spike's triangle, a round
-///   cone's side), the length is taken out of the middle and its ends kept as they are, so a
-///   rod is read as a rectangle and a capsule as a stadium however long they are;
-/// - **curved along it** (an oval's, a profile's), it is pressed evenly from end to end, so an
-///   oval of a thousand to one is read as one of six: pointed, as the measure reads ovals of
-///   over about four to one.
-pub fn at_most_long(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
-    let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+/// How far from straight and level a stretch of an outline's two long sides may be and still be
+/// taken out of it ([`at_most_long`]), as a share of the outline's width: a fiftieth, about a
+/// pixel where the shortened outline is read.
+pub const STRAIGHT: f32 = 0.02;
+/// How far a side may lean off an outline's long axis (the sine of five degrees) and still be
+/// the side it is laid along ([`at_most_long`]).
+const SIDE_SLANT: f64 = 0.087;
+
+/// The axis an outline is longest along (from its area's second moments; square roots only, the
+/// same on every machine), as a unit direction, and its middle. Within a ten-thousandth of an
+/// axis, that axis exactly.
+fn long_axis(points: &[[f32; 2]]) -> ([f64; 2], [f64; 2]) {
+    let n = points.len();
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
     for p in points {
+        for k in 0..2 {
+            lo[k] = lo[k].min(f64::from(p[k]));
+            hi[k] = hi[k].max(f64::from(p[k]));
+        }
+    }
+    let o = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1])];
+    let (mut a, mut cx, mut cy, mut xx, mut yy, mut xy) = (0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for i in 0..n {
+        let (p, q) = (points[i], points[(i + 1) % n]);
+        let (x0, y0, x1, y1) = (f64::from(p[0]) - o[0], f64::from(p[1]) - o[1], f64::from(q[0]) - o[0], f64::from(q[1]) - o[1]);
+        let c = x0 * y1 - x1 * y0;
+        a += c;
+        cx += (x0 + x1) * c;
+        cy += (y0 + y1) * c;
+        xx += (x0 * x0 + x0 * x1 + x1 * x1) * c;
+        yy += (y0 * y0 + y0 * y1 + y1 * y1) * c;
+        xy += (x0 * y1 + 2.0 * x0 * y0 + 2.0 * x1 * y1 + x1 * y0) * c;
+    }
+    let (sxx, syy, sxy, mid) = if a.abs() > 0.0 && a.is_finite() {
+        let (mx, my) = (cx / (3.0 * a), cy / (3.0 * a));
+        (xx / (6.0 * a) - mx * mx, yy / (6.0 * a) - my * my, xy / (12.0 * a) - mx * my, [mx + o[0], my + o[1]])
+    } else {
+        (hi[0] - lo[0], hi[1] - lo[1], 0.0, o)
+    };
+    // (The larger eigenvector of [[sxx, sxy], [sxy, syy]].)
+    let half = 0.5 * (sxx - syy);
+    let big = 0.5 * (sxx + syy) + (half * half + sxy * sxy).sqrt();
+    let d = if sxx >= syy { [big - syy, sxy] } else { [sxy, big - sxx] };
+    let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
+    let d = if len > 0.0 && len.is_finite() { [d[0] / len, d[1] / len] } else { [1.0, 0.0] };
+    // (An outline whose side runs nearly along that axis, for a quarter of its length or more,
+    // is laid along its longest such side, so that a straight side is level exactly: an L's
+    // foot tilts its axis by a little.)
+    let reach = points.iter().map(|p| f64::from(p[0]) * d[0] + f64::from(p[1]) * d[1]).fold((f64::INFINITY, f64::NEG_INFINITY), |m, u| (m.0.min(u), m.1.max(u)));
+    let mut side: Option<([f64; 2], f64)> = None;
+    for i in 0..n {
+        let (p, q) = (points[i], points[(i + 1) % n]);
+        let e = [f64::from(q[0]) - f64::from(p[0]), f64::from(q[1]) - f64::from(p[1])];
+        let l = (e[0] * e[0] + e[1] * e[1]).sqrt();
+        if !(l >= 0.25 * (reach.1 - reach.0) && l > 0.0) || (e[0] * d[1] - e[1] * d[0]).abs() > SIDE_SLANT * l || side.is_some_and(|(_, best)| best >= l) {
+            continue;
+        }
+        let s = if e[0] * d[0] + e[1] * d[1] >= 0.0 { 1.0 } else { -1.0 };
+        side = Some(([s * e[0] / l, s * e[1] / l], l));
+    }
+    let d = side.map_or(d, |(e, _)| e);
+    let d = if d[1].abs() < 1e-4 {
+        [1.0, 0.0]
+    } else if d[0].abs() < 1e-4 {
+        [0.0, 1.0]
+    } else {
+        d
+    };
+    (d, mid)
+}
+
+/// The stretches `[from, to]` of an outline laid along X (`q`), longer than `least`, in which it
+/// is two sides only, each straight and level within `tol` (however many points lie on them):
+/// every edge that crosses a station there is one of the two. The longest first, then the
+/// longest of what is left, none overlapping; in order along. Exact: found between the
+/// outline's own points, not at sampled stations.
+fn straight_stretches(q: &[[f64; 2]], tol: f64, least: f64) -> Vec<(f64, f64)> {
+    let n = q.len();
+    let mut xs: Vec<f64> = q.iter().map(|p| p[0]).collect();
+    xs.sort_by(f64::total_cmp);
+    xs.dedup();
+    // (Each gap between two of the points' places along: its two sides' heights at its ends,
+    // lower then upper, when exactly two edges cross it.)
+    let gaps: Vec<Option<[f64; 4]>> = xs
+        .windows(2)
+        .map(|g| {
+            let m = 0.5 * (g[0] + g[1]);
+            let mut sides: Vec<[f64; 2]> = Vec::new();
+            for i in 0..n {
+                let (a, b) = (q[i], q[(i + 1) % n]);
+                if (a[0] < m) != (b[0] < m) {
+                    let at = |x: f64| a[1] + (x - a[0]) / (b[0] - a[0]) * (b[1] - a[1]);
+                    sides.push([at(g[0]), at(g[1])]);
+                }
+            }
+            if sides.len() != 2 {
+                return None;
+            }
+            let (lo, hi) = if sides[0][0] + sides[0][1] <= sides[1][0] + sides[1][1] { (sides[0], sides[1]) } else { (sides[1], sides[0]) };
+            Some([lo[0], lo[1], hi[0], hi[1]])
+        })
+        .collect();
+    let mut used = vec![false; gaps.len()];
+    let mut found: Vec<(f64, f64)> = Vec::new();
+    loop {
+        let mut best: Option<(usize, usize)> = None;
+        for i in 0..gaps.len() {
+            let Some(first) = gaps[i].filter(|_| !used[i]) else { continue };
+            let (mut lo, mut hi) = ([first[0].min(first[1]), first[0].max(first[1])], [first[2].min(first[3]), first[2].max(first[3])]);
+            let mut j = i;
+            while j < gaps.len() && !used[j] {
+                let Some(g) = gaps[j] else { break };
+                let nlo = [lo[0].min(g[0]).min(g[1]), lo[1].max(g[0]).max(g[1])];
+                let nhi = [hi[0].min(g[2]).min(g[3]), hi[1].max(g[2]).max(g[3])];
+                if nlo[1] - nlo[0] > tol || nhi[1] - nhi[0] > tol {
+                    break;
+                }
+                (lo, hi) = (nlo, nhi);
+                j += 1;
+            }
+            if j > i && best.is_none_or(|(a, b)| xs[j] - xs[i] > xs[b] - xs[a]) {
+                best = Some((i, j));
+            }
+        }
+        match best {
+            Some((i, j)) if xs[j] - xs[i] > least => {
+                used[i..j].iter_mut().for_each(|u| *u = true);
+                found.push((xs[i], xs[j]));
+            }
+            _ => break,
+        }
+    }
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    found
+}
+
+/// An outline longer than [`MAX_ASPECT`] times its width, made that long. Drawn at its own
+/// length a thin one is too thin for the measure to read (under [`crate::shape::MIN_THICK`]
+/// pixels: about forty to one at [`PIXELS`]), and past about six to one the readings of
+/// ordinary outlines (a horn at eight, a cut rectangle, a bottle and a club at twelve) begin to
+/// differ between 384 and 512 pixels. So, along the axis it is longest on (an outline on a
+/// diagonal is turned to it first):
+/// - **its length is taken out of its longest straight stretch** (its two sides straight and
+///   level there within [`STRAIGHT`] of its width, however many points lie on them: a rod's,
+///   a capsule's, a column's of any number of sections, a blade's), from the middle of the
+///   stretch; **its ends are kept as they are**, so a rod reads as a rectangle, a capsule and
+///   a column as a stadium and a blade as a blade however long;
+/// - what is still too long after that (an outline with no such stretch: an oval, a taper, a
+///   horn, a round cone, a profile curved all along) **is pressed evenly between its two ends,
+///   each as long as the outline is wide, which are kept as they are**: a needle of an oval, a
+///   spike and a horn read pointed at both sizes (the measure reads an oval of over about four
+///   to one as pointed), a round cone round. What it cannot keep: the slope of the sides
+///   between the ends (a taper's middle is steeper than it was), and a curve along the middle
+///   that the press makes tighter (a crescent of eight to one and more reads differently at
+///   384 and 512 pixels; so does a superellipse of power 6, as it does at its own length).
+///
+/// A shorter outline is as it was; a long one is given laid along X.
+pub fn at_most_long(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    if points.len() < 3 || points.iter().any(|p| !(p[0].is_finite() && p[1].is_finite())) {
+        return points.to_vec();
+    }
+    let (d, mid) = long_axis(points);
+    // (Laid along X: along the axis, and across it.)
+    let mut q: Vec<[f64; 2]> = points
+        .iter()
+        .map(|p| {
+            let (x, y) = (f64::from(p[0]) - mid[0], f64::from(p[1]) - mid[1]);
+            [x * d[0] + y * d[1], y * d[0] - x * d[1]]
+        })
+        .collect();
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for p in &q {
         for k in 0..2 {
             lo[k] = lo[k].min(p[k]);
             hi[k] = hi[k].max(p[k]);
         }
     }
-    let w = [hi[0] - lo[0], hi[1] - lo[1]];
-    let (long, short) = if w[0] >= w[1] { (0, 1) } else { (1, 0) };
-    if !(w[short] > 0.0 && w[long].is_finite()) || w[long] <= MAX_ASPECT * w[short] {
+    let (long, wide) = (hi[0] - lo[0], hi[1] - lo[1]);
+    let target = f64::from(MAX_ASPECT) * wide;
+    if !(wide > 0.0 && long.is_finite()) || long <= target {
         return points.to_vec();
     }
-    let end = w[short];
-    let middle = w[long] - 2.0 * end;
-    // (An outline with corners along its middle, an oval's or a profile's, is curved there:
-    // it is pressed evenly from end to end, and an oval of a thousand to one is read as one of
-    // six.)
-    if points.iter().any(|p| p[long] - lo[long] > end && p[long] - lo[long] < w[long] - end) {
-        let k = MAX_ASPECT * w[short] / w[long];
-        return points
-            .iter()
-            .map(|p| {
-                let mut q = *p;
-                q[long] = lo[long] + (p[long] - lo[long]) * k;
-                q
-            })
-            .collect();
+    // (Out of the middle of each straight stretch, leaving half a width of it at each end with
+    // what is beside it; from all of them by what each can give, so that a bottle's body and
+    // neck both shorten.)
+    let stretches = straight_stretches(&q, f64::from(STRAIGHT) * wide, wide);
+    let can: f64 = stretches.iter().map(|(a, b)| b - a - wide).sum();
+    let mut now = long;
+    if can > 0.0 {
+        let share = ((long - target) / can).min(1.0);
+        let cuts: Vec<(f64, f64)> = stretches.iter().map(|(a, b)| (b - a - wide) * share).map(|c| c.max(0.0)).zip(&stretches).map(|(c, (a, b))| (0.5 * (a + b - c), c)).collect();
+        for p in &mut q {
+            let mut shift = 0.0;
+            let mut x = p[0];
+            for (c0, cut) in &cuts {
+                if p[0] >= c0 + cut {
+                    shift += cut;
+                } else {
+                    if p[0] > *c0 {
+                        x = *c0;
+                    }
+                    break;
+                }
+            }
+            p[0] = x - shift;
+        }
+        now -= cuts.iter().map(|c| c.1).sum::<f64>();
     }
-    let k = (MAX_ASPECT - 2.0) * w[short] / middle;
-    points
-        .iter()
-        .map(|p| {
-            let u = p[long] - lo[long];
-            let u = if u <= end {
-                u
-            } else if u >= w[long] - end {
-                u - middle * (1.0 - k)
+    // (What is left too long is pressed evenly between its two ends, each as long as the
+    // outline is wide, which are kept as they are.)
+    if now > target * (1.0 + 1e-9) {
+        let (a, b) = (lo[0] + wide, lo[0] + now - wide);
+        let k = (target - 2.0 * wide) / (now - 2.0 * wide);
+        for p in &mut q {
+            p[0] = if p[0] <= a {
+                p[0]
+            } else if p[0] >= b {
+                p[0] - (now - target)
             } else {
-                end + (u - end) * k
+                a + (p[0] - a) * k
             };
-            let mut q = *p;
-            q[long] = lo[long] + u;
-            q
-        })
-        .collect()
+        }
+    }
+    q.into_iter().map(|p| [p[0] as f32, p[1] as f32]).collect()
 }
 
 /// The shape language of one outline, drawn and read (at most [`MAX_ASPECT`] times as long as
@@ -469,6 +636,198 @@ mod tests {
         let b = built_of(&record, 0.0).unwrap();
         let took = t.elapsed();
         assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(400)), "{took:?}");
-        assert!(b.read < 0.2, "only what the budget read is read: {}", b.read);
+        // (32 outlines are read, the largest shapes' first: eight shapes of four, of 64.)
+        assert!((b.read - 8.0 / 64.0).abs() < 1e-6, "only what the budget read is read: {}", b.read);
+    }
+
+    /// A long outline is read as what it is whatever points lie along it, and keeps its ends:
+    /// a stadium with one more point on its straight side reads as the stadium does; a column
+    /// of three, five or more equal sections, 4 cm wide and up to two metres long, as one of
+    /// two (a stadium: round); a sword's blade, 4 cm by 95 cm with a tip of 10 cm, as it reads
+    /// at its own length (pointed), at 384 and at 512 pixels.
+    #[test]
+    fn a_long_outline_keeps_its_ends_whatever_points_it_has() {
+        use specula_model::made::capped;
+        let at_both = |p: &[[f32; 2]]| [PIXELS, 512].map(|side| read_at(p, side).unwrap_or_else(|| panic!("not read at {side}")));
+        for a in [12.0f32, 30.0, 100.0, 1000.0] {
+            let plain = stadium(a, 0.5);
+            let mut more = plain.clone();
+            more.push([0.0, -0.5]);
+            for (x, y) in at_both(&plain).iter().zip(&at_both(&more)) {
+                assert!(y.round > 0.9 && (x.round - y.round).abs() < 0.02, "a stadium {a} to 1 with a point on its side: {y:?}, without: {x:?}");
+            }
+        }
+        for len in [0.5f32, 1.0, 2.0] {
+            for n in [2usize, 3, 5, 8] {
+                let rows: Vec<[f32; 2]> = (0..n).map(|i| [0.02, len * i as f32 / (n - 1) as f32]).collect();
+                for s in at_both(&capped(&rows, [0.02, 0.02])) {
+                    assert!(s.round > 0.9, "a column of {n} sections, 4 cm by {len} m: {s:?}");
+                }
+            }
+        }
+        let blade = vec![[-0.02, 0.0], [0.02, 0.0], [0.02, 0.85], [0.0, 0.95], [-0.02, 0.85]];
+        let own = crate::shape::of_mask(&drawn(&blade, PIXELS).unwrap()).unwrap();
+        for s in at_both(&blade) {
+            assert!(leading(s.round, s.square, s.pointed) == Kind::Pointed && (s.pointed - own.pointed).abs() < 0.1, "a blade: {s:?}, at its own length {own:?}");
+        }
+        // Its ends are kept as they are: the tip's points, laid along X and moved along together.
+        let short = at_most_long(&blade);
+        let tip: Vec<[f32; 2]> = short.iter().skip(2).copied().collect();
+        let (dy0, dy1) = (tip[1][0] - tip[0][0], tip[1][1] - tip[0][1]);
+        assert!((dy0 - 0.1).abs() < 1e-5 && (dy1 - 0.02).abs() < 1e-5, "the tip as it was (laid along X): {tip:?}");
+        // Points along a straight side change nothing: a rectangle of 50 to 1 with twenty more
+        // points on its sides is drawn as the rectangle is.
+        let mut dotted = rect(50.0, 1.0, 0.0);
+        for i in 1..=10 {
+            dotted.insert(1, [25.0 - 5.0 * i as f32 + 0.25, -0.5]);
+        }
+        for i in 1..=10 {
+            let at = dotted.len() - 1;
+            dotted.insert(at, [-25.0 + 5.0 * i as f32 - 0.25, 0.5]);
+        }
+        assert_eq!(drawn(&at_most_long(&dotted), PIXELS), drawn(&at_most_long(&rect(50.0, 1.0, 0.0)), PIXELS));
+    }
+
+    /// A long outline on a diagonal is turned to its long axis before it is shortened, and is
+    /// read as it is along an axis: a rod, a capsule, a column and a spike at 10, 30 and 45
+    /// degrees, 30 and 100 to one, lead as they do lying flat, at both sizes (before, past about
+    /// forty to one they were not read at all, and nearer they flipped between sizes).
+    #[test]
+    fn a_long_outline_on_a_diagonal_is_read_as_lying_flat() {
+        use specula_model::made::capped;
+        type Outline = Box<dyn Fn(f32) -> Vec<[f32; 2]>>;
+        let kinds: Vec<(&str, Outline)> = vec![
+            ("rectangle", Box::new(|a| rect(a, 1.0, 0.0))),
+            ("stadium", Box::new(|a| stadium(a, 0.5))),
+            ("column of three", Box::new(|a| capped(&[[0.5, 0.0], [0.5, 0.5 * a], [0.5, a]], [0.5, 0.5]))),
+            ("spike", Box::new(|a| trapezoid(0.5, 0.0, a))),
+        ];
+        let turned = |p: &[[f32; 2]], deg: f64| -> Vec<[f32; 2]> {
+            let (s, c) = specula_model::dmath::sin_cos_deg(deg);
+            p.iter().map(|q| [c as f32 * q[0] - s as f32 * q[1], s as f32 * q[0] + c as f32 * q[1]]).collect()
+        };
+        for (name, f) in &kinds {
+            for a in [30.0f32, 100.0] {
+                let flat = f(a);
+                for deg in [10.0, 30.0, 45.0] {
+                    for side in [PIXELS, 512] {
+                        let (x, y) = (read_at(&flat, side).unwrap(), read_at(&turned(&flat, deg), side).unwrap_or_else(|| panic!("a {name} {a} to 1 at {deg} degrees is not read at {side}")));
+                        assert!(leading(x.round, x.square, x.pointed) == leading(y.round, y.square, y.pointed) && (x.share(leading(x.round, x.square, x.pointed)) - y.share(leading(x.round, x.square, x.pointed))).abs() < 0.1, "a {name} {a} to 1 at {deg} degrees, {side} pixels: {y:?}; flat {x:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Around the line where shortening begins (six to one) nothing jumps: rectangles, stadia,
+    /// ovals, frustums, spikes, round cones and columns read the same lead from 5.5 to 7.5 to one,
+    /// at both sizes, and a share moves by less than 0.15 from one step to the next (the measure
+    /// itself moves an oval's by 0.14 between 5.5 and 5.6 to one, where nothing is shortened).
+    #[test]
+    fn nothing_jumps_where_shortening_begins() {
+        use specula_model::made::{capped, ellipse, tapered};
+        type Outline = Box<dyn Fn(f32) -> Vec<[f32; 2]>>;
+        let kinds: Vec<(&str, Outline)> = vec![
+            ("rectangle", Box::new(|a| rect(a, 1.0, 0.0))),
+            ("stadium", Box::new(|a| stadium(a, 0.5))),
+            ("oval", Box::new(|a| ellipse(0.5 * a, 0.5))),
+            ("frustum", Box::new(|a| trapezoid(0.5, 0.3, a))),
+            ("spike", Box::new(|a| trapezoid(0.5, 0.0, a))),
+            ("round cone", Box::new(|a| tapered(0.5, 0.2, a))),
+            ("column of three", Box::new(|a| capped(&[[0.5, 0.0], [0.5, 0.5 * a], [0.5, a]], [0.5, 0.5]))),
+        ];
+        for (name, f) in &kinds {
+            for side in [PIXELS, 512] {
+                let mut last: Option<ShapeLanguage> = None;
+                for step in 0..=20 {
+                    let a = 5.5 + 0.1 * step as f32;
+                    let s = read_at(&f(a), side).unwrap();
+                    if let Some(l) = last {
+                        let lead = leading(l.round, l.square, l.pointed);
+                        // (A round cone only keeps its lead: the measure reads its round share unsteadily at
+                        // its own length too, 0.61 and 0.68 at six to one, 0.59 and 0.79 at eight.)
+                        let tol = if *name == "round cone" { 1.0 } else { 0.15 };
+                        assert!(leading(s.round, s.square, s.pointed) == lead && (s.share(lead) - l.share(lead)).abs() < tol, "a {name} at {a} to 1, {side} pixels: {s:?} after {l:?}");
+                    }
+                    last = Some(s);
+                }
+            }
+        }
+    }
+
+    /// Length is taken out of every straight stretch by what each can give, and what lies
+    /// between them is kept: a bottle a hundred times as long as wide (a body and a neck, each
+    /// straight, and a shoulder between) shortens to six to one with its shoulder's points
+    /// moved along together, as they were.
+    #[test]
+    fn what_lies_between_straight_stretches_is_kept() {
+        let a = 100.0f32;
+        let bottle = mirrored(&[[0.0, 0.0], [0.5, 0.0], [0.5, 0.4 * a], [0.3, 0.4 * a + 0.5], [0.15, 0.4 * a + 1.0], [0.15, a], [0.0, a]]);
+        let short = at_most_long(&bottle);
+        let e = specula_model::made::half_extents(&short);
+        assert!((e[0] / e[1] - MAX_ASPECT).abs() < 1e-3, "{e:?}");
+        // (The shoulder: points 2 to 4, along X now; their spacing as it was.)
+        let along: Vec<f32> = short[2..5].iter().map(|p| p[0]).collect();
+        assert!((along[1] - along[0] - 0.5).abs() < 1e-4 && (along[2] - along[1] - 0.5).abs() < 1e-4, "the shoulder: {:?}", &short[2..5]);
+        // (Both stretches gave: the body is still longer than the neck.)
+        let (body, neck) = (short[2][0] - short[1][0], short[5][0] - short[4][0]);
+        assert!(body > 0.5 && neck > 0.5 && (body / neck - 1.0).abs() < 0.5, "body {body}, neck {neck}");
+    }
+
+    /// What is pressed is pressed between its two ends, each as long as the outline is wide,
+    /// which keep their points where they were (moved along together): a round cone and an
+    /// oval of a hundred to one, shortened to six to one.
+    #[test]
+    fn a_pressed_outline_keeps_its_ends() {
+        use specula_model::made::{ellipse, tapered};
+        for (name, p) in [("round cone", tapered(0.5, 0.2, 100.0)), ("oval", ellipse(50.0, 0.5))] {
+            let short = at_most_long(&p);
+            let (lo, hi) = p.iter().fold((f32::MAX, f32::MIN), |m, q| (m.0.min(q[0]), m.1.max(q[0])));
+            let e = specula_model::made::half_extents(&short);
+            assert!((e[0] / e[1] - 6.0).abs() < 1e-3, "a {name} made {e:?}");
+            // (Laid along its axis, the distances between the points of each end are as they were.)
+            let gap = |s: &[[f32; 2]], i: usize, j: usize| ((s[i][0] - s[j][0]).powi(2) + (s[i][1] - s[j][1]).powi(2)).sqrt();
+            let end = |i: usize| p[i][0] - lo <= 1.0 || hi - p[i][0] <= 1.0;
+            let mut held = 0;
+            for i in 0..p.len() {
+                let j = (i + 1) % p.len();
+                if end(i) && end(j) && ((p[i][0] - lo <= 1.0) == (p[j][0] - lo <= 1.0)) {
+                    assert!((gap(&short, i, j) - gap(&p, i, j)).abs() < 1e-3, "a {name}: points {i} and {j} were {} apart, now {}", gap(&p, i, j), gap(&short, i, j));
+                    held += 1;
+                }
+            }
+            assert!(held >= 4, "a {name}: {held} pairs of points at its ends");
+        }
+    }
+
+    /// The line is drawn where it is said to be: an outline is shortened from six to one on
+    /// (not five, not eight), and a stretch is straight when its sides stay level within a
+    /// fiftieth of its width: a rod whose top steps up and down by 0.015 of its width every
+    /// width along has its length taken out (points are moved onto one place), and one whose
+    /// top steps by 0.025 is pressed (no two points meet).
+    #[test]
+    fn the_lines_are_where_they_are_said_to_be() {
+        assert_eq!(at_most_long(&rect(6.0, 1.0, 0.0)), rect(6.0, 1.0, 0.0));
+        let e = specula_model::made::half_extents(&at_most_long(&rect(6.5, 1.0, 0.0)));
+        assert!((e[0] / e[1] - 6.0).abs() < 1e-4, "{e:?}");
+        let stepped = |h: f32| -> Vec<[f32; 2]> {
+            let mut p = vec![[0.0, -0.5], [60.0, -0.5]];
+            for i in (0..60).rev() {
+                let y = 0.5 + if i % 2 == 0 { h } else { 0.0 };
+                p.push([i as f32 + 1.0, y]);
+                p.push([i as f32, y]);
+            }
+            p
+        };
+        let places = |p: &[[f32; 2]]| {
+            let mut x: Vec<u32> = p.iter().map(|q| q[0].to_bits()).collect();
+            x.sort_unstable();
+            x.dedup();
+            x.len()
+        };
+        for (h, cut) in [(0.015f32, true), (0.025, false)] {
+            let p = stepped(h);
+            assert_eq!(places(&at_most_long(&p)) < places(&p), cut, "a rod stepping by {h}");
+        }
     }
 }

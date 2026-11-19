@@ -1159,13 +1159,15 @@ pub struct ModelExtras {
     /// ones whose facets stand furthest off the true curve first, at most [`MAX_ROUND`].
     pub round: Vec<Round>,
     /// What the recipe is built of ([`crate::Made`]): each shape it names with its own outlines
-    /// and its own surface in the finished model (what its operations, a boolean and a scatter
-    /// left of it), one record a path, the ones with the most surface first, at most
-    /// [`crate::MAX_MADE`] and [`crate::made::MAX_RECORD_VIEWS`] outlines in all.
+    /// and its own surface in the finished model, measured on the triangles that carry it
+    /// ([`crate::Shape::owners`]: what its operations, a boolean and a scatter left of it), one
+    /// record a path, the ones with the most surface first, at most [`crate::MAX_MADE`] and
+    /// [`crate::made::MAX_RECORD_VIEWS`] outlines in all.
     pub made: Vec<crate::Made>,
     /// The surface nothing in `made` speaks for, square metres: a terrain, a building, an
     /// imported mesh, the walls cuts make (their cutters' surface), a bevel's strips, a
-    /// sculpt's half spaces, and the shapes past the ones kept.
+    /// sculpt's half spaces and its triangles not asked within
+    /// [`crate::sdf::MAX_OWNER_BUILD_WORK`], and the shapes past the ones kept.
     pub made_rest_m2: f32,
 }
 
@@ -1467,7 +1469,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
             f64::from(math3::length(math3::cross(math3::sub(b, a), math3::sub(c, a)))) * 0.5
         })
         .sum();
-    let (made, made_rest_m2) = tally.made_of(surface as f32);
+    let (made, made_rest_m2) = tally.made_of(&built.iter().map(|b| &b.shape).collect::<Vec<_>>(), surface as f32);
     Ok(Model {
         name: recipe.name.clone(),
         bounds: lods[0].bounds(),
@@ -1601,8 +1603,16 @@ struct Tally {
     work: std::cell::Cell<u64>,
     /// The shapes named round so far ([`Round`]), the [`MAX_ROUND`] that sag the most.
     round: std::cell::RefCell<Vec<Round>>,
-    /// What the fine level is built of so far ([`crate::Made`]), in the order built.
-    made: std::cell::RefCell<Vec<crate::Made>>,
+    /// What the fine level is built of so far ([`crate::Made`]): each shape the recipe names,
+    /// in the order built (a path and what it is).
+    made: std::cell::RefCell<Vec<made::Record>>,
+    /// Their outlines, in slots: a plain shape has one, a sculpt one for each primitive that
+    /// adds to it. Every triangle of the fine level knows its slot ([`Shape::owners`]), and
+    /// what a slot weighs is summed from its triangles in the finished model.
+    slots: std::cell::RefCell<Vec<made::Slot>>,
+    /// The work spent asking a sculpt's triangles which primitive made them, against its own
+    /// limit ([`crate::sdf::MAX_OWNER_BUILD_WORK`]): never against the build's.
+    owner_work: std::cell::Cell<u64>,
     /// The outlines of the shape being built, until it is built and its surface known.
     making: std::cell::RefCell<Option<(&'static str, made::Views)>>,
     /// How deep the build is in what a boolean takes away: nothing there is recorded.
@@ -1610,34 +1620,47 @@ struct Tally {
 }
 
 impl Tally {
-    /// The shape at `path` is built, with this surface: what was noted of it is kept.
-    fn made_now(&self, path: &str, area_m2: f32) {
+    /// The shape at `path` is built as `s`: what was noted of it is kept, and every triangle of
+    /// `s` is its.
+    fn made_now(&self, path: &str, s: &mut Shape) {
         let Some((what, views)) = self.making.take() else { return };
         let views = crate::made::views(views);
-        let mut list = self.made.borrow_mut();
-        if !views.is_empty() && area_m2 > 0.0 && list.len() < crate::made::MAX_KEPT {
-            list.push(crate::Made { path: path.to_string(), what, area_m2, views });
+        if views.is_empty() || s.tris.is_empty() {
+            return;
+        }
+        let mut records = self.made.borrow_mut();
+        let mut slots = self.slots.borrow_mut();
+        if records.len() < crate::made::MAX_KEPT && slots.len() < crate::made::MAX_SLOTS {
+            slots.push(made::Slot { record: records.len() as u32, views });
+            records.push(made::Record { path: path.to_string(), what });
+            s.own(slots.len() as u32 - 1);
         }
     }
 
-    /// The shapes built since `mark` (a part's, an include's) had their surface changed by
-    /// operations from `before` to `after` in all: each by the same share.
-    /// **A record's surface is that shape's own in the finished model**: each is scaled only by
-    /// what an operation did to the pieces it is part of (their area before against after),
-    /// never fitted to a total that holds surface no record speaks for.
-    fn made_scaled(&self, mark: usize, before: f32, after: f32) {
-        let end = self.made.borrow().len();
-        self.made_part_scaled(mark, end, before, after);
-    }
-
-    /// The records from `from` to `to` (one boolean operand's, one scatter item's) had their
-    /// pieces' surface changed from `before` to `after` (0: none of it is left).
-    fn made_part_scaled(&self, from: usize, to: usize, before: f32, after: f32) {
-        if before > 0.0 && after.is_finite() && after >= 0.0 {
-            for m in self.made.borrow_mut().iter_mut().take(to).skip(from) {
-                m.area_m2 *= after / before;
+    /// The sculpt at `path` is built as `s`: `views` holds each of its primitives' outlines (in
+    /// the tree's depth-first order; none for one that does not add to it), and `of` says which
+    /// primitive made each triangle of `s` ([`crate::shape::NO_OWNER`]: none, or not asked).
+    fn made_sculpt(&self, path: &str, what: &'static str, views: Vec<Option<made::Views>>, of: &[u32], s: &mut Shape) {
+        let mut records = self.made.borrow_mut();
+        let mut slots = self.slots.borrow_mut();
+        if records.len() >= crate::made::MAX_KEPT || of.len() != s.tris.len() {
+            return;
+        }
+        let record = records.len() as u32;
+        let mut slot_of = vec![crate::shape::NO_OWNER; views.len()];
+        for (i, v) in views.into_iter().enumerate() {
+            let v = crate::made::views(v.unwrap_or_default());
+            if !v.is_empty() && slots.len() < crate::made::MAX_SLOTS {
+                slot_of[i] = slots.len() as u32;
+                slots.push(made::Slot { record, views: v });
             }
         }
+        if slot_of.iter().all(|&x| x == crate::shape::NO_OWNER) {
+            s.owners.clear();
+            return;
+        }
+        records.push(made::Record { path: path.to_string(), what });
+        s.owners = of.iter().map(|&p| slot_of.get(p as usize).copied().unwrap_or(crate::shape::NO_OWNER)).collect();
     }
 
     /// The records made from `from` on were made inside an include at `at` (`parts[1].include`)
@@ -1649,40 +1672,10 @@ impl Tally {
         }
     }
 
-    /// What the model is built of: the [`crate::MAX_MADE`] shapes with the most surface, and
-    /// how much of the model's `surface` none of them speaks for. **One record a path**: a
-    /// scatter item's variants (one path, built once each) are one shape, their surfaces
-    /// summed and their outlines each weighed by its variant's share (the same outlines once).
-    /// A shape with no surface left (cut away, never placed) is not kept. At most
-    /// [`crate::made::MAX_RECORD_VIEWS`] outlines in all are kept, the largest shapes'
-    /// first: a shape whose outlines do not all fit keeps its heaviest that do, and the weight of
-    /// the rest as one outline of no points (which the studio cannot read, and so counts as not
-    /// read).
-    fn made_of(&self, surface: f32) -> (Vec<crate::Made>, f32) {
-        let mut list: Vec<crate::Made> = self.made.take().into_iter().filter(|m| m.area_m2.is_finite() && m.area_m2 > 0.0).collect();
-        // (Stable: the build's own order within a path.)
-        list.sort_by(|a, b| a.path.cmp(&b.path));
-        let mut merged: Vec<crate::Made> = Vec::with_capacity(list.len());
-        for m in list {
-            match merged.last_mut() {
-                Some(last) if last.path == m.path => crate::made::merge(last, m),
-                _ => merged.push(m),
-            }
-        }
-        merged.sort_by(|a, b| b.area_m2.total_cmp(&a.area_m2).then_with(|| a.path.cmp(&b.path)));
-        merged.truncate(crate::MAX_MADE);
-        let mut room = crate::made::MAX_RECORD_VIEWS;
-        for m in &mut merged {
-            if m.views.len() > room {
-                m.views.sort_by(|a, b| b.1.total_cmp(&a.1));
-                let dropped: f32 = m.views[room..].iter().map(|v| v.1).sum();
-                m.views.truncate(room);
-                m.views.push((Vec::new(), dropped));
-            }
-            room -= m.views.iter().filter(|v| !v.0.is_empty()).count();
-        }
-        let spoken: f32 = merged.iter().map(|m| m.area_m2).sum();
-        (merged, (surface - spoken).max(0.0))
+    /// What the model is built of, measured on its finished parts (`shapes`) against its
+    /// finest level's `surface` ([`crate::made::gather`]).
+    fn made_of(&self, shapes: &[&Shape], surface: f32) -> (Vec<crate::Made>, f32) {
+        crate::made::gather(&self.made.take(), &self.slots.take(), shapes, surface)
     }
 
     /// A shape named round was built this coarsely. Kept if it is among the [`MAX_ROUND`]
@@ -1875,8 +1868,6 @@ fn build_parts(
         None => 30.0,
     };
     let mut out: Vec<BuiltPart> = Vec::new();
-    // (What this recipe's own parts, and its includes', record from here on.)
-    let made_first = tally.made.borrow().len();
     let mut terrains: Vec<(String, std::sync::Arc<crate::terrain::Terrain>, bool)> = Vec::new();
     let mut scattered: Vec<(String, Vec<crate::math3::V2>)> = Vec::new();
     // The model's terrain is the first one made, here or in an include; its transform gathers
@@ -1998,19 +1989,12 @@ fn build_parts(
             p.bones = part.bones.clone();
             p.blend = blend;
         }
-        // What the part's shapes are recorded with is the surface each has in the end: after
-        // the part's operations, by what they did to its pieces (three copies count three
-        // times), and never more (what in the part no record speaks for, a terrain beside an
-        // included box, stays no record's).
-        let recorded = !coarse && !part.ops.is_empty() && tally.made.borrow().len() > made_mark;
-        let before = if recorded { pieces.iter().map(|p| made::area(&p.shape)).sum::<f32>() } else { 0.0 };
+        // (Each triangle keeps what it was made as through the part's operations: what each
+        // shape weighs is measured in the finished model.)
         for piece in &mut pieces {
             for (i, op) in part.ops.iter().enumerate() {
                 ctx.apply(&mut piece.shape, op, stream_seed(pseed, &format!("op{i}")))?;
             }
-        }
-        if before > 0.0 {
-            tally.made_scaled(made_mark, before, pieces.iter().map(|p| made::area(&p.shape)).sum::<f32>());
         }
         if !had {
             match &part.source {
@@ -2035,14 +2019,10 @@ fn build_parts(
         }
         out.extend(pieces);
     }
-    let finish_from = if coarse || recipe.finish.is_empty() { 0.0 } else { out.iter().map(|p| made::area(&p.shape)).sum::<f32>() };
     for (i, op) in recipe.finish.iter().enumerate() {
         for (k, piece) in out.iter_mut().enumerate() {
             ctx.apply(&mut piece.shape, op, stream_seed(seed, &format!("finish{i}/{k}")))?;
         }
-    }
-    if finish_from > 0.0 {
-        tally.made_scaled(made_first, finish_from, out.iter().map(|p| made::area(&p.shape)).sum::<f32>());
     }
     if !had_before && tally.terrain.borrow().is_some() {
         tally.terrain_transform.set(ctx.terrain_transform(&recipe.finish, tally.terrain_transform.get()));
@@ -2108,9 +2088,9 @@ impl Ctx<'_> {
 
     /// The shape being built is a `what` with these outlines along its own axes and their
     /// weights ([`crate::Made`]): kept once it is built, not for what a boolean takes away.
-    /// (The coarse far level notes them too, in a tally of its own that nobody reads.)
+    /// (Not for the coarse far level, whose triangles then carry nothing.)
     fn made(&self, what: &'static str, views: Vec<(Vec<V2>, f32)>) {
-        if self.tally.cutting.get() > 0 {
+        if self.tally.cutting.get() > 0 || self.coarse {
             return;
         }
         self.tally.making.replace(Some((what, views)));
@@ -2529,8 +2509,8 @@ impl Ctx<'_> {
             other => return Err(e(&n.path, ErrorCode::UnknownOp, format!("unknown shape '{other}'"))),
         };
         self.tally.grow(&n.path, 0, predicted)?;
-        let s = build()?;
-        self.tally.made_now(&n.path, made::area(&s));
+        let mut s = build()?;
+        self.tally.made_now(&n.path, &mut s);
         self.tally.settle(predicted, s.triangle_count());
         check_extent(&s, &n.path)?;
         Ok(s)
