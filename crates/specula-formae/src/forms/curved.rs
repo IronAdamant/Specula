@@ -23,7 +23,7 @@ use crate::anchor::{at3, out3, Anchor, On};
 use crate::detail::segments;
 use crate::error::{refuse, Refusal};
 use crate::forms::round::drop_parts;
-use crate::geom::{arc, func, line, Geom};
+use crate::geom::{arc, arc_ends, func, line, Geom};
 use crate::maths::*;
 use crate::mesh::{Mesh, Surface};
 use crate::solid::{fpiece, gauss, piece, quarter_turns, sphere_error, superellipse, superellipse_support, tube_check, tube_mesh, Gen, Lattice, Piece, Rev, Ring};
@@ -301,7 +301,10 @@ fn cap_parts(a: &Args) -> Result<(f64, f64, f64), Refusal> {
 fn cap_geom(a: &Args) -> Result<Geom, Refusal> {
     let (r, h, base) = cap_parts(a)?;
     let cy = h - r;
-    turned(vec![piece(line(O, [base, 0.0]), "base"), piece(arc([0.0, cy], r, atan2(-cy, base), 0.5 * PI), "cap")])
+    // (Its ends exactly: the rim at the base's radius on y = 0, the top on the axis; the sweep
+    // from the rim to the top as one angle, not a difference near π/2. A cap 1e-4 high on a
+    // sphere of 1e4 has its centre 1e4 below its rim.)
+    turned(vec![piece(line(O, [base, 0.0]), "base"), piece(arc_ends([0.0, cy], r, atan2(-cy, base), atan2(base, -cy), [base, 0.0], [0.0, h]), "cap")])
 }
 fn cap_closed(a: &Args) -> Measures {
     let Ok((r, h, base)) = cap_parts(a) else { return Measures::default() };
@@ -326,7 +329,9 @@ fn zone_geom(a: &Args) -> Result<Geom, Refusal> {
     let (r, f, t) = zone_parts(a)?;
     let (y0, y1) = (f * r, t * r);
     let (a0, a1) = (r * ((1.0 - f) * (1.0 + f)).sqrt(), r * ((1.0 - t) * (1.0 + t)).sqrt());
-    turned(vec![piece(line(O, [a0, 0.0]), "bottom"), piece(arc([0.0, -y0], r, asin(f), asin(t)), "zone"), piece(line([a1, y1 - y0], [0.0, y1 - y0]), "top")])
+    // (The arc's ends exactly the cuts' rims: a thin zone's arc is short beside its radius.)
+    let (s0, s1) = (asin(f), asin(t));
+    turned(vec![piece(line(O, [a0, 0.0]), "bottom"), piece(arc_ends([0.0, -y0], r, s0, s1 - s0, [a0, 0.0], [a1, y1 - y0]), "zone"), piece(line([a1, y1 - y0], [0.0, y1 - y0]), "top")])
 }
 fn zone_closed(a: &Args) -> Measures {
     let Ok((r, f, t)) = zone_parts(a) else { return Measures::default() };
@@ -632,7 +637,14 @@ fn lens_parts(a: &Args) -> Result<(f64, f64, f64), Refusal> {
 fn lens_geom(a: &Args) -> Result<Geom, Refusal> {
     let (r, t, rho) = lens_parts(a)?;
     let h = 0.5 * t;
-    turned(vec![piece(arc([0.0, rho], rho, -0.5 * PI, atan2(h - rho, r)), "lower"), piece(arc([0.0, t - rho], rho, atan2(rho - h, r), 0.5 * PI), "upper")])
+    // Each face's arc runs through the angle `α` (`tan α = r / (ρ − h)`) from its pole on the
+    // axis to the rim at `(r, h)`, ends given exactly: at a radius of 4.8 km and a thickness of
+    // 0.1 mm the arcs' centre is 2e11 m off, and a rim placed from it (`c + ρ (cos, sin)`) was
+    // 1e-5 m wider than the lens. `ρ − h = (r − h)(r + h) / 2h`, without cancellation.
+    let rh = (r - h) * (r + h) / (2.0 * h);
+    let al = atan2(r, rh);
+    let rim = [r, h];
+    turned(vec![piece(arc_ends([0.0, rho], rho, -0.5 * PI, al, [0.0, 0.0], rim), "lower"), piece(arc_ends([0.0, t - rho], rho, atan2(rh, r), al, rim, [0.0, t]), "upper")])
 }
 fn lens_closed(a: &Args) -> Measures {
     let Ok((r, t, rho)) = lens_parts(a) else { return Measures::default() };
@@ -660,7 +672,8 @@ fn spindle_parts(a: &Args) -> Result<(f64, f64, f64, f64), Refusal> {
 // of 1 the volume came out 4% short. They are left out; the arc's own integrals give them.)
 fn spindle_geom(a: &Args) -> Result<Geom, Refusal> {
     let (_, h, c, rho) = spindle_parts(a)?;
-    turned(vec![piece(arc([c, 0.5 * h], rho, atan2(-0.5 * h, -c), atan2(0.5 * h, -c)), "spindle")])
+    // (From tip to tip on the axis, exactly; the sweep as one angle.)
+    turned(vec![piece(arc_ends([c, 0.5 * h], rho, atan2(-0.5 * h, -c), 2.0 * atan2(0.5 * h, -c), [0.0, 0.0], [0.0, h]), "spindle")])
 }
 fn spindle_anchors(a: &Args) -> Vec<Anchor> {
     let (w, h) = (a.f("radius"), a.f("height"));
@@ -682,7 +695,9 @@ fn barrel_parts(a: &Args) -> Result<(f64, f64, f64, f64), Refusal> {
 }
 fn barrel_geom(a: &Args) -> Result<Geom, Refusal> {
     let (re, h, c, rho) = barrel_parts(a)?;
-    turned(vec![piece(line(O, [re, 0.0]), "bottom"), piece(arc([c, 0.5 * h], rho, atan2(-0.5 * h, re - c), atan2(0.5 * h, re - c)), "side"), piece(line([re, h], [0.0, h]), "top")])
+    // (From rim to rim exactly; the sweep as one angle: a barrel that bulges by a hair has its
+    // staves' centre far inside the axis.)
+    turned(vec![piece(line(O, [re, 0.0]), "bottom"), piece(arc_ends([c, 0.5 * h], rho, atan2(-0.5 * h, re - c), 2.0 * atan2(0.5 * h, re - c), [re, 0.0], [re, h]), "side"), piece(line([re, h], [0.0, h]), "top")])
 }
 fn barrel_anchors(a: &Args) -> Vec<Anchor> {
     let (rm, h) = (a.f("bulge"), a.f("height"));
@@ -704,8 +719,9 @@ fn hourglass_parts(a: &Args) -> Result<(f64, f64, f64, f64), Refusal> {
 }
 fn hourglass_geom(a: &Args) -> Result<Geom, Refusal> {
     let (re, h, c, rho) = hourglass_parts(a)?;
-    let (s, e) = (atan2(-0.5 * h, re - c), atan2(0.5 * h, re - c));
-    turned(vec![piece(line(O, [re, 0.0]), "bottom"), piece(arc([c, 0.5 * h], rho, s, e - TAU), "side"), piece(line([re, h], [0.0, h]), "top")])
+    // (Clockwise from rim to rim through `2β`, `tan β = (h/2) / (c − re)`, ends exact.)
+    let s = atan2(-0.5 * h, re - c);
+    turned(vec![piece(line(O, [re, 0.0]), "bottom"), piece(arc_ends([c, 0.5 * h], rho, s, -2.0 * atan2(0.5 * h, c - re), [re, 0.0], [re, h]), "side"), piece(line([re, h], [0.0, h]), "top")])
 }
 fn hourglass_anchors(a: &Args) -> Vec<Anchor> {
     let (rw, h) = (a.f("waist"), a.f("height"));
@@ -881,7 +897,7 @@ fn rbox_geom(a: &Args) -> Result<Geom, Refusal> {
             let q = segments(0.25, d) as f64;
             // The edges' sag exactly; and each corner face's distance from its own ball (its
             // points all have one centre: a point less the radius along its normal).
-            let mut err = r * (1.0 - cos(0.125 * PI / q));
+            let mut err = r * versin(0.125 * PI / q);
             for f in mesh.faces.iter().filter(|f| f.surface == 2) {
                 let n0 = f.normals.as_ref().map(|n| n[0]).unwrap_or([0.0; 3]);
                 let c = sub3(mesh.points[f.verts[0] as usize], scale3(n0, r));
@@ -997,8 +1013,8 @@ fn sweep(w: f64, exact: Measures, along: impl Fn(u32) -> u64 + 'static, ts: impl
             };
             let mut mesh = tube_mesh(rings, corners, closed, 0, ring, |_| 0, surfaces, 1);
             let step = (1..t.len()).map(|i| dist3(centre(t[i - 1]), centre(t[i]))).fold(0.0f64, f64::max);
-            let bend = if kappa > 0.0 { (1.0 / kappa + w) * (1.0 - cos(0.5 * kappa * step)) } else { 0.0 };
-            mesh.chord_error += w * (1.0 - cos(PI / corners as f64)) + bend;
+            let bend = if kappa > 0.0 { (1.0 / kappa + w) * versin(0.5 * kappa * step) } else { 0.0 };
+            mesh.chord_error += w * versin(PI / corners as f64) + bend;
             (mesh, None)
         }),
         exact,
@@ -1166,7 +1182,7 @@ fn mobius_geom(a: &Args) -> Result<Geom, Refusal> {
             let mut mesh = tube_mesh(mm, 4, true, 2, ring, |j| (j % 2) as u32, surfaces, 0);
             // An estimate: the quads' twist, and the band's sag round the loop at its outer reach.
             let step = PI / mm as f64;
-            mesh.chord_error += (big + d) * (1.0 - cos(step)) + d * (1.0 - cos(0.5 * step));
+            mesh.chord_error += (big + d) * versin(step) + d * versin(0.5 * step);
             (mesh, None)
         }),
         exact,
@@ -1212,7 +1228,7 @@ fn steinmetz_mesh(r: f64, m: usize) -> Mesh {
     }
     let faces = faces.into_iter().map(|(verts, surface, k)| crate::mesh::Face { normals: Some(verts.iter().map(|&v| normal(points[v as usize], k)).collect()), verts, surface }).collect();
     let surfaces = vec![Surface { name: "along_z".into(), smooth: true, radius: Some(r) }, Surface { name: "along_x".into(), smooth: true, radius: Some(r) }];
-    Mesh { points, faces, surfaces, chord_error: r * (1.0 - cos(0.5 * PI / m as f64)) }
+    Mesh { points, faces, surfaces, chord_error: r * versin(0.5 * PI / m as f64) }
 }
 fn steinmetz_geom(a: &Args) -> Result<Geom, Refusal> {
     let r = a.f("radius");
@@ -1224,7 +1240,7 @@ fn steinmetz_geom(a: &Args) -> Result<Geom, Refusal> {
         }),
         build: Rc::new(move |d| (steinmetz_mesh(r, segments(0.5, d) as usize), None)),
         exact: m(Some(16.0 * r * r * r / 3.0), Some(16.0 * r * r), r, lo, hi),
-        error: Rc::new(move |d| Some(r * (1.0 - cos(0.5 * PI / segments(0.5, d) as f64)))),
+        error: Rc::new(move |d| Some(r * versin(0.5 * PI / segments(0.5, d) as f64))),
         genus: 0,
         check: None,
     })))

@@ -509,7 +509,9 @@ fn t8_solids_are_pinned() {
 // (Moved on 2026-11-20, from 0xa6f9_09c6_ca30_fb04: the superellipsoid is built as a profile
 // turned on a superellipse, not a cube's directions sent to its surface (review 1b); each of the
 // other ten builds hashes as before.)
-const PINNED: u64 = 0xcbc0_d9d6_79ba_a7b2;
+// (Moved again on 2026-11-20, from 0xcbc0_d9d6_79ba_a7b2: arcs placed from their nearer end, as
+// the plane figures' pinned builds moved.)
+const PINNED: u64 = 0x504f_415b_b170_9c8e;
 
 /// The 8-point Gauss–Legendre rule integrates `x^k` on [−1, 1] exactly for `k` up to 15, and its
 /// weights sum to 2.

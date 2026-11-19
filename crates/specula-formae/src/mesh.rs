@@ -71,7 +71,7 @@ pub struct Round {
 impl Round {
     /// How far the middle of a facet can stand in from the true surface: `r (1 − cos(t / 2))`.
     pub fn sag(&self) -> f64 {
-        self.radius * (1.0 - cos(rad(self.turn_deg) * 0.5))
+        self.radius * versin(rad(self.turn_deg) * 0.5)
     }
 }
 

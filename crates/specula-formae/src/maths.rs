@@ -180,10 +180,45 @@ pub(crate) fn len(a: Pt) -> f64 {
 pub(crate) fn dist(a: Pt, b: Pt) -> f64 {
     len(sub(a, b))
 }
-/// The point at angle `t` (radians) on the circle of centre `c` and radius `r`.
+/// The point at angle `t` (radians) on the circle of centre `c` and radius `r`. At a whole
+/// number of quarter turns (`t` exactly `q · π/2` in floating point) the cosine and sine are
+/// taken as exactly 0 and ±1, so that an arc to a pole or to the circle's widest point lands on
+/// it (`cos(π/2)` is 6e-17, which times a radius of 1e12 is 6e-5 m).
 pub(crate) fn polar(c: Pt, r: f64, t: f64) -> Pt {
-    let (s, co) = sin_cos(t);
+    let (s, co) = quarter_exact(t).unwrap_or_else(|| sin_cos(t));
     [c[0] + r * co, c[1] + r * s]
+}
+/// `(sin t, cos t)` exactly when `t` is a whole number of quarter turns as floating point
+/// writes them (`0.5 · π · q` for a whole `q`, as `0.5 * PI`, `PI`, `-0.5 * PI` and `TAU` are).
+fn quarter_exact(t: f64) -> Option<(f64, f64)> {
+    let q = t / (0.5 * PI);
+    let w = dmath::round_f64(q);
+    if w.abs() > 64.0 || 0.5 * PI * w != t {
+        return None;
+    }
+    Some(match (w as i64).rem_euclid(4) {
+        0 => (0.0, 1.0),
+        1 => (1.0, 0.0),
+        2 => (0.0, -1.0),
+        _ => (-1.0, 0.0),
+    })
+}
+/// The versine `1 − cos x` as `2 sin²(x / 2)`, which keeps its digits where `1 − cos x` rounds
+/// to nothing (at `x` under 1e-8: a chord's sag of an arc of radius 1e12 cut into steps of a
+/// hundred-millionth of a turn is metres, and `1 − cos` said 0).
+pub(crate) fn versin(x: f64) -> f64 {
+    let s = sin(0.5 * x);
+    2.0 * s * s
+}
+/// The step along the circle of radius `r` from its point at angle `a` through the angle `d`:
+/// `r (cos(a + d) − cos a, sin(a + d) − sin a)`, as `2 r sin(d/2) (−sin(a + d/2), cos(a + d/2))`.
+/// Added to the exact point at `a`, it places a point of an arc from the arc's own end, in
+/// numbers the size of the step and not of the radius (whose centre may be a billion times
+/// farther off than the arc is long).
+pub(crate) fn arc_step(r: f64, a: f64, d: f64) -> Pt {
+    let k = 2.0 * r * sin(0.5 * d);
+    let (s, c) = sin_cos(a + 0.5 * d);
+    [-k * s, k * c]
 }
 /// `p` turned by `t` radians about the origin.
 pub(crate) fn rotate(p: Pt, t: f64) -> Pt {

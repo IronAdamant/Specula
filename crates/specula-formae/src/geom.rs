@@ -21,8 +21,11 @@ pub(crate) enum Seg {
     /// A straight piece from `a` to `b`.
     Line { a: Pt, b: Pt },
     /// An arc of the circle of centre `c` and radius `r`, from angle `a0` turning by `sweep`
-    /// radians (positive counter-clockwise).
-    Arc { c: Pt, r: f64, a0: f64, sweep: f64 },
+    /// radians (positive counter-clockwise), from the point `ends[0]` to the point `ends[1]`.
+    /// The ends are where the build lands, exactly (a rim at its radius, a pole on its axis,
+    /// where the form knows them); every other sample is placed from the nearer end by
+    /// [`arc_step`], in numbers the size of the arc and not of its radius.
+    Arc { c: Pt, r: f64, a0: f64, sweep: f64, ends: [Pt; 2] },
     /// A parametric piece from `t0` to `t1`, sampled evenly in its parameter, which is worth
     /// `turns` full turns of detail.
     Fn { f: PtFn, t0: f64, t1: f64, turns: f64 },
@@ -32,14 +35,14 @@ impl Seg {
     pub fn start(&self) -> Pt {
         match self {
             Seg::Line { a, .. } => *a,
-            Seg::Arc { c, r, a0, .. } => polar(*c, *r, *a0),
+            Seg::Arc { ends, .. } => ends[0],
             Seg::Fn { f, t0, .. } => f(*t0),
         }
     }
     pub fn end(&self) -> Pt {
         match self {
             Seg::Line { b, .. } => *b,
-            Seg::Arc { c, r, a0, sweep } => polar(*c, *r, a0 + sweep),
+            Seg::Arc { ends, .. } => ends[1],
             Seg::Fn { f, t1, .. } => f(*t1),
         }
     }
@@ -60,7 +63,14 @@ impl Seg {
         let u = i as f64 / k as f64;
         match self {
             Seg::Line { a, b } => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u],
-            Seg::Arc { c, r, a0, sweep } => polar(*c, *r, a0 + sweep * u),
+            Seg::Arc { r, a0, sweep, ends, .. } => {
+                // From the nearer end (the ends themselves exactly).
+                if 2 * i <= k {
+                    add(ends[0], arc_step(*r, *a0, sweep * u))
+                } else {
+                    add(ends[1], arc_step(*r, a0 + sweep, -sweep * ((k - i) as f64 / k as f64)))
+                }
+            }
             Seg::Fn { f, t0, t1, .. } => f(t0 + (t1 - t0) * u),
         }
     }
@@ -80,7 +90,7 @@ impl Seg {
             }
             match self {
                 Seg::Line { .. } => {}
-                Seg::Arc { r, sweep, .. } => worst = worst.max(r * (1.0 - cos(sweep.abs() / (2 * k) as f64))),
+                Seg::Arc { r, sweep, .. } => worst = worst.max(r * versin(sweep.abs() / (2 * k) as f64)),
                 Seg::Fn { .. } => {
                     // At a quarter, a half and three quarters of the sample's parameter: the
                     // middle alone misses a curve that runs past the chord's end (a needle
@@ -181,7 +191,7 @@ impl Geom {
         for s in self.segs() {
             match s {
                 Seg::Line { .. } => {}
-                Seg::Arc { r, sweep, .. } => worst = worst.max(r * (1.0 - cos(sweep.abs() / (2 * s.k(detail)) as f64))),
+                Seg::Arc { r, sweep, .. } => worst = worst.max(r * versin(sweep.abs() / (2 * s.k(detail)) as f64)),
                 Seg::Fn { .. } => return None,
             }
         }
@@ -219,7 +229,7 @@ impl Geom {
                     grow(*a);
                     grow(*b);
                 }
-                Seg::Arc { c, r, a0, sweep } => {
+                Seg::Arc { c, r, a0, sweep, ends } => {
                     let (cx, cy, r) = (c[0], c[1], *r);
                     let (p0, p1) = (*a0, a0 + sweep);
                     let (s0, c0) = sin_cos(p0);
@@ -231,8 +241,8 @@ impl Geom {
                     mx += 0.5 * (fx(p1, s1, c1) - fx(p0, s0, c0));
                     my -= 0.5 * (fy(p1, s1, c1) - fy(p0, s0, c0));
                     length += r * sweep.abs();
-                    grow(polar(*c, r, p0));
-                    grow(polar(*c, r, p1));
+                    grow(ends[0]);
+                    grow(ends[1]);
                     // The axis points the arc passes.
                     let (from, to) = if *sweep >= 0.0 { (p0, p1) } else { (p1, p0) };
                     let mut q = ceil(from / (0.5 * PI)) * (0.5 * PI);
@@ -316,8 +326,20 @@ pub(crate) fn line(a: Pt, b: Pt) -> Seg {
 }
 
 /// An arc from angle `a0` to angle `a1` (radians; `a1 < a0` turns clockwise).
+/// Its ends are the circle's points at `a0` and `a1` ([`polar`]: exact at quarter turns), which
+/// is right where the centre is no farther off than the figure is large; a shallow arc, whose
+/// centre is far off, is made with [`arc_ends`].
 pub(crate) fn arc(c: Pt, r: f64, a0: f64, a1: f64) -> Seg {
-    Seg::Arc { c, r, a0, sweep: a1 - a0 }
+    Seg::Arc { c, r, a0, sweep: a1 - a0, ends: [polar(c, r, a0), polar(c, r, a1)] }
+}
+
+/// An arc from angle `a0` turning by `sweep`, from the point `p0` to the point `p1`, which the
+/// form gives exactly (and which must be the circle's points at `a0` and `a0 + sweep`, to
+/// rounding: a test holds every form's ends to its centre and radius). For a shallow arc: a rim
+/// at a given radius, a pole on the axis, and a sweep taken without the cancellation of a
+/// difference of two angles near ±π/2.
+pub(crate) fn arc_ends(c: Pt, r: f64, a0: f64, sweep: f64, p0: Pt, p1: Pt) -> Seg {
+    Seg::Arc { c, r, a0, sweep, ends: [p0, p1] }
 }
 
 /// A parametric piece.

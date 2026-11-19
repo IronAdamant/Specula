@@ -826,3 +826,115 @@ fn figures(n_sets: usize, least: usize) {
 fn over(x: f64, limit: f64) -> bool {
     x.is_nan() || x > limit
 }
+
+// ---------------------------------------------------------------- shallow arcs
+
+/// What rounding may move a point that was computed by a few operations from numbers no larger
+/// than the shape's reach: `1e-12` of the reach (some 4,500 ε). A point placed from a centre far
+/// beyond the shape (the arc of a flat lens has its centre up to 1e12 m away) is off by ε times
+/// that distance, far over this; a point placed from the shape's own numbers is well under it.
+const TIGHT: f64 = 1e-12;
+
+/// Every curved word with each of its measured parameters at its least or its greatest, all
+/// together (at most 64 sets a word), at details 8, 9 and 30: the corners where an arc is
+/// shallowest (a radius over its chord by up to 1e8, a centre far off the shape). Each build is
+/// refused as data or lands on its exact bounds to rounding (`TIGHT`, not the hair of the corner
+/// draw above: a rim at its radius, a pole on its axis), lies within them, and holds its closed
+/// area or volume within its own chord error over its boundary, so that an error said to be small
+/// is small (an arc's sag that rounded to nothing failed here).
+#[test]
+fn shallow_arcs_land_on_their_ends() {
+    let mut faults: Vec<String> = Vec::new();
+    let (mut built, mut refused) = (0usize, 0usize);
+    let mut ws = words(Kind::Solid);
+    ws.extend(words(Kind::Plane));
+    // The review's own case first, and then the corners.
+    let mut cases: Vec<(Found, Vec<(&str, f64)>)> = vec![(find("biconvex_lens", Some(Kind::Solid)).expect("the lens"), vec![("radius", 4785.767163963165), ("thickness", 1e-4)])];
+    for w in ws.into_iter().filter(|w| w.form.curved) {
+        let params = params_of(&w);
+        let free: Vec<usize> = (0..params.len()).filter(|&i| !params[i].integer).take(6).collect();
+        for bits in 0..(1u32 << free.len()) {
+            let given: Vec<(&str, f64)> = params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let v = match free.iter().position(|&j| j == i) {
+                        Some(k) if bits >> k & 1 == 1 => p.max,
+                        Some(_) => p.min,
+                        None => p.default,
+                    };
+                    (p.name, v)
+                })
+                .collect();
+            cases.push((w, given));
+        }
+    }
+    for (w, given) in cases {
+        let what = format!("{} {given:?}", w.name());
+        let Ok(s) = Spec::of(w, &given) else {
+            refused += 1;
+            continue;
+        };
+        let Ok(closed) = s.closed() else { continue };
+        for detail in [8u32, 9, 30] {
+            let what = format!("{what} at detail {detail}");
+            let b = match s.build(detail) {
+                Ok(b) => b,
+                Err(Error::Constraint { rule, .. }) if forbidden(&w, rule) => {
+                    gather(&mut faults, w.name(), format!("{what}: refused as {rule}"));
+                    continue;
+                }
+                Err(Error::Constraint { .. } | Error::TooManyPoints { .. }) => {
+                    refused += 1;
+                    continue;
+                }
+                Err(e) => {
+                    gather(&mut faults, w.name(), format!("{what}: {e}"));
+                    continue;
+                }
+            };
+            built += 1;
+            let h = b.chord_error();
+            let (points, size, boundary): (Vec<P3>, f64, f64) = match &b {
+                Built::Mesh(m) => match own(m, s.genus().unwrap_or(0)) {
+                    Ok(o) => (m.points.clone(), o.volume, o.area),
+                    Err(e) => {
+                        gather(&mut faults, w.name(), format!("{what}: {e}"));
+                        continue;
+                    }
+                },
+                Built::Outline(o) => match own_outline(&o.rings) {
+                    Ok((a, p)) => (o.rings.iter().flatten().map(|q| [q[0], q[1], 0.0]).collect(), a, p),
+                    Err(e) => {
+                        gather(&mut faults, w.name(), format!("{what}: {e}"));
+                        continue;
+                    }
+                },
+                _ => continue,
+            };
+            let reach = points.iter().flatten().fold(0.0f64, |a, x| a.max(x.abs()));
+            let tight = TIGHT * reach;
+            if let Some((lo, hi)) = closed.bounds {
+                let dims = if matches!(b, Built::Mesh(_)) { 3 } else { 2 };
+                for k in 0..dims {
+                    let blo = points.iter().map(|p| p[k]).fold(f64::MAX, f64::min);
+                    let bhi = points.iter().map(|p| p[k]).fold(f64::MIN, f64::max);
+                    if blo < lo[k] - tight || bhi > hi[k] + tight {
+                        gather(&mut faults, w.name(), format!("{what}: axis {k}: built {blo}..{bhi}, past the closed bounds {}..{} (by {:e}; rounding allows {tight:e})", lo[k], hi[k], (lo[k] - blo).max(bhi - hi[k])));
+                    }
+                    if blo - lo[k] > 2.0 * h + tight || hi[k] - bhi > 2.0 * h + tight {
+                        gather(&mut faults, w.name(), format!("{what}: axis {k}: built {blo}..{bhi}, short of the closed bounds {}..{} by more than twice its error {h}", lo[k], hi[k]));
+                    }
+                }
+            }
+            if let Some(c) = closed.size {
+                let allowed = (2.0 * h + tight) * boundary + 1e-9 * c.abs();
+                if over((c - size).abs(), allowed) {
+                    gather(&mut faults, w.name(), format!("{what}: closed {c}, built {size} (off by {:e}; its error {h:e} allows {allowed:e})", (c - size).abs()));
+                }
+            }
+        }
+    }
+    assert!(faults.is_empty(), "{} faults ({built} built, {refused} refused):\n{}", faults.len(), faults.join("\n"));
+    assert!(built > 1_000, "only {built} builds ({refused} refused)");
+}

@@ -496,7 +496,16 @@ fn small_argument_functions_keep_their_digits() {
         close(&format!("sinh({x})"), sinh(x), x + x * x * x / 6.0);
         close(&format!("asinh({x})"), asinh(x), x - x * x * x / 6.0);
         close(&format!("coshm1({x})"), coshm1(x), x * x / 2.0 + x * x * x * x / 24.0);
+        close(&format!("versin({x})"), versin(x), x * x / 2.0 - x * x * x * x / 24.0);
     }
+    // An arc's sag where `1 − cos` rounds to nothing: a sag of the flattest lens's arc
+    // (radius 1e12, a step of 2.5e-9 radians) is 3.1 µm, not 0; and the detail for an error far
+    // under the radius is the one whose sag meets it.
+    let x = PI / 1_256_637_062.0;
+    close("the sag of a shallow step", crate::detail::sag(1e12, 1_256_637_062), 1e12 * (x * x / 2.0 - x * x * x * x / 24.0));
+    assert!(crate::detail::sag(1e12, 1_256_637_062) > 3e-6);
+    let n = crate::detail::detail_for(1e4, 1.0);
+    assert!(crate::detail::sag(1e4, n) <= 1.0 && crate::detail::sag(1e4, n - 1) > 1.0, "detail_for(1e4, 1) = {n}");
     // Between: the series to many terms (each term `x² / ((2i)(2i + 1))` of the one before).
     for x in [0.01, 0.3, 0.9, -0.6] {
         let (mut term, mut sum) = (x, x);
@@ -525,6 +534,41 @@ fn pieces_join() {
             let Ok(b) = s.build(DETAIL_MIN) else { continue };
             let size = size_of(&b);
             assert!(s.gap() <= size * 1e-9, "{} {label}: pieces {} apart", w.name(), s.gap());
+        }
+    }
+}
+
+/// Every arc's ends lie on its circle at its angles: the ends a form gives exactly
+/// (`geom::arc_ends`) and its centre, radius, start angle and sweep say one arc, to `1e-9` of the
+/// arc's centre's distance and radius (what the angles can carry), at the defaults, each
+/// parameter at its least and greatest, and every parameter at its least or greatest together.
+#[test]
+fn arc_ends_lie_on_their_circles() {
+    use crate::geom::{Geom, Seg};
+    for w in words() {
+        let params = params_of(&w);
+        let mut all = cases(&w);
+        let free: Vec<&Param> = params.iter().filter(|p| !p.integer).take(5).collect();
+        for bits in 0..(1u32 << free.len()) {
+            all.push((format!("corner {bits}"), free.iter().enumerate().map(|(k, p)| (p.name, if bits >> k & 1 == 1 { p.max } else { p.min })).collect()));
+        }
+        for (label, given) in all {
+            let Ok(s) = Spec::of(w, &given) else { continue };
+            let Ok(g) = s.geom_of() else { continue };
+            let segs: Vec<Seg> = match g {
+                Geom::Rings(r) => r.into_iter().flatten().collect(),
+                Geom::Path { segs, .. } => segs,
+                Geom::Solid(m) => m.pieces(),
+            };
+            for seg in segs {
+                if let Seg::Arc { c, r, a0, sweep, ends } = seg {
+                    let scale = len(c) + r;
+                    for (end, at) in [(ends[0], a0), (ends[1], a0 + sweep)] {
+                        let off = dist(end, polar(c, r, at));
+                        assert!(off <= 1e-9 * scale, "{} {label}: an arc's end {end:?} is {off} from its circle's point at its angle (centre {c:?}, radius {r})", w.name());
+                    }
+                }
+            }
         }
     }
 }
@@ -816,7 +860,10 @@ fn t8_builds_are_pinned() {
     let h = specula_core::hash::hash_bytes(&bytes);
     assert_eq!(h, PINNED, "the pinned builds moved: hash {h:#018x}");
 }
-const PINNED: u64 = 0xc095_62ee_60d3_2fea;
+// (Moved on 2026-11-20, from 0xc095_62ee_60d3_2fea: an arc's samples are placed from its nearer end
+// (`geom::Seg::at`), not from its centre; at every form's defaults no sample moved by more than
+// 1.6e-15 of its arc's centre distance and radius.)
+const PINNED: u64 = 0x5828_3630_0961_f0e0;
 
 // ---------------------------------------------------------------- particular checks
 

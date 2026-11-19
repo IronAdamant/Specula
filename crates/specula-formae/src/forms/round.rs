@@ -4,7 +4,7 @@
 use super::{ap, none};
 use crate::anchor::{self, at, out, Anchor, On};
 use crate::error::{refuse, Refusal};
-use crate::geom::{arc, func, func_rc, line, ring, Geom, PtFn, Seg};
+use crate::geom::{arc, arc_ends, func, func_rc, line, ring, Geom, PtFn, Seg};
 use crate::maths::*;
 use crate::spec::Args;
 use crate::table::{count, deg, len, ratio, Alias, Form, Param, Set};
@@ -521,7 +521,7 @@ fn reul_geom(a: &Args) -> Result<Geom, Refusal> {
             .map(|j| {
                 let c = v[(j + n.div_ceil(2)) % n];
                 let a0 = atan2(v[j][1] - c[1], v[j][0] - c[0]);
-                Seg::Arc { c, r: w, a0, sweep: PI / n as f64 }
+                arc_ends(c, w, a0, PI / n as f64, v[j], v[(j + 1) % n])
             })
             .collect(),
     ))
@@ -567,7 +567,7 @@ fn foil_geom(a: &Args) -> Result<Geom, Refusal> {
                 while sw <= 0.0 {
                     sw += TAU;
                 }
-                Seg::Arc { c, r: rho, a0, sweep: sw }
+                arc_ends(c, rho, a0, sw, p0, p1)
             })
             .collect(),
     ))

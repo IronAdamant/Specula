@@ -57,6 +57,12 @@ pub(crate) trait Make {
     /// Whether it has curved surfaces.
     #[cfg_attr(not(test), allow(dead_code, reason = "read by the tests only"))]
     fn curved(&self) -> bool;
+    /// The plane pieces it is made from, where it is made from a profile or an outline (a test
+    /// holds every arc's ends to its circle).
+    #[cfg_attr(not(test), allow(dead_code, reason = "read by the tests only"))]
+    fn pieces(&self) -> Vec<Seg> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------- quadrature
@@ -136,17 +142,20 @@ pub(crate) fn profile_integrals(segs: &[&Seg], at: Pt) -> Option<[f64; 7]> {
                     1.0,
                 )
             }
-            Seg::Arc { c, r: big, a0, sweep } => {
-                let (c0, c1) = (c[0] - at[0], c[1] - at[1]);
+            Seg::Arc { r: big, a0, sweep, ends, .. } => {
+                // The point at the angle `a0 + d` is taken from the nearer end (as the build
+                // places it: `geom::Seg::at`), so a shallow arc whose centre is far off keeps its
+                // digits; `d` runs from 0 to the sweep.
+                let (e0, e1) = ([ends[0][0] - at[0], ends[0][1] - at[1]], [ends[1][0] - at[0], ends[1][1] - at[1]]);
                 let m = ceil(sweep.abs() / (PI / 8.0)).max(1.0) as usize;
                 let g = if *sweep >= 0.0 { 1.0 } else { -1.0 };
                 let mut t = [0.0; 7];
                 for i in 0..m {
-                    let (t0, t1) = (a0 + sweep * i as f64 / m as f64, a0 + sweep * (i + 1) as f64 / m as f64);
+                    let (t0, t1) = (sweep * i as f64 / m as f64, sweep * (i + 1) as f64 / m as f64);
                     let v = integrate(
-                        |p| {
-                            let (sn, cs) = sin_cos(p);
-                            let (r, y, dy) = (c0 + big * cs, c1 + big * sn, big * cs);
+                        |d| {
+                            let p = if (d - 0.5 * sweep) * g <= 0.0 { add(e0, arc_step(*big, *a0, d)) } else { add(e1, arc_step(*big, a0 + sweep, d - sweep)) };
+                            let (r, y, dy) = (p[0], p[1], big * cos(a0 + d));
                             [r * dy, r * r * dy, r * r * r * dy, r * y * dy, r * r * y * dy, r * big * g, big * g]
                         },
                         t0,
@@ -478,7 +487,7 @@ impl Piece {
     fn step_sag(&self, i: u64, k: u64, a: Pt, b: Pt, est: f64) -> (f64, bool) {
         match &self.seg {
             Seg::Line { .. } => (0.0, true),
-            Seg::Arc { r, sweep, .. } => (r * (1.0 - cos(sweep.abs() / (2 * k) as f64)), true),
+            Seg::Arc { r, sweep, .. } => (r * versin(sweep.abs() / (2 * k) as f64), true),
             Seg::Fn { .. } => {
                 let d = sub(b, a);
                 let l = len(d);
@@ -648,11 +657,12 @@ impl Rev {
             if let Some(p) = self.pieces.last() {
                 q.push(p.seg.end());
             }
-            // An open profile's ends are on the axis: an arc to a pole reaches it as
-            // `c + r cos(π/2)`, a few parts in 1e17 of the arc's centre and radius off it, which is
-            // put on it.
-            let arcs = self.pieces.iter().filter_map(|p| if let Seg::Arc { c, r, .. } = p.seg { Some(c[0].abs().max(c[1].abs()) + r) } else { None });
-            let reach = q.iter().flatten().map(|x| x.abs()).chain(arcs).fold(0.0f64, f64::max);
+            // An open profile's ends are on the axis. An arc lands on its pole exactly (its ends
+            // are given, or are its circle's points at a quarter turn, which `polar` takes
+            // exactly); a parametric piece's end may be a few parts in 1e17 of the profile's
+            // reach off it, which is put on it. (The reach is the profile's own: an arc's far
+            // centre once made it, and so would have put a point a metre off the axis on it.)
+            let reach = q.iter().flatten().map(|x| x.abs()).fold(0.0f64, f64::max);
             let last = q.len() - 1;
             for i in [0, last] {
                 if q[i][0].abs() <= 1e-12 * reach {
@@ -686,7 +696,7 @@ impl Rev {
                         ([c, s], 1.0)
                     })
                     .collect();
-                RingS { m: e.clone(), h: vec![1.0; cols], e, mid, sag: 1.0 - cos(0.5 * self.sweep.min(TAU) / na as f64), reach: 1.0 }
+                RingS { m: e.clone(), h: vec![1.0; cols], e, mid, sag: versin(0.5 * self.sweep.min(TAU) / na as f64), reach: 1.0 }
             }
             Ring::Super { a, b, n } => {
                 let k = na / 4;
@@ -792,6 +802,9 @@ enum Row {
 /// superellipsoid's and the ellipsoid's are cut at the equator) has `n_r Δy >= 0` and
 /// `−n_y Δr >= 0`, not both zero. [`Mesh::validate`] holds every build to it all the same.
 impl Make for Rev {
+    fn pieces(&self) -> Vec<Seg> {
+        self.segs()
+    }
     fn count(&self, detail: u32) -> (u64, u64) {
         let (m, na) = (self.m(detail), self.turns(detail));
         let (d0, d1) = self.discs();
