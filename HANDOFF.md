@@ -258,6 +258,26 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     waits for them on this machine: the folders `C:\sr-i3` (empty), `C:\sr-j1` and `C:\sr-j2`
     (reviewers' worktrees) and, when its branch is merged, `C:\sf-formae` (the shape
     library's builder).
+  - **Back, and three answers** (the owner, 2026-11-20, home between two sleeps, asked what
+    needed them: "1 - relaunch, and 2 - go ahead. I'll ge[t] you permission and as for the
+    decision. At your discretion").
+    - *The two stopped reviews are run again.* Two fresh reviewers on Opus, each in a
+      worktree of its own at `f173b170` (`C:\sr-k1`: faceting from the recipe and the shape
+      check's safe state; `C:\sr-k2`: the light report's mends and the rounded shape's
+      weights). Their briefs and reports are in `.swarmnotes/m6/part4/reviews/` on this
+      machine.
+    - *Old data may be removed again.* `C:\sr-i3` (empty) is gone. `C:\sr-j1`, `C:\sr-j2`,
+      `C:\sr-k1`, `C:\sr-k2` and `C:\sf-formae` are in use; each goes when its branch is
+      merged or its review is in. The folders the list of "never delete" names stay as they
+      are.
+    - *What a reviewer of the silhouette measure may refuse it for is Claude's to set.* Five
+      reviews each found shapes it misreads, and each mend was true to the review before.
+      The bar from the sixth on: a reviewer refuses it for unbounded cost, a panic, a
+      result that is not the same twice, a false sentence in the documents or the advice,
+      a reading that flips as the shape turns inside the limits it states, a regression
+      nobody listed, or a rule no test holds. A shape outside its set of common assets that
+      it misreads steadily counts in the rate it states, and is not a refusal. The rate is
+      said with the measure wherever it is used.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
@@ -707,8 +727,8 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       **Owed:** the mends of both shape-language measures and their reviews; and reviews,
       by models that did not write them, of faceting from the recipe, the light report's
       mends and the levelled weights (the two reviewers started for them were stopped by
-      an interrupt and wait for the owner's word: "Open owner decisions"). Nothing of
-      part 4 is pushed.
+      an interrupt; at the owner's word of 2026-11-20 two fresh ones are running). Nothing
+      of part 4 is pushed.
     - **The shape library: being built** (2026-11-19, at the owner's word above; builders
       on Opus, a fresh one a stage, in a worktree of their own, branch `m6-formae`; the
       brief and each stage's notes are in `.swarmnotes/m6/part4/formae/` on this machine).
@@ -1675,12 +1695,10 @@ Not decisions of this kind, and also with the owner: the seven items of
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-- **Whether the two reviews the interrupt stopped are run again** (2026-11-19, night). An
-  interrupt sent to ask a question stopped every agent then running, the two reviewers among
-  them, and a stopped agent is started again only at the owner's word. Until then four pieces
-  have no review by a model that did not write them: faceting from the recipe, the shape
-  language's safe state, the light report's mends and the rounded shape's levelled weights.
+Nothing is open (2026-11-20).
 
+(Whether the two reviews an interrupt stopped are run again was decided on 2026-11-20: they
+are, recorded at the top of this page with the owner's word on removals.)
 (What shape language should become was decided on 2026-11-19: both a fourth silhouette
 measure and the measure from the recipe, recorded at the top of this page.)
 (The reference pictures' place was decided on 2026-11-17: a public repository of
