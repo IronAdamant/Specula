@@ -524,6 +524,13 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       one (`[taste] shape_language`), and the `storybook` preset asks for round. With it the
       five items of "form within an agent's reach" are all built. Sepulcra's recipes lead
       square (41 of 56), pointed (13) and round (2): no check is asked of it. Not reviewed.
+    - **Where its verification stands** (2026-11-20): the full gate passed on `1a19d379`,
+      and seven live checks on it (window, sight, terrain, GI, studio, procgen, and the new
+      `form_sheet_check`), the window's pictures looked at on both adapters. The gate before
+      it failed once, on a test written that day that gave the engine 500 passes to reach a
+      state a GPU worker brings about (the cause was found by reproducing it: one run in
+      eight); the test now waits on the state. Three reviewers are on the last mends and on
+      shape language. Nothing of part 4 is pushed.
     - **Then:** the light report; the same in 2D; `form`
       on `sight_compare` and the line-up. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
