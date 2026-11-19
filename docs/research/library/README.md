@@ -161,3 +161,41 @@ An independent checker went through rounds two, three and four row by row agains
 
 The rule for all of the library stands: a number is checked against its source as it is typed into the
 engine.
+
+## Round five: the figure's surface (2026-11-19)
+
+What [REFERENCE_ROUND5_BRIEF.md](../REFERENCE_ROUND5_BRIEF.md) asked for, delivered the day it was asked:
+eight files of numbers, and 217 pictures of the trunk, the shoulder and arm, hands and feet, which are in
+the pictures' repository ([specula-imagines](https://github.com/IronAdamant/specula-imagines), its
+`INDEX-round-5.md`; that index also has how well each line of the brief is covered, and what was found
+and could only be linked).
+
+| File | What it holds | Thin on |
+|---|---|---|
+| [A9](A9-hand-dimensions.md) | 86 dimensions of the hand for women and men (Greiner 1991: finger lengths by segment, breadths, depths and girths at each joint, the heights of the webs), finger segments as shares, and the join to ANSUR II | the hand's thickness, nails |
+| [A10](A10-foot-dimensions.md) | 33 measures of the foot and lower leg for women and men (Parham 1992: lengths, breadths, heights of the ankle bones, girths), ratios, ANSUR II's foot | toe by toe lengths, the arch's height by type, a foot loaded against unloaded |
+| [A11](A11-joint-ranges.md) | Ranges of the wrist, hand, ankle, toes and shoulder (NASA's standard, 5th to 95th percentile; a CDC study by sex and age), finger and thumb joints, how the shoulder blade turns as the arm rises at 30, 60, 90 and 120 degrees by sex, how the collar bone moves | the arm above 120 degrees, finger ranges by sex; three digits of NASA's figure are marked (?) for blur |
+| [A12](A12-joint-centres.md) | Where a joint's centre lies from the landmarks on the skin (Dempster 1955, from eight cadavers: the collar bone's two joints, the shoulder, elbow, wrist, hip, knee and ankle), and the links between them as shares | no data for women; no finger joints; the ankle's axis as numbers (the source could not be read) |
+| [A13](A13-trunk-sections.md) | Breadth, depth and girth of the chest, waist and hip by sex and build, from ANSUR II, with a shape number for each: the exponent of the superellipse whose outline has the measured girth | the chest's shape numbers are not an outline (the file says why); no level between; no measured outline |
+| [A14](A14-muscle-thickness.md) | The calf muscle's thickness by age and sex; the thigh's front muscle as a share of the thigh's length, by age and sex | every other muscle asked for (chest, shoulder, back, buttock, belly): not found |
+| [A15](A15-skinfolds.md) | Skinfolds at the back of the arm, under the shoulder blade, over the hip bone and on the thigh, by sex, age and build (NHANES) | chest, belly, flank and calf; one code of the data file is inferred |
+| [A16](A16-muscle-attachments.md) | Nothing as numbers: where a muscle attaches, as a share along its bone, was not found. It names the plates to read them from (Spalteholz's, in the pictures' repository) | all of it |
+
+- **Each file has its checker's rows beside it** (`<file>.md.verify.md`): the delivery's own checker
+  re-opened the sources of 26 rows (20 verified, 4 fixed before delivery, 2 unverifiable), tried every
+  link, and read the licence of every picture again.
+- **A13 was held against the engine the day it came.** Its 24 means and spreads of the whole sample are
+  the engine's own to a rounding (the body's table in `specula-corpus` is computed from the same public
+  files), and its shape numbers come out of a solver written here from its mean breadths, depths and
+  girths: 2.83 and 2.73 at the waist against its 2.83 and 2.71, 3.59 and 3.39 at the hip against its
+  3.64 and 3.40. The rows by build and everything in the other seven files are **not** re-opened here.
+- **What it says that the figure needs:** a waist is squarer than an ellipse (a shape number near 2.7
+  to 2.8, where an ellipse is 2) and a hip squarer still (3.3 to 3.7). The figure's trunk reads short
+  round the tape because its sections are too round. **The chest's numbers are not to be used as an
+  outline**: the tape there bridges hollows that the breadth and the depth are measured across.
+- **Almost everything pictured is one man** (Richer's model, and the men of three atlases). A woman's
+  trunk as a surface, builds, and the levels between the shoulder and the hip in cross-section were
+  not found under an open licence.
+
+The rule stands for these as for the rest: a number is checked against its source as it is typed into
+the engine.

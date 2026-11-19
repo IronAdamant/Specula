@@ -111,7 +111,7 @@ that was shown to fail on the fault, and the sheets have a live check of their o
 (`form_sheet_check`). It found sound: the shaders' bytes, the variant set on both adapters, the
 orthographic rule, the waits' bounds.
 
-**A fourth review, of those** (another model, 2026-11-20), **said merge**, with four small
+**A fourth review, of those** (another model, 2026-11-19), **said merge**, with four small
 findings, all mended: a sheet's silhouette tile was still framed without the references' room
 (as its form tiles had been); one line of the live check could not fail (every tile of a view
 is given the one box, so only its test of the pixels holds the framing: it says so now, and
@@ -245,7 +245,7 @@ found); and the sample budget was called a cap. Each is mended as said above and
 triangle, shares summing to 1, three times faster, bit for bit over two runs), the comparison's
 boundary, stopping, and the first review's other findings closed.
 
-**A third review** (another model, 2026-11-20) said not to merge those. Faceting, mended to
+**A third review** (another model, 2026-11-19) said not to merge those. Faceting, mended to
 count the edges shaded as one surface, still read 0 on the engine's own coarse cylinders, because
 the modeller shades an edge that turns more than a recipe's `smooth_angle` as two faces: a
 ten-sided cylinder was hard-shaded and "had no facets", a smooth-shaded box "was faceted by 90°",
@@ -311,11 +311,11 @@ and **checked only when a style asks** for one.
   writes it with the rest: `storybook` asks for round (half of an outline's turning). The other
   four ask for nothing: a moonlit graveyard, a muted or a noir game and the neutral stage are not
   one shape.
-- **What it says of Sepulcra** (2026-11-20, its 56 recipes through `studio_check`): 31 lead
+- **What it says of Sepulcra** (2026-11-19, its 56 recipes through `studio_check`): 31 lead
   square, 18 pointed and 7 round (`grave_rock` 1.00 round, `mausoleum_domed` 0.56); the crypt is
   0.71 square, the wraith 0.70 pointed, the iron fences and gate and the brazier's fire pointed. A
   graveyard of cut stone and iron: no check is asked of it.
-- **Its first review** (a model that did not write it, 2026-11-20) **said not to merge it.** The
+- **Its first review** (a model that did not write it, 2026-11-19) **said not to merge it.** The
   measure then counted the corners of a straightened polygon with hard lines between the classes:
   a box rounded by an eighth of its size was round upright and square turned six degrees; a
   capsule was pointed (its round end merged into one corner of 180°); a bar was square or pointed

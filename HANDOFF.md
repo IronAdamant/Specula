@@ -202,8 +202,22 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     please. I'll pass this to Grok to investigate"). It is
     [docs/research/REFERENCE_ROUND5_BRIEF.md](docs/research/REFERENCE_ROUND5_BRIEF.md): the
     trunk as a surface (cross-sections most of all), the shoulder and the arm where it joins,
-    hands and feet from six sides and in poses, and the numbers that go with them. The owner's
-    use of that assistant resets in the week of 2026-11-23; nothing in hand waits on it.
+    hands and feet from six sides and in poses, and the numbers that go with them.
+  - **It came the same day** ("additional files per your request"): 217 pictures and eight
+    files of numbers, with their own checker's report. **Every picture was looked at before
+    any was placed** (none shows a child; the 31 unclothed figures are all Richer's adult
+    model; two dissections that show the groin were moved to the adults-only folder), and
+    all 217 are in the pictures' repository, 576 there now. The numbers are in the library
+    as A9 to A16 ([docs/research/library/README.md](docs/research/library/README.md), "Round
+    five"). What they give the figure: **a waist and a hip are squarer than an ellipse** (a
+    superellipse of exponent about 2.7 to 2.8 at the waist, 3.3 to 3.7 at the hip, by sex
+    and build), which is the squareness the trunk's sections lack; 86 dimensions of the
+    hand and 33 of the foot; joint ranges, and where joint centres lie under the skin's
+    landmarks, for the rig. The trunk file's means were held against the engine's own
+    table of the same survey and its shape numbers against a solver written here: they
+    agree. The rest is as delivered: checked as it is typed in. **Not found:**
+    cross-sections at the nipple, waist and navel; a woman's trunk as a surface; builds; a
+    foot moving; muscle thickness and attachments as numbers.
   - **A skeleton with every figure, so that a character is a change and not a rebuild** (the same
     message: "At the very least, basic skeletons alongside the figures you've made for me will be
     key to set it up so you can easily mutate or change into individual characters over time
@@ -543,13 +557,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       recipes lead square (31 of 56), pointed (18) and round (7): no check is asked of it.
       The form checks and it now have their place in the critique. **The rewrite is not
       reviewed yet.**
-    - **Where its verification stands** (2026-11-20): the full gate passed on `1a19d379`,
-      and seven live checks on it (window, sight, terrain, GI, studio, procgen, and the new
-      `form_sheet_check`), the window's pictures looked at on both adapters. The gate before
-      it failed once, on a test written that day that gave the engine 500 passes to reach a
-      state a GPU worker brings about (the cause was found by reproducing it: one run in
-      eight); the test now waits on the state. Three reviewers are on the last mends and on
-      shape language. Nothing of part 4 is pushed.
+    - **Where its verification stands** (2026-11-19): the full gate passed on `24bfe7de`
+      (the mends of the fourth round of reviews: 3,288 tests), and seven live checks on it
+      (window, sight, terrain, GI, studio, procgen, and the new `form_sheet_check`), the
+      window's pictures looked at on both adapters; the same had passed on `1a19d379`
+      before those mends. A gate earlier that day failed once, on a test written that day
+      that gave the engine 500 passes to reach a state a GPU worker brings about (the cause
+      was found by reproducing it: one run in eight); the test now waits on the state.
+      **Owed:** one narrow review, by a model that did not write them, of the three pieces
+      written again after the fourth round (shape language, the rounded field's solve, the
+      form checks without faceting). Nothing of part 4 is pushed.
     - **Owed from the form checks:** faceting, from what a recipe says is round (above).
     - **Then:** the light report; the same in 2D; `form`
       on `sight_compare` and the line-up. And on the figure, by what the form views show: the plate front and back, the arm

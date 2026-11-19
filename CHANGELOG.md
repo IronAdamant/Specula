@@ -355,7 +355,7 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       into each other, on silhouettes of 256 pixels, and is steady to a tenth over a quarter
       turn for fourteen known shapes. Sepulcra's 56 recipes lead square (31), pointed (18)
       and round (7). The form checks and it have their place in the critique.
-    - **A fourth round of reviews** (2026-11-20). *The form views:* merge, with four small
+    - **A fourth round of reviews** (2026-11-19). *The form views:* merge, with four small
       findings mended. *The form checks:* faceting still read nothing on the engine's own
       coarse cylinders, and is **taken out** after three tries: a mesh alone cannot say what
       was meant to be round; it belongs at build time, from the recipe, and is owed. *Roundness:*

@@ -1,8 +1,13 @@
 # Reference, round five: the trunk, the shoulder, hands and feet
 
-Status: **asked for** (2026-11-19, at the owner's word: "trunk and shoulder muscle and surface anatomy
-from front, side and back, plus hands and feet from several angles -- Get me full list of that please").
-Nothing in hand waits on it.
+Status: **delivered the day it was asked** (2026-11-19, at the owner's word: "trunk and shoulder muscle
+and surface anatomy from front, side and back, plus hands and feet from several angles -- Get me full
+list of that please"). Its 217 pictures are in the pictures' repository
+([specula-imagines](https://github.com/IronAdamant/specula-imagines), `INDEX-round-5.md`, which says
+line by line what was found and what was not), and its eight files of numbers are in the library
+([library/README.md](library/README.md), "Round five"). **Not found**, and still wanted: cross-sections
+of the trunk at the nipple, the waist and the navel; a woman's trunk as a surface; bodies by build; the
+arm raised in steps; a foot on tiptoe; muscle thickness and where muscles attach, as numbers.
 
 **Why these.** The figure ([FIGURE.md](../design/FIGURE.md)) now measures within a few per cent of its
 body, and the form views ([FORM.md](../design/FORM.md)) show what is still wrong with its shape: a flat
