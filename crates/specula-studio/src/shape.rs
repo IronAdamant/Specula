@@ -7,33 +7,48 @@
 //! steps are gone), and at every point of it the **net turn of the outline within a window**
 //! a fourteenth of the shape's size long is taken. Along a straight side that is nothing,
 //! whatever the pixels do; round a curve it is the window over the curve's radius; at a corner
-//! it is the corner's whole turn. A point of the outline counts for that net turn, and counts
-//! as part of a curve where it is small (under 40°, fading out by 75°), as a point where it
-//! is large (from 95°, wholly by 125°: the corner's own angle is then under 85° to 55°), and
-//! as a square corner between. The classes fade into each other: an outline that turns 60° at
-//! its corners (a hexagon) is partly round and partly square whichever way it is turned,
-//! where a hard line at 60° made it one or the other by the pixels' luck (its first review).
+//! it is the corner's whole turn. Then:
+//!
+//! - **Only outward turning counts**: the outline's bulges and its corners. Where it turns
+//!   back on itself (a notch, a slot, the inside corner of an L, the cusp between two bumps
+//!   of a cloud) it counts for nothing, so one small cut does not unmake a disc.
+//! - A point of the outline counts for its outward turn, and is **part of a curve** where
+//!   the most the outline turns in a window near it is small (under [`ROUND_DEG`]`.0`,
+//!   fading out by `.1`), **a point** where that is large (from [`POINTED_DEG`]`.0`, wholly
+//!   by `.1`: the corner's own angle is then under 84 to 64 degrees), and **a square
+//!   corner** between. The classes fade into each other: an outline that turns 60 degrees at
+//!   its corners (a hexagon) is partly round and partly square whichever way it is turned.
+//! - **A point counts double** ([`POINT_WEIGHT`]): a spike's tip is what is seen of it, and
+//!   by turning alone it is under half of a spike, whose base has two square corners.
+//! - **The size is the shape's greatest width**, the same whichever way it is turned.
 //!
 //! So: a disc is round, and so is a box whose corners are rounded by a tenth of its size or
-//! a capsule down to a sixth as thick as it is long; a box is square, and so is one whose
-//! corners are rounded by a twentieth; a triangle and a star are pointed. What is smaller
-//! than the window is not seen: the teeth of a comb, a bevel. A part thinner than about a
-//! tenth of the size ends in a point at this scale, whatever its end.
+//! a capsule down to a sixth as thick as it is long, and a disc with a slot cut in it; a box
+//! is square, and so is one whose corners are rounded by a thirtieth; a triangle, a spike, a
+//! star and a crescent are pointed.
 //!
-//! It needs pixels: the window is 18 pixels of a 256-pixel silhouette and 4 of a 64-pixel
-//! one, where the pixels' steps are as large as what is measured. The studio measures it on
-//! silhouettes of [`PIXELS`]; on a smaller mask it is coarser, and under [`MIN_SIZE`] it is
-//! not taken.
+//! **What it cannot say steadily**, by its own scale (the window):
+//! - a corner rounded by about a twentieth to a fourteenth of the size is between square and
+//!   round, and the share moves by up to a fifth as the shape is turned;
+//! - a part about as thick as the window (a fifteenth of the size: a dagger's grip) ends
+//!   between a square end and a point, and reads as either by the angle; thinner, it ends in
+//!   a point whatever its end, and what is smaller than the window (a comb's teeth, a bevel)
+//!   is seen as a ripple or not at all.
+//!
+//! It needs pixels: the studio measures it on silhouettes of [`PIXELS`], and a piece under
+//! [`MIN_SIZE`] pixels across is not read at all (a thumbnail never is).
 
 use crate::image::Mask;
 use specula_core::Json;
 
 /// The net turn within the window under which a point of the outline is part of a curve,
-/// and by which it is wholly not (degrees).
-pub const ROUND_DEG: (f32, f32) = (50.0, 70.0);
+/// and by which it is wholly not (degrees). (A band this wide: a narrower one, 50 to 70, made
+/// the share of a corner rounded by a sixteenth of the size swing from a fifth to nine tenths
+/// by the angle the shape was turned to.)
+pub const ROUND_DEG: (f32, f32) = (45.0, 80.0);
 /// The net turn from which a point of the outline begins to be a point, and by which it
 /// wholly is (degrees).
-pub const POINTED_DEG: (f32, f32) = (100.0, 112.0);
+pub const POINTED_DEG: (f32, f32) = (96.0, 116.0);
 /// The window the net turn is taken in, as a share of the shape's size.
 pub const WINDOW: f32 = 0.07;
 /// Half the chord the outline's direction is taken along, as a share of the shape's size.
@@ -41,14 +56,23 @@ pub const CHORD: f32 = 0.02;
 /// How far the outline is smoothed (a Gaussian's deviation), as a share of the shape's size,
 /// and never less than two pixels.
 pub const SMOOTH: f32 = 0.012;
+/// A run of the outline is straightened when it is at least this long, as a share of the
+/// shape's size.
+pub const STRAIGHT_RUN: f32 = 0.1;
 /// How far (pixels) the straightened outline may lie from the pixels' own.
 pub const STRAIGHTEN_PX: f32 = 1.5;
+/// How much more a point counts for than a curve or a square corner of the same turn: a
+/// sharp corner draws the eye before a right angle does. Without it a spike is never mostly
+/// pointed: its tip turns under 180 degrees and the two corners of its base 90 each.
+pub const POINT_WEIGHT: f32 = 2.0;
 /// A net turn of this much or more is a corner (counted, in `corners`).
 pub const CORNER_DEG: f32 = 60.0;
 /// The side, in pixels, of the silhouettes the studio measures shape language on.
-pub const PIXELS: u32 = 256;
-/// A piece smaller than this across (pixels) has no shape to speak of.
-pub const MIN_SIZE: f32 = 24.0;
+pub const PIXELS: u32 = 512;
+/// A piece smaller than this across (pixels, its greatest width) is not read: under it the
+/// pixels' steps are as large as what is measured, and a triangle of 96 pixels read as
+/// anything from a tenth to wholly pointed by the angle it was turned to.
+pub const MIN_SIZE: f32 = 110.0;
 /// The largest mask traced (pixels).
 pub const MAX_PIXELS: usize = 512 * 512;
 
@@ -72,10 +96,10 @@ impl Kind {
     }
 }
 
-/// A silhouette's shape language: the share of its outline's turning that is gentle, at
-/// square corners and at points (they sum to 1), how much of its convex hull it fills, and
-/// how many corners it has (places where the outline turns [`CORNER_DEG`] or more within the
-/// window).
+/// A silhouette's shape language: the share of its outline's outward turning that is gentle,
+/// at square corners and at points (a point counted double; they sum to 1), how much of its
+/// convex hull it fills, and how many outward corners it has (places where the outline turns
+/// outward by [`CORNER_DEG`] or more within the window: an L has five).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ShapeLanguage {
     pub round: f32,
@@ -214,7 +238,7 @@ fn outline(m: &Mask) -> Option<Vec<P>> {
 /// The points of `line` (open, at least two) that a straightened line keeps: its ends, and
 /// between two kept points the one furthest from the straight line through them while it is
 /// further than `slack` (Douglas and Peucker's rule).
-fn straighten(line: &[P], slack: f32, keep: &mut Vec<P>) {
+fn straighten(line: &[P], slack: f32, base: usize, keep: &mut Vec<usize>) {
     let mut spans = vec![(0usize, line.len() - 1)];
     let mut kept = vec![false; line.len()];
     kept[0] = true;
@@ -238,16 +262,16 @@ fn straighten(line: &[P], slack: f32, keep: &mut Vec<P>) {
             spans.push((far, b));
         }
     }
-    keep.extend(line.iter().zip(&kept).filter(|(_, k)| **k).map(|(p, _)| *p));
+    keep.extend(kept.iter().enumerate().filter(|(_, k)| **k).map(|(i, _)| base + i));
 }
 
-/// The convex hull's area of `points` (Andrew's chain).
-fn hull_area(points: &[P]) -> f32 {
+/// The convex hull of `points` (Andrew's chain); empty for fewer than three apart.
+fn hull_of(points: &[P]) -> Vec<P> {
     let mut sorted = points.to_vec();
     sorted.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
     sorted.dedup();
     if sorted.len() < 3 {
-        return 0.0;
+        return Vec::new();
     }
     let mut hull: Vec<P> = Vec::new();
     for pass in 0..2 {
@@ -261,7 +285,21 @@ fn hull_area(points: &[P]) -> f32 {
         }
         hull.pop();
     }
-    area(&hull).abs()
+    hull
+}
+
+/// The furthest two points of a hull are apart: the shape's greatest width, whichever way it
+/// is turned. (Every pair of a thinned hull: a hull of a 512-pixel disc has under two thousand
+/// points, and one in `HULL_STEP` of them is tried against the rest.)
+fn greatest_width(hull: &[P]) -> f32 {
+    const HULL_STEP: usize = 4;
+    let mut most = 0.0f32;
+    for a in hull.iter().step_by(HULL_STEP) {
+        for b in hull {
+            most = most.max(dist(*a, *b));
+        }
+    }
+    most
 }
 
 fn area(polygon: &[P]) -> f32 {
@@ -278,14 +316,12 @@ fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
 /// piece too small to have a shape (under [`MIN_SIZE`] pixels across).
 pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
     let points = outline(m)?;
-    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
-    for p in &points {
-        for k in 0..2 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
-        }
-    }
-    let size = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+    // The shape's size is its greatest width: the same whichever way it is turned. (The
+    // longer side of the box round it grows by two fifths as a square is turned to stand on
+    // a corner, and every length here is a share of the size: the same corner was a curve at
+    // one angle and a corner at another. Its second review.)
+    let hull = hull_of(&points);
+    let size = greatest_width(&hull);
     if size < MIN_SIZE {
         return None;
     }
@@ -294,21 +330,33 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
     // side: smoothing alone left a ripple along it that read as a gentle curve, and a box
     // turned five degrees was a quarter round), and walked again a pixel at a time.
     let far = (0..points.len()).max_by(|a, b| dist(points[*a], points[0]).total_cmp(&dist(points[*b], points[0])).then(b.cmp(a)))?;
-    let mut polygon: Vec<P> = Vec::new();
-    straighten(&points[..=far], STRAIGHTEN_PX, &mut polygon);
-    polygon.pop();
+    let mut kept: Vec<usize> = Vec::new();
+    straighten(&points[..=far], STRAIGHTEN_PX, 0, &mut kept);
+    kept.pop();
     let mut back: Vec<P> = points[far..].to_vec();
     back.push(points[0]);
-    straighten(&back, STRAIGHTEN_PX, &mut polygon);
-    polygon.pop();
-    if polygon.len() < 3 {
+    straighten(&back, STRAIGHTEN_PX, far, &mut kept);
+    kept.pop();
+    if kept.len() < 3 {
         return None;
     }
+    // Only a long run is a side to straighten. A short one is a piece of a curve, and a curve
+    // made a polygon has corners of its own, laid by where the tracing happened to begin: a
+    // corner rounded by a sixteenth of the size read as round or as square by the angle the
+    // box was turned to (its second review). A curve keeps its pixels, and the smoothing
+    // below, which is as long as their steps there, takes them out.
+    let long = (STRAIGHT_RUN * size).max(8.0);
     let mut walked: Vec<P> = Vec::new();
-    for (i, a) in polygon.iter().enumerate() {
-        let b = polygon[(i + 1) % polygon.len()];
-        let steps = (dist(*a, b).round() as usize).max(1);
-        walked.extend((0..steps).map(|k| [a[0] + (b[0] - a[0]) * k as f32 / steps as f32, a[1] + (b[1] - a[1]) * k as f32 / steps as f32]));
+    for (k, i) in kept.iter().enumerate() {
+        let j = kept[(k + 1) % kept.len()];
+        let (a, b) = (points[*i], points[j % points.len()]);
+        if dist(a, b) >= long {
+            let steps = (dist(a, b).round() as usize).max(1);
+            walked.extend((0..steps).map(|k| [a[0] + (b[0] - a[0]) * k as f32 / steps as f32, a[1] + (b[1] - a[1]) * k as f32 / steps as f32]));
+        } else {
+            let end = if j > *i { j } else { points.len() };
+            walked.extend_from_slice(&points[*i..end]);
+        }
     }
     let outline_points = points;
     let points = walked;
@@ -404,22 +452,27 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
         // (The window moves on a step: the turn it leaves behind out, the one ahead in.)
         run += turn[(i + half) % count] - turn[(i + count - half) % count];
     }
+    // Which way round the outline goes: a closed outline turns once in all, one way or the
+    // other. Only where it turns that way (outward: its bulges and its corners) does it count;
+    // where it turns back on itself (a notch, a slot, the inside corner of an L) it does not.
+    let way = if turn.iter().sum::<f32>() >= 0.0 { 1.0f32 } else { -1.0 };
+    let out: Vec<f32> = net.iter().map(|n| (n * way).max(0.0).to_degrees()).collect();
     let mut shares = [0.0f32; 3];
     let mut corners = 0u32;
-    for (i, at) in net.iter().enumerate() {
-        let by = at.abs().to_degrees();
-        // Classed by the most the outline turns in any window this step is in: a step beside
-        // a corner, whose own window holds only part of the corner's turn, is part of that
-        // corner and not of a gentle curve.
-        let most = (0..=2 * half).map(|k| net[(i + count - half + k) % count].abs()).fold(0.0f32, f32::max).to_degrees();
+    for (i, by) in out.iter().copied().enumerate() {
+        // Classed by the most the outline turns outward in any window near this step: a step
+        // beside a corner, whose own window holds only part of the corner's turn, is part of
+        // that corner and not of a gentle curve.
+        let most = (0..=2 * half).map(|k| out[(i + count - half + k) % count]).fold(0.0f32, f32::max);
         let round = 1.0 - smoothstep(ROUND_DEG.0, ROUND_DEG.1, most);
         let pointed = smoothstep(POINTED_DEG.0, POINTED_DEG.1, most);
         shares[0] += by * round;
         shares[1] += by * (1.0 - round - pointed);
-        shares[2] += by * pointed;
+        // (A point draws the eye more than a right angle does: it counts for more.)
+        shares[2] += by * pointed * POINT_WEIGHT;
         // (A corner is counted where the outline comes to turn that much: once for each run
         // of steps that do.)
-        if by >= CORNER_DEG && net[(i + count - 1) % count].abs().to_degrees() < CORNER_DEG {
+        if by >= CORNER_DEG && out[(i + count - 1) % count] < CORNER_DEG {
             corners += 1;
         }
     }
@@ -427,7 +480,7 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
     if all <= 0.0 {
         return None;
     }
-    let hull = hull_area(&outline_points);
+    let hull = area(&hull).abs();
     Some(ShapeLanguage {
         round: shares[0] / all,
         square: shares[1] / all,
@@ -454,12 +507,14 @@ mod tests {
     use super::*;
 
     /// A mask of `side` pixels whose pixels are on where `inside` says, at their middles, in
-    /// units of the mask (0 to 1 across).
-    fn mask(side: u32, inside: impl Fn(f32, f32) -> bool) -> Mask {
+    /// units of the mask about its middle (-0.5 to 0.5 across), the shape turned by `deg`.
+    fn mask(side: u32, deg: f32, inside: impl Fn(f32, f32) -> bool) -> Mask {
+        let (s, c) = (-deg).to_radians().sin_cos();
         let mut m = Mask::empty(side, side);
         for y in 0..side {
             for x in 0..side {
-                m.on[(y * side + x) as usize] = inside((x as f32 + 0.5) / side as f32, (y as f32 + 0.5) / side as f32);
+                let (px, py) = ((x as f32 + 0.5) / side as f32 - 0.5, (y as f32 + 0.5) / side as f32 - 0.5);
+                m.on[(y * side + x) as usize] = inside(px * c - py * s, px * s + py * c);
             }
         }
         m
@@ -478,137 +533,167 @@ mod tests {
         odd
     }
 
-    fn turned(polygon: &[[f32; 2]], deg: f32) -> Vec<[f32; 2]> {
-        let (s, c) = deg.to_radians().sin_cos();
-        polygon.iter().map(|p| [0.5 + (p[0] - 0.5) * c - (p[1] - 0.5) * s, 0.5 + (p[0] - 0.5) * s + (p[1] - 0.5) * c]).collect()
+    /// A box of half sizes `hx`, `hy` with its corners rounded by `r`.
+    fn rounded(x: f32, y: f32, hx: f32, hy: f32, r: f32) -> bool {
+        let (dx, dy) = (x.abs() - (hx - r), y.abs() - (hy - r));
+        dx <= r && dy <= r && (dx <= 0.0 || dy <= 0.0 || dx.hypot(dy) <= r)
     }
 
-    /// Known shapes on a silhouette of the studio's size, **at every five degrees of a quarter
-    /// turn** (its first review: upright, a box rounded by an eighth of its size was round and
-    /// turned six degrees it was square; a bar was square or pointed by the angle; a capsule
-    /// was pointed). For each, the least and the most of each share over the turns:
-    ///
-    /// - a disc, an ellipse of 2 to 1, an octagon: round;
-    /// - a box, an L, a bar a fifth and an eighth as thick as it is long: square;
-    /// - a triangle and a star: pointed;
-    /// - a box rounded by a tenth and by a sixth of its size, a capsule of 4 to 1 and of 6
-    ///   to 1: round (what the check's own advice says to build);
-    /// - a box rounded by a twentieth: still square;
-    /// - a hexagon is between round and square, and stays there;
-    /// - a spike on a flat base is its point and its base's two square corners.
-    #[test]
-    fn known_shapes_speak_their_language_however_they_are_turned() {
-        let poly = |points: Vec<[f32; 2]>| move |deg: f32| {
-            let turned = turned(&points, deg);
-            mask(PIXELS, move |x, y| within(&turned, x, y))
-        };
-        let regular = |sides: u32, r: f32| -> Vec<[f32; 2]> {
-            (0..sides)
-                .map(|i| {
-                    let a = std::f32::consts::TAU * i as f32 / sides as f32 - std::f32::consts::FRAC_PI_2;
-                    [0.5 + r * a.cos(), 0.5 + r * a.sin()]
-                })
-                .collect()
-        };
-        // (A shape given by a test of points in its own frame, turned about the middle.)
-        let by = |inside: fn(f32, f32) -> bool| move |deg: f32| {
-            let (s, c) = (-deg).to_radians().sin_cos();
-            mask(PIXELS, move |x, y| inside((x - 0.5) * c - (y - 0.5) * s, (x - 0.5) * s + (y - 0.5) * c))
-        };
-        fn rounded(x: f32, y: f32, hx: f32, hy: f32, r: f32) -> bool {
-            let (dx, dy) = (x.abs() - (hx - r), y.abs() - (hy - r));
-            dx <= r && dy <= r && (dx <= 0.0 || dy <= 0.0 || dx.hypot(dy) <= r)
-        }
-        let star: Vec<[f32; 2]> = (0..10)
+    fn regular(x: f32, y: f32, sides: usize, r: f32, inner: Option<f32>) -> bool {
+        let n = if inner.is_some() { 2 * sides } else { sides };
+        let p: Vec<[f32; 2]> = (0..n)
             .map(|i| {
-                let (a, r) = (std::f32::consts::TAU * i as f32 / 10.0 - std::f32::consts::FRAC_PI_2, if i % 2 == 0 { 0.46 } else { 0.18 });
-                [0.5 + r * a.cos(), 0.5 + r * a.sin()]
+                let a = std::f32::consts::TAU * i as f32 / n as f32 - std::f32::consts::FRAC_PI_2;
+                let r = if i % 2 == 1 { inner.unwrap_or(r) } else { r };
+                [r * a.cos(), r * a.sin()]
             })
             .collect();
-        type Shape = Box<dyn Fn(f32) -> Mask>;
-        // (Each within 0.47 of the middle, so that it stays in the mask however it is turned.)
-        let shapes: Vec<(&str, Shape, Kind, f32)> = vec![
-            ("a disc", Box::new(by(|x, y| x.hypot(y) < 0.44)), Kind::Round, 0.95),
-            ("an ellipse of 2 to 1", Box::new(by(|x, y| (x / 0.45).hypot(y / 0.225) < 1.0)), Kind::Round, 0.8),
-            ("an octagon", Box::new(poly(regular(8, 0.45))), Kind::Round, 0.8),
-            ("a box", Box::new(poly(vec![[0.15, 0.2], [0.85, 0.2], [0.85, 0.8], [0.15, 0.8]])), Kind::Square, 0.9),
-            ("an L", Box::new(poly(vec![[0.18, 0.18], [0.46, 0.18], [0.46, 0.54], [0.82, 0.54], [0.82, 0.82], [0.18, 0.82]])), Kind::Square, 0.9),
-            ("a bar a fifth as thick as long", Box::new(by(|x, y| x.abs() < 0.45 && y.abs() < 0.09)), Kind::Square, 0.85),
-            ("a bar an eighth as thick as long", Box::new(by(|x, y| x.abs() < 0.45 && y.abs() < 0.056)), Kind::Square, 0.6),
-            ("a triangle", Box::new(poly(vec![[0.5, 0.08], [0.86, 0.74], [0.14, 0.74]])), Kind::Pointed, 0.85),
-            ("a star", Box::new(poly(star)), Kind::Pointed, 0.6),
-            ("a box rounded by a tenth of its size", Box::new(by(|x, y| rounded(x, y, 0.4, 0.3, 0.08))), Kind::Round, 0.8),
-            ("a box rounded by a sixth of its size", Box::new(by(|x, y| rounded(x, y, 0.4, 0.3, 0.13))), Kind::Round, 0.9),
-            ("a capsule of 4 to 1", Box::new(by(|x, y| rounded(x, y, 0.45, 0.1125, 0.1125))), Kind::Round, 0.9),
-            ("a capsule of 6 to 1", Box::new(by(|x, y| rounded(x, y, 0.45, 0.075, 0.075))), Kind::Round, 0.6),
-            ("a box rounded by a twentieth of its size", Box::new(by(|x, y| rounded(x, y, 0.4, 0.3, 0.04))), Kind::Square, 0.7),
-        ];
-        let turns: Vec<f32> = (0..=18).map(|i| i as f32 * 5.0).collect();
-        for (name, shape, kind, least) in &shapes {
-            let (mut lo, mut hi) = (1.0f32, 0.0f32);
-            for deg in &turns {
-                let a = of_mask(&shape(*deg)).unwrap_or_else(|| panic!("{name} turned {deg} has no shape"));
-                assert_eq!(a.leading(), *kind, "{name} turned {deg}: {a:?}");
-                lo = lo.min(a.share(*kind));
-                hi = hi.max(a.share(*kind));
+        within(&p, x, y)
+    }
+
+    type Inside = fn(f32, f32) -> bool;
+
+    /// The least and the most of each share as the shape is turned through a quarter turn in
+    /// steps of `step` degrees, on a silhouette of the studio's size, and what led at each.
+    fn turned(inside: Inside, step: f32) -> ([f32; 3], [f32; 3], Vec<Kind>, Vec<f32>) {
+        let (mut lo, mut hi, mut lead, mut corners) = ([1.0f32; 3], [0.0f32; 3], Vec::new(), Vec::new());
+        let mut deg = 0.0f32;
+        while deg < 90.0 - 1e-3 {
+            let a = of_mask(&mask(PIXELS, deg, inside)).unwrap_or_else(|| panic!("no shape at {deg} degrees"));
+            let sum = a.round + a.square + a.pointed;
+            assert!((sum - 1.0).abs() < 1e-3 && [a.round, a.square, a.pointed].iter().all(|v| (0.0..=1.0).contains(v)), "shares at {deg}: {a:?}");
+            for (k, v) in [a.round, a.square, a.pointed].into_iter().enumerate() {
+                lo[k] = lo[k].min(v);
+                hi[k] = hi[k].max(v);
             }
-            // (Steady to a tenth; the two on the edge of their class, the thinnest capsule and
-            // the least rounded box, to a quarter.)
-            let steady = if name.contains("6 to 1") || name.contains("twentieth") { 0.25 } else { 0.1 };
-            assert!(lo >= *least && hi - lo <= steady, "{name}: {} from {lo:.2} to {hi:.2} over a quarter turn (at least {least})", kind.name());
+            lead.push(a.leading());
+            corners.push(a.corners);
+            deg += step;
+        }
+        (lo, hi, lead, corners)
+    }
+
+    /// Known shapes on a silhouette of the studio's size, **however they are turned** (its
+    /// first review: upright, a box rounded by an eighth of its size was round and turned six
+    /// degrees it was square; its second: a spike read under half pointed, a disc with one
+    /// slot cut in it failed "round", an ellipse of three to one moved by a third). For each:
+    /// what leads at every angle, the least its share is, and how far the share moves.
+    #[test]
+    fn known_shapes_speak_their_language_however_they_are_turned() {
+        let shapes: [(&str, Inside, Kind, f32); 28] = [
+            ("a disc", |x, y| x.hypot(y) < 0.44, Kind::Round, 0.97),
+            ("an ellipse of 3 to 1", |x, y| (x / 0.45).hypot(y / 0.15) < 1.0, Kind::Round, 0.7),
+            ("an octagon", |x, y| regular(x, y, 8, 0.45, None), Kind::Round, 0.9),
+            ("a capsule of 4 to 1", |x, y| rounded(x, y, 0.45, 0.1125, 0.1125), Kind::Round, 0.9),
+            ("a capsule of 6 to 1", |x, y| rounded(x, y, 0.45, 0.075, 0.075), Kind::Round, 0.85),
+            // (A box of 0.8 by 0.6 is 1 across, corner to corner: its rounding is a share of that.)
+            ("a box rounded by a twelfth of its size", |x, y| rounded(x, y, 0.4, 0.3, 0.08), Kind::Round, 0.9),
+            ("a box rounded by a tenth of its size", |x, y| rounded(x, y, 0.4, 0.3, 0.10), Kind::Round, 0.95),
+            ("a disc with a slot cut in it", |x, y| x.hypot(y) < 0.44 && !(x.abs() < 0.01 && y > 0.34), Kind::Round, 0.55),
+            ("a disc with a notch cut in it", |x, y| x.hypot(y) < 0.44 && !(y > 0.24 && x.abs() < (y - 0.24) * 0.5), Kind::Round, 0.55),
+            ("a cloud of five bumps", |x, y| x.hypot(y) < 0.2 || (x - 0.22).hypot(y - 0.05) < 0.16 || (x + 0.22).hypot(y - 0.05) < 0.16 || (x - 0.1).hypot(y + 0.14) < 0.15 || (x + 0.1).hypot(y + 0.14) < 0.15, Kind::Round, 0.9),
+            ("a box", |x, y| x.abs() < 0.35 && y.abs() < 0.3, Kind::Square, 0.95),
+            ("an L", |x, y| within(&[[-0.32, -0.32], [-0.04, -0.32], [-0.04, 0.04], [0.32, 0.04], [0.32, 0.32], [-0.32, 0.32]], x, y), Kind::Square, 0.95),
+            ("a cross", |x, y| (x.abs() < 0.44 && y.abs() < 0.12) || (x.abs() < 0.12 && y.abs() < 0.44), Kind::Square, 0.95),
+            ("a bar a fifth as thick as long", |x, y| x.abs() < 0.45 && y.abs() < 0.09, Kind::Square, 0.95),
+            ("a bar an eighth as thick as long", |x, y| x.abs() < 0.45 && y.abs() < 0.056, Kind::Square, 0.95),
+            ("a box rounded by a fiftieth of its size", |x, y| rounded(x, y, 0.4, 0.3, 0.02), Kind::Square, 0.93),
+            ("a box rounded by a twenty-fifth of its size", |x, y| rounded(x, y, 0.4, 0.3, 0.04), Kind::Square, 0.78),
+            ("a house (a box under a right-angled roof)", |x, y| within(&[[-0.3, 0.4], [-0.3, -0.1], [0.0, -0.4], [0.3, -0.1], [0.3, 0.4]], x, y), Kind::Square, 0.65),
+            ("a pentagon", |x, y| regular(x, y, 5, 0.45, None), Kind::Square, 0.7),
+            ("a triangle", |x, y| within(&[[0.0, -0.42], [0.36, 0.24], [-0.36, 0.24]], x, y), Kind::Pointed, 0.95),
+            ("a star of five points", |x, y| regular(x, y, 5, 0.46, Some(0.18)), Kind::Pointed, 0.95),
+            ("a star of twelve points", |x, y| regular(x, y, 12, 0.46, Some(0.30)), Kind::Pointed, 0.95),
+            ("a spike of 8 degrees", |x, y| within(&[[0.0, -0.44], [0.0615, 0.44], [-0.0615, 0.44]], x, y), Kind::Pointed, 0.55),
+            ("a spike of 15 degrees", |x, y| within(&[[0.0, -0.44], [0.1158, 0.44], [-0.1158, 0.44]], x, y), Kind::Pointed, 0.55),
+            ("a spike of 25 degrees", |x, y| within(&[[0.0, -0.44], [0.195, 0.44], [-0.195, 0.44]], x, y), Kind::Pointed, 0.55),
+            ("a thin diamond", |x, y| x.abs() / 0.11 + y.abs() / 0.44 < 1.0, Kind::Pointed, 0.85),
+            ("a crescent", |x, y| x.hypot(y) < 0.44 && (x - 0.18).hypot(y) > 0.36, Kind::Pointed, 0.65),
+            ("a box with a spike on it", |x, y| (x.abs() < 0.3 && y.abs() < 0.2) || within(&[[-0.05, -0.2], [0.05, -0.2], [0.0, -0.44]], x, y), Kind::Square, 0.48),
+        ];
+        for (name, inside, kind, least) in shapes {
+            let (lo, hi, lead, _) = turned(inside, 10.0);
+            let k = kind as usize;
+            assert!(lead.iter().all(|l| *l == kind), "{name} leads {lead:?}");
+            // Steady to a tenth.
+            assert!(lo[k] >= least && hi[k] - lo[k] <= 0.1, "{name}: {} from {:.2} to {:.2} over a quarter turn (at least {least})", kind.name(), lo[k], hi[k]);
         }
         // Between two classes, and steady there: a hexagon's corners turn 60 degrees.
-        let hexagon = poly(regular(6, 0.45));
-        let (mut lo, mut hi) = (1.0f32, 0.0f32);
-        for deg in &turns {
-            let a = of_mask(&hexagon(*deg)).unwrap();
-            assert!(a.pointed < 0.05, "a hexagon turned {deg}: {a:?}");
-            lo = lo.min(a.round);
-            hi = hi.max(a.round);
-        }
-        assert!(lo > 0.2 && hi < 0.8 && hi - lo <= 0.2, "a hexagon is between round and square: round from {lo:.2} to {hi:.2}");
-        // A spike on a flat base: its point, and its base's two square corners.
-        let spike = by(|x, y| x.abs() < 0.4 && y.abs() < 0.12 * (0.4 - x) / 0.8);
-        for deg in &turns {
-            let a = of_mask(&spike(*deg)).unwrap();
-            assert!(a.pointed > 0.35 && a.pointed < 0.65 && a.round < 0.1 && a.corners == 3.0, "a spike turned {deg}: {a:?}");
-        }
-        // And the corners are counted: four, six, three, ten; none on a disc.
-        for (name, want) in [("a box", 4.0f32), ("an L", 6.0), ("a triangle", 3.0), ("a star", 10.0), ("a disc", 0.0)] {
-            let shape = &shapes.iter().find(|s| s.0 == name).unwrap().1;
+        let (lo, hi, _, _) = turned(|x, y| regular(x, y, 6, 0.45, None), 10.0);
+        assert!(lo[0] > 0.5 && hi[0] < 0.8 && hi[0] - lo[0] <= 0.1 && hi[2] < 0.02, "a hexagon is between round and square: round from {:.2} to {:.2}", lo[0], hi[0]);
+        // Outward corners are counted: four, five (an L's inside corner is not one), three,
+        // five; none on a disc.
+        for (name, want) in [("a box", 4.0f32), ("an L", 5.0), ("a triangle", 3.0), ("a star of five points", 5.0), ("a disc", 0.0)] {
+            let inside = shapes.iter().find(|s| s.0 == name).unwrap().1;
             for deg in [0.0f32, 15.0, 35.0] {
-                assert_eq!(of_mask(&shape(deg)).unwrap().corners, want, "{name} turned {deg}");
+                assert_eq!(of_mask(&mask(PIXELS, deg, inside)).unwrap().corners, want, "{name} turned {deg}");
             }
         }
+    }
+
+    /// **A corner's rounding moves the answer smoothly** (its second review: between the two
+    /// radii its first test tried, a box rounded by a sixteenth of its size read as a fifth
+    /// round at one angle and nine tenths at another, a degree apart; the size was the longer
+    /// side of the box round the shape, which grows as it is turned). At every rounding from
+    /// a fiftieth to a tenth of the size, at every three degrees: the share moves by a
+    /// quarter at most, and the more rounded box is the rounder at its middle.
+    #[test]
+    fn a_corners_rounding_moves_the_answer_smoothly() {
+        let boxes: [(f32, Inside); 7] = [
+            (0.02, |x, y| rounded(x, y, 0.4, 0.3, 0.02)),
+            (0.04, |x, y| rounded(x, y, 0.4, 0.3, 0.04)),
+            (0.05, |x, y| rounded(x, y, 0.4, 0.3, 0.05)),
+            (0.055, |x, y| rounded(x, y, 0.4, 0.3, 0.055)),
+            (0.06, |x, y| rounded(x, y, 0.4, 0.3, 0.06)),
+            (0.07, |x, y| rounded(x, y, 0.4, 0.3, 0.07)),
+            (0.10, |x, y| rounded(x, y, 0.4, 0.3, 0.10)),
+        ];
+        let mut last = -1.0f32;
+        for (r, inside) in boxes {
+            let (lo, hi, _, _) = turned(inside, 3.0);
+            assert!(hi[0] - lo[0] <= 0.25, "a box rounded by {r} of its size: round from {:.2} to {:.2} as it is turned", lo[0], hi[0]);
+            assert!(hi[2] < 0.02, "a box rounded by {r}: nothing of it is a point ({:.2})", hi[2]);
+            let middle = (lo[0] + hi[0]) / 2.0;
+            assert!(middle >= last - 0.02, "a box rounded by {r} is no less round than one rounded by less: {middle:.2} after {last:.2}");
+            last = middle;
+        }
+        assert!(last > 0.95, "rounded by a tenth, it is round: {last:.2}");
     }
 
     /// What has no shape has no language, and the largest piece is the one read: an empty
-    /// mask, a speck, a mask too large; a disc with a speck beside it is the disc; the mean of
-    /// a disc and a box is half round and half square; the same mask gives the same numbers.
+    /// mask, a speck, a mask too large, a piece under the size it reads at (a thumbnail: its
+    /// second review found a 64-pixel square read as wholly round at one angle in five); a
+    /// disc with a speck beside it is the disc; the mean of a disc and a box is half round
+    /// and half square; the same mask gives the same numbers, and half the pixels much the same.
     #[test]
     fn what_is_measured_and_what_is_not() {
+        let disc: Inside = |x, y| (x + 0.1).hypot(y) < 0.3;
+        let boxy: Inside = |x, y| x.abs() < 0.3 && y.abs() < 0.25;
         assert_eq!(of_mask(&Mask::empty(PIXELS, PIXELS)), None);
-        assert_eq!(of_mask(&mask(PIXELS, |x, y| (x - 0.5).hypot(y - 0.5) < 0.03)), None);
+        assert_eq!(of_mask(&mask(PIXELS, 0.0, |x, y| x.hypot(y) < 0.03)), None);
         assert_eq!(of_mask(&Mask::empty(600, 600)), None);
-        let disc = mask(PIXELS, |x, y| (x - 0.4).hypot(y - 0.5) < 0.3);
-        let with_speck = mask(PIXELS, |x, y| (x - 0.4).hypot(y - 0.5) < 0.3 || (x > 0.9 && y > 0.9));
-        assert_eq!(of_mask(&disc), of_mask(&with_speck));
-        let boxy = mask(PIXELS, |x, y| (0.2..0.8).contains(&x) && (0.25..0.75).contains(&y));
-        let both = of_masks(&[disc.clone(), boxy, Mask::empty(PIXELS, PIXELS)]).unwrap();
+        for small in [24u32, 64, 96] {
+            assert_eq!(of_mask(&mask(small, 0.0, boxy)), None, "a box on {small} pixels is too small to read");
+            assert_eq!(of_mask(&mask(small, 0.0, |x, y| x.hypot(y) < 0.44)), None, "a disc on {small} pixels");
+        }
+        assert_eq!(of_mask(&mask(PIXELS, 0.0, disc)), of_mask(&mask(PIXELS, 0.0, |x, y| (x + 0.1).hypot(y) < 0.3 || (x > 0.4 && y > 0.4))));
+        let both = of_masks(&[mask(PIXELS, 0.0, disc), mask(PIXELS, 0.0, boxy), Mask::empty(PIXELS, PIXELS)]).unwrap();
         assert!((both.round - 0.5).abs() < 0.05 && (both.square - 0.5).abs() < 0.05 && both.corners == 2.0, "{both:?}");
         assert_eq!(of_masks(&[Mask::empty(8, 8)]), None);
+        assert_eq!(of_masks(&[]), None);
         // (A disc with a hole is its outline: the hole is not traced.)
-        let ring = mask(PIXELS, |x, y| (0.2..0.44).contains(&(x - 0.5).hypot(y - 0.5)));
-        assert!(of_mask(&ring).unwrap().round > 0.95);
+        assert!(of_mask(&mask(PIXELS, 0.0, |x, y| (0.2..0.44).contains(&x.hypot(y)))).unwrap().round > 0.95);
         // A part thinner than the window ends in a point at this scale, whatever its end: a
         // comb's flat teeth, a twentieth of the size across, are points.
-        let comb = mask(PIXELS, |x, y| (0.1..0.9).contains(&x) && ((0.5..0.62).contains(&y) || ((0.38..0.5).contains(&y) && (((x - 0.1) / 0.04) as u32).is_multiple_of(2))));
-        let a = of_mask(&comb).unwrap();
+        let comb: Inside = |x, y| x.abs() < 0.4 && ((0.0..0.12).contains(&y) || ((-0.12..0.0).contains(&y) && (((x + 0.4) / 0.04) as u32).is_multiple_of(2)));
+        let a = of_mask(&mask(PIXELS, 0.0, comb)).unwrap();
         assert!(a.pointed > 0.7 && a.leading() == Kind::Pointed, "a comb's thin teeth: {a:?}");
-        // On a thumbnail's 64 pixels it is coarser, and still tells a disc from a box.
-        assert!(of_mask(&mask(64, |x, y| (x - 0.5).hypot(y - 0.5) < 0.44)).unwrap().round > 0.8);
-        assert!(of_mask(&mask(64, |x, y| (0.15..0.85).contains(&x) && (0.2..0.8).contains(&y))).unwrap().square > 0.6);
-        let j = of_mask(&disc).unwrap().to_json();
+        // The same shape on half the pixels (still over the size it reads at) says the same.
+        for (name, inside, kind) in [("a disc", disc, Kind::Round), ("a box", boxy, Kind::Square)] {
+            let (full, half) = (of_mask(&mask(PIXELS, 20.0, inside)).unwrap(), of_mask(&mask(PIXELS / 2, 20.0, inside)).unwrap());
+            assert!((full.share(kind) - half.share(kind)).abs() < 0.1 && half.leading() == kind, "{name}: {full:?} and on half the pixels {half:?}");
+        }
+        let j = of_mask(&mask(PIXELS, 0.0, disc)).unwrap().to_json();
         assert_eq!(j.get("leading").and_then(Json::as_str), Some("round"));
         assert_eq!(Kind::parse("pointed"), Some(Kind::Pointed));
         assert_eq!(Kind::parse("spiky"), None);

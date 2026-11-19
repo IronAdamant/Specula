@@ -62,6 +62,10 @@ pub struct FormFacts {
     pub triangles: usize,
     /// Why nothing below was measured (too many triangles), if so.
     pub skipped: Option<&'static str>,
+    /// Triangles that could not be read: an index past the vertices, or a corner whose place
+    /// is not a finite number (or is past [`FAR_M`]). They are no part of what is measured,
+    /// and a mesh that has any does not pass the loose check: it was not all looked at.
+    pub unread: usize,
     /// Pieces: sets of triangles joined through shared corners.
     pub pieces: usize,
     /// Pieces whose bounds do not reach the ground (y = 0): only these can be loose.
@@ -80,8 +84,9 @@ pub struct FormFacts {
     pub crease_m: f32,
     /// Length of the razors (creases turning more than [`RAZOR_DEG`]), metres.
     pub razor_m: f32,
-    /// Every vertex has a normal: without them the two measures of shading below are not
-    /// taken (and say nothing).
+    /// Every vertex a measured triangle uses has a normal, of some length: without them the
+    /// two measures of shading below are not taken, and a style that limits them is told so
+    /// (a failure, never a pass on nothing).
     pub shaded: bool,
     /// Length of the edges that are not creases across which the shading normals jump by more
     /// than [`SEAM_DEG`]: a line in the light where the surface has none.
@@ -107,6 +112,9 @@ impl FormFacts {
     pub fn to_json(&self) -> Json {
         let r3 = |x: f32| Json::from((f64::from(x) * 1000.0).round() / 1000.0);
         let mut j = Json::obj([("triangles", Json::from(self.triangles))]);
+        if self.unread > 0 {
+            j.set("unread_triangles", Json::from(self.unread));
+        }
         if let Some(why) = self.skipped {
             j.set("skipped", Json::from(why));
             return j;
@@ -193,7 +201,8 @@ fn find(parent: &mut [u32], mut x: u32) -> u32 {
 }
 
 /// Measures a mesh's form. Work and memory go by its triangles, of which there are at most
-/// [`MAX_TRIANGLES`] (more: `skipped`).
+/// [`MAX_TRIANGLES`] (more: `skipped`), and not by its vertices: one no triangle uses is
+/// never looked at.
 pub fn measure(m: &MeshData) -> FormFacts {
     measure_with(m, &|| false)
 }
@@ -209,39 +218,51 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
     }
     let given_up = |f: &FormFacts| FormFacts { triangles: f.triangles, skipped: Some("stopped: the call ran out of time before its form was measured"), ..FormFacts::default() };
     // Corners at one place are one corner, whatever their normals (a hard edge splits them).
+    // Only the vertices a triangle uses are looked at (a file's importer keeps every vertex:
+    // twenty million that no triangle used were welded before the first look at `stop`, three
+    // seconds of them. Fourth review).
     let mut place: BTreeMap<[u32; 3], u32> = BTreeMap::new();
+    let mut seen: BTreeMap<u32, u32> = BTreeMap::new();
     let mut points: Vec<V3> = Vec::new();
-    let weld: Vec<u32> = m
-        .positions
-        .iter()
-        .map(|p| {
-            // (-0.0 and 0.0 are one place.)
-            let key = p.map(|x| (x + 0.0).to_bits());
-            *place.entry(key).or_insert_with(|| {
-                points.push(*p);
-                (points.len() - 1) as u32
-            })
-        })
-        .collect();
     // Triangles with three places, each a finite one. The shape's size is theirs: a vertex no
-    // triangle uses (an importer keeps every vertex of a file) or one at infinity is no part
-    // of the shape, and one stray vertex a kilometre off made every piece "near" every other.
-    let finite = |i: u32| points[i as usize].iter().all(|x| x.abs() <= FAR_M);
+    // triangle uses or one at infinity is no part of the shape, and one stray vertex a
+    // kilometre off made every piece "near" every other.
     let mut corners: Vec<([u32; 3], [u32; 3])> = Vec::with_capacity(triangles);
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-    for t in m.indices.as_chunks::<3>().0 {
-        let (Some(a), Some(b), Some(c)) = (weld.get(t[0] as usize), weld.get(t[1] as usize), weld.get(t[2] as usize)) else { continue };
-        if a == b || b == c || a == c || !(finite(*a) && finite(*b) && finite(*c)) {
+    for (n, t) in m.indices.as_chunks::<3>().0.iter().enumerate() {
+        if n % 65_536 == 65_535 && stop() {
+            return given_up(&f);
+        }
+        let mut w = [0u32; 3];
+        let mut read = true;
+        for k in 0..3 {
+            let Some(p) = m.positions.get(t[k] as usize).filter(|p| p.iter().all(|x| x.abs() <= FAR_M)) else {
+                read = false;
+                break;
+            };
+            w[k] = *seen.entry(t[k]).or_insert_with(|| {
+                // (-0.0 and 0.0 are one place.)
+                *place.entry(p.map(|x| (x + 0.0).to_bits())).or_insert_with(|| {
+                    points.push(*p);
+                    (points.len() - 1) as u32
+                })
+            });
+        }
+        if !read {
+            f.unread += 1;
             continue;
         }
-        for v in [*a, *b, *c] {
+        if w[0] == w[1] || w[1] == w[2] || w[0] == w[2] {
+            continue;
+        }
+        for v in w {
             let p = points[v as usize];
             for k in 0..3 {
                 lo[k] = lo[k].min(p[k]);
                 hi[k] = hi[k].max(p[k]);
             }
         }
-        corners.push(([*a, *b, *c], *t));
+        corners.push((w, *t));
     }
     if corners.is_empty() {
         // (Nothing to measure: nothing is loose.)
@@ -250,7 +271,7 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
     }
     let size = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(hi[2] - lo[2]).max(1e-6);
     // A sliver (three corners nearly in a line: an area under a millionth of the square of
-    // its own longest side) is left out: its facing is noise, and the edges it would make
+    // its own longest side, which is half a million times longer than it is broad) is left out: its facing is noise, and the edges it would make
     // razors of are no edges anyone sees. By its own sides, not the shape's size: one far
     // triangle made slivers of every other (second review).
     let mut tris: Vec<([u32; 3], [u32; 3], V3)> = Vec::with_capacity(corners.len());
@@ -345,7 +366,10 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
     // would read as shaded round.)
     // (A normal of no length is no normal either: such a mesh read as shaded round at every
     // crease. Third review.)
-    f.shaded = m.normals.len() >= m.positions.len() && m.normals.iter().all(|n| length(*n) > 1e-6);
+    // (Of the vertices a measured triangle uses, and no other: one stray vertex with a normal
+    // of no length, used by nothing, switched both measures off, and the checks then passed
+    // on nothing. Fourth review.)
+    f.shaded = tris.iter().all(|(_, raw, _)| raw.iter().all(|i| m.normals.get(*i as usize).is_some_and(|n| length(*n) > 1e-6)));
     let normal = |i: u32| m.normals.get(i as usize).copied().unwrap_or([0.0; 3]);
     let mut edges: BTreeMap<(u32, u32), Vec<Side>> = BTreeMap::new();
     for (i, (w, raw, face)) in tris.iter().enumerate() {
@@ -399,13 +423,12 @@ pub fn measure_with(m: &MeshData, stop: &dyn Fn() -> bool) -> FormFacts {
         .map(|(w, _, _)| {
             let p = [points[w[0] as usize], points[w[1] as usize], points[w[2] as usize]];
             let l = [length(sub(p[1], p[0])), length(sub(p[2], p[1])), length(sub(p[0], p[2]))];
-            let k = if l[0] <= l[1] && l[0] <= l[2] {
-                0
-            } else if l[1] <= l[2] {
-                1
-            } else {
-                2
-            };
+            // (The shortest side; of two as short, the one that starts at the corner that
+            // comes first by its place, not by its turn in the triangle: the same triangle
+            // written from another corner was sampled elsewhere, and a shape's small relief
+            // moved by a tenth. Fourth review.)
+            let first = |a: usize, b: usize| l[a] < l[b] || (l[a] == l[b] && (0..3).map(|c| p[a][c].total_cmp(&p[b][c])).find(|o| o.is_ne()).is_none_or(|o| o.is_lt()));
+            let k = (1..3).fold(0, |best, c| if first(c, best) { c } else { best });
             (p[k], sub(p[(k + 1) % 3], p[k]), sub(p[(k + 2) % 3], p[k]))
         })
         .collect();
@@ -771,7 +794,7 @@ mod tests {
         for far in [1.0e3f32, 1.0e6] {
             let mut with = adrift.clone();
             let first = with.positions.len() as u32;
-            // (A triangle of that size, and one a thousand times longer than broad: the second
+            // (A triangle of that size, and one a million times longer than broad: the second
             // is a sliver by its own sides and is left out, and changes nothing.)
             with.positions.extend_from_slice(&[[0.0, 5.0, 0.0], [far, 5.0, 0.0], [far * 0.5, 5.0, far], [0.0, 6.0, 0.0], [1.0, 6.0, 0.0], [far, 6.0, 1.0]]);
             with.normals.extend_from_slice(&[[0.0, 1.0, 0.0]; 6]);
@@ -828,5 +851,79 @@ mod tests {
         let f = measure(&big);
         assert!(f.skipped.is_some() && f.to_json().get("skipped").is_some());
         assert_eq!(measure(&MeshData::default()), FormFacts { loose_count: Some(0), ..FormFacts::default() });
+    }
+
+    /// What a fourth review found. Shading is judged on the vertices in use and no other (one
+    /// stray vertex with a normal of no length switched it off, and the checks passed on
+    /// nothing). A triangle written from another corner is the same triangle: its relief is
+    /// the same (it moved by a tenth). Vertices no triangle uses are never looked at. And a
+    /// triangle that cannot be read (an index past the vertices, a place that is no number)
+    /// is counted, so that a mesh not all looked at is not passed.
+    #[test]
+    fn the_fourth_review_of_the_form_checks() {
+        // A box of eight shared corners, each with the mean of its three faces' normals: every
+        // one of its creases is shaded as if it were round.
+        let mut smeared = MeshData::default();
+        for k in 0..8u32 {
+            let p = [(k & 1) as f32, ((k >> 1) & 1) as f32, ((k >> 2) & 1) as f32];
+            smeared.positions.push(p);
+            let n = p.map(|x| x * 2.0 - 1.0);
+            smeared.normals.push(n.map(|x| x / length(n)));
+        }
+        for q in [[1u32, 3, 7, 5], [4, 6, 2, 0], [2, 6, 7, 3], [4, 0, 1, 5], [5, 7, 6, 4], [0, 2, 3, 1]] {
+            smeared.indices.extend_from_slice(&[q[0], q[1], q[2], q[0], q[2], q[3]]);
+        }
+        let whole = measure(&smeared);
+        assert!(whole.shaded && whole.crease_m > 11.9 && (whole.smeared_m - whole.crease_m).abs() < 1e-3, "{whole:?}");
+        // A vertex nothing uses, with a normal of no length (or none that is a number), is no
+        // part of the mesh: the same facts.
+        for stray in [[0.0f32; 3], [f32::NAN; 3]] {
+            let mut with = smeared.clone();
+            with.positions.push([9.0, 9.0, 9.0]);
+            with.normals.push(stray);
+            assert_eq!(measure(&with), whole, "a stray vertex with the normal {stray:?}");
+        }
+        // One in use: the shading is not measured, and the facts say so.
+        let mut holed = smeared.clone();
+        holed.normals[3] = [0.0; 3];
+        let got = measure(&holed);
+        assert!(!got.shaded && got.smeared_m == 0.0 && got.seam_m == 0.0 && got.crease_m > 11.9, "{got:?}");
+        let mut none = smeared.clone();
+        none.normals.clear();
+        assert!(!measure(&none).shaded);
+
+        // Every triangle written from its next corner: the same relief.
+        let lumpy = joined(&ball(0.5, 12, [0.0, 0.5, 0.0]), &flat(&box_quads([0.3, 0.0, 0.3], [0.9, 0.35, 0.8])));
+        let mut turned = lumpy.clone();
+        for t in turned.indices.as_chunks_mut::<3>().0 {
+            t.rotate_left(1);
+        }
+        let (a, b) = (measure(&turned), measure(&lumpy));
+        // (To the rounding of a face's own normal, which is made from other two of its sides.)
+        assert!((0..3).all(|k| (a.relief[k] - b.relief[k]).abs() < 1e-5), "{:?} and {:?}", a.relief, b.relief);
+        assert_eq!(FormFacts { relief: b.relief, ..a }, b);
+
+        // A million vertices that no triangle uses are not looked at: the facts are the
+        // triangle's own.
+        let mut one = MeshData { positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], normals: vec![[0.0, 1.0, 0.0]; 3], indices: vec![0, 1, 2], ..MeshData::default() };
+        let alone = measure(&one);
+        one.positions.extend(std::iter::repeat_n([5.0, 5.0, 5.0], 1_000_000));
+        assert_eq!(measure(&one), alone);
+        assert!(alone.pieces == 1 && alone.shaded);
+
+        // What cannot be read is counted and left out.
+        let mut broken = flat(&box_quads([0.0; 3], [1.0; 3]));
+        let first = broken.positions.len() as u32;
+        broken.indices.extend_from_slice(&[0, 1, first + 40, 2, 3, u32::MAX]);
+        let got = measure(&broken);
+        assert_eq!((got.unread, got.pieces, got.loose_count), (2, 1, Some(0)), "{got:?}");
+        assert_eq!(got.to_json().get("unread_triangles").and_then(Json::as_u64), Some(2));
+        let mut adrift = flat(&box_quads([0.2, 1.5, 0.2], [0.4, 1.7, 0.4]));
+        for p in &mut adrift.positions {
+            p[1] = f32::NAN;
+        }
+        let got = measure(&joined(&flat(&box_quads([0.0; 3], [1.0; 3])), &adrift));
+        assert_eq!((got.unread, got.pieces, got.loose_count), (12, 1, Some(0)), "a box whose places are no numbers: {got:?}");
+        assert!(measure(&flat(&box_quads([0.0; 3], [1.0; 3]))).to_json().get("unread_triangles").is_none());
     }
 }

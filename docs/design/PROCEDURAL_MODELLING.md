@@ -157,10 +157,15 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   for the nearest point with a dozen to twenty powers a sample outside the shape, over twenty times
   a plain box's. So a cube of roundness 0.3 builds at a resolution of 64 on under half of the work
   limit and is refused at 96, where the same cube at roundness 1 takes a third of the limit (a test
-  holds this); a thin board has an eighth of a cube's samples at the same resolution. The weight is
-  set by the dearest cases found, a box with a rounded plate, a rounded needle or a 4 by 4 repeat
-  of plates cut out of it, whose every sample is outside the rounded shape: at the work limit
-  those take about 1.3 s here. It is not the modifier `round`
+  holds this); a thin board has an eighth of a cube's samples at the same resolution. **A thin
+  rounded shape costs more a sample than a thick one** (under an eighth as thick as it is long,
+  box or cylinder: about 1.7 times): more of its samples take more steps, and up to one in eight
+  is left to the sure way. The weights are **set against the plain primitives' own rate, not
+  against a time**: a build at the work limit is to take what a plain box cut from a plain box
+  takes there, whatever the machine and its state (2026-11-19, release, one thread: that plain
+  cut ran at 1.01 to 1.07 ns a unit of work, a 2 m box with a rounded cube, plate or needle cut
+  out of it, whose every sample is outside the rounded shape, at 0.7 to 1.2, and with a foil or
+  a hair of a nine-thousandth at 0.65 to 1.04 by the thin weight). It is not the modifier `round`
   (a swelling by a radius in metres, on any node) nor `corner` (an edge radius in metres, which cannot
   be given with it). A rounded cylinder has one radius. On an outline that is not a `rect` it is
   refused, as `segments` is where it would do nothing.
@@ -188,7 +193,20 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     reviews' points to the distance, and scans out to 100 m for steps. A test holds the field
     against a distance found by search, on six shapes to 100:1 at six roundnesses, and swollen
     meshes against the unswollen surface at every roundness, for swellings to three times the
-    thinness.
+    thinness. **A sixth** (2026-11-19) held the accuracy against a nearest point of its own in
+    double precision on eight shapes to 1:1000 at ten roundnesses, from a micrometre to ten
+    kilometres out (the worst over the truth 1.3 parts in ten thousand, of a ten-billionth of a
+    metre), and found two things. **A recipe could stop its own build with a panic**: a sample
+    past 1.8e19 from the shape, whose square is past what the numbers hold, made a limit of the
+    solve nothing; a rounded box nested in seven scales of a thousandth, which a recipe may
+    write, did it (such a sample has the bound for its distance now, as it has for a plain box,
+    and the solve cannot be stopped by its limits; a test builds that recipe). **And a foil or a
+    hair cost up to 1.7 times a plain cut's rate under the one weight**, with up to 11% of
+    their samples left to the sure way where the test's four shapes had 5% at most: thin shapes
+    have a weight of their own now, the test holds a foil and a hair to under thirty steps a
+    sample and one in eight left over, and the weights are said against the plain primitives'
+    rate (the time the comment gave, 1.3 s at the limit, was measured on a cooler machine than
+    the reviewer's or this one an afternoon later). **Not reviewed yet.**
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded

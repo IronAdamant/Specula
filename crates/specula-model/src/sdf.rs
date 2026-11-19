@@ -505,15 +505,23 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
 }
 
 /// What a rounded box or cylinder costs a sample over a plain primitive: at a power of 2 (an
-/// ellipsoid's own shares, no power to take), and at any other (a dozen to twenty powers a
-/// sample outside the shape, where the nearest point is solved for; a power of 4 is solved
-/// the same way and costs the same). Set so that the dearest cases found take under the work
-/// limit's 1.5 s at the limit (2026-11-20, release, resolution 96): a cube and a thin board
-/// alone run at 0.36 to 0.6 ns a unit, and a 2 m box with a rounded plate, a rounded needle
-/// or a 4 by 4 repeat of plates cut out of it, whose every sample is outside the rounded
-/// shape, at 0.5 to 0.85. (Two reviews found those cuts at 3 to 5 ns a unit under weights
-/// set from the shapes alone.)
-const ROUNDED_COST: [u64; 2] = [300, 1300];
+/// ellipsoid's own shares, no power to take); at any other (a dozen to twenty powers a sample
+/// outside the shape, where the nearest point is solved for; a power of 4 is solved the same
+/// way and costs the same); and at any other when the shape is thin ([`ROUNDED_THIN`]), where
+/// more samples take more steps and up to one in eight is left to the sure way.
+///
+/// **Set against the plain primitives' own rate, not against a time**: a build at the work
+/// limit is to take what a plain box cut from a plain box takes there, whatever the machine
+/// and its state (2026-11-19, release, resolution 96, one thread: that plain cut ran at 1.01
+/// to 1.07 ns a unit; a rounded cube and a board alone at 0.68 to 0.91; and a 2 m box with a
+/// rounded shape cut out of it, whose every sample is outside the rounded shape, at 0.7 to
+/// 1.2 by the thick weight for a cube, a plate and a needle of a fiftieth, and at 1.1 to 1.76
+/// by it for a foil and a hair of a nine-thousandth, which the thin weight brings to 0.65 to
+/// 1.04). A sixth review found the thin ones: the weights had been set from shapes down to a
+/// fiftieth as thick as long, and against a time measured on a cooler machine.
+const ROUNDED_COST: [u64; 3] = [300, 1300, 2200];
+/// A rounded shape whose least half size is under this share of its greatest is thin.
+const ROUNDED_THIN: f32 = 0.125;
 
 /// A rounded box's or cylinder's field ([`Prim::Rounded`]), in metres.
 ///
@@ -596,6 +604,14 @@ fn rounded_counted(q: V3, half: V3, power: f32, disc: bool) -> (f32, u32) {
 /// what a sample costs, which a test holds to what its work weight was set by).
 fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, (g, len, plane): (V3, f32, f32), lower: f32) -> (f32, u32) {
     let mut steps = 0u32;
+    // A sample so far off that its own distance is past what the numbers hold (a coordinate
+    // past 1.8e19 squares to infinity) has no nearest point to solve for: the bound is the
+    // answer, as it is for a plain box there. (Solved for all the same, a share's limit came
+    // out as nothing and the solve stopped the build with a panic: a recipe nested in seven
+    // scales of a thousandth does it. Sixth review.)
+    if !(lower.is_finite() && len.is_finite() && plane.is_finite() && p.iter().all(|x| x.is_finite())) {
+        return (lower, 0);
+    }
     let n = if inv[2] == 0.0 { 2 } else { 3 };
     let (least, most) = if n == 3 { (h[0].min(h[1]).min(h[2]), h[0].max(h[1]).max(h[2])) } else { (h[0].min(h[1]), h[0].max(h[1])) };
     // (`mu` is the distance over the length of the gradient at the nearest point, which is no
@@ -699,7 +715,9 @@ fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, (g, len, plane): (V3, f32, f
                 let c = mu * inv2[i];
                 // (Never nothing, and never more than either term alone allows.)
                 let most = if c > 0.0 { big[i] / c } else { f64::MAX };
-                let x = v[i].clamp(1e-200, most);
+                // (Written so that no pair of limits can stop it: a `clamp` whose least is over
+                // its most panics.)
+                let x = v[i].min(most).max(1e-200);
                 let share = to(x, 1.0 / e);
                 off[i] = share + c * x - big[i];
                 stiff[i] = share / (e * x) + c;
@@ -1176,7 +1194,15 @@ fn prim_cost(p: &Prim) -> u64 {
         // one and a half times its slowest. Before the steps they were 27 and 175 ns: what a
         // swelling that is right at a thin board's corners costs.)
         Prim::Rounded { power: 2.0, .. } => ROUNDED_COST[0],
-        Prim::Rounded { .. } => ROUNDED_COST[1],
+        Prim::Rounded { half, disc, .. } => {
+            // (A cylinder's two sizes are its radius and its half height.)
+            let (least, most) = if disc { (half[0].min(half[1]), half[0].max(half[1])) } else { (half[0].min(half[1]).min(half[2]), half[0].max(half[1]).max(half[2])) };
+            if least < most * ROUNDED_THIN {
+                ROUNDED_COST[2]
+            } else {
+                ROUNDED_COST[1]
+            }
+        }
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 12,
         Prim::Cylinder { .. } => 35,
     }
@@ -2366,6 +2392,52 @@ mod tests {
         assert!(refused.limit && refused.message.contains("work") && refused.max == Some(MAX_WORK as f64), "{refused:?}");
         let (_, stats) = mesh(&cube(2.0), &opts(96)).unwrap();
         assert!(stats.work < MAX_WORK * 2 / 5, "roundness 1 at 96: {} of {MAX_WORK}", stats.work);
+        // A thin rounded shape costs more a sample than a thick one (a sixth review: a foil
+        // cut from a box ran at up to 1.7 times a plain cut's rate under the thick weight): a
+        // shape under an eighth as thick as it is long, box or cylinder, at any power but 2.
+        let cost = |half: V3, power: f32, disc: bool| eval_cost(&prim(Prim::Rounded { half, power, disc }));
+        let (thick, thin) = (cost([0.5; 3], 4.0, false), cost([0.9, 1e-4, 0.9], 4.0, false));
+        assert!(thin > thick && thin - 48 == ROUNDED_COST[2] && thick - 48 == ROUNDED_COST[1], "{thick} and {thin}");
+        assert_eq!(cost([1e-4, 0.9, 1e-4], 6.67, false), thin);
+        assert_eq!(cost([0.5, 0.07, 0.3], 2.5, false), thick, "an eighth is not thin");
+        assert_eq!(cost([0.5, 0.06, 0.3], 2.5, false), thin);
+        // (A cylinder: its radius and its half height; the third number is not a size.)
+        assert_eq!((cost([0.5, 0.5, 0.0], 4.0, true), cost([0.5, 0.01, 0.0], 4.0, true), cost([0.01, 0.5, 0.0], 4.0, true)), (thick, thin, thin));
+        assert_eq!(cost([0.9, 1e-4, 0.9], 2.0, false), cost([0.5; 3], 2.0, false), "at a power of 2 nothing is solved for");
+    }
+
+    /// A sample too far for numbers has the bound for its distance, and stops nothing (a
+    /// sixth review: a coordinate past 1.8e19, whose square is past what an `f32` holds, made
+    /// a limit of the solve nothing and the solve panic; a rounded box nested in seven scales
+    /// of a thousandth, which a recipe may write, stopped its build that way).
+    #[test]
+    fn a_sample_too_far_for_numbers_stops_nothing() {
+        for power in [2.0f32, 2.5, 4.0, 40.0] {
+            for disc in [false, true] {
+                for far in [2.0e19f32, 1.0e20, 1.0e30, f32::MAX, f32::INFINITY] {
+                    for q in [[far, 0.0, 0.0], [0.0, -far, 0.0], [far, far, far]] {
+                        let (f, steps) = rounded_counted(q, [0.5; 3], power, disc);
+                        assert!(f > 1.0e18 && steps == 0, "power {power}, disc {disc}, at {q:?}: {f} in {steps} steps");
+                    }
+                }
+                // (Not a number in: nothing is solved for, and nothing stops. What comes out is
+                // not held: no sample of a grid is not a number.)
+                assert_eq!(rounded_counted([f32::NAN, 0.0, 0.0], [0.5; 3], power, disc).1, 0, "power {power}");
+                // Far, and still a number: the distance, solved.
+                let (f, _) = rounded_counted([1.0e12, 0.0, 0.0], [0.5; 3], power, disc);
+                assert!((f - 1.0e12).abs() < 1.0e6, "power {power} at a billion kilometres: {f}");
+            }
+        }
+        // The recipe: a rounded box under seven scales of a thousandth, beside a plain one.
+        let mut inner = prim(Prim::Rounded { half: [0.5; 3], power: 4.0, disc: false });
+        let union = |kids: Vec<SdfNode>, m: Modifiers| SdfNode { kind: Kind::Group { op: Combine::Union, kids, smooth: 0.0 }, m };
+        for _ in 0..7 {
+            inner = union(vec![inner], Modifiers { scale: 0.001, ..Modifiers::default() });
+        }
+        let plain = SdfNode { kind: Kind::Prim(Prim::Box { half: [0.5; 3], round: 0.0 }), m: Modifiers { at: [0.0, 0.5, 0.0], ..Modifiers::default() } };
+        let tree = union(vec![plain, inner], Modifiers::default());
+        let (mesh, _) = mesh(&tree, &opts(16)).expect("it builds: the speck is far under a cell");
+        assert!(!mesh.positions.is_empty());
     }
 
     /// A rounded shape's surface in `f64`, for the tests below: how far out a point is by the
@@ -2572,6 +2644,25 @@ mod tests {
                 // no more than one sample in twenty left to the sure way: the weight was set
                 // at about thirty.)
                 assert!(far_mean < 25.0 && near < 30.0 && slow * 20 <= far.1, "{name}, power {power}: {far_mean:.1} steps a sample in a 2 m box ({slow} of {} over forty), {near:.1} near the surface", far.1);
+            }
+        }
+        // A foil and a hair, a nine-thousandth as thick as they are long (a sixth review:
+        // the four shapes above hid them). They are dearer, and are priced so (the thin
+        // weight): under thirty steps a sample in the box, and up to one sample in eight
+        // left to the sure way.
+        for (name, half) in [("a foil", [0.9f32, 1e-4, 0.9]), ("a hair", [1e-4, 0.9, 1e-4])] {
+            assert_eq!(eval_cost(&prim(Prim::Rounded { half, power: 4.0, disc: false })) - 48, ROUNDED_COST[2], "{name} is thin");
+            for power in [2.5f32, 3.0, 4.0, 6.67, 20.0, 40.0] {
+                let (mut far, mut slow) = ((0u64, 0u64), 0u64);
+                for _ in 0..6000 {
+                    let (f, steps) = rounded_counted([next() * 2.0 - 1.0, next() * 2.0 - 1.0, next() * 2.0 - 1.0], half, power, false);
+                    if f > 0.0 {
+                        far = (far.0 + u64::from(steps), far.1 + 1);
+                        slow += u64::from(steps > 40);
+                    }
+                }
+                let mean = far.0 as f64 / far.1 as f64;
+                assert!(mean < 30.0 && slow * 8 <= far.1, "{name}, power {power}: {mean:.1} steps a sample in a 2 m box ({slow} of {} over forty)", far.1);
             }
         }
 
@@ -2913,3 +3004,4 @@ mod tests {
         assert_eq!(ground.open_edge_count(), 0, "closed at the bounds");
     }
 }
+

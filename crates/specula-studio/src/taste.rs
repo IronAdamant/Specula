@@ -68,19 +68,24 @@ pub struct Measured {
     /// Thumbnail silhouettes, fitted, one per angle (the same angles for every sibling).
     pub silhouettes: Vec<Mask>,
     /// The same silhouettes at [`crate::shape::PIXELS`], for the outline's shape language
-    /// (a thumbnail's pixels are as large as what it measures). Empty: the thumbnails serve.
+    /// (a thumbnail's pixels are as large as what it measures). Empty: no shape is read.
     pub outlines: Vec<Mask>,
     pub gameplay: Option<ShotMeasure>,
     pub phone: Option<ShotMeasure>,
     pub worst: Option<ShotMeasure>,
     /// The subject under the game light (close framing), for flat lighting.
     pub lit: Option<Lightness>,
+    /// The shape language read from `outlines`, kept from its first reading ([`Measured::shape`]:
+    /// tracing three silhouettes of 512 pixels takes some milliseconds, and both the measures
+    /// and the check ask).
+    pub shape_read: std::sync::OnceLock<Option<crate::shape::ShapeLanguage>>,
 }
 
 impl Measured {
-    /// The subject's shape language: from its larger silhouettes when it has them.
+    /// The subject's shape language, from its larger silhouettes (`None` without them: a
+    /// thumbnail is under the size the measure reads at).
     pub fn shape(&self) -> Option<crate::shape::ShapeLanguage> {
-        crate::shape::of_masks(if self.outlines.is_empty() { &self.silhouettes } else { &self.outlines })
+        *self.shape_read.get_or_init(|| crate::shape::of_masks(&self.outlines))
     }
 }
 
@@ -121,9 +126,9 @@ pub fn check_subject(m: &Measured, rules: &StyleRules) -> Vec<Finding> {
     if let (Some(kind), Some(shape)) = (t.shape_language, m.shape()) {
         let pc = |x: f32| (x * 100.0).round();
         let fix = match kind {
-            crate::shape::Kind::Round => "round its corners with a radius of a tenth of its size or more (a roundness, a larger corner or round), and build it from balls, capsules and chains rather than boxes (a limb thinner than a sixth of its length ends in a point at this size)",
+            crate::shape::Kind::Round => "round its corners with a radius of a tenth of its size or more (a roundness, a larger corner or round), and build it from balls, capsules and chains rather than boxes (a part thinner than a fifteenth of the whole ends in a point at this size)",
             crate::shape::Kind::Square => "square it off: flat sides meeting at right angles, bevels kept under a tenth of its size, fewer curves and spikes in the outline",
-            crate::shape::Kind::Pointed => "give the outline points: tapers that end in a tip, wedges and spikes whose corners are under 75 degrees, in place of rounded and squared ends",
+            crate::shape::Kind::Pointed => "give the outline points: tapers that end in a tip, wedges, spikes and blades whose tips are under 65 degrees, in place of rounded and squared ends (a notch cut into it adds nothing: only what sticks out is read)",
         };
         out.push(finding(
             rules,
@@ -134,7 +139,7 @@ pub fn check_subject(m: &Measured, rules: &StyleRules) -> Vec<Finding> {
             Bound::Min,
             "share",
             "shape_min_share",
-            format!("{:.0}% of its outline's turning is {} (round {:.0}%, square {:.0}%, pointed {:.0}%), where the style asks for a {} shape", pc(shape.share(kind)), kind.name(), pc(shape.round), pc(shape.square), pc(shape.pointed), kind.name()),
+            format!("{:.0}% of its outline reads as {} (round {:.0}%, square {:.0}%, pointed {:.0}%, by how it turns outward; a point counts double), where the style asks for a {} shape", pc(shape.share(kind)), kind.name(), pc(shape.round), pc(shape.square), pc(shape.pointed), kind.name()),
             fix,
         ));
     }
@@ -217,6 +222,7 @@ mod tests {
             subject: "fence_a".into(),
             silhouettes: vec![comb],
             outlines: Vec::new(),
+            shape_read: Default::default(),
             gameplay: Some(ShotMeasure { px_height: 9.0, subject: flat, ring, edge }),
             phone: Some(ShotMeasure { px_height: 4.0, subject: flat, ring, edge }),
             worst: Some(ShotMeasure { px_height: 30.0, subject: flat, ring, edge }),
@@ -244,9 +250,10 @@ mod tests {
             }
         }
         let boxy = Measured { subject: "crate_a".into(), silhouettes: vec![rect([8, 14, 48, 36])], outlines: vec![big], ..Measured::default() };
-        // (The larger silhouettes are the ones read: the thumbnail alone is coarser.)
+        // (The larger silhouettes are the ones read; a thumbnail alone is under the size the
+        // measure reads at, and says nothing rather than something wrong: its second review.)
         assert!(boxy.shape().is_some_and(|s| s.square > 0.99));
-        assert!(Measured { outlines: Vec::new(), ..boxy.clone() }.shape().is_some_and(|s| s.square > 0.6));
+        assert_eq!(Measured { outlines: Vec::new(), shape_read: Default::default(), ..boxy.clone() }.shape(), None);
         let of = |toml: &str, m: &Measured| check_subject(m, &StyleRules::parse(toml, "style.toml", &|_| None).unwrap()).into_iter().find(|f| f.check == "shape_language");
         let f = of("[taste]\nshape_language = \"round\"\n", &boxy).unwrap();
         assert!(f.is_error() && f.value < 0.1 && f.limit == 0.5 && f.message.contains("square 100%") && f.fix.contains("round its corners"), "{f:?}");

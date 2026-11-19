@@ -61,7 +61,22 @@ fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
     if m.skipped.is_some() {
         return;
     }
-    if let (Some(_), None) = (limits.max_loose_pieces, m.loose_count) {
+    if let (Some(_), true) = (limits.max_loose_pieces, m.unread > 0) {
+        // Triangles that could not be read are no part of what was measured: a mesh with any
+        // was not all looked at, and is not passed.
+        let mut finding = Finding::flag(
+            "loose_pieces",
+            s,
+            true,
+            at(rules, "form.max_loose_pieces"),
+            format!("{} of its {} triangles could not be read (an index past its vertices, or a corner whose place is not a finite number): loose pieces could not be ruled out", m.unread, m.triangles),
+            "export the mesh again: every index must name a vertex, and every vertex a finite place".to_string(),
+        );
+        if limits.allows(s, "loose_pieces") {
+            finding.exempt = true;
+        }
+        r.findings.push(finding);
+    } else if let (Some(_), None) = (limits.max_loose_pieces, m.loose_count) {
         // Too many pieces hang clear of the ground to compare each with every other: that is
         // said as a failure, never passed over.
         let mut finding = Finding::flag(
@@ -77,6 +92,26 @@ fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
         }
         r.findings.push(finding);
     }
+    // Shading that was not measured is said as a failure of the checks that limit it, never
+    // passed as a share of nothing (a mesh whose every crease is smeared read "0% of its
+    // creases", with one vertex's normal missing: fourth review).
+    let unshaded = !m.shaded && m.edge_m + m.open_m + m.tangled_m > 0.0;
+    for (check, key, limit) in [("shading_seams", "max_seam_share", limits.max_seam_share), ("smeared_creases", "max_smeared_share", limits.max_smeared_share)] {
+        if unshaded && limit.is_some() {
+            let mut finding = Finding::flag(
+                check,
+                s,
+                true,
+                at(rules, &format!("form.{key}")),
+                "its shading could not be measured: a vertex in use has no normal, or one of no length".to_string(),
+                "give every vertex a normal (the modeller does; an imported mesh may need its normals made again)".to_string(),
+            );
+            if limits.allows(s, check) {
+                finding.exempt = true;
+            }
+            r.findings.push(finding);
+        }
+    }
     let mut push = |check: &'static str, value: f64, limit: f64, unit: &'static str, key: &str, message: String, fix: &str| {
         let mut finding = Finding::measure(check, s, value, limit, Bound::Max, unit, at(rules, &format!("form.{key}")), message, fix.to_string());
         if !finding.passed && limits.allows(s, check) {
@@ -84,7 +119,7 @@ fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
         }
         r.findings.push(finding);
     };
-    if let (Some(max), Some(loose)) = (limits.max_loose_pieces, m.loose_count) {
+    if let (Some(max), Some(loose), false) = (limits.max_loose_pieces, m.loose_count, m.unread > 0) {
         let first = m.loose.first().map(|l| format!(": the largest, {} triangles and {:.2} m across, is {:.2} m from anything else, at [{:.2}, {:.2}, {:.2}]", l.triangles, l.size_m, l.gap_m, l.at[0], l.at[1], l.at[2])).unwrap_or_default();
         push("loose_pieces", loose as f64, f64::from(max), "pieces", "max_loose_pieces", format!("{loose} of its {} pieces touch nothing and hang clear of the ground{first}", m.pieces), "join each loose piece to the rest (move it until it overlaps, or bridge the gap), or delete it; if it is meant to hover, exempt it in [form.allow]");
     }
@@ -92,10 +127,10 @@ fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
         push("razor_edges", f64::from(m.razor_share()), f64::from(max), "share", "max_razor_share", format!("{:.0}% of its {:.2} m of creases turn more than {RAZOR_DEG}° with no bevel", m.razor_share() * 100.0, m.crease_m), "bevel the hard edges (a \"bevel\" on the outline, a \"corner\" or \"roundness\" on the box): no made thing has an edge that sharp");
     }
     let size = f.size_m[0].max(f.size_m[1]).max(f.size_m[2]).max(1e-6);
-    if let Some(max) = limits.max_seam_share {
+    if let Some(max) = limits.max_seam_share.filter(|_| !unshaded) {
         push("shading_seams", f64::from(m.seam_m / size), f64::from(max), "of its size", "max_seam_share", format!("{:.2} m of edges that are not creases are shaded more than {SEAM_DEG}° apart on their two sides: a line in the light where the surface has none", m.seam_m), "let the two sides share their normals there (one part, or a smooth step), or make the edge a real crease");
     }
-    if let Some(max) = limits.max_smeared_share {
+    if let Some(max) = limits.max_smeared_share.filter(|_| !unshaded) {
         let share = if m.crease_m > 0.0 { m.smeared_m / m.crease_m } else { 0.0 };
         push("smeared_creases", f64::from(share), f64::from(max), "share", "max_smeared_share", format!("{:.0}% of its creases are shaded as if they were round: a dark smear along each", share * 100.0), "shade hard edges flat (split the normals there), or round the edge with real faces");
     }
@@ -462,8 +497,10 @@ categories = ["stone", "enemy"]
             pieces: 3,
             loose_count: Some(1),
             loose: vec![Loose { triangles: 12, at: [0.5, 2.0, 0.5], size_m: 0.1, gap_m: 0.95 }],
+            edge_m: 9.0,
             crease_m: 4.0,
             razor_m: 3.0,
+            shaded: true,
             seam_m: 0.6,
             smeared_m: 1.0,
             relief: [0.2, 0.2, 0.6],
@@ -490,6 +527,27 @@ categories = ["stone", "enemy"]
         assert!(by("razor_edges").is_error() && (by("razor_edges").value - 0.75).abs() < 1e-6);
         assert!(by("shading_seams").is_error() && (by("shading_seams").value - 0.25).abs() < 1e-6);
         assert!(!by("small_relief").passed && by("small_relief").exempt && !by("small_relief").is_error());
+
+        // Shading that was not measured (a vertex in use without a normal) fails the two checks
+        // that limit it, saying so: never "0% of its creases", a pass on nothing (fourth review).
+        let measured = f.form.clone();
+        f.form = FormFacts { shaded: false, seam_m: 0.0, smeared_m: 0.0, ..measured.clone() };
+        let found = of_form(&check(&f, &r, &palette(&r)));
+        let by = |name: &str| found.iter().find(|x| x.check == name).unwrap_or_else(|| panic!("{name} was checked"));
+        assert_eq!(found.len(), 5, "{found:?}");
+        for name in ["shading_seams", "smeared_creases"] {
+            assert!(by(name).is_error() && by(name).message.contains("could not be measured") && by(name).rule.contains("form.max_s"), "{:?}", by(name));
+        }
+        assert!(by("razor_edges").is_error() && by("loose_pieces").passed);
+        // (With no limit on them, nothing is said of them.)
+        let mut loose_only = r.clone();
+        loose_only.form = crate::rules::FormRules { max_loose_pieces: Some(1), ..crate::rules::FormRules::default() };
+        assert_eq!(of_form(&check(&f, &loose_only, &palette(&r))).len(), 1);
+        // Triangles that could not be read: the loose check fails saying so, whatever it counted.
+        f.form = FormFacts { unread: 3, ..measured };
+        let found = of_form(&check(&f, &r, &palette(&r)));
+        let loose: Vec<_> = found.iter().filter(|x| x.check == "loose_pieces").collect();
+        assert!(loose.len() == 1 && loose[0].is_error() && loose[0].message.contains("3 of its") && loose[0].message.contains("could not be read"), "{loose:?}");
 
         // A mesh too large to measure: nothing but the loose check, which fails saying so.
         f.form = FormFacts { triangles: 9_000_000, skipped: Some("more triangles than the form measures take"), ..FormFacts::default() };
