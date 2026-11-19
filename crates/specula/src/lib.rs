@@ -148,6 +148,7 @@ pub mod launch_store;
 pub mod timeline_audio;
 mod gi;
 mod gi_tools;
+mod light_noise;
 mod light_tools;
 pub mod terrain;
 mod model_export;

@@ -411,7 +411,18 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       mends (2026-11-20) stopped early on a refused permission, before it ran the engine;
       by reading it found that the wait for a loading view can keep itself waiting, and by
       simulation that the noise rule does not hold on a machine that is busy by turns
-      (LIGHT.md, "Its second review, which stopped early"). Not mended yet.
+      (LIGHT.md, "Its second review, which stopped early"). A fresh agent reproduced the
+      findings in a running engine and mended them (2026-11-20): one way to wait for a
+      loading view, shared with `sight_frame`; a cut-short answer says it is partial and
+      advises nothing from too few rounds; no copy on the graphics card either; and each
+      cost is read from the difference of two frames of the same round, every second round
+      drawn backwards, with the answer saying when the machine was too busy to advise
+      (`light_noise.rs`; LIGHT.md, "What was mended, second round"). Not reviewed yet.
+    - **The rounded shape's levelled weights, reviewed** (2026-11-20): not to merge. A large
+      thin rounded cutter set past the corner of what it cuts costs four times its charge
+      by count, so the work limit does not bound such a build's time; other roundnesses
+      than the ones levelled at run 1.2 to 1.6 times the plain rate
+      (PROCEDURAL_MODELLING.md, tier 3, "An eighth"). Not mended yet.
     - **Shape language, after its third review** (2026-11-19): not to merge, again: a crate
       with wide bevels read as round and a ball on a string as pointed. It is not written a
       fourth time on a guess: the shares stay a reported fact, the check stays for a style

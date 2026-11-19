@@ -806,10 +806,20 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       stage 1a (edges nearer each other than the floor passed as well made; refused now).
       **Claude ran its own probe again, unchanged and wider: the mends hold, and one small
       fault is left** (a very shallow lens built two parts in a thousand million wider
-      than its radius), which is the next builder's first job. **Stage 1c, 2.5D, is being
-      built** by a fresh agent.
-      Then 1c (2.5D: a plane figure raised, a solid drawn flat, a solid cut into layers),
-      the modeller, the engine's 2D item with two read-only tools and
+      than its radius), which is the next builder's first job. **Stage 1c, 2.5D: built**
+      (2026-11-20, `19e4be0a`). The lens was a rounding fault of arcs with far centres
+      (every sample is placed from an arc's exact ends now). Built: a plane figure raised
+      five ways (`slab`, `bevelled`, `pillow`, `stepped`, `relief`), holes included, with
+      caps proved to tile their region once; a solid drawn flat in eight named views or
+      any parallel one, hidden surfaces removed (`draw`); a solid cut by a plane or into
+      layers (`slice`, `layers`). **Claude's review held all of it with checks of its own**
+      (8,289 raised builds; 6,268 drawings held at 492,756 points against a ray cast; 7,096
+      cuts held at 172,379 points against a parity; its probe's first run had 918 faults
+      that were all the probe's own, corrected and run again), **and found two small
+      faults**: a slab of a needle triangle is refused for an inset a slab does not have,
+      and one refusal names an inset as holding that does not. They are the next builder's
+      first job. **Stage 2, the modeller, is being built** by a fresh agent.
+      Then the engine's 2D item with two read-only tools and
       `docs/design/FORMAE.md`, and further families. Each stage is reviewed by Claude, who
       did not write it; the whole is pictured in the engine and gated before it is merged.
       **Nothing of it is merged yet.**
@@ -865,9 +875,29 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       seconds, and it reads file times on the engine thread), two small ones, and by
       simulation that the noise rule calls a costless feature a cost up to one time in
       eleven on a machine that is busy by turns. Its provisional verdict is not to merge.
-      **Nothing of it is reproduced in an engine or mended yet. The rounded shape's
-      levelled weights, given to the same reviewer, were not looked at: they are still
-      unreviewed.**
+      The rounded shape's levelled weights, given to the same reviewer, were not looked
+      at; a fresh reviewer took them (below). **A fresh agent then reproduced the light
+      report's findings in a running engine and mended them** (2026-11-20; LIGHT.md, "What
+      was mended, second round"). What it saw: the wait kept a view with a just-written
+      sprite waiting about two seconds, not ten, on both adapters; only 2D textures renew
+      their own wait. Now there is one way to wait, shared with `sight_frame`; a cut-short
+      answer says it is partial and gives no advice from too few rounds; a measuring
+      render copies nothing on the graphics card either; and **the noise rule reads each
+      cost from the difference of two frames of the same round**, with every second round
+      drawn backwards, and says when the machine was too busy to advise. By its own
+      simulation a costless feature is called a cost under 1% of the time where it was up
+      to 12%; **what it gave up for that: on a machine busy in short bursts a real cost of
+      a twentieth of the frame is told only a fifth to a third of the time**, and then the
+      answer says the machine was not steady and advises nothing. **Not reviewed yet.**
+    - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
+      PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
+      builds: a large thin rounded cutter set a metre past the corner of what it cuts
+      costs four times its charge (a 100 m sheet subtracted from a 2 m box, cutting
+      nothing; four to seven times by a busy machine's clock), so **for such a recipe the
+      work limit does not bound the build's time**; at roundnesses the levelling did not
+      try, thin shapes run 1.2 to 1.6 times the plain rate; two sentences of the document
+      are false; nothing holds the levelling by a test. No recipe in the repository uses
+      `roundness`. **Not mended yet.**
     - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.

@@ -70,6 +70,18 @@ struct Pending {
     timed: bool,
     prepare_ms: f64,
     times: SyncTimes,
+    /// The colour image is copied into the target's readback buffer in its submission.
+    copied: bool,
+}
+
+/// Offscreen colour images copied into their target's readback buffer on the GPU (in a
+/// render's own submission, or by `read_rgba8` when the render left it out), and copied out of
+/// that buffer by the host (`read_rgba8`), since start-up: what tests hold a timings-only render
+/// to (`GpuInner::render_async_timings`: neither).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Readbacks {
+    pub gpu_copies: u64,
+    pub host_reads: u64,
 }
 
 /// Whose graph rendered the latest frame.
@@ -93,6 +105,9 @@ pub struct GpuInner {
     pending: Option<Pending>,
     /// The next settled asynchronous render reports a lost device (tests, `inject_offscreen_fault`).
     offscreen_fault: bool,
+    /// Offscreen colour images copied into a readback buffer, and read out of one by the host,
+    /// since start-up ([`GpuInner::readbacks`]).
+    readbacks: Readbacks,
     /// Frame data and draw records for offscreen renders (synchronous, so one buffer suffices).
     upload: Option<FrameUpload>,
     /// Sight's ID buffer resources, shared by every target (`render_with_ids`).
@@ -292,6 +307,7 @@ impl GpuInner {
             async_fence: VK_NULL_HANDLE,
             pending: None,
             offscreen_fault: false,
+            readbacks: Readbacks::default(),
             upload: None,
             ids: IdResources::default(),
             timer: None,
@@ -1264,7 +1280,7 @@ impl GpuInner {
     }
 
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
-        self.render_frame(target, frame, None, true)
+        self.render_frame(target, frame, None, true, false)
     }
 
     /// Makes `target`'s render graph images ahead of its first render, for a frame in `env`
@@ -1328,7 +1344,20 @@ impl GpuInner {
         if let Some((ids, occluders)) = ids {
             check_ids(frame, ids, occluders)?;
         }
-        self.render_frame(target, frame, ids, false)
+        self.render_frame(target, frame, ids, false, true)
+    }
+
+    /// [`GpuInner::render_async`] with no ID buffer and **no copy of its image**: a render whose
+    /// timings are all that is wanted (`perf_light`). The same render; only the copy into the
+    /// readback buffer is left out of its submission, so a later `read_rgba8` of the target makes
+    /// that copy itself.
+    pub fn render_async_timings(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
+        self.render_frame(target, frame, None, false, false)
+    }
+
+    /// What offscreen images were copied back, and read, since start-up ([`Readbacks`]).
+    pub fn readbacks(&self) -> Readbacks {
+        self.readbacks
     }
 
     /// Whether an asynchronous render is in flight (not yet settled).
@@ -1402,7 +1431,7 @@ impl GpuInner {
         waited.and(reset)?;
         self.ids.finished();
         if let Some(t) = self.targets.get_mut(&target) {
-            t.copied = true;
+            t.copied = p.copied;
         }
         Ok(true)
     }
@@ -1412,7 +1441,7 @@ impl GpuInner {
     /// (`Gpu::render_with_ids_occluded`); read it back with [`GpuInner::read_ids`].
     pub fn render_with_ids(&mut self, target: TargetId, frame: &FrameDesc, ids: &[u32], occluders: &[[u32; 4]]) -> Result<(), GpuError> {
         check_ids(frame, ids, occluders)?;
-        self.render_frame(target, frame, Some((ids, occluders)), true)
+        self.render_frame(target, frame, Some((ids, occluders)), true, false)
     }
 
     /// [`GpuInner::read_ids`] inside `rect` (`[x0, y0, x1, y1)`, clipped) only.
@@ -1463,7 +1492,10 @@ impl GpuInner {
         self.ids.blended_disabled = !on;
     }
 
-    fn render_frame(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<(&[u32], &[[u32; 4]])>, wait: bool) -> Result<(), GpuError> {
+    /// `copy`: an asynchronous render (`!wait`) copies its image into the readback buffer in its
+    /// own submission (a synchronous one never does: `read_rgba8` copies when asked).
+    fn render_frame(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<(&[u32], &[[u32; 4]])>, wait: bool, copy: bool) -> Result<(), GpuError> {
+        let copy = copy && !wait;
         // One offscreen render at a time: they share the ID buffers, the frame upload buffer and
         // the timer.
         self.settle_offscreen(true)?;
@@ -1579,7 +1611,7 @@ impl GpuInner {
                 t.begin_frame(dev, cmd, frame_no);
             }
             *draws = record_frame(&ctx, cmd, graph, &res, timer);
-            if !wait {
+            if copy {
                 // The readback rides in the same submission (see `render_async`).
                 record_readback(dev, cmd, color, readback, extent);
             }
@@ -1612,7 +1644,10 @@ impl GpuInner {
             self.completed = submission;
             self.ids.finished();
         } else {
-            self.pending = Some(Pending { target: target.0, submission, timed, prepare_ms, times });
+            self.pending = Some(Pending { target: target.0, submission, timed, prepare_ms, times, copied: copy });
+            if copy {
+                self.readbacks.gpu_copies += 1;
+            }
         }
         t.rendered = true;
         t.copied = false;
@@ -1642,7 +1677,9 @@ impl GpuInner {
         let (image, buffer, extent, copied) = (t.color.handle, t.readback.handle, t.extent, t.copied);
         if !copied {
             self.run_sync(|dev, cmd| record_readback(dev, cmd, image, buffer, extent))?;
+            self.readbacks.gpu_copies += 1;
         }
+        self.readbacks.host_reads += 1;
         let t = self.targets.get(&target.0).expect("checked above");
         let len = extent.width as usize * extent.height as usize * 4;
         let _z = specula_core::profile::zone("gpu.readback_copy");

@@ -220,7 +220,40 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     same evening, with its own probe**: 1.04 to 1.09 times for boxes a quarter to a ninth as
     thick as long, 0.75 to 0.87 for the foil and the hair. The rest was noise; the weights
     were moved by what was left (the thick one up a ninth, the thinnest down a tenth), and
-    every case measured now runs at or under the plain cut's rate.
+    every case measured now runs at or under the plain cut's rate. **An eighth** (2026-11-20,
+    of those levelled weights, by counting the solve's steps and powers in real builds)
+    **said not to merge them. None of this is mended yet, so the sentences above about
+    what a rounded shape costs are not all true**:
+    1. **A large, thin rounded cutter set past the corner of what it cuts costs four times
+       its charge by count** (and timed four to seven times, on a busy machine): a 2 m box
+       with a rounded sheet of 100 m by 0.1 mm subtracted from it, a metre past its corner,
+       where the sheet cuts nothing. A difference keeps every child, every sample near the
+       box is one to three metres from a 50 m shape (too near to take the far estimate), the
+       first steps fail there, and 98% of the solves fall back to the sure way at 119 steps
+       each. A build at the work limit then runs several times as long as the limit is
+       meant to allow: **the limit does not bound the time for such a recipe.** A sheet of
+       10 m, a ten-thousandth as thick, timed about three times. The test samples a 2 m box
+       round shapes of under a metre and does not reach that region.
+    2. *Medium:* **at roundnesses the levelling did not try, shapes inside the tested range
+       run 1.2 to 1.6 times the plain cut's rate**: a foil a nine-thousandth as thick at a
+       roundness of 0.3 (1.58, where the same foil at 0.5 runs 0.83), a hair at 0.05 (1.35),
+       a board a twentieth as thick at 0.99 (1.24). The weights were levelled at one
+       roundness a shape, and the cost moves by about two to one across roundness.
+    3. *Medium:* **two sentences above are false**: "up to one in eight left to the sure
+       way" (measured 14% and 15% in the tested range, and half to nearly all in finding
+       1), and "a dozen to twenty powers a sample outside the shape" (the calibrated cube
+       takes over 22).
+    4. *Minor:* the weights before the levelling pass both tests, so nothing holds the
+       levelling; and leaving a box's third size out of its thinness passes too, so a plank
+       thin along its depth could be charged as thick.
+    Found sound: the grading has no step (swept from 1 to 1 to a hundred-millionth as thick),
+    thinner than its cap is not under-charged away from finding 1, discs and needles are
+    cheap at every thinness, the earlier reviews' cases hold, Sepulcra's approved props
+    build as they did, and nothing panicked in 1,500 builds and two million samples. A lone
+    cube of roundness 0.3 at a resolution of 88 built before the levelling and is refused
+    now (as meant: the old weight under-charged it; no recipe here uses `roundness`). Not
+    checked: rounded shapes under a twist, a bend or a repeat; whether the field is right
+    where the solve falls back most.
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded
