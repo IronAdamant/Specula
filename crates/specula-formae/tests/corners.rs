@@ -1425,7 +1425,7 @@ fn slices_full() {
 fn slices(n_sets: usize, details: &[u32]) {
     use specula_formae::slice::{layers, slice, Axis, Plane};
     let mut faults: Vec<String> = Vec::new();
-    let mut cuts = 0usize;
+    let (mut cuts, mut refused) = (0usize, 0usize);
     for w in words(Kind::Solid) {
         let params = params_of(&w);
         let mut seq = Seq(seed(w.name()) ^ 0x5A5A);
@@ -1476,6 +1476,7 @@ fn slices(n_sets: usize, details: &[u32]) {
                                     }
                                 }
                             }
+                            Err(Error::Constraint { rule: "edge_under_floor", .. }) => refused += 1,
                             Err(e) => gather(&mut faults, w.name(), format!("{what}: cut {axis:?} at {at}: {e}")),
                         }
                     }
@@ -1518,6 +1519,7 @@ fn slices(n_sets: usize, details: &[u32]) {
                             gather(&mut faults, w.name(), format!("{what}: the layers hold {sum} and the volume is {vol}"));
                         }
                     }
+                    Err(Error::Constraint { rule: "edge_under_floor", .. }) => refused += 1,
                     Err(e) => gather(&mut faults, w.name(), format!("{what}: layers: {e}")),
                 }
             }
@@ -1525,7 +1527,7 @@ fn slices(n_sets: usize, details: &[u32]) {
     }
     faults.truncate(80);
     assert!(faults.is_empty(), "{} faults ({cuts} cuts):\n{}", faults.len(), faults.join("\n"));
-    assert!(cuts > 500, "only {cuts} cuts");
+    assert!(cuts > 500 && refused * 20 <= cuts, "{cuts} cuts, {refused} refused as edges under the floor");
 }
 
 /// A ball's layers sum, times their spacing, to its volume plus the midpoint rule's error, which

@@ -15,7 +15,7 @@
 //! is on its left seen from above the plane: along `n × N` for the triangle's outward normal `N`).
 //! Every crossed edge is crossed by its two triangles, once leaving and once coming back, so the
 //! segments join edge to edge into closed rings, exactly; where a mesh point lies on the plane
-//! (taken as above), crossings fall on it and a ring visits it once for each edge through it,
+//! (taken as above), crossings fall on it (or within rounding of it) and a ring visits it once for each edge through it,
 //! and those repeats are left out.
 //!
 //! **Regions.** Rings of a closed surface that does not cross itself do not cross each other. A
@@ -162,6 +162,9 @@ fn cut(mesh: &Mesh, t: &[[u32; 3]], which: &[usize], plane: Plane) -> Result<Sli
     }
     segs.sort_unstable();
     let (u, w) = plane.frame();
+    // Points of a ring within rounding of the one before are one point (a plane through mesh
+    // points meets their edges at 1e-17 of them, not at their bits).
+    let same = 1e-12 * mesh.reach();
     let mut rings: Vec<Vec<Pt>> = Vec::new();
     let mut used = vec![false; segs.len()];
     for start in 0..segs.len() {
@@ -176,7 +179,7 @@ fn cut(mesh: &Mesh, t: &[[u32; 3]], which: &[usize], plane: Plane) -> Result<Sli
             let (x, y) = segs[at];
             let p = cross_at(x);
             let q = [dot3(u, p), dot3(w, p)];
-            if ring.last() != Some(&q) {
+            if ring.last().is_none_or(|l| dist(*l, q) > same) {
                 ring.push(q);
             }
             if y == segs[start].0 {
@@ -191,7 +194,7 @@ fn cut(mesh: &Mesh, t: &[[u32; 3]], which: &[usize], plane: Plane) -> Result<Sli
         if !closed {
             return Err(not_sound("a ring of the cut does not close: the mesh is not closed"));
         }
-        while ring.len() > 1 && ring.first() == ring.last() {
+        while ring.len() > 1 && dist(ring[0], ring[ring.len() - 1]) <= same {
             ring.pop();
         }
         if ring.len() >= 3 && signed_area(&ring) != 0.0 {
@@ -199,6 +202,17 @@ fn cut(mesh: &Mesh, t: &[[u32; 3]], which: &[usize], plane: Plane) -> Result<Sli
         }
     }
     let regions = regions(&rings)?;
+    // Each region is held to what an outline of this library is (`Outline::validate`): a cut of a
+    // needle can have an edge under a billionth of its size, or two parts the floor apart where
+    // the plane grazes the surface; refused as data, as a figure's build would be.
+    for (i, r) in regions.iter().enumerate() {
+        match r.validate() {
+            Ok(()) => {}
+            Err(crate::outline::Fault::ShortEdge { length, .. }) => return Err(Error::Constraint { form: "slice", rule: "edge_under_floor", message: "an edge of the cut is no longer than a billionth of the cut's size: the solid's parts are too far apart in size for a well-made outline (a needle cut across)".into(), values: vec![("region", i as f64), ("edge", length), ("size", r.size())] }),
+            Err(crate::outline::Fault::Gap { gap, .. }) => return Err(Error::Constraint { form: "slice", rule: "edge_under_floor", message: "two edges of the cut come no farther apart than a billionth of its size (the plane grazes the surface, or the solid is that thin there)".into(), values: vec![("region", i as f64), ("gap", gap), ("size", r.size())] }),
+            Err(_) => return Err(not_sound("a region of the cut is not a well-made outline")),
+        }
+    }
     Ok(Slice { plane, rings, regions })
 }
 
