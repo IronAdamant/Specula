@@ -729,17 +729,19 @@ and **checked only when a style asks** for one.
   rectangle; a cone's, a triangle), an extruded outline and the box it is raised to, a lathe's
   section and its profile mirrored, a sweep's profile and its path laid out straight (a horn
   that narrows to nothing comes to a point), each primitive of a sculpt. What a boolean or a
-  sculpt takes away is not recorded; a part's operations change the surface (three copies
-  count three times; a box with a hole cut through it has the hole's wall too) and not the
-  outlines. The studio reads each outline with the measure above (drawn on 384 pixels), weighs
+  sculpt takes away is not recorded, and the wall a cut makes is its cutter's surface, which
+  no record speaks for; a part's operations change the surface (three copies count three
+  times; since the second round of mends it is measured on each shape's own triangles after
+  them) and not the outlines. The studio reads each outline with the measure above (drawn on 384 pixels), weighs
   a shape's outlines as the recipe weighed them and **the shapes by their surface**, and
   answers `built_of` in `studio_check` (`measures.thumbnails.built_of`): the three shares,
   the share of the surface that was read, and the eight shapes with the most surface, each
   with its path in the recipe, what it was made as, its share and what it reads as.
   - **What it says that a silhouette cannot**: which part is what, so a failed check names
     what to change; and it is not moved by the angle the asset is seen from.
-  - **What it cannot say**: anything of an imported mesh or a generated part (terrain, a
-    scatter, a building: `read_share` says how much was read); what a part's operations did
+  - **What it cannot say**: anything of an imported mesh, a terrain or a building
+    (`read_share` says how much was read; a scatter's items are recorded by what was
+    placed of each); what a part's operations did
     to its form (a taper does not make a box's outline a wedge's); how the parts are put
     together. **A straight-sided cylinder is a third round and two thirds square** by it, as
     it is in silhouette from the side: a can is not a ball. (Since the mends below this holds
