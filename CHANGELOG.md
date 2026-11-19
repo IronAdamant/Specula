@@ -355,6 +355,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       into each other, on silhouettes of 256 pixels, and is steady to a tenth over a quarter
       turn for fourteen known shapes. Sepulcra's 56 recipes lead square (31), pointed (18)
       and round (7). The form checks and it have their place in the critique.
+    - **`pediment_fallen`'s floating rubble, mended at the owner's word** (2026-11-19): one of
+      the approved prop's three rubble blocks hung 8 cm over the ground (the array's jitter
+      turns a copy about the prop's origin) and another 9 mm. The three are written out one by
+      one as they were, those two seated in the ground; the third and everything else is
+      where it was. Its exemption from the loose-pieces check is removed.
     - **The light report's first review** (2026-11-19): not to merge. Its advice for a budget
       stopped at the first feature not told from the noise; every measuring render copied
       its image back on the engine thread and threw it away. Both mended, with five smaller

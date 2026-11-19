@@ -332,12 +332,8 @@ max_loose_pieces = 0
 "brazier_cairn*" = ["loose_pieces"]
 "rune_pillar*" = ["loose_pieces"]
 "warding_stone*" = ["loose_pieces"]
-# NOT deliberate: one of the fallen pediment's three rubble blocks hangs about 5 cm over the ground,
-# 6 cm from anything (its array's jitter lifted it). Found when the check was first run
-# (2026-11-18). The prop is one of the 33 the owner approved at the window in M4, so its recipe is
-# left as approved until the owner says to mend it; exempted here so that the fault is written down
-# and the check stays on for everything else.
-"pediment_fallen" = ["loose_pieces"]
+# (The fallen pediment was exempt here from 2026-11-18, when the check first ran and found one of
+# its rubble blocks in the air, until 2026-11-19, when the owner had it mended.)
 
 [taste]
 thumb_px = 64

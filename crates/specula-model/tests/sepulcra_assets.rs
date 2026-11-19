@@ -454,4 +454,6 @@ fn m4_exit_props_build_in_budget_and_pinned() {
 
 // (Moved on 2026-11-19 with `PROCGEN_PINNED`, for the same mend: of the 33 props only those
 // with a turned distance-field node changed, by a few triangles.)
-const M4_PINNED: &str = "6f5723d8610c9fe6";
+// (And again that day, at the owner's word: `pediment_fallen`'s three rubble blocks are written
+// out one by one, two of them lowered to rest in the ground; nothing else of the 33 changed.)
+const M4_PINNED: &str = "9573f835579ba7fd";
