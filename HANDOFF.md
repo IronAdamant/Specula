@@ -313,6 +313,12 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       and for the rest either a bounded search of the mesh or a plain refusal. It is a
       stage of the library of its own, after the engine's side, and the field's
       correctness is what reviews have been hardest on (the rounded box took nine).
+    - **The order is Claude's** ("At your determinaiton in order"): the engine's side,
+      then the path and its measured comparison, then the sculpt primitives, then further
+      families. Asked whether research is needed for the sculpt primitives ("Do you need
+      me to ask Grok to get you the research materials for this?"): not to build it (the
+      distances are known mathematics, and each is held here against a nearest point
+      found by search); a short list of primary sources to cite was offered as optional.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
