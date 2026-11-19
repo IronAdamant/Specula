@@ -658,8 +658,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       part under six pixels thick still reads as a point; a thin plank in the rounding band
       swings by a third to two thirds; a dagger, a tombstone and a 4 to 1 oval sit on a
       line and flip; the median step is held by no test; the worst case costs twelve times
-      a disc. **Not reviewed yet**, and Sepulcra is not counted again by it. No preset asks
-      for it, and the check exists only for a style that asks by name. Sepulcra's recipes
+      a disc. **Its reviewer said not to merge it** (the fifth review, the fifth "do not
+      merge"; FORM.md, "Its fifth review"): a coiled shape takes ten seconds to read (the
+      search for a part's level thickness is quadratic; the fourth version took 33 ms);
+      a lens, a leaf and a teardrop read a third to a half square (the fourth read them
+      right); an apple's stalk of 9 to 11 pixels flickers; the round advice fails on a
+      thin plank; five of its rules are held by no test; under 384 pixels an oval reads
+      square. **None of it is mended yet, and the slow case is on this branch**: do not
+      take the measure for sound, and do not read a coiled silhouette with it. Sepulcra is
+      not counted again by it. No preset asks for it, and the check exists only for a
+      style that asks by name. Sepulcra's recipes
       by the fourth version: 29 lead pointed, 14 round, 13 square. **The measure from the recipe is built too** (the modeller records
       each named shape's own outlines and its surface; the studio reads them by the same
       measure, weighed by surface: `built_of` in `studio_check`, with the shapes named). By

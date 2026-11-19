@@ -688,6 +688,40 @@ and **checked only when a style asks** for one.
      comb of one-pixel teeth with two-pixel gaps 7 times, a box with such a comb 5 times; the
      `cost` test writes them). The fifth version reads each outline twice and costs about
      twice the fourth for ordinary shapes.
+- **Its fifth review** (another model, 2026-11-20, of `cf54bb37`) **said not to merge the fifth
+  version**: four major findings, each from a sweep of a quarter turn at 512 pixels, plain,
+  mirrored and shifted; two are worse than the fourth version, which it ran beside. None is
+  mended yet. **What "Its fifth version" above gets wrong:**
+  1. **The cost is not twelve times a disc: a coiled shape takes seconds.** The search for
+     where a part's thickness levels off runs to the part's end for every step where it never
+     does: a coiled wire three pixels wide takes 9.8 s, 303 times a disc (33 ms in the fourth
+     version), and a comb of one-pixel teeth as tall as the picture 1.8 s. `studio_check`
+     reads the measure twice on each of three silhouettes: a coiled rope or a spring costs
+     about a minute.
+  2. **"A corner between two curves is never square" is false for gentle curves.** The
+     evidence asked of a curve is a bend of 0.4° to 1° a step, which an arc of a radius over
+     about 140 pixels does not have: a lens with tips of 90° leads square in all 360 masks
+     (38% to 59% square), a leaf is 35% square and a smooth teardrop 29%. The fourth version
+     read all of them 0% to 4% square.
+  3. **The short stalk is mended only at the widths that were tried.** An apple whose stalk
+     is 9 to 11 pixels wide reads up to 30% pointed at some angles and round at others (the
+     fourth version read it 22% pointed, steadily): a steady error became a flicker. The
+     advice's "a stalk under half as thick as the body changes nothing" is false there.
+  4. **The round advice fails the check again**, on a thinner part than the test tries: a
+     plank of 0.8 by 0.05 with corners rounded by a third of its width is 39% to 91% round and
+     leads square in one mask of ten.
+  Smaller: a figure whose arms are capsules eight pixels wide still flips between round and
+  pointed; a cloud (an oval with two bumps) leads pointed in every mask, a dog with tapered
+  legs and a bell are two thirds pointed, a sunburst of 24 shallow points is wholly square;
+  **five rules are held by no test** (the least length of a level stretch, the smoothing of
+  each part at its own thickness, the median of five, a point's weight between 1.5 and 2,
+  how straight a side must be), so that the mend of the comb's teeth is shown by none;
+  **an oval drawn on 160 to 200 pixels reads up to 62% square** (the measure reads from 110
+  pixels; everything holds at 384 and 512); the median is in the first look only, not "as
+  well". It found sound: boxes with wobbling edges in other proportions and seeds; the
+  square, cut and pointed advice; snowmen, pears, rings, lobes, crescents, stars, gears and
+  combs of 12 to 16 pixels; about 28 of 38 common assets read as a person would; every edge
+  case; no panic and the same answer twice. **Five reviews, five "do not merge".**
 - **From what the recipe is built of: the second measure, built** (2026-11-19;
   `specula-model` `made`, `specula-studio` `built`). The modeller records, for every shape a
   recipe names, **that shape's own outlines along its own axes and the surface it has in the

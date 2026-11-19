@@ -369,7 +369,9 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       fourth, on its review's findings): sides from the smoothed outline, a part's thickness
       where it levels off, joints where the outline turns inward, each part smoothed at its
       own thickness, the advice tried by a test, about 150 shapes held as they turn
-      (`tests/shape_families.rs`). Its limits are in FORM.md. Not reviewed.
+      (`tests/shape_families.rs`). Its limits are in FORM.md. Its review said not to merge it
+      (a coiled shape takes seconds; lenses and leaves read square; FORM.md, "Its fifth
+      review").
     - **Shape language, a fourth version** (2026-11-19, at the owner's word): each part of a
       silhouette is judged at its own thickness and counts by it (a distance transform, the
       discs that fill the shape, the outline followed to the body a corner is of and not
