@@ -754,4 +754,23 @@ mod tests {
             }
         }
     }
+
+    /// Length is taken out of every straight stretch by what each can give, and what lies
+    /// between them is kept: a bottle a hundred times as long as wide (a body and a neck, each
+    /// straight, and a shoulder between) shortens to six to one with its shoulder's points
+    /// moved along together, as they were.
+    #[test]
+    fn what_lies_between_straight_stretches_is_kept() {
+        let a = 100.0f32;
+        let bottle = mirrored(&[[0.0, 0.0], [0.5, 0.0], [0.5, 0.4 * a], [0.3, 0.4 * a + 0.5], [0.15, 0.4 * a + 1.0], [0.15, a], [0.0, a]]);
+        let short = at_most_long(&bottle);
+        let e = specula_model::made::half_extents(&short);
+        assert!((e[0] / e[1] - MAX_ASPECT).abs() < 1e-3, "{e:?}");
+        // (The shoulder: points 2 to 4, along X now; their spacing as it was.)
+        let along: Vec<f32> = short[2..5].iter().map(|p| p[0]).collect();
+        assert!((along[1] - along[0] - 0.5).abs() < 1e-4 && (along[2] - along[1] - 0.5).abs() < 1e-4, "the shoulder: {:?}", &short[2..5]);
+        // (Both stretches gave: the body is still longer than the neck.)
+        let (body, neck) = (short[2][0] - short[1][0], short[5][0] - short[4][0]);
+        assert!(body > 0.5 && neck > 0.5 && (body / neck - 1.0).abs() < 0.5, "body {body}, neck {neck}");
+    }
 }
