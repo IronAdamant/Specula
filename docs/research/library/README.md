@@ -204,3 +204,26 @@ and could only be linked).
 
 The rule stands for these as for the rest: a number is checked against its source as it is typed into
 the engine.
+
+## Round six: distance fields, for the forms as sculpt primitives (2026-11-20)
+
+One file, asked for the same morning (the owner offered research for the shape library's
+sculpt primitives; Claude said none was needed to build them and named six sources worth
+citing rightly) and delivered within the hour.
+
+| File | What it has | What it could not confirm |
+|---|---|---|
+| [I6](I6-distance-fields-citations.md) | Citations, working links, licences and what each source claims, for: Quilez's 2D and 3D distance functions (a 2D field that is exact stays exact when extruded or revolved; unions, differences and intersections give bounds); Bærentzen and Aanæs 2005 (the sign of a mesh's distance by the angle-weighted pseudonormal, for a closed, orientable mesh); Jacobson, Kavan and Sorkine-Hornung 2013 and Barill et al. 2018 (inside and outside by winding numbers, for meshes with defects); Hart 1996 (a field may fall short of the distance and must never exceed it); the smooth minimum (Quilez: in its normalised form the blend's `k` is the most a shape is thickened, and the polynomial family never overstates the distance; Barbier et al. 2025, CC BY, the best peer-reviewed use of it) | the licence of Quilez's article text and figures (only his code snippets are stated MIT); MIT headers inside his Shadertoy shaders; whether the free copy of Hart's paper matches the journal's text; whether Dekkers et al. 2004 states a blend's error bound; no peer-reviewed paper was found that states the smooth minimum's deviation bound as a result |
+
+- **No second checker's report came with it**, and nothing in it has been re-opened against its
+  sources here yet. It is a list of where to read, not of numbers: each formula is derived and
+  written here, and held by a test against a nearest point found by search, whatever its source says.
+- **Kept as delivered but for five words**: a phrase naming the time zone it was compiled in was
+  taken out of its second line.
+- **What it says for the design** (FORMAE's sculpt stage, when it is built): raise and turn the
+  library's plane figures from an exact distance in the plane, which stays exact; a boolean or a
+  blend of fields is a bound, so the mesher is told a slack and bounds are widened by the blend's
+  radius; a mesh's own sign is safe by pseudonormals only where the mesh is closed and well made
+  (the library's are checked so), and by winding numbers otherwise.
+- **Rights.** Formulas are mathematics and are written here in the engine's own code; no code is
+  copied from the articles (their snippets are MIT, their text and pictures are not licensed).

@@ -319,6 +319,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       me to ask Grok to get you the research materials for this?"): not to build it (the
       distances are known mathematics, and each is held here against a nearest point
       found by search); a short list of primary sources to cite was offered as optional.
+      **It came within the hour** and is in the library as
+      [I6](docs/research/library/I6-distance-fields-citations.md): citations, links,
+      licences and what each source claims, with what it could not confirm marked. Not
+      re-opened against its sources here yet; it is where to read, not numbers to type.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
