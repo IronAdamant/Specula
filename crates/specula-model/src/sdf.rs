@@ -3194,7 +3194,6 @@ mod tests {
         let asked = |n: usize, work: u64| primitive_of_triangles(&ball, 1, &at(n), MAX_OWNER_ASKED, work);
         assert_eq!(asked(16_384, u64::MAX).asked, 16_384, "every triangle of 16,384");
         assert_eq!(asked(16_385, u64::MAX).asked, 8_193, "every other of one more");
-        assert_eq!(MAX_OWNER_ASKED, 16_384);
         let a = asked(1000, u64::MAX);
         assert!(a.of.iter().all(|&o| o == 0) && a.work > 0);
         let per = a.work / 1000;

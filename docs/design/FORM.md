@@ -1205,5 +1205,44 @@ and **checked only when a style asks** for one.
     Not this measure's, and listed apart: a sword's outline that is not pressed at all
     flips from 82% pointed at 384 pixels to 51% square at 512 (the silhouette reader's).
     Not settled: why reading time rose (every asset rose by a like share and the outlines
-    counted did not change, which points away from the press). **These three are not
-    mended yet.**
+    counted did not change, which points away from the press).
+  - **What was mended, third round** (2026-11-20, by a model that wrote none of it; each
+    fault seeded back once and seen to fail its test):
+    1. **The snap is held both ways** (`a_side_within_five_degrees_is_laid_level`): Ls of
+       thirty to one whose feet tilt their area's axis by one to four degrees (and the same
+       turned by 37°) come out with their long side level to a hundred-thousandth; a kite
+       whose sides lean 4.5° off its axis is laid along a side, one whose sides lean 5.5°
+       along its axis; an oval turned by 0.002° keeps its points' heights, one turned by
+       0.02° does not. Seeded and caught: the slant at nothing and at half (30°); the axis's
+       snap off, at a thousandth and at a hundred-thousandth.
+    2. **A rod whose sides wobble: the line is stated, not moved.** Why the press rounds it:
+       a wobble past `STRAIGHT` leaves no straight stretch, so the whole length is pressed
+       evenly, which shortens the wobble's wavelength by the press (seven times at thirty to
+       one) and steepens its bumps; the reader then sees round bumps. At its own length the
+       same wobble is under a pixel (thirty to one is twelve pixels wide at 384), so it reads
+       square there; at eight to one, where it can be seen, it reads much as the press does.
+       Measured (sides wobbling with a wavelength of one width; round share at 384 and 512
+       pixels): at 6% peak to peak, its own length at 8 to 1 reads 0.39 and 0.39, pressed
+       from 30 to 1 0.57 and 0.64; at 3%, own 0.00 and 0.19, pressed 0.22 and 0.29; at 1%,
+       nothing round anywhere. So "square at its own length" is a reading under a pixel, not
+       one of the rod. **Up to `STRAIGHT` (a fiftieth of the width, peak to peak) a wobbling
+       side is a straight stretch**: its length is taken out of it with its wobble as it was,
+       and it reads as a rod (held at 1.8%, wavelengths of half, one and two widths, at 12,
+       30 and 100 to one: square leads by three quarters or more; a wavelength of half a
+       width shows at 512 pixels on the six-to-one outline, up to 0.16 round;
+       `a_rod_that_wobbles_within_the_straight_line_reads_as_a_rod`). Past it the rod is
+       pressed and reads as its wobble does at eight to one, or rounder. Not tried, for want
+       of time: cutting a wobbling stretch in whole periods (between points where both sides
+       stand where they stood), which would keep the wavelength and risk a step at the cut;
+       no rule was changed, so the outline table of the second round does not move.
+    3. **The two weak tests are strong.** An overlapping union's operand is held exactly by
+       set algebra over three other builds, (|X ∪ U| + |X − U| − |U|) / 2, within two parts
+       in a thousand of the whole (`an_overlapping_operand_is_held_exactly`: 24 unions of two
+       and three shapes under scales, copies, subdivisions and a finish, with no face of one
+       in another's plane, where which operand keeps the face is the boolean's choice).
+       Seeded: a union's second operand recorded as nothing; caught (the old bound passed
+       it). Under a taper, a twist, a bend or a mirror that keeps both halves no other build
+       is a truth (each cuts and welds its own way; 5% off seen), and there the record is
+       held to no more than alone. The cap of 16,384 is held by what a build's asking does
+       (`Tally::ask_owners`, which the sculpt calls): 16,384 triangles all asked, 16,385
+       every other one (`a_build_asks_up_to_its_cap`); seeded at 16,000 and 17,000, caught.

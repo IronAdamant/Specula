@@ -1663,6 +1663,17 @@ impl Tally {
         s.owners = of.iter().map(|&p| slot_of.get(p as usize).copied().unwrap_or(crate::shape::NO_OWNER)).collect();
     }
 
+    /// Which primitive made each triangle of a sculpt's mesh `shape`, asked as a build asks
+    /// it: every triangle up to [`crate::sdf::MAX_OWNER_ASKED`], every so many past it, within
+    /// what is left of the build's own limit for it ([`crate::sdf::MAX_OWNER_BUILD_WORK`]),
+    /// which is spent.
+    pub(crate) fn ask_owners(&self, tree: &crate::sdf::SdfNode, seed: u64, shape: &Shape) -> crate::sdf::Asked {
+        let left = crate::sdf::MAX_OWNER_BUILD_WORK.saturating_sub(self.owner_work.get());
+        let a = crate::sdf::primitive_of_triangles(tree, seed, shape, crate::sdf::MAX_OWNER_ASKED, left);
+        self.owner_work.set(self.owner_work.get().saturating_add(a.work));
+        a
+    }
+
     /// The records made from `from` on were made inside an include at `at` (`parts[1].include`)
     /// of `asset`: their paths are written as an error's there are (`parts[1].include(gem).
     /// parts[0].shape`).

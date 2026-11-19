@@ -777,9 +777,7 @@ impl Ctx<'_> {
         // for the whole build, never the build's: what is past it is no record's.
         let mut asked = None;
         if !self.coarse && self.tally.cutting.get() == 0 {
-            let left = sdf::MAX_OWNER_BUILD_WORK.saturating_sub(self.tally.owner_work.get());
-            let a = sdf::primitive_of_triangles(&tree, opts.seed, &shape, sdf::MAX_OWNER_ASKED, left);
-            self.tally.owner_work.set(self.tally.owner_work.get().saturating_add(a.work));
+            let a = self.tally.ask_owners(&tree, opts.seed, &shape);
             self.tally.made_sculpt(&n.path, if figure { "figure" } else { "sdf" }, crate::made::of_sculpt(&tree), &a.of, &mut shape);
             asked = Some((a.asked, a.work, a.of.iter().filter(|&&o| o == crate::shape::NO_OWNER).count()));
         }

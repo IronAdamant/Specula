@@ -676,6 +676,22 @@ fn what_a_recipe_is_built_of_is_recorded_with_its_surface() {
     assert_eq!(build_with(&text, &[]).unwrap().extras.made, *made);
 }
 
+/// A build asks every triangle of a sculpt of up to 16,384 which primitive made it, and every
+/// other one of 16,385: held by what the build's own asking does, not by the constant.
+#[test]
+fn a_build_asks_up_to_its_cap() {
+    use crate::sdf::{Combine, Kind, Modifiers, Prim, SdfNode};
+    let one = |x: f32| SdfNode { kind: Kind::Prim(Prim::Sphere { radius: 0.5 }), m: Modifiers { at: [x, 0.0, 0.0], ..Modifiers::default() } };
+    let ball = SdfNode { kind: Kind::Group { op: Combine::Union, kids: vec![one(0.0), one(5.0)], smooth: 0.0 }, m: Modifiers::default() };
+    let at = |n: usize| Shape { positions: vec![[0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 0.5]], colors: vec![[1.0; 4]; 3], tris: vec![[0, 1, 2]; n], tags: vec![0; n], ..Shape::default() };
+    for (n, asked) in [(16_384usize, 16_384usize), (16_385, 8_193)] {
+        let tally = Tally::default();
+        let a = tally.ask_owners(&ball, 1, &at(n));
+        assert_eq!(a.asked, asked, "a sculpt of {n} triangles");
+        assert!(tally.owner_work.get() == a.work && a.work > 0);
+    }
+}
+
 /// While a model is built, at most 512 shapes are recorded and 8,192 slots of outlines kept
 /// (a sculpt has one for each primitive): a shape past them is no record's, and its triangles
 /// say so.
