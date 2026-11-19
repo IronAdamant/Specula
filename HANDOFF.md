@@ -895,9 +895,18 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       was 36) show a round shape turning more than 20 degrees, four of them newly (their
       coarsest is a sphere stretched unevenly), which leaves one of the old 36 that no
       longer shows and that its author did not find. **What it cannot know:** whether a
-      whole shape is hidden inside another part (allow such an asset by name). **Not
-      reviewed yet: a second review is running. Give no style a `max_facet_deg` until it
-      says merge.** The recipe measure's three small findings were mended with it (the
+      whole shape is hidden inside another part (allow such an asset by name). **Its
+      reviewer said not to merge it** (2026-11-20; FORM.md, "Its second review"), on a
+      truth of its own over 400 random chains of operations: spheres and rings whose
+      axis stays square to them are exact, and **a ring leant over, or turned by an odd
+      angle and then scaled unevenly, is measured wrongly and still called measured**
+      (up to three times the true stand-in; a leant cylinder passes a limit it breaks);
+      and the sphere's advice names too few subdivisions (it takes each to halve the
+      turn; they do not). None of Sepulcra's props has such a ring. The prop that
+      stopped showing is `grave_bell`, rightly: its facets are nine tenths of a pixel at
+      the size the studio reads. **A third mender is on it, with the reviewer's probe as
+      the test it must pass. Give no style a `max_facet_deg` until a reviewer says
+      merge.** The recipe measure's three small findings were mended with it (the
       snap held by a test; the wobbling rod's limit stated and held: up to 1.8% of the
       width a long rod is cut and reads square, past it it is pressed and reads rounder;
       the two weak tests made exact).

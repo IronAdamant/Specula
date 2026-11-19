@@ -520,6 +520,52 @@ primitive). Their coarsest showing shapes: a torus's tube in 14, a cone in 9, a 
 a sculpt in 4, a capsule's ends in 3, a lathe in 2, a cylinder in 1. Its style still gives no
 limit, so nothing fails.
 
+#### Its second review
+
+**A second model said not to merge the mends** (2026-11-20, of `9677811c`). Its truth was its
+own: it carried each operation's map itself through 400 random chains of part operations,
+includes and a finish (rings of 3, 5, 9, 31 and 101 sides), then measured the finished mesh
+itself: how far each facet stands in from the true surface, and the turn between
+neighbouring facets. **Spheres under any linear map are exact** (95 cases; the "three to
+four times further in" above is true, 3.12 to 4.38), and **rings whose axis stays square to
+them are exact** through includes, mirrors and the finish (141 cases). The verdict holds
+under ten turns of every one of Sepulcra's props, the greatest width not moving at all.
+**None of what follows is mended yet.**
+
+1. **Major: a ring whose axis is no longer square to it is measured wrongly, and is still
+   called measured.** Under a `lean`, or a turn by an angle that is not a quarter followed
+   by an uneven scale, the ring is measured in its own plane, while its side faces follow
+   the section square to the axis. Over 164 such cases the stand-in read up to 3.16 times
+   the truth and the turn was off by up to 41° either way. With a limit of 20°: a cylinder
+   of 24 sides leant by one records 15.00° where the mesh turns 20.75° (it passes and
+   should fail); one turned 45° about z and then scaled twofold in y records 22.96° where
+   the mesh turns 18.72° (it fails and should pass). "Exact on the ellipse for a ring under
+   any linear map", above, is false for these. None of Sepulcra's 56 has such a ring.
+2. **Major: the sphere's advice names too few subdivisions.** It takes each subdivision to
+   halve the turn; the turns are 41.81°, 22.46°, 11.45°. A plain sphere held to 21.5° is
+   told one subdivision and still fails; an egg (a sphere scaled threefold in y) held to
+   20° is told two, still fails at 31.3°, and needs three. The other counts' advice held
+   when followed (a cylinder, a lathe, a sculpt).
+3. *Minor:* a shape that was not measured is said only once the measured ones pass (a torus
+   scaled unevenly fails on its segments, and after that advice is followed fails again as
+   not measured for its tube).
+4. *Minor:* the wobbling rod's line is held from one side only (a tolerance of 0.017, which
+   puts the stated 1.8% case past the line, passes both tests).
+5. *Minor:* the greatest width reads short on some shapes (a plus of a bar of 1 m and one of
+   1.6 m reads 1.0004 m; on 14 of Sepulcra's 56 up to 4.2% under a search), inside its
+   stated bound, which only makes the check stricter.
+6. *Minor:* past eight shapes not measured, the others are left out of the counts.
+
+**The prop that stopped showing is `grave_bell`.** Its bell, a lathe of twelve segments 0.135 m
+in radius, stands 4.60 mm in. Against the longer side of its box (2.010 m) the line was
+3.93 mm and it showed; against its greatest width (2.648 m) the line is 5.17 mm and it does
+not, which is right by the rule (about nine tenths of a pixel at 512).
+
+Not settled: whether the kept order can drop the answer (it needs more than 56 records in
+front, which only a contrived recipe gives). Not checked against the mesh: cones, lathes
+with a slope, a torus's ring of segments, copies with jitter or by scatter, a sculpt's
+stand-in.
+
 **Not built:** pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so
 `seam_m` does not see them: the form views do).

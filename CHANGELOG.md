@@ -447,8 +447,10 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       model, from each round shape's own triangles and the linear map every operation
       carried to them; a shape tapered, twisted or bent is said to be not measured; a
       sculpt speaks for each primitive that has surface; an unseen cutter says nothing;
-      the asset's size is its greatest width; the advice names the right count. Not
-      reviewed yet.
+      the asset's size is its greatest width; the advice names the right count. Its
+      review said not to merge it: a ring whose axis is no longer square to it (a lean; an
+      odd turn then an uneven scale) is measured wrongly and called measured, and the
+      sphere's advice names too few subdivisions (FORM.md, "Its second review").
     - **The light report** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)): `perf_light`
       measures what each light feature of a view costs on the machine the engine runs on, at
       the size asked, by the GPU's own timestamps: the view as the world has it, each feature
