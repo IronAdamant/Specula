@@ -972,7 +972,22 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       work limit does not bound the build's time**; at roundnesses the levelling did not
       try, thin shapes run 1.2 to 1.6 times the plain rate; two sentences of the document
       are false; nothing holds the levelling by a test. No recipe in the repository uses
-      `roundness`. **Not mended yet.**
+      `roundness`. **A fresh agent found the cause and mended it** (2026-11-20, merged;
+      PROCEDURAL_MODELLING.md, "What was mended after it"). The cause: beside a thin
+      sheet's rim the solve started from how far the shape reaches along the face's
+      normal, millions of times short of how far it reaches along the true one, and
+      never recovered. It now starts at the point of the surface that reaches furthest
+      along a guessed normal, which is the answer itself for any sample on that point's
+      normal. **And a build is now charged for what its solve does**: the weight covers
+      17 powers a sample, and powers past that are charged as the mesh is made, so no
+      recipe can take more than 1.25 times the calibrated case's powers for a unit of
+      work, whatever its shape. The thinness grading is gone (one weight). By its own
+      count the review's worst case went from 4.1 times its charge to within the bound,
+      and the worst of 1,188 builds is 1.14 times. **Not reviewed yet (a review is
+      running), and not timed: the quiet-machine timing is owed**
+      (`cargo run --release -p specula-model --example rounded_rates 5`). A recipe whose
+      samples take more than 17 powers on average is charged more than before and may be
+      refused where it built.
     - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.

@@ -428,7 +428,12 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       thin rounded cutter set past the corner of what it cuts costs four times its charge
       by count, so the work limit does not bound such a build's time; other roundnesses
       than the ones levelled at run 1.2 to 1.6 times the plain rate
-      (PROCEDURAL_MODELLING.md, tier 3, "An eighth"). Not mended yet.
+      (PROCEDURAL_MODELLING.md, tier 3, "An eighth"). Mended by an agent that did not write
+      it (2026-11-20): the solve starts at the point of the surface that reaches furthest
+      along a guessed normal (beside a thin sheet's rim it had started millions of times
+      short), and a build is charged for the powers its solve takes past what the weight
+      covers, so the work limit bounds the time whatever the shape. One weight; the
+      thinness grading is gone. Not reviewed yet.
     - **Shape language, after its third review** (2026-11-19): not to merge, again: a crate
       with wide bevels read as round and a ball on a string as pointed. It is not written a
       fourth time on a guess: the shares stay a reported fact, the check stays for a style
