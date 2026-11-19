@@ -890,3 +890,71 @@ fn cost_table() {
     }
     std::fs::write(std::env::temp_dir().join("specula-shape-cost.txt"), out).unwrap();
 }
+
+/// The shapes the size test draws at every size, across the families: polygons, rounded and
+/// cut boxes, a plank, ovals, a lens, combs, figures, bottles, stalks and common assets.
+const SIZED: [&str; 24] = [
+    "disc", "box 0.8x0.6 round 0", "triangle", "star 5", "house", "L", "cross", "box 0.8x0.6 round 0.1", "box 0.8x0.6 round 0.33", "box 0.8x0.2 round 0.33", "box 0.8x0.4 cut 0.05", "oval 3:1", "oval 6:1", "lens tip 90", "crescent", "comb teeth 24px long 0.25", "character", "char T-pose", "bottle square shoulder", "stalk 12px len 0.06", "cloud", "heart", "mace", "pear",
+];
+
+/// A sweep of a family at another size of picture (the shape drawn as large in it).
+fn sweep_at(f: &(dyn Fn(f32, f32) -> bool + Sync), step: u32, side: u32) -> Sweep {
+    let (mut lo, mut hi, mut sum, mut lead, mut none, mut n) = ([1.0f32; 3], [0.0f32; 3], [0.0f32; 3], [0usize; 3], 0usize, 0usize);
+    for deg in (0..90).step_by(step as usize) {
+        for mirror in [false, true] {
+            for off in [(0.0, 0.0), (0.37, 0.71)] {
+                n += 1;
+                let Some(a) = of_mask(&render(side, f, deg as f32, mirror, off)) else {
+                    none += 1;
+                    continue;
+                };
+                let sh = [a.round, a.square, a.pointed];
+                for k in 0..3 {
+                    lo[k] = lo[k].min(sh[k]);
+                    hi[k] = hi[k].max(sh[k]);
+                    sum[k] += sh[k];
+                }
+                lead[a.leading() as usize] += 1;
+            }
+        }
+    }
+    let m = (n - none).max(1) as f32;
+    Sweep { lo, hi, mean: [sum[0] / m, sum[1] / m, sum[2] / m], lead, none }
+}
+
+/// Each sized shape at each size of picture, every `step` degrees: its sweep.
+fn sized(step: u32, sides: &[u32]) -> Vec<(String, u32, Sweep)> {
+    let fam: Vec<(String, F)> = families().into_iter().filter(|(n, _)| SIZED.contains(&n.as_str())).collect();
+    assert_eq!(fam.len(), SIZED.len(), "every sized shape is a family");
+    let jobs: Vec<(usize, u32)> = (0..fam.len()).flat_map(|i| sides.iter().map(move |s| (i, *s))).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let out = std::sync::Mutex::new(Vec::new());
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(12);
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Some((i, side)) = jobs.get(k) else { break };
+                let r = sweep_at(&*fam[*i].1, step, *side);
+                out.lock().unwrap().push((k, fam[*i].0.clone(), *side, r));
+            });
+        }
+    });
+    let mut out = out.into_inner().unwrap();
+    out.sort_by_key(|r| r.0);
+    out.into_iter().map(|(_, n, s, r)| (n, s, r)).collect()
+}
+
+/// (For whoever tunes the measure: the sized shapes at pictures of 128 to 512 pixels, written
+/// to `specula-shape-sizes.txt` in the temporary folder, or `OUT`, every `STEP` degrees.)
+#[test]
+#[ignore = "writes the sizes' table"]
+fn size_table() {
+    let step: u32 = std::env::var("STEP").ok().and_then(|s| s.parse().ok()).unwrap_or(9);
+    let mut out = String::new();
+    for (name, side, s) in sized(step, &[128, 160, 200, 256, 320, 384, 448, 512]) {
+        out += &format!("{name:28} {side:3} lead R/S/P {:3?} none {:3} mean r{:.2} s{:.2} p{:.2} | r {:.2}-{:.2} s {:.2}-{:.2} p {:.2}-{:.2}\n", s.lead, s.none, s.mean[0], s.mean[1], s.mean[2], s.lo[0], s.hi[0], s.lo[1], s.hi[1], s.lo[2], s.hi[2]);
+    }
+    let path = std::env::var("OUT").map_or_else(|_| std::env::temp_dir().join("specula-shape-sizes.txt"), std::path::PathBuf::from);
+    std::fs::write(&path, out).unwrap();
+}

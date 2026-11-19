@@ -12,7 +12,7 @@
 //!    gap between teeth, a bottle's neck). Under each point of the outline the piece is as
 //!    thick as the largest disc inside it that touches it there ([`distances`], [`spine`],
 //!    [`thickness`]). A point's part is as thick as **the most thickness about it once that
-//!    has been level** for [`PLATEAU`] times itself along the outline ([`first_plateau`]):
+//!    has been level** for [`PLATEAU`] times itself along the outline ([`plateaus`]):
 //!    from a box's corner the thickness rises to the box's and stays (the corner is the
 //!    box's); from the end of a limb it is level at once (the end is the limb's, whether or
 //!    not the outline turns inward where the limb meets the body); along a taper it keeps
@@ -85,7 +85,7 @@ pub const ROUND_DEG: (f32, f32) = (45.0, 80.0);
 pub const POINTED_DEG: (f32, f32) = (96.0, 116.0);
 /// The window the net turn is taken in, as a share of **the part's own thickness** there (the
 /// radius of the largest disc inside the silhouette that touches the outline at that point,
-/// taken as the part's: [`first_plateau`]). A box's window is three tenths of its
+/// taken as the part's: [`plateaus`]). A box's window is three tenths of its
 /// side; a plank's, three tenths of its width; a hair's, nothing to speak of.
 pub const WINDOW: f32 = 0.6;
 /// The lengths that take the pixels out of the outline ([`CHORD`], [`SMOOTH`],
@@ -106,6 +106,10 @@ pub const KINK: f32 = 0.18;
 /// larger window holds. (Twenty to sixty until its fourth review's mends, with a second
 /// source of corners beside it, which made a plank's rounded corners a lottery: [`of_mask`].)
 pub const KINK_DEG: (f32, f32) = (15.0, 45.0);
+/// The small window reaches at least this many times the smoothing's deviation each way, as far
+/// as the smoothing spreads a corner's turn (a floor of the pixel grid: the smoothing is never
+/// under two pixels).
+pub const KINK_SMOOTH: f32 = 0.6;
 /// A corner between two curves (the end of an oval, the horn of a crescent) is not square
 /// whatever its angle: it is part of a curve up to the first of these turns and a point from
 /// the second (degrees), and between them a share of each. Between two curves means both: no
@@ -118,32 +122,39 @@ pub const SIDED: f32 = 0.2;
 /// The outline runs straight about a step when its window ([`WINDOW`]) turns by under the
 /// first of these, and not at all by the second (degrees); a step is on a straight run when
 /// such a window holds it.
-pub const STRAIGHT_DEG: (f32, f32) = (4.0, 8.0);
+pub const STRAIGHT_DEG: (f32, f32) = (3.0, 6.0);
 /// The two sides of a corner's window bend when the less of the two turns by the first of
 /// these and wholly by the second (degrees for each step along them, from the corner's middle
 /// out to twice the window: the end of an oval of four to one bends by about one, a box's
 /// rounded corner by under a fifth beyond its arc).
-pub const CURVING_DEG: (f32, f32) = (0.4, 1.0);
+pub const CURVING_DEG: (f32, f32) = (3.0, 7.0);
 /// Where the outline turns inward by this much in one place (degrees) it is a joint between
 /// two parts: the foot of a stalk, the neck of a bottle, an armpit, the gap between two teeth.
 pub const JOINT_DEG: f32 = 30.0;
-/// A step is of a joint where the outline about it turns inward by this many degrees for every
-/// step (a sharp inward corner, or a tight inward curve: a slow one is part of a curve).
-pub const JOINT_EDGE: f32 = 0.5;
-/// The steps at each end of a part that its thickness is not taken from (and an eighth of the
-/// part at most): a joint's inside corner is touched by the thicker part's discs.
-pub const JOINT_MARGIN: usize = 6;
+/// A step is of a joint where the outline about it (as far each way as the first look's
+/// smoothing and chord reach, which are shares of the shape's size) turns inward by this many
+/// degrees in all (a sharp inward corner, or a tight inward curve: a slow one is part of a
+/// curve). (Half a degree a step until its sixth version: a share of a degree for every pixel,
+/// so that the same neck was a joint drawn large and not drawn small.)
+pub const JOINT_EDGE: f32 = 15.0;
+/// The steps at each end of a part that its thickness is not taken from, as a share of the
+/// first look's reach (and an eighth of the part at most): a joint's inside corner is touched
+/// by the thicker part's discs. (Six steps until its sixth version, whatever the size.)
+pub const JOINT_MARGIN: f32 = 0.33;
 /// A part is as thick as the most thickness about a step once that has been level for this
-/// many times itself along the outline ([`first_plateau`]) ...
+/// many times itself along the outline ([`plateaus`]) ...
 pub const PLATEAU: f32 = 6.0;
-/// ... rising by no more than this share of itself (and half a pixel) over that length ...
+/// ... rising by no more than this share of itself (and half a pixel) over that length. (Not
+/// fewer than so many steps: a part's level is never under [`MIN_THICK`], six times which is
+/// 24, the least its fifth version asked for and which therefore never bound.)
 pub const PLATEAU_RISE: f32 = 0.1;
-/// ... and for this many steps at the least (a few pixels of a thin taper are level by the
-/// pixels alone: a spike's tip was judged at its own few pixels at one angle in ninety).
-pub const PLATEAU_MIN: usize = 24;
 /// The thicknesses a part's level is tried at ([`plateaus`]): from [`MIN_THICK`], each this
 /// many times the last (and the part's own greatest).
 pub const LADDER: f32 = 1.05;
+/// The least thickness a part is level at (pixels).
+pub const LEVEL_FROM: f32 = 1.0;
+/// Under [`MIN_THICK`] a part is level only over this many steps, and with no half pixel to spare.
+pub const THIN_LEVEL: usize = 24;
 /// A thickness under this many pixels is not read: the shape is `None`; and the thickness about
 /// a step is not taken to be level ([`PLATEAU`]) until it is this much.
 pub const MIN_THICK: f32 = 4.0;
@@ -745,8 +756,8 @@ fn joints(turn: &[f32], way: f32, k: usize) -> Vec<bool> {
         sum[j + 1] = sum[j] + f64::from(turn[j % count]);
     }
     let inward = |a: usize, b: usize| -((sum[b] - sum[a]) as f32) * way;
-    // (A step turns inward when its neighbourhood does by a degree for every step it holds.)
-    let edge = (2 * k + 1) as f32 * JOINT_EDGE.to_radians();
+    // (A step turns inward when its neighbourhood does by [`JOINT_EDGE`] in all.)
+    let edge = JOINT_EDGE.to_radians();
     let candidate: Vec<bool> = (0..count).map(|i| inward(i + count - k, i + count + k + 1) >= edge).collect();
     let mut joint = vec![false; count];
     let Some(start) = (0..count).find(|i| !candidate[*i]) else {
@@ -772,46 +783,6 @@ fn joints(turn: &[f32], way: f32, k: usize) -> Vec<bool> {
         i += len;
     }
     joint
-}
-
-/// How thick the part is that the step `at` of `raw` (the thickness under each step of a
-/// part's outline; `cyclic` when the part is the whole outline) is of: the most thickness
-/// within a length of the outline about the step, the length grown **until the thickness has
-/// been level for [`PLATEAU`] times itself**. From a box's corner the thickness rises as the
-/// sides go out, to the box's, and stays: the corner is the box's. From the end of a limb or a
-/// stalk it is level at once, for as long as the limb is: the end is the limb's, wherever the
-/// limb meets the body and whether or not the outline turns inward there. Along a taper it
-/// keeps rising (by more than [`PLATEAU_RISE`] over the length), to the taper's foot: a
-/// spike's tip is of the spike.
-#[cfg(test)]
-fn first_plateau(raw: &[f32], at: usize, cyclic: bool) -> f32 {
-    let n = raw.len();
-    let limit = if cyclic { n / 2 } else { n };
-    let mut most = raw[at];
-    let mut seen: Vec<f32> = vec![most];
-    for l in 1..=limit {
-        let mut any = false;
-        for j in [at as isize - l as isize, (at + l) as isize] {
-            let j = if cyclic {
-                j.rem_euclid(n as isize) as usize
-            } else if j < 0 || j >= n as isize {
-                continue;
-            } else {
-                j as usize
-            };
-            most = most.max(raw[j]);
-            any = true;
-        }
-        if !any {
-            break;
-        }
-        seen.push(most);
-        let span = ((PLATEAU * most).ceil() as usize).max(PLATEAU_MIN);
-        if most >= MIN_THICK && l >= span && most - seen[l - span] <= PLATEAU_RISE * most + 0.5 {
-            break;
-        }
-    }
-    most
 }
 
 /// The greatest of any run of a sequence, in constant time once built (a sparse table: the
@@ -864,7 +835,7 @@ fn plateaus(raw: &[f32], cyclic: bool, work: &mut u64) -> Vec<f32> {
         }
     };
     let mut ladder: Vec<f32> = Vec::new();
-    let mut t = MIN_THICK;
+    let mut t = LEVEL_FROM;
     while t < most {
         ladder.push(t);
         t *= LADDER;
@@ -873,11 +844,12 @@ fn plateaus(raw: &[f32], cyclic: bool, work: &mut u64) -> Vec<f32> {
     let mut out = vec![f32::NAN; n];
     let mut near = vec![usize::MAX; seq.len()];
     for t in ladder {
-        if t < MIN_THICK {
+        if t < LEVEL_FROM {
             break;
         }
         // How far each step is from the nearest one at least so thick.
-        let floor = (1.0 - PLATEAU_RISE) * t - 0.5;
+        let thin = t < MIN_THICK;
+        let floor = (1.0 - PLATEAU_RISE) * t - if thin { 0.0 } else { 0.5 };
         let mut last: Option<usize> = None;
         for (j, v) in seq.iter().enumerate() {
             if *v >= floor {
@@ -895,7 +867,7 @@ fn plateaus(raw: &[f32], cyclic: bool, work: &mut u64) -> Vec<f32> {
             }
         }
         *work += 2 * seq.len() as u64;
-        let span = (PLATEAU * t).ceil() as usize;
+        let span = ((PLATEAU * t).ceil() as usize).max(if thin { THIN_LEVEL } else { 0 });
         for i in 0..n {
             *work += 1;
             if !out[i].is_nan() || raw[i] > t {
@@ -922,10 +894,10 @@ fn plateaus(raw: &[f32], cyclic: bool, work: &mut u64) -> Vec<f32> {
 }
 
 /// Each step's part (the outline between two joints; [`JOINT`] at a joint) and how thick the
-/// part is there ([`first_plateau`]). A part's first and last few steps are read as no
+/// part is there ([`plateaus`]). A part's first and last few steps are read as no
 /// thicker than the step within them (a joint's inside corner is touched by the thicker
 /// part's discs). A joint's steps take the thinner of the two parts beside them.
-fn parts(joint: &[bool], raw: &[f32], work: &mut u64) -> (Vec<u32>, Vec<f32>) {
+fn parts(joint: &[bool], raw: &[f32], reach: usize, work: &mut u64) -> (Vec<u32>, Vec<f32>) {
     let count = raw.len();
     let mut part = vec![JOINT; count];
     let mut host = vec![0.0f32; count];
@@ -949,7 +921,7 @@ fn parts(joint: &[bool], raw: &[f32], work: &mut u64) -> (Vec<u32>, Vec<f32>) {
     }
     *work += count as u64;
     for (id, (a, len)) in runs.iter().enumerate() {
-        let margin = (len / 8).min(JOINT_MARGIN);
+        let margin = (len / 8).min((JOINT_MARGIN * reach as f32).round() as usize);
         let mut own: Vec<f32> = (0..*len).map(|k| raw[(a + k) % count]).collect();
         for k in 0..margin {
             own[k] = own[k].min(own[margin]);
@@ -1076,8 +1048,9 @@ fn read(m: &Mask, work: &mut u64) -> Option<ShapeLanguage> {
     // loop on itself at a sharp tip, where the whole outline then read inside out.)
     let way = if area(&outline_points) >= 0.0 { 1.0f32 } else { -1.0 };
     let raw_g = median5(&thickness(&spine, &coarse.even, w, h, work));
-    let joint_g = joints(&turn_g, way, (2.0 * sigma_g).ceil() as usize + chord_g);
-    let (part_g, host_g) = parts(&joint_g, &raw_g, work);
+    let reach_g = (2.0 * sigma_g).ceil() as usize + chord_g;
+    let joint_g = joints(&turn_g, way, reach_g);
+    let (part_g, host_g) = parts(&joint_g, &raw_g, reach_g, work);
     // (Carried back to the outline's own points, to smooth each part by its thickness.)
     let n = points.len();
     let (mut host_w, mut part_w) = (vec![-1.0f32; n], vec![JOINT; n]);
@@ -1118,7 +1091,11 @@ fn read(m: &Mask, work: &mut u64) -> Option<ShapeLanguage> {
         sum[j + 1] = sum[j] + f64::from(turn[j % count]);
     }
     let net: Vec<f32> = (0..count).map(|i| (sum[i + count + half[i]] - sum[i + count - half[i]]) as f32).collect();
-    let fine_net: Vec<f32> = (0..count).map(|i| (sum[i + count + small[i]] - sum[i + count - small[i]]) as f32).collect();
+    // (The small window is not rounded to whole steps: on a part a few pixels thick it is a
+    // step or two, and two steps where it should be one made a capsule's round end a corner
+    // drawn small and a curve drawn large. The turn so far is read between steps.)
+    let at = |x: f64| { let k = x.floor(); let j = k as usize; sum[j] + (sum[j + 1] - sum[j]) * (x - k) };
+    let fine_net: Vec<f32> = (0..count).map(|i| { let s = f64::from((0.5 * KINK * host[i]).max(KINK_SMOOTH * sigma_w[from[i]]).min(half[i] as f32)); (at((i + count) as f64 + s) - at((i + count) as f64 - s)) as f32 }).collect();
     // Only where the outline turns its own way round (outward: its bulges and its corners)
     // does it count; where it turns back on itself (a notch, a slot, the inside corner of an
     // L) it does not.
@@ -1180,7 +1157,7 @@ fn read(m: &Mask, work: &mut u64) -> Option<ShapeLanguage> {
             if far >= core + 4 {
                 let bend = |from: usize, to: usize| ((sum[to] - sum[from]) as f32) * way;
                 let (before, after) = (bend(at - far, at - core), bend(at + core, at + far));
-                curving[i] = smoothstep(CURVING_DEG.0, CURVING_DEG.1, before.min(after).to_degrees() / (far - core) as f32);
+                curving[i] = smoothstep(CURVING_DEG.0, CURVING_DEG.1, before.min(after).to_degrees());
             }
             mean.to_degrees().clamp(0.0, 180.0)
         })
