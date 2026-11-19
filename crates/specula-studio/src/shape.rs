@@ -170,6 +170,9 @@ pub const STRAIGHT_RUN: f32 = 0.1;
 pub const STRAIGHTEN_PX: f32 = 1.5;
 /// How far (pixels) the ends of a straightened side may lie from the line of its middle half.
 pub const TRIM_PX: f32 = 0.5;
+/// A side's end is pulled back ([`TRIM_PX`]) only where the run beyond it turns from it by less
+/// than this (degrees).
+pub const TRIM_TURN: f32 = 120.0;
 /// A run is a side only if its points lie, on the mean, within this many pixels to one side of
 /// its chord ([`runs`]).
 pub const BOW_PX: f32 = 0.2;
@@ -188,7 +191,7 @@ pub const PIXELS: u32 = 512;
 /// A piece smaller than this across (pixels, its greatest width) is not read: under it the
 /// pixels' steps are as large as what is measured, and a triangle of 96 pixels read as
 /// anything from a tenth to wholly pointed by the angle it was turned to.
-pub const MIN_SIZE: f32 = 110.0;
+pub const MIN_SIZE: f32 = 192.0;
 /// The largest mask traced (pixels).
 pub const MAX_PIXELS: usize = 512 * 512;
 
@@ -499,16 +502,26 @@ fn thickness(spine: &[(f32, f32, f32)], at: &[P], w: usize, h: usize, work: &mut
 }
 
 /// The points of a closed outline (`points`, from the first) at which a straightened outline
-/// turns: each run from one to the next is as long as it can be with every point of it within
-/// `slack` of the straight line from its first point through its last. Found in one walk round
-/// (each point is looked at once, or twice where a run ends): the directions from a run's first
-/// point that keep every point so far within `slack` narrow as the run goes on, and the run ends
-/// at the first point outside them. (Douglas and Peucker's rule until its sixth version, which
-/// is quadratic where the farthest point is always at one end of what is left: a comb of
+/// turns, each with whether the stretch from it to the next is a side to straighten. A run is
+/// as long as it can be with every point of it within `slack` of the straight line from its
+/// first point through its last, and going on along that line. Found in one walk round (each
+/// point is looked at once, or twice where a run ends): the directions from a run's first point
+/// that keep every point so far within `slack` narrow as the run goes on, and the run ends at
+/// the first point outside them. (Douglas and Peucker's rule until its sixth version, which is
+/// quadratic where the farthest point is always at one end of what is left: a comb of
 /// one-pixel teeth took a third of a second.)
+///
+/// A long run is a side if it does not bow: the mean offset of its middle half from the line
+/// through the means of its first and last quarters is under [`BOW_PX`] (the steps of a slanted
+/// side's pixels fall to both sides of it; a curve's flank, within `slack` of its chord for
+/// ninety pixels on a large oval, falls all to one). Where it meets the next run (or the last)
+/// at a gentle turn, under [`TRIM_TURN`], its end is pulled back to where the outline leaves
+/// that line by more than [`TRIM_PX`]: a run reaches as far into the rounding of a corner as
+/// `slack` lets it, and left there it would end in a kink. At a sharp corner it is not (the
+/// stub left at the tip of a blade turned the outline inside out).
 fn runs(points: &[P], slack: f32, long: f32, work: &mut u64) -> Vec<(usize, bool)> {
     let n = points.len();
-    let mut kept = vec![(0usize, false)];
+    let mut found: Vec<(usize, usize)> = Vec::new();
     let mut i = 0usize;
     while i < n {
         let a = points[i];
@@ -524,8 +537,8 @@ fn runs(points: &[P], slack: f32, long: f32, work: &mut u64) -> Vec<(usize, bool
             if d > slack {
                 let r = *along.get_or_insert([v[0] / d, v[1] / d]);
                 let at = specula_core::dmath::atan2(cross(r, v), r[0] * v[0] + r[1] * v[1]);
-                // (And the run goes on along its line: one that came back on itself, round the tip
-                // of a thin blade, would cut the tip off.)
+                // (And the run goes on along its line: one that came back on itself, round the
+                // tip of a thin blade, would cut the tip off.)
                 let ahead = r[0] * v[0] + r[1] * v[1];
                 if at < lo || at > hi || ahead < furthest - slack {
                     break;
@@ -537,58 +550,56 @@ fn runs(points: &[P], slack: f32, long: f32, work: &mut u64) -> Vec<(usize, bool
             end = j;
             j += 1;
         }
-        // A long run is a side if it does not bow: the mean of its points' offsets from its
-        // chord, each to its own side, is under [`BOW_PX`] (the steps of a slanted side's
-        // pixels fall to both sides of it; a curve's flank, within `slack` of its chord for
-        // ninety pixels on a large oval, falls all to one). Its ends are pulled back to where the
-        // outline leaves the line of its middle half by more than [`TRIM_PX`]: a run reaches as
-        // far into the rounding of a corner as `slack` lets it, and left there it would end in
-        // a kink.
-        let mut side = None;
-        if dist(a, points[end % n]) >= long && end > i + 8 {
-            let (q1, q3) = (points[i + (end - i) / 4], points[i + 3 * (end - i) / 4]);
-            let (dir, len) = (sub(q3, q1), dist(q1, q3));
-            let off = |p: P| if len > 1e-6 { cross(dir, sub(p, q1)) / len } else { 0.0 };
-            let (mut s, mut e) = (i, end);
-            while s + 1 < e && off(points[s % n]).abs() > TRIM_PX {
+        found.push((i, end));
+        i = end;
+    }
+    // Each run's way along it (from its first point to its last).
+    let way: Vec<P> = found.iter().map(|(a, b)| { let v = sub(points[*b % n], points[*a]); let d = (v[0] * v[0] + v[1] * v[1]).sqrt().max(1e-6); [v[0] / d, v[1] / d] }).collect();
+    let gentle = |k: usize, l: usize| way[k][0] * way[l][0] + way[k][1] * way[l][1] >= TRIM_TURN.to_radians().cos();
+    let mut kept: Vec<(usize, bool)> = Vec::new();
+    let runs = found.len();
+    for (k, (i, end)) in found.iter().copied().enumerate() {
+        kept.push((i, false));
+        if dist(points[i], points[end % n]) < long || end <= i + 8 {
+            continue;
+        }
+        let (q1, q3) = (points[i + (end - i) / 4], points[i + 3 * (end - i) / 4]);
+        let (dir, len) = (sub(q3, q1), dist(q1, q3));
+        let off = |p: P| if len > 1e-6 { (cross(dir, sub(p, q1)) / len).abs() } else { 0.0 };
+        let (mut s, mut e) = (i, end);
+        if runs > 1 && gentle((k + runs - 1) % runs, k) {
+            while s + 1 < e && off(points[s % n]) > TRIM_PX {
                 s += 1;
             }
-            while e > s + 1 && off(points[e % n]).abs() > TRIM_PX {
+        }
+        if runs > 1 && gentle(k, (k + 1) % runs) {
+            while e > s + 1 && off(points[e % n]) > TRIM_PX {
                 e -= 1;
             }
-            // (The line through the means of its first and last quarters, and the mean offset of
-            // its middle half from that line: means, so that the pixels' steps cancel.)
-            let mean = |a: usize, b: usize| {
-                let c = (b - a).max(1) as f32;
-                let t = (a..b).fold([0.0f32; 2], |t, k| [t[0] + points[k % n][0], t[1] + points[k % n][1]]);
-                [t[0] / c, t[1] / c]
-            };
-            let q = (e - s) / 4;
-            let (pa, pb) = (mean(s, s + q.max(1)), mean(e - q.max(1) + 1, e + 1));
-            let (cd, cl) = (sub(pb, pa), dist(pa, pb));
-            let bow = if cl > 1e-6 && q >= 1 { (s + q..e - q).map(|k| cross(cd, sub(points[k % n], pa)) / cl).sum::<f32>() / (e - s - 2 * q).max(1) as f32 } else { f32::INFINITY };
-            *work += 2 * (end - i) as u64;
-            if bow.abs() <= BOW_PX && cl >= long {
-                side = Some((s, e));
-            }
         }
-        match side {
-            Some((s, e)) => {
-                if s > i {
-                    kept.push((s, true));
-                } else {
-                    kept.last_mut().unwrap().1 = true;
-                }
-                if e < end && e < n {
-                    kept.push((e, false));
-                }
-            }
-            None => {}
+        // (The line through the means of its first and last quarters, and the mean offset of
+        // its middle half from that line: means, so that the pixels' steps cancel.)
+        let mean = |a: usize, b: usize| {
+            let c = (b - a).max(1) as f32;
+            let t = (a..b).fold([0.0f32; 2], |t, k| [t[0] + points[k % n][0], t[1] + points[k % n][1]]);
+            [t[0] / c, t[1] / c]
+        };
+        let q = (e - s) / 4;
+        let (pa, pb) = (mean(s, s + q.max(1)), mean(e - q.max(1) + 1, e + 1));
+        let (cd, cl) = (sub(pb, pa), dist(pa, pb));
+        let bow = if cl > 1e-6 && q >= 1 { (s + q..e - q).map(|k| cross(cd, sub(points[k % n], pa)) / cl).sum::<f32>() / (e - s - 2 * q).max(1) as f32 } else { f32::INFINITY };
+        *work += 2 * (end - i) as u64;
+        if bow.abs() > BOW_PX || dist(points[s % n], points[e % n]) < long {
+            continue;
         }
-        if end < n {
-            kept.push((end, false));
+        if s > i {
+            kept.push((s, true));
+        } else {
+            kept.last_mut().unwrap().1 = true;
         }
-        i = end;
+        if e < end && e < n {
+            kept.push((e, false));
+        }
     }
     kept
 }
@@ -1047,6 +1058,7 @@ fn read(m: &Mask, work: &mut u64) -> Option<ShapeLanguage> {
     // the same of a clean outline, and the opposite of one that a straightened run has made
     // loop on itself at a sharp tip, where the whole outline then read inside out.)
     let way = if area(&outline_points) >= 0.0 { 1.0f32 } else { -1.0 };
+    // (A smoothed outline that turns other than once round, its own way, has looped on itself    // somewhere: what it would say is not to be trusted, and it says nothing.)    if (turn_g.iter().map(|t| f64::from(*t)).sum::<f64>() - f64::from(way) * std::f64::consts::TAU).abs() > std::f64::consts::PI {        return None;    }
     let raw_g = median5(&thickness(&spine, &coarse.even, w, h, work));
     let reach_g = (2.0 * sigma_g).ceil() as usize + chord_g;
     let joint_g = joints(&turn_g, way, reach_g);
@@ -1636,7 +1648,7 @@ mod tests {
         assert_eq!(of_mask(&Mask::empty(PIXELS, PIXELS)), None);
         assert_eq!(of_mask(&mask(PIXELS, 0.0, |x, y| x.hypot(y) < 0.03)), None);
         assert_eq!(of_mask(&Mask::empty(600, 600)), None);
-        for small in [24u32, 64, 96] {
+        for small in [24u32, 64, 96, 128, 200] {
             assert_eq!(of_mask(&mask(small, 0.0, boxy)), None, "a box on {small} pixels is too small to read");
             assert_eq!(of_mask(&mask(small, 0.0, |x, y| x.hypot(y) < 0.44)), None, "a disc on {small} pixels");
         }
@@ -1655,11 +1667,16 @@ mod tests {
         assert!(a.square > 0.9 && a.leading() == Kind::Square, "a comb's flat teeth: {a:?}");
         // A shape too thin to read has no language: a hair.
         assert_eq!(of_mask(&mask(PIXELS, 0.0, |x, y| x.abs() < 0.45 && y.abs() < 0.004)), None, "a line of four pixels");
-        // The same shape on half the pixels (still over the size it reads at) says the same.
-        for (name, inside, kind) in [("a disc", disc, Kind::Round), ("a box", boxy, Kind::Square)] {
+        // The same shape on half the pixels (still over the size it reads at) says the same
+        // (the sized shapes of `tests/shape_families.rs` hold this at every size from 256 up),
+        // and under [`MIN_SIZE`] across it is not read.
+        let (big_disc, big_box): (Inside, Inside) = (|x, y| x.hypot(y) < 0.44, |x, y| x.abs() < 0.4 && y.abs() < 0.3);
+        for (name, inside, kind) in [("a disc", big_disc, Kind::Round), ("a box", big_box, Kind::Square)] {
             let (full, half) = (of_mask(&mask(PIXELS, 20.0, inside)).unwrap(), of_mask(&mask(PIXELS / 2, 20.0, inside)).unwrap());
             assert!((full.share(kind) - half.share(kind)).abs() < 0.1 && half.leading() == kind, "{name}: {full:?} and on half the pixels {half:?}");
         }
+        assert_eq!(of_mask(&mask(PIXELS / 2, 0.0, |x, y| x.hypot(y) < 0.36)), None, "a disc 184 pixels across");
+        assert!(of_mask(&mask(PIXELS / 2, 0.0, |x, y| x.hypot(y) < 0.38)).is_some(), "a disc 195 pixels across");
         let j = of_mask(&mask(PIXELS, 0.0, disc)).unwrap().to_json();
         assert_eq!(j.get("leading").and_then(Json::as_str), Some("round"));
         assert_eq!(Kind::parse("pointed"), Some(Kind::Pointed));
