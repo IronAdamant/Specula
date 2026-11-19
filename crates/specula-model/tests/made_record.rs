@@ -291,7 +291,9 @@ fn the_record_is_bounded() {
     let tree = format!(r#"{{"op":"sdf","resolution":24,"tree":{{"op":"union","of":[{}]}}}}"#, balls.join(","));
     let sculpts: Vec<String> = (0..6).map(|i| part(&format!("s{i}"), &tree, &format!(r#"{{"op":"move","by":[0,{},0]}}"#, 3 * i))).collect();
     let m = parts(&sculpts);
-    let total: usize = m.extras.made.iter().map(|x| x.views.len()).sum();
-    assert!(total <= MAX_RECORD_VIEWS && m.extras.made.iter().all(|x| x.views.len() <= MAX_VIEWS) && m.extras.made.iter().any(|x| x.views.is_empty()), "{total} outlines");
+    // (One past them is kept as an outline of no points, with the weight of what was left out.)
+    let total: usize = m.extras.made.iter().map(|x| x.views.iter().filter(|v| !v.0.is_empty()).count()).sum();
+    let short = m.extras.made.iter().filter(|x| x.views.iter().any(|v| v.0.is_empty())).count();
+    assert!(total == MAX_RECORD_VIEWS && short > 0 && m.extras.made.iter().all(|x| x.views.len() <= MAX_VIEWS + 1), "{total} outlines, {short} shapes cut short");
     adds_up(&m);
 }

@@ -165,8 +165,9 @@ pub fn drawn(points: &[[f32; 2]], side: u32) -> Option<Mask> {
 /// How much longer than wide an outline is read at, at the most ([`at_most_long`]).
 pub const MAX_ASPECT: f32 = 6.0;
 /// Outlines read for one asset, at the most (identical ones are read once): what is past them
-/// counts as not read. About a tenth of a second on the reference laptop.
-pub const MAX_READS: usize = 48;
+/// counts as not read. The largest record a model keeps, every outline different, read in
+/// 0.27 s on the reference laptop while other builds ran (an outline 8 ms there).
+pub const MAX_READS: usize = 32;
 
 /// An outline longer than [`MAX_ASPECT`] times its width, shortened to that. Drawn at its own
 /// length a thin one is too thin for the measure to read (under [`crate::shape::MIN_THICK`]
@@ -259,6 +260,8 @@ pub fn built_of(made: &[Made], rest_m2: f32) -> Option<BuiltOf> {
             let known = seen.iter().find(|(p, _)| *p == points.as_slice()).map(|(_, s)| *s);
             let s = match known {
                 Some(s) => s,
+                // (An outline of no points: one the model did not keep. Not read.)
+                None if points.len() < 3 => None,
                 None if seen.len() < MAX_READS => {
                     let s = of_outline(points);
                     seen.push((points.as_slice(), s));
@@ -422,6 +425,9 @@ mod tests {
         let line = vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]];
         let half = built_of(&[made("parts[0].shape", "box", 2.0, vec![(rect(1.0, 1.0, 0.0), 1.0), (line, 1.0)])], 0.0).unwrap();
         assert!((half.read - 0.5).abs() < 1e-4 && half.square > 0.95, "{half:?}");
+        // An outline the model did not keep (no points, its weight kept) is not read either.
+        let cut = built_of(&[made("parts[0].shape", "sdf", 2.0, vec![(rect(1.0, 1.0, 0.0), 1.0), (Vec::new(), 3.0)])], 0.0).unwrap();
+        assert!((cut.read - 0.25).abs() < 1e-4, "{cut:?}");
         // More outlines than are read: the largest shapes are read, the rest is not.
         let many: Vec<Made> = (0..MAX_READS + 12).map(|i| made(&format!("parts[{i}].shape"), "box", 100.0 - i as f32, vec![(rect(1.0 + 0.01 * i as f32, 1.0, 0.0), 1.0)])).collect();
         let b = built_of(&many, 0.0).unwrap();

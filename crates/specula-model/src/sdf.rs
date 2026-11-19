@@ -1203,10 +1203,11 @@ pub fn eval_cost(n: &SdfNode) -> u64 {
 /// Most triangles of a sculpt's mesh asked which primitive they are the surface of
 /// ([`surface_by_primitive`]); a mesh of more is asked by every so many of its triangles.
 pub const MAX_OWNER_SAMPLES: usize = 4096;
-/// The work ([`eval_cost`]'s units) asking a sculpt's triangles who made them may spend: about
-/// 20 ms on the reference laptop. A tree too dear for [`MAX_OWNER_SAMPLES`] is asked fewer
+/// The work ([`eval_cost`]'s units, charged to the build's) asking a sculpt's triangles who made
+/// them may spend: under a third of a percent of a build's (a measured figure: about 600 of its
+/// 8,000 triangles asked, in about half a millisecond). A tree too dear for [`MAX_OWNER_SAMPLES`] is asked fewer
 /// times, never fewer than 64.
-pub const MAX_OWNER_WORK: u64 = 30_000_000;
+pub const MAX_OWNER_WORK: u64 = 4_000_000;
 
 /// How much of a sculpt's surface each of its primitives makes, in the order they are met
 /// depth first (every primitive counted, a half space and what a difference takes away among

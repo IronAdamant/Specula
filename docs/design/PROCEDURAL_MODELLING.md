@@ -412,7 +412,8 @@ review):
 - **Sculpts**: `sdf::surface_by_primitive` gives each triangle of the mesh to the primitive
   whose field is the tree's at its middle (in a union the nearest, in an intersection the
   furthest, in a difference the first child or the cutter that made the wall), at most 4,096
-  triangles asked and about 20 ms of work (`MAX_OWNER_WORK`, charged to the build's work), so
+  triangles asked within `MAX_OWNER_WORK` (charged to the build's work: a measured figure has
+  about 600 of its triangles asked, in half a millisecond), so
   a mirror's and a repeat's copies, an elongation and what an intersection leaves are counted
   as meshed. In a smooth blend the nearest takes the blend.
 - **Includes**: records carry the including part's path as its errors do
@@ -420,8 +421,8 @@ review):
   of what was placed of it, under its path in the items; a variant never placed has no record,
   and an item's variants are one record (one record a path, everywhere).
 - **Bounds**: the 64 shapes with the most surface, at most 256 outlines of 128 points in all
-  (a quarter of a megabyte); a shape whose outlines do not fit keeps none and is read as not
-  read.
+  (a quarter of a megabyte); a shape whose outlines do not all fit keeps its heaviest that do,
+  and the weight of the rest as an outline of no points, which is read as not read.
 
 ### Agent tools
 

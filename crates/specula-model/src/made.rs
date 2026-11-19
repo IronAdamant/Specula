@@ -44,7 +44,8 @@ pub struct Made {
     /// a boolean or a scatter left of it).
     pub area_m2: f32,
     /// Its outlines along its own axes (closed, in any units: only their shape is read), each
-    /// with its weight among them. At most [`MAX_VIEW_POINTS`] points each.
+    /// with its weight among them. At most [`MAX_VIEW_POINTS`] points each. One of no points is
+    /// the weight of outlines the record had no room for ([`MAX_RECORD_VIEWS`]): not read.
     pub views: Vec<(Vec<V2>, f32)>,
 }
 

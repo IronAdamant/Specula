@@ -1159,11 +1159,13 @@ pub struct ModelExtras {
     /// ones whose facets stand furthest off the true curve first, at most [`MAX_ROUND`].
     pub round: Vec<Round>,
     /// What the recipe is built of ([`crate::Made`]): each shape it names with its own outlines
-    /// and its surface in the model, the ones with the most surface first, at most
-    /// [`crate::MAX_MADE`].
+    /// and its own surface in the finished model (what its operations, a boolean and a scatter
+    /// left of it), one record a path, the ones with the most surface first, at most
+    /// [`crate::MAX_MADE`] and [`crate::made::MAX_RECORD_VIEWS`] outlines in all.
     pub made: Vec<crate::Made>,
-    /// The surface nothing in `made` speaks for, square metres: generated parts (terrain, a
-    /// scatter, a building), and the shapes past the ones kept.
+    /// The surface nothing in `made` speaks for, square metres: a terrain, a building, an
+    /// imported mesh, the walls cuts make (their cutters' surface), a bevel's strips, a
+    /// sculpt's half spaces, and the shapes past the ones kept.
     pub made_rest_m2: f32,
 }
 
@@ -1653,8 +1655,9 @@ impl Tally {
     /// summed and their outlines each weighed by its variant's share (the same outlines once).
     /// A shape with no surface left (cut away, never placed) is not kept. At most
     /// [`crate::made::MAX_RECORD_VIEWS`] outlines in all are kept, the largest shapes'
-    /// first: a shape whose outlines do not all fit is kept with none, its surface still counted
-    /// (the studio counts what it cannot read as not read).
+    /// first: a shape whose outlines do not all fit keeps its heaviest that do, and the weight of
+    /// the rest as one outline of no points (which the studio cannot read, and so counts as not
+    /// read).
     fn made_of(&self, surface: f32) -> (Vec<crate::Made>, f32) {
         let mut list: Vec<crate::Made> = self.made.take().into_iter().filter(|m| m.area_m2.is_finite() && m.area_m2 > 0.0).collect();
         // (Stable: the build's own order within a path.)
@@ -1671,9 +1674,12 @@ impl Tally {
         let mut room = crate::made::MAX_RECORD_VIEWS;
         for m in &mut merged {
             if m.views.len() > room {
-                m.views.clear();
+                m.views.sort_by(|a, b| b.1.total_cmp(&a.1));
+                let dropped: f32 = m.views[room..].iter().map(|v| v.1).sum();
+                m.views.truncate(room);
+                m.views.push((Vec::new(), dropped));
             }
-            room -= m.views.len();
+            room -= m.views.iter().filter(|v| !v.0.is_empty()).count();
         }
         let spoken: f32 = merged.iter().map(|m| m.area_m2).sum();
         (merged, (surface - spoken).max(0.0))

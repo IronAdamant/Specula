@@ -787,8 +787,9 @@ and **checked only when a style asks** for one.
     2. **Sculpts weigh each primitive by the surface it makes in the mesh**: every triangle of
        the mesh goes to the primitive whose field is the tree's at its middle (in a union the
        nearest, in an intersection the furthest, in a difference the first child or the cutter
-       whose wall it is), at most 4,096 triangles asked and about 20 ms of work, charged to
-       the build's work. So a mirror's and a repeat's copies count, an elongation counts and
+       whose wall it is), at most 4,096 triangles asked, within a work limit charged to the
+       build's (a measured figure: about 600 of its 8,000 triangles, in about half a
+       millisecond). So a mirror's and a repeat's copies count, an elongation counts and
        widens the outlines it is along, and an intersection's primitive counts by what is left
        of it (a box with a row of nine balls: 58% round; a box inside a ball: the box). In a
        smooth blend the nearest primitive takes the blend: a stated rule, not a measure.
@@ -813,15 +814,19 @@ and **checked only when a style asks** for one.
        past each end, as high as the end's section is narrow), where it had flat ends. With
        the weights of (2) (the boxes the figure cuts its hands and feet with, recorded whole
        by an intersection before, are what is left of them: nearly nothing), **a measured
-       figure reads 98% round** (it read 98% square). A person reads round by this measure:
+       figure reads 97% to 98% round** (it read 98% square). A person reads round by this measure:
        it is made of limbs, a trunk and a head, each a column, a ball or a round cone.
     8. A group's stretch and elongation are put on each outline along its own axes.
     9. **The cost has a ceiling.** The record keeps at most 256 outlines of 128 points in all
-       (a quarter of a megabyte; a shape whose outlines do not all fit keeps none, and is
-       read as not read); the studio reads at most 48 distinct outlines for an asset,
-       identical ones once, the largest shapes first, and what is past them is not read. The
-       largest record the model keeps, every outline different, reads in COST_RECORD;
-       Sepulcra's assets in COST_SEPULCRA.
+       (a quarter of a megabyte; a shape whose outlines do not all fit keeps its heaviest that
+       do, and the weight of the rest as an outline of no points, read as not read); the
+       studio reads at most 32 distinct outlines for an asset, identical ones once, the
+       largest shapes first, and what is past them is not read. Measured in release while
+       other builds ran on the laptop (one outline 8 ms there): **the largest record a recipe
+       can make** (64 sculpts of 32 primitives each, every outline different: 112 KB) reads
+       in 0.27 s, and its read share says 1%; Sepulcra's assets read in 9 to 243 ms each;
+       asking a measured figure's triangles which primitive made them takes about half a
+       millisecond.
     10. Tests now hold the records of an extrude that tapers, a loft that leans, open and
         closed sweeps, a torus, a capsule (end to end), a plane, a frustum, a sculpted
         cylinder's corner, the finish's scaling, an include, a scatter, an intersection, the
@@ -829,8 +834,8 @@ and **checked only when a style asks** for one.
         guards the reviewer found redundant are gone (the far level's tally is its own and
         nobody reads it; nothing recovers from a failed shape on the same tally).
     11. **Read now**: a loft's lean (each side by its stations' shifts), a closed sweep's
-        loop as smoothed (its plan, beside its profile: a square frame of round tube is half
-        each), a sculpted cylinder's `corner` (its side's corners rounded by it; a frustum's
+        loop as smoothed (its plan, beside its profile: a ring of round tube is round, and a
+        square frame of it would be half each), a sculpted cylinder's `corner` (its side's corners rounded by it; a frustum's
         are not). **Said here now**: when the style does not ask for the recipe and the
         silhouettes cannot be read, the recipe's reading answers, with "its silhouettes could
         not be read" in the message.
@@ -840,4 +845,8 @@ and **checked only when a style asks** for one.
     box a wedge. **For the next review of the silhouette measure**, not worked round here: a
     frustum (a bucket) reads half pointed and a mushroom's cap half pointed, which is that
     measure's reading of a trapezoid and of a dome on a rim, and not what a person would say.
-    By the record after the mends Sepulcra is SEPULCRA_COUNTS.
+    By the record after the mends, and read by the silhouette measure's fifth version,
+    **Sepulcra is as it was: 42 lead square, 11 round, 1 pointed, 2 unread** (the crypt and
+    the graveyard's ground, generated); its includes now carry their own paths, and
+    `graveyard_plot` is read at 11% of its surface (its ground is the rest), where its terrain
+    was credited to its headstones.
