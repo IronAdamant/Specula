@@ -425,13 +425,15 @@ test. Not reviewed yet.) The table above still says what each shape records as i
    the largest factor. Under a scale that is not the same every way, or a lean, **a ring** (a
    cylinder's, a cone's, a lathe's, a torus's round its axis, a capsule's round its axis) is
    mapped corner by corner, and its largest turn and the furthest any side stands in from the
-   mapped curve are measured on the ellipse: exact, since an affine map keeps the point where
-   an arc's tangent runs along its chord (held against the built mesh's own top ring and the
-   true ellipse searched along each side: within 0.05° and a thousandth). **A sphere** is
+   mapped curve are measured on the ellipse in the ring's own plane. (That was said to be exact
+   under any linear map; **it is not**: it holds only while the map keeps the axis square to
+   the ring, and the second review showed it false under a lean or a turn followed by an
+   uneven scale. A ring is now measured face by face round its axis: "What was mended, second
+   round", below.) **A sphere** is
    measured face by face on its own icosphere, mapped: a face's furthest point of the curve
    is the mapped sphere's point along the face's own normal (exact, for the same reason). That
-   found that a sphere's faces stand in **three to four times further than its edge turn
-   said** (the twenty faces of none by a fifth of the radius; the table's turn is right, the
+   found that a sphere's faces stand in **3.1 to 4.4 times further than its edge turn
+   said** (3.12 at none, 3.97 at one, 4.27 to 4.38 past it) (the twenty faces of none by a fifth of the radius; the table's turn is right, the
    old sag was not), and that a subdivided icosphere's largest turn is up to a tenth above the
    nominal one (22.5° at one subdivision, not 20.9°). **Not measured, and said:** a taper, a
    twist and a bend (not affine); a torus's tube, a capsule's ends and a sculpt stretched
@@ -459,7 +461,8 @@ test. Not reviewed yet.) The table above still says what each shape records as i
    capsule's `rings` or `segments` (each recorded apart), a torus's `sides` (its tube) or
    `segments`, a cylinder's, a cone's or a lathe's; a sphere's `subdivisions` to the number
    that holds it (or, past five, that none does); a sculpt's `resolution` to the number that
-   holds it. A cone's message says what turns: its base, from one side to the next.
+   holds it. (A cone's message said its base turns, from one side to the next; since the second
+   round it says what its faces turn, measured.)
 5. **A shape nobody sees says nothing**: one with no triangle of its own in the finished
    model (a cutter that cuts nothing, a shape cut wholly away, a part switched off), exact,
    from the tie. A cutter that cuts speaks for the walls it left (`parts[0].shape.of[1]`).
@@ -469,8 +472,9 @@ test. Not reviewed yet.) The table above still says what each shape records as i
    finished mesh is many pieces merged, whose closure and convexity would each have to be
    found first. The fix says to allow such an asset by name.
 6. **The verdict does not move as the asset is turned**: the size a facet is seen against is
-   the asset's greatest width (`width_m`: from its first point to the one furthest from it,
-   and on, four times; it depends on distances only, is never more than the true greatest
+   the asset's greatest width (`width_m`: as first mended, from its first point to the one
+   furthest from it, and on, four times, and since the second round the greatest distance to a
+   millionth; it depends on distances only, is never more than the true greatest
    width and never less than half of it, and is it for a bar, a box, a ball and a disc), not
    its box's longest side. The ten-metre bar beside a twelve-sided column holds its verdict
    at every turn from nothing to a quarter in steps of 7.5°.
@@ -565,6 +569,119 @@ Not settled: whether the kept order can drop the answer (it needs more than 56 r
 front, which only a contrived recipe gives). Not checked against the mesh: cones, lathes
 with a slope, a torus's ring of segments, copies with jitter or by scatter, a sculpt's
 stand-in.
+
+#### What was mended, second round
+
+(2026-11-20, by a model that wrote none of it; each finding seen first with the reviewer's
+probes, each mend held by a test that fails on the code before it, and each fault seeded back
+once. Not reviewed yet.)
+
+1. **A ring is measured face by face round its axis, under any linear map.** The cause: the
+   ring's polygon was mapped and measured in its own plane, while the faces that show run
+   between edges along the profile, so they follow the section square to the *mapped axis*,
+   which a lean, or a turn followed by an uneven scale, tilts away from the ring's plane. Now
+   a ring keeps its profile, read off the built mesh (the edges of the column of vertices at
+   its first vertex's angle; one edge for each direction, the widest), and every band of faces
+   is rebuilt from it: each face is planar (an isosceles trapezoid, or a triangle at the axis),
+   its normal is carried through the map by the map's inverse transpose, **the turn is the
+   angle between neighbouring faces' normals**, and **a face stands in** by its gap as built
+   (from the chord at its wider rim to the arc, along its normal) over the length of its
+   carried normal: exact for planar faces under an affine map, since parallel planes stay
+   parallel and the distance between two goes as one over that length. For a wall that is the
+   reviewer's projection along the mapped axis; and it says what a sloped band is, which the
+   projection did not: **a cone, a flared cylinder, a lathe's slope, a capsule's ends round its
+   axis and a torus round its axis are measured the same way**, their faces' own turn and their
+   own stand-in from the surface of revolution between their two rims. A consequence, as built
+   and not only under a map: a sloped band's faces turn less than a wall's
+   (`2·asin(cos a · sin(180°/n))`, `a` the faces' slope from the axis): a tall cone of four
+   sides turns 87° to 89°, not 90°, and a torus round its axis turns by its band nearest the
+   equator. The cone's message says what its faces turn, no longer its base. **Still not
+   measured, and said:** a capsule's ends from one ring to the next and a torus's tube from
+   one side to the next, stretched unevenly (the model could measure them the same way and
+   does not yet), and a sculpt stretched unevenly. A limit of the definition: looked at down
+   its axis, a flat cone's base outline turns a full side at each corner while its faces turn
+   much less; what is measured is the faces.
+   **Held** by `tests/facet_truth.rs`, the reviewer's probe kept with a truth of its own (it
+   carries every map from the operations' definitions and measures the finished mesh; it calls
+   nothing it checks): one chain in four of the 400 by default, all 400 `#[ignore]`d, now drawn
+   over cylinders, flared cylinders, cones, spheres, capsules, a lathe with a wall, a bell
+   lathe that slopes every way, and tori; the review's named cases (a cylinder of 24 sides
+   leant by 1 and by 0.4, and one turned 45° about z then scaled twofold in y: 20.75°, 16.10°,
+   18.72°, record and mesh alike); copies whose maps come from a seed (an array with a jitter of
+   turns and scales then an uneven scale; a radial with jittered turns then a lean; a scatter
+   then a lean), each copy's map fitted to the mesh from the shape built alone. Over all 400
+   every case is measured, the stand-in within 0.12% of the mesh and the turn within 0.003°
+   (record over mesh: cylinders, 95 cases, 0.99885 to 1.00000; lathes, 90, 0.99896 to 1;
+   cones, 55, 0.99974 to 1; tori, 57, 0.99969 to 1; capsules, 51, 0.99995 to 1; spheres, 52,
+   0.99995 to 1.00002: the f32 of the mesh). The reviewer's own probe, unchanged, now finds
+   every leant cylinder and lathe exact; it still flags 39 leant capsules, every one where the
+   record is the higher: its truth counts a capsule's walls only, and the record also counts
+   the faces of its ends round its axis, which a lean can make turn more (the probe here counts
+   them).
+2. **Advice is measured before it is given.** The cause: the fix assumed that each subdivision
+   halves a sphere's turn and that every other count's turn goes as one over it; neither holds
+   (41.81°, 22.46°, 11.45°; an egg's falls more slowly; an ellipse's does not go as one over its
+   count). Now every record carries what measures it again (`Round::turn_at`: the same maps and
+   the same faces; a sphere rebuilt at that count; a ring's bands at that count, its first
+   vertex where its builder puts it), and the fix names a count only once that count has been
+   measured to hold: it starts where a turn going as one over the count would hold, steps down
+   while the count below holds too and up while it does not, within a work limit (40 million
+   faces measured; past it, and for a record made by hand, it names no count and says why).
+   When no count up to the most a shape takes holds the limit, it says so, with the turn at
+   the most. The fix reads "give the sphere 2 "subdivisions" (it has 0; at 2 it turns 11.4° a
+   face, measured as this was)". **Held** by `tests/facet_advice.rs` (specula-studio): every
+   kind's advice followed at limits just above and just below the turn of several of its counts
+   (a plain sphere, and spheres scaled `[1,3,1]`, `[2,1,0.5]` and turned then scaled; a cylinder
+   scaled, leant, and turned then scaled; a cone scaled; a torus's segments scaled unevenly and
+   its tube scaled evenly; a capsule's segments turned and scaled, and its rings; a bell lathe
+   scaled and leant; a sculpt), each failure's advice followed once and passing; and where no
+   count holds, the most allowed still turning more than the limit.
+3. **Every shape not measured is said in the first answer**, beside a measured one that fails:
+   all of them by path (the eight kept) and how many more there are.
+4. **The wobbling rod's line is held from both sides**: within it (1.8%, at each wavelength)
+   the rod's length is cut out, its points meeting; past it (3% and 6%) it is pressed.
+5. **The greatest width is the greatest distance between two points**, to a millionth. The
+   cause: four sweeps from the first point find a local greatest; from an end of a plus's
+   shorter bar the furthest point is that bar's other end, and the sweeps stay on it (1.0004 m
+   for 1.6003 m). Now sweeps from the first point and from the point furthest from the centroid
+   give a lower bound, and every pair that could beat it is compared: with the points in order
+   of their distance from the centroid, two are no further apart than the sum of those two
+   distances, so a pair whose sum is within a millionth of the best found is not looked at, nor
+   any after it. It costs the sweeps (eight passes), a sort, and the pairs left (none for a ball
+   or a box), at most 20 million; past them it is never less than the sweeps'. It depends on
+   distances only. Held by the plus and by sixty drawn clouds (bars, crosses, stars) against
+   every pair.
+6. **The counts are true whatever is kept**: `round_shapes`, and `not_measured` from the
+   model's own count (`ModelExtras::round_not_measured`); and item 1 of the first round now
+   says 3.1 to 4.4 for the sphere, and no longer that a ring's measure was exact under any
+   linear map.
+
+**The kept order could drop the answer, and no longer can.** Built: seventy six-sided discs on
+one spot, each leant a little more and scaled a little smaller than the one before, so that
+each turns more and stands in less, and all show. Every one is the answer at some size; with 64
+kept, the one that turns the most, the answer at the asset's own size, was left out. Now every
+record that is the answer at some size is kept, past the 64 if it must be (those past it keep
+no means of being measured again, so their advice names no count); only a recipe like this one
+reaches it. Held by `the_answer_is_kept_however_many_shapes_are_answers`.
+
+**A sculpt's figure is an estimate**, now held against its mesh
+(`a_sculpts_figure_is_held_against_its_mesh`): a ball's facets turn 1.06 times the figure at a
+resolution of 8 and up to 1.5 times at 48, and stand in 0.94 to 1.4 times as far (the dual
+contouring's corners are off the surface by up to 1.5% of the radius at 8, and its faces are
+not one cell wide). The check reads the figure, and its advice is measured by the figure, so
+following it passes the check; that the mesh then turns no more than the limit is not what it
+says.
+
+**Sepulcra again** (its 56 recipes): 41 name something round; in 39 a round shape whose facets
+show turns more than 20°, as before; none is not measured; the median is 87.5° (was 90°: its
+tall cones of four sides turn 87° to 89° face to face). No verdict at 20° moved. Where the
+coarsest showing shape changed: `bone_colossus` and `gate_iron` (another of their cones),
+`urn_toppled` (another band of its lathe), and `shambler` (its lathe, whose sloped bands under
+its own uneven scale turn 71°, past its skull's 56°). Their coarsest showing shapes: a torus's
+tube in 14, a cone in 9, a sphere in 6, a sculpt in 4, a capsule's ends in 3, a lathe in 2, a
+cylinder in 1. The greatest width grew by more than a ten-thousandth on 10 props (up to 4.4%: `candle_cluster` 1.376 to
+1.436 m, `wreath_stand`, `rune_obelisk`, `chest_tomb`), changing no verdict. (The before is the
+old ring figure, 360° over the count, and the old width, both recomputed on the same build.)
 
 **Not built:** pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so

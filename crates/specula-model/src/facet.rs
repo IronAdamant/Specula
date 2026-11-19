@@ -11,12 +11,23 @@
 //! - under a move, a turn, a mirror, a uniform scale, copies and scatters (similarities), the
 //!   turn is as built and the radius and how far a facet stands in from the true curve scale
 //!   by the factor, the largest copy's;
-//! - under a scale that is not the same in every direction, or a lean, a ring (a cylinder's,
-//!   a cone's, a lathe's, a torus's round its axis, a capsule's round its axis) becomes an
-//!   ellipse: its polygon is mapped vertex by vertex and its largest turn and the furthest
-//!   any facet stands in from the mapped curve are measured (an affine map keeps a chord's
-//!   tangent point, so the furthest point of a mapped arc from its chord is the mapped arc's
-//!   middle); any other kind is **not measured** and says so;
+//! - a ring (a cylinder's, a cone's, a lathe's, a torus's round its axis, a capsule's round
+//!   its axis) is measured **face by face round its axis**, under any linear map (a scale that
+//!   is not the same every way, a lean, a turn then an uneven scale): its profile is read off
+//!   the built mesh (the edges of the column of vertices at its first vertex's angle), every
+//!   band of faces between two rows of it is rebuilt from it, each face's normal is carried
+//!   through the map by its inverse transpose, the turn is the angle between neighbouring
+//!   faces' normals and a face stands in from the true surface of its band (the surface of
+//!   revolution between the band's two rims, carried through the map) by its gap as built
+//!   over the length of its carried normal. That is exact for planar faces under an affine map
+//!   (parallel planes stay parallel, and the distance between two goes as one over that
+//!   length). A band whose faces run along the axis (a wall) is so measured in the section
+//!   square to the mapped axis, not in the plane of its rings, which a lean or an uneven
+//!   scale after a turn tilts away from it; a sloped band (a cone, a flared cylinder, a
+//!   lathe's slope, a capsule's ends and a torus's tube round the axis) the same way. A
+//!   sphere is measured face by face too; any other kind under such a map is **not
+//!   measured** and says so (a capsule's ends from one ring to the next, a torus's tube from
+//!   one side to the next, a sculpt);
 //! - a taper, a twist and a bend are not affine: what they make of a facet is not measured;
 //! - a displacement moves the facets and the curve they stand for together (one field): the
 //!   facets are as they were, and how far it moved them is said beside them.
@@ -62,7 +73,9 @@ pub struct Round {
     /// That number as built.
     pub count_value: u32,
     /// The largest turn between neighbouring faces round it, degrees, in the finished model
-    /// (a cone's: its base's, from one side to the next).
+    /// (a ring's: between neighbouring faces round its axis, in any band of them; a sloped
+    /// band's faces turn less than a wall's: a cone's `2·asin(cos a · sin(180°/sides))`, `a`
+    /// its faces' slope from the axis).
     pub turn_deg: f32,
     /// The largest radius it turns at in the finished model, metres.
     pub radius_m: f32,
@@ -75,6 +88,84 @@ pub struct Round {
     /// `None`: measured. Otherwise why not (a taper, a twist or a bend; a shape other than a
     /// ring stretched unevenly); the turn, radius and sag are then as it was built.
     pub unmeasured: Option<&'static str>,
+    /// What measures it again at another count, the same way and through the same maps
+    /// ([`Round::turn_at`]): advice is checked by it before it is given. Empty for a shape not
+    /// measured, and for a record made by hand.
+    pub recount: Recount,
+}
+
+/// What a [`Round`] needs to be measured again at another count (opaque).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Recount {
+    kind: Again,
+    /// The linear maps its copies were put through (the identity for a similarity's).
+    maps: Vec<M3>,
+}
+
+impl Recount {
+    /// A shape whose turn is `per` over its count (as a wall's is as built, `per` 360°, and a
+    /// capsule's ends', 90°), unmoved: for a record made by hand.
+    pub fn even(per: f64) -> Recount {
+        Recount { kind: Again::Even(per), maps: vec![IDENTITY] }
+    }
+
+    /// A sphere of `radius`, unmoved, measured face by face: for a record made by hand.
+    pub fn sphere(radius: f64) -> Recount {
+        Recount { kind: Again::Sphere(radius), maps: vec![IDENTITY] }
+    }
+
+    /// A sculpt's primitive, whose turn at resolution `n` is `2·asin(k / n)`: for a record made
+    /// by hand.
+    pub fn cell(k: f64) -> Recount {
+        Recount { kind: Again::Cell(k), maps: vec![IDENTITY] }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+enum Again {
+    #[default]
+    No,
+    /// Faces round an axis, face by face.
+    Ring(Ring),
+    /// A sphere of this radius, face by face.
+    Sphere(f64),
+    /// A turn of `per` over the count, only under similarities (a capsule's ends, a torus's
+    /// tube).
+    Even(f64),
+    /// A sculpt: the cell is the bounds' longest side over the resolution, and turns the
+    /// surface by twice the arc sine of the cell over twice the radius (`longest / 2r`).
+    Cell(f64),
+}
+
+impl Round {
+    /// The largest turn between neighbouring faces this shape would have in the finished model
+    /// with `count` in place of its count, measured as this record was (the same maps, the
+    /// same faces): `None` when that cannot be said (not measured; a record made by hand).
+    pub fn turn_at(&self, count: u32) -> Option<f32> {
+        let maps = &self.recount.maps;
+        if maps.is_empty() {
+            return None;
+        }
+        let t = match &self.recount.kind {
+            Again::No => return None,
+            Again::Ring(ring) => maps.iter().map(|m| ring.under(m, count).0).fold(0.0, f64::max),
+            Again::Sphere(r) => maps.iter().map(|m| sphere_under(m, *r, count).0).fold(0.0, f64::max),
+            Again::Even(per) => per / f64::from(count.max(1)),
+            Again::Cell(k) => 2.0 * dmath::asin_f64((k / f64::from(count.max(1))).min(1.0)).to_degrees(),
+        };
+        Some(t as f32)
+    }
+
+    /// The work [`Round::turn_at`] takes at `count`, in faces measured (for a caller that
+    /// bounds a search).
+    pub fn turn_at_work(&self, count: u32) -> u64 {
+        let maps = self.recount.maps.len() as u64;
+        match &self.recount.kind {
+            Again::Ring(ring) => maps * u64::from(count) * ring.prof.len() as u64,
+            Again::Sphere(_) => maps * (20u64 << (2 * count.min(5))),
+            _ => 1,
+        }
+    }
 }
 
 impl Round {
@@ -136,8 +227,8 @@ pub(crate) struct Rec {
     /// The made-record it hangs on (its path) and its slot (its triangles).
     pub record: u32,
     pub slot: u32,
-    /// The ring's first vertex's angle about Y, radians.
-    pub phase: f64,
+    /// A ring's faces round its axis, read off the built shape ([`Ring::of`]).
+    pub ring: Option<Ring>,
     /// The linear maps its copies were put through since it was built.
     pub maps: Vec<M3>,
     /// Past [`MAX_MAPS`] copies, all similarities: the largest factor.
@@ -271,16 +362,24 @@ impl Rec {
     /// What it is in the finished model.
     fn measure(&self, path: String) -> Round {
         let n = &self.note;
+        // (As built: a ring's and a sphere's faces measured one by one; any other's from its
+        // note.)
+        let built = match (&self.ring, n.what) {
+            (Some(ring), _) => ring.under(&IDENTITY, n.count_value),
+            (None, "sphere") => sphere_under(&IDENTITY, n.radius, n.count_value),
+            _ => (n.turn_deg, n.radius, sag_of(n.radius, n.turn_deg)),
+        };
         let as_built = |unmeasured: Option<&'static str>| Round {
             path: path.clone(),
             what: n.what,
             count: n.count,
             count_value: n.count_value,
-            turn_deg: n.turn_deg as f32,
-            radius_m: n.radius as f32,
-            sag: sag_of(n.radius, n.turn_deg) as f32,
+            turn_deg: built.0 as f32,
+            radius_m: built.1 as f32,
+            sag: built.2 as f32,
             displaced_m: self.displaced as f32,
             unmeasured,
+            recount: Recount::default(),
         };
         if self.unknown.is_some() {
             return as_built(self.unknown);
@@ -290,54 +389,231 @@ impl Rec {
             Some(f) => vec![(Some(f), None)],
             None => self.maps.iter().map(|m| (similarity(m), Some(m))).collect(),
         };
-        // (A sphere's faces stand in further at their middles than the turn at their edges
-        // says: measured face by face, once as built, then scaled.)
-        let ball = (n.what == "sphere").then(|| sphere_under(&IDENTITY, n.radius, n.count_value));
+        let mut maps: Vec<M3> = Vec::new();
+        let mut uneven = false;
         for (f, m) in factors {
-            let (t, r, s) = match (f, m, n.ring) {
-                (Some(f), _, _) => match ball {
-                    Some((t, r, s)) => (t, r * f, s * f),
-                    None => (n.turn_deg, n.radius * f, sag_of(n.radius, n.turn_deg) * f),
-                },
-                (None, Some(m), Some(sides)) => ring_under(m, n.radius, sides, self.phase),
-                (None, Some(m), None) if n.what == "sphere" => sphere_under(m, n.radius, n.count_value),
-                _ => return as_built(Some("stretched unevenly (only a ring and a sphere are measured so)")),
+            let (t, r, s) = match (f, m, &self.ring) {
+                // (A similarity keeps every angle: as built, scaled.)
+                (Some(f), _, _) => {
+                    if !maps.contains(&IDENTITY) {
+                        maps.push(IDENTITY);
+                    }
+                    (built.0, built.1 * f, built.2 * f)
+                }
+                (None, Some(m), Some(ring)) => {
+                    uneven = true;
+                    maps.push(*m);
+                    ring.under(m, n.count_value)
+                }
+                (None, Some(m), None) if n.what == "sphere" => {
+                    uneven = true;
+                    maps.push(*m);
+                    sphere_under(m, n.radius, n.count_value)
+                }
+                _ => return as_built(Some("stretched unevenly (only faces round a ring's axis and a sphere's are measured so)")),
             };
+            if !(t.is_finite() && r.is_finite() && s.is_finite()) {
+                return as_built(Some("flattened by a map (not measured)"));
+            }
             turn = turn.max(t);
             radius = radius.max(r);
             sag = sag.max(s);
         }
-        Round { path, what: n.what, count: n.count, count_value: n.count_value, turn_deg: turn as f32, radius_m: radius as f32, sag: sag as f32, displaced_m: self.displaced as f32, unmeasured: None }
+        let kind = match (&self.ring, n.what, n.count) {
+            (Some(ring), _, _) => Again::Ring(ring.clone()),
+            (None, "sphere", _) => Again::Sphere(n.radius),
+            (None, _, "resolution") if !uneven => Again::Cell(dmath::sin_f64((0.5 * n.turn_deg).to_radians()) * f64::from(n.count_value)),
+            (None, _, "rings") if !uneven => Again::Even(90.0),
+            (None, _, "sides") if !uneven => Again::Even(360.0),
+            _ => Again::No,
+        };
+        let recount = Recount { kind, maps };
+        Round { path, what: n.what, count: n.count, count_value: n.count_value, turn_deg: turn as f32, radius_m: radius as f32, sag: sag as f32, displaced_m: self.displaced as f32, unmeasured: None, recount }
     }
 }
 
-/// A ring of `sides` round Y at `radius` (its first vertex at `phase` about Y) put through
-/// `m`: its largest turn from one side to the next (degrees), its largest radius, and the
-/// furthest any side stands in from the mapped circle (the mapped arc's middle: an affine map
-/// keeps the point where an arc's tangent runs along its chord).
-pub(crate) fn ring_under(m: &M3, radius: f64, sides: u32, phase: f64) -> (f64, f64, f64) {
-    let n = sides.max(3) as usize;
-    let at = |a: f64| {
-        let (s, c) = dmath::sin_cos_f64(a);
-        apply(m, [radius * c, 0.0, -radius * s])
-    };
-    let step = std::f64::consts::TAU / n as f64;
-    let p: Vec<[f64; 3]> = (0..n).map(|k| at(phase + step * k as f64)).collect();
-    let (mut turn, mut far, mut sag) = (0.0f64, 0.0f64, 0.0f64);
-    for k in 0..n {
-        let (a, b, c) = (p[(k + n - 1) % n], p[k], p[(k + 1) % n]);
-        let (e0, e1) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - b[0], c[1] - b[1], c[2] - b[2]]);
-        let t = dmath::atan2_f64(norm(cross(e0, e1)), dot(e0, e1)).to_degrees();
-        turn = turn.max(t);
-        far = far.max(norm(b));
-        let mid = at(phase + step * (k as f64 + 0.5));
-        let w = [mid[0] - b[0], mid[1] - b[1], mid[2] - b[2]];
-        let l = norm(e1);
-        if l > 0.0 {
-            sag = sag.max(norm(cross(w, e1)) / l);
-        }
+/// The inverse transpose of `m`, which carries a plane's normal through it (`None` for a map
+/// that flattens).
+fn normal_map(m: &M3) -> Option<M3> {
+    let det = dot(m[0], cross(m[1], m[2]));
+    if !(det.is_finite() && det.abs() > 1e-300) {
+        return None;
     }
-    (turn, far, sag)
+    Some([cross(m[1], m[2]), cross(m[2], m[0]), cross(m[0], m[1])].map(|c| c.map(|x| x / det)))
+}
+
+/// Most profile edges a ring keeps (a lathe has at most 512 rows; past this, the widest are
+/// kept: a capped count says so in [`Ring::of`]'s caller by nothing, since no recipe reaches it).
+const MAX_PROFILE: usize = 1024;
+
+/// A ring's faces round its own Y axis, as built: where its vertices sit round the axis and
+/// the profile they are spun from. Every band of faces is the profile edge between two rows
+/// spun round the axis in `sides` steps; its faces are planar (an isosceles trapezoid, or a
+/// triangle at the axis), so each is known exactly from its edge, its step and its angle.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Ring {
+    /// What it is (its builder decides where its first vertex sits).
+    what: &'static str,
+    /// Its count as built, and its first vertex's angle about Y then, radians (measured on the
+    /// built mesh).
+    sides: u32,
+    phase: f64,
+    /// The largest radius any of its vertices has (the record's radius).
+    radius: f64,
+    /// The profile's edges that turn round the axis, as `[ρ0, y0, ρ1, y1]`, one for each
+    /// direction (the widest of those alike: faces of one direction turn alike, and the
+    /// widest stands in furthest).
+    prof: Vec<[f64; 4]>,
+}
+
+/// The builder's first angle round the axis for `sides` (a cylinder's and a cone's polygon
+/// starts at 90° and half a side; a lathe's, a capsule's and a torus's at 0).
+fn first_angle(what: &str, sides: u32) -> f64 {
+    match what {
+        "cylinder" | "cone" => (90.0 + 180.0 / f64::from(sides.max(3))).to_radians(),
+        _ => 0.0,
+    }
+}
+
+impl Ring {
+    /// The ring of `sides` that `s` (a shape round its own Y axis, as built) is: its first
+    /// vertex's angle and its profile, from the column of vertices at that angle (and on the
+    /// axis): every edge of a triangle with both ends there is an edge of the profile.
+    pub(crate) fn of(s: &Shape, what: &'static str, sides: u32, radius: f64) -> Ring {
+        let phase = phase_of(s);
+        let rho_max = s.positions.iter().map(|p| dmath::hypot_f64(f64::from(p[0]), f64::from(p[2]))).fold(0.0f64, f64::max);
+        let (sp, cp) = dmath::sin_cos_f64(phase);
+        // (Where each vertex is: in the column, on the axis, or elsewhere; its radius and height.)
+        let at: Vec<Option<[f64; 2]>> = s
+            .positions
+            .iter()
+            .map(|p| {
+                let (x, z) = (f64::from(p[0]), f64::from(p[2]));
+                let rho = dmath::hypot_f64(x, z);
+                if rho <= 1e-5 * rho_max {
+                    return Some([0.0, f64::from(p[1])]);
+                }
+                // (In the column: along the first vertex's direction, to the precision of the
+                // stored position.)
+                let along = x * cp - z * sp;
+                let across = x * sp + z * cp;
+                (along > 0.0 && across.abs() <= 1e-5 * rho).then_some([rho, f64::from(p[1])])
+            })
+            .collect();
+        let mut prof: Vec<[f64; 4]> = Vec::new();
+        for t in &s.tris {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                if let (Some(p), Some(q)) = (at[a as usize], at[b as usize]) {
+                    if p[0] > 0.0 || q[0] > 0.0 {
+                        let (p, q) = if (p[1], p[0]) <= (q[1], q[0]) { (p, q) } else { (q, p) };
+                        prof.push([p[0], p[1], q[0], q[1]]);
+                    }
+                }
+            }
+        }
+        // (One edge for each direction, the widest: by its unit direction, then its width.)
+        let dir = |e: &[f64; 4]| {
+            let (dr, dy) = (e[2] - e[0], e[3] - e[1]);
+            let l = dmath::hypot_f64(dr, dy);
+            if l > 0.0 {
+                [dr / l, dy / l]
+            } else {
+                [0.0, 0.0]
+            }
+        };
+        prof.retain(|e| {
+            let d = dir(e);
+            // (A flat edge's faces lie in one plane: they never turn round the axis.)
+            d[1].abs() > 1e-9
+        });
+        prof.sort_by(|a, b| {
+            let (da, db) = (dir(a), dir(b));
+            da[0].total_cmp(&db[0]).then(da[1].total_cmp(&db[1]))
+        });
+        // (Alike to the precision of the stored positions; of those alike, the widest.)
+        let mut merged: Vec<[f64; 4]> = Vec::with_capacity(prof.len());
+        for e in prof {
+            match merged.last_mut() {
+                Some(k) if (dir(k)[0] - dir(&e)[0]).abs() <= 1e-9 && (dir(k)[1] - dir(&e)[1]).abs() <= 1e-9 => {
+                    if e[0].max(e[2]) > k[0].max(k[2]) {
+                        *k = e;
+                    }
+                }
+                _ => merged.push(e),
+            }
+        }
+        let mut prof = merged;
+        if prof.len() > MAX_PROFILE {
+            prof.sort_by(|a, b| b[0].max(b[2]).total_cmp(&a[0].max(a[2])));
+            prof.truncate(MAX_PROFILE);
+        }
+        Ring { what, sides, phase, radius, prof }
+    }
+
+    /// Its first vertex's angle at `count` (the builder's start, less what was measured as
+    /// built).
+    fn phase_at(&self, count: u32) -> f64 {
+        if count == self.sides {
+            return self.phase;
+        }
+        let step = std::f64::consts::TAU / f64::from(self.sides.max(3));
+        let off = self.phase - first_angle(self.what, self.sides);
+        let off = off - step * dmath::round_f64(off / step);
+        first_angle(self.what, count) + off
+    }
+
+    /// Put through `m` with `count` faces round its axis: the largest turn between neighbouring
+    /// faces round it (degrees), its largest radius, and the furthest any face stands in from
+    /// the true surface of its band (each band's surface of revolution, carried through `m`).
+    pub(crate) fn under(&self, m: &M3, count: u32) -> (f64, f64, f64) {
+        self.under_at(m, count, self.phase_at(count))
+    }
+
+    fn under_at(&self, m: &M3, count: u32, phase: f64) -> (f64, f64, f64) {
+        let n = count.max(3) as usize;
+        let step = std::f64::consts::TAU / n as f64;
+        let Some(w) = normal_map(m) else { return (f64::NAN, f64::NAN, f64::NAN) };
+        let half = dmath::sin_f64(0.5 * step);
+        let c2 = dmath::cos_f64(0.5 * step);
+        // (1 − cos of half a step, without the cancellation.)
+        let one_less = 2.0 * dmath::sin_f64(0.25 * step) * dmath::sin_f64(0.25 * step);
+        let mids: Vec<(f64, f64)> = (0..n).map(|k| dmath::sin_cos_f64(phase + step * (k as f64 + 0.5))).collect();
+        let (mut turn, mut far, mut sag) = (0.0f64, 0.0f64, 0.0f64);
+        for &(s, c) in &mids {
+            // (The widest row's vertices are at the faces' middles less half a step.)
+            let (sv, cv) = (s * c2 - c * half, c * c2 + s * half);
+            far = far.max(norm(apply(m, [self.radius * cv, 0.0, -self.radius * sv])));
+        }
+        for e in &self.prof {
+            // A face of this band at middle angle μ: its edges at the rims are chords, at
+            // ρ·cos(half a step) from the axis; its normal in the (outward, up) plane at μ is
+            // square to the chord-to-chord line.
+            let (dr, dy) = ((e[2] - e[0]) * c2, e[3] - e[1]);
+            let l = dmath::hypot_f64(dr, dy);
+            if l <= 0.0 {
+                continue;
+            }
+            let (a, b) = (dy / l, -dr / l);
+            if a.abs() <= 1e-12 {
+                continue;
+            }
+            // (How far its true surface stands out of it as built: at the wider rim, the arc's
+            // middle less the chord's, along the normal.)
+            let gap = e[0].max(e[2]) * a.abs() * one_less;
+            let normal = |&(s, c): &(f64, f64)| apply(&w, [a * c, b, -a * s]);
+            let mut prev = normal(&mids[n - 1]);
+            for mid in &mids {
+                let cur = normal(mid);
+                let l = norm(cur);
+                if l > 0.0 {
+                    sag = sag.max(gap / l);
+                }
+                turn = turn.max(dmath::atan2_f64(norm(cross(prev, cur)), dot(prev, cur)).to_degrees());
+                prev = cur;
+            }
+        }
+        (turn, far, sag)
+    }
 }
 
 /// A sphere of `radius` and `sub` subdivisions (as [`Shape::sphere`] builds it) put through
@@ -401,14 +677,16 @@ pub(crate) fn slots_in(owners: &[u32]) -> Vec<u32> {
 }
 
 /// What the round shapes come to in the finished model (`shapes`): one [`Round`] for each
-/// with a triangle of its own left, and how many there are. Kept, at most [`crate::MAX_ROUND`],
-/// **in the order the facts answer by**: every round shape that is the answer at some size of
-/// the asset (the coarsest turn among those standing in at least so far: the shapes no other
-/// both stands in further and turns more than), the furthest standing first; then the rest by
-/// how far they stand in; the ones not measured are kept before both, up to eight.
-pub(crate) fn finish(recs: &[Rec], paths: &[String], shapes: &[&Shape]) -> (Vec<Round>, usize) {
+/// with a triangle of its own left, how many there are, and how many of them were not
+/// measured (both counted whatever is kept). Kept **in the order the facts answer by**: every
+/// round shape that is the answer at some size of the asset (the coarsest turn among those
+/// standing in at least so far: the shapes no other both stands in further and turns more
+/// than), the furthest standing first; then the rest by how far they stand in; the ones not
+/// measured are kept before both, up to eight. At most [`crate::MAX_ROUND`] are kept, except
+/// that the answers are all kept, however many.
+pub(crate) fn finish(recs: &[Rec], paths: &[String], shapes: &[&Shape]) -> (Vec<Round>, usize, usize) {
     if recs.is_empty() {
-        return (Vec::new(), 0);
+        return (Vec::new(), 0, 0);
     }
     let slots = recs.iter().map(|r| r.slot as usize + 1).max().unwrap_or(0);
     let mut present = vec![false; slots];
@@ -433,13 +711,16 @@ pub(crate) fn finish(recs: &[Rec], paths: &[String], shapes: &[&Shape]) -> (Vec<
         })
         .collect();
     let total = all.len();
+    let not_measured = all.iter().filter(|r| !r.measured()).count();
     // (Not measured first, up to eight; then the front by stand-in; then the rest.)
     let mut out: Vec<Round> = Vec::new();
     let mut rest: Vec<Round> = Vec::new();
     for r in all.drain(..) {
-        if !r.measured() && out.len() < 8 {
-            out.push(r);
-        } else if r.measured() {
+        if !r.measured() {
+            if out.len() < 8 {
+                out.push(r);
+            }
+        } else {
             rest.push(r);
         }
     }
@@ -455,10 +736,20 @@ pub(crate) fn finish(recs: &[Rec], paths: &[String], shapes: &[&Shape]) -> (Vec<
             others.push(r);
         }
     }
-    out.extend(front);
-    out.extend(others);
-    out.truncate(crate::recipe::MAX_ROUND);
-    (out, total)
+    // The front is kept whole, past the bound if it must be: every record on it is the answer
+    // at some size of the asset, so leaving one out could change the answer. (Past the bound a
+    // record keeps no means of being measured again: its advice says so. Only a contrived
+    // recipe has a front that long: a turn that rises as the stand-in falls, record by record.)
+    let room = crate::recipe::MAX_ROUND.saturating_sub(out.len());
+    for (i, mut r) in front.into_iter().enumerate() {
+        if i >= room {
+            r.recount = Recount::default();
+        }
+        out.push(r);
+    }
+    let room = crate::recipe::MAX_ROUND.saturating_sub(out.len());
+    out.extend(others.into_iter().take(room));
+    (out, total, not_measured)
 }
 
 #[cfg(test)]
@@ -472,15 +763,20 @@ mod tests {
     /// Under a similarity a ring is as built, scaled; under a scale that stretches one way
     /// it is an ellipse, whose sides near its ends turn more and whose middle sides stand in
     /// further: held against the same ring's polygon measured point by point here.
+    /// A wall of `sides` round Y at radius 1 (a lathe's: its first vertex at angle 0).
+    fn wall(sides: u32) -> Ring {
+        Ring::of(&Shape::lathe(&[[1.0, 0.0], [1.0, 1.0]], sides, true), "lathe", sides, 1.0)
+    }
+
     #[test]
     fn a_ring_under_a_map_is_measured_exactly() {
-        let (t, r, s) = ring_under(&scale([2.0; 3]), 1.0, 6, 0.0);
-        assert!((t - 60.0).abs() < 1e-9 && (r - 2.0).abs() < 1e-9 && (s - 2.0 * sag_of(1.0, 60.0)).abs() < 1e-9, "{t} {r} {s}");
+        let (t, r, s) = wall(6).under(&scale([2.0; 3]), 6);
+        assert!((t - 60.0).abs() < 1e-9 && (r - 2.0).abs() < 1e-6 && (s - 2.0 * sag_of(1.0, 60.0)).abs() < 1e-6, "{t} {r} {s}");
         // Stretched along its axis only: the ring is untouched.
-        let (t, r, s) = ring_under(&scale([1.0, 5.0, 1.0]), 1.0, 12, 0.3);
-        assert!((t - 30.0).abs() < 1e-9 && (r - 1.0).abs() < 1e-9 && (s - sag_of(1.0, 30.0)).abs() < 1e-9);
+        let (t, r, s) = wall(12).under(&scale([1.0, 5.0, 1.0]), 12);
+        assert!((t - 30.0).abs() < 1e-9 && (r - 1.0).abs() < 1e-6 && (s - sag_of(1.0, 30.0)).abs() < 1e-6);
         // Stretched across it by three: an ellipse of 3 by 1 drawn with 12 points.
-        let (t, r, s) = ring_under(&scale([3.0, 1.0, 1.0]), 1.0, 12, 0.0);
+        let (t, r, s) = wall(12).under(&scale([3.0, 1.0, 1.0]), 12);
         let pts: Vec<(f64, f64)> = (0..12).map(|k| (3.0 * dmath::cos_f64(k as f64 * 30f64.to_radians()), dmath::sin_f64(k as f64 * 30f64.to_radians()))).collect();
         let mut turn: f64 = 0.0;
         for k in 0..12 {
@@ -499,7 +795,7 @@ mod tests {
                 far = far.max(d);
             }
         }
-        assert!((t - turn).abs() < 1e-6 && (r - 3.0).abs() < 1e-9 && (s - far).abs() < 1e-6 * far, "{t} against {turn}; {s} against {far}");
+        assert!((t - turn).abs() < 1e-6 && (r - 3.0).abs() < 1e-6 && (s - far).abs() < 1e-6 * far, "{t} against {turn}; {s} against {far}");
         assert!(t > 50.0 && s > sag_of(1.0, 30.0) * 2.0, "the ends of the ellipse turn more than a twelfth of a turn");
     }
 
@@ -519,6 +815,40 @@ mod tests {
             let (t2, r2, s2) = sphere_under(&scale([1.0, 2.0, 1.0]), 0.5, sub);
             assert!(t2 > t && (r2 - 1.0).abs() < 1e-6 && s2 > s && s2 <= 2.0 * s * 1.0001, "sub {sub}: egg {t2} {r2} {s2}");
         }
+    }
+
+    /// Where a ring's first vertex sits at another count is the builder's own start (the advice
+    /// measures a count it has not built): held against each builder at counts round the one
+    /// built, odd and even; and a ring's profile is what it was built of.
+    #[test]
+    fn a_ring_knows_where_it_starts_at_any_count() {
+        type Make = fn(u32) -> Shape;
+        let shapes: [(&'static str, Make); 5] = [
+            ("cylinder", |n| Shape::cylinder(0.5, 0.5, 1.0, n, 0.0).unwrap()),
+            ("cone", |n| Shape::cylinder(0.5, 0.0, 1.0, n, 0.0).unwrap()),
+            ("lathe", |n| Shape::lathe(&[[0.0, 0.0], [0.5, 0.2], [0.3, 1.0]], n, false)),
+            ("capsule", |n| Shape::capsule(0.4, 2.0, n, 3)),
+            ("torus", |n| Shape::torus(0.6, 0.2, n, 5)),
+        ];
+        for (what, make) in shapes {
+            for built in [3u32, 4, 7, 12, 31] {
+                let ring = Ring::of(&make(built), what, built, 0.5);
+                assert!(!ring.prof.is_empty(), "{what} {built}");
+                for other in [3u32, 5, 8, 13, 64, 101] {
+                    let truth = Ring::of(&make(other), what, other, 0.5).phase;
+                    let step = std::f64::consts::TAU / f64::from(other);
+                    let d = ring.phase_at(other) - truth;
+                    assert!((d - step * dmath::round_f64(d / step)).abs() < 1e-5, "{what} built {built}, at {other}: {} against {truth}", ring.phase_at(other));
+                }
+            }
+        }
+        // A wall turns a full side face to face; a cone's faces, sloped, turn less:
+        // 2·asin(cos a · sin(180°/n)), its faces sloped by a from the axis.
+        let cone = Ring::of(&Shape::cylinder(0.5, 0.0, 1.0, 4, 0.0).unwrap(), "cone", 4, 0.5);
+        let (t, _, s) = cone.under(&IDENTITY, 4);
+        let ca = 1.0 / (1.0f64 + (0.5 * dmath::cos_f64(std::f64::consts::FRAC_PI_4)) * (0.5 * dmath::cos_f64(std::f64::consts::FRAC_PI_4))).sqrt();
+        let want = 2.0 * dmath::asin_f64(ca * dmath::sin_f64(std::f64::consts::FRAC_PI_4)).to_degrees();
+        assert!((t - want).abs() < 1e-4 && (s - 0.5 * ca * (1.0 - dmath::cos_f64(std::f64::consts::FRAC_PI_4))).abs() < 1e-6, "{t} against {want}; {s}");
     }
 
     #[test]

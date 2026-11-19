@@ -37,31 +37,73 @@ impl AssetFacts {
     }
 }
 
-/// The greatest width of a set of points, metres, as far as it is found: from the first
-/// point to the one furthest from it, from that to the one furthest from it, and so on four
-/// times, the longest of these. It depends on distances only, so it is the same however the
-/// points are turned; it is never more than the true greatest width and never less than half
-/// of it (and is it, for a bar, a box, a ball or a disc).
+/// How close [`greatest_width`] comes to the true greatest width: never further below it than
+/// this share of it (within [`WIDTH_PAIRS`]).
+pub const WIDTH_TOLERANCE: f64 = 1e-6;
+
+/// Most pairs of points [`greatest_width`] compares after its sweeps (past them it answers the
+/// greatest found so far, never less than the sweeps found).
+pub const WIDTH_PAIRS: u64 = 20_000_000;
+
+/// The greatest width of a set of points, metres: the greatest distance between two of them,
+/// to [`WIDTH_TOLERANCE`].
+///
+/// First a lower bound by sweeps (from a point to the one furthest from it, and on, four times,
+/// started from the first point and from the point furthest from the centroid); then every
+/// pair that could beat it is compared: with the points in order of their distance from the
+/// centroid, two points are no further apart than the sum of those distances, so a pair whose
+/// sum is within the tolerance of the best found need not be looked at, and nor need any after
+/// it. A plus of two bars, whose sweeps can stay on the shorter bar, is found whole this way.
+/// It depends on distances only, so it is the same however the points are turned (to the
+/// tolerance). It costs the sweeps (eight passes over the points), a sort, and the pairs left:
+/// none for a ball or a box, whose sweeps find the width; at most [`WIDTH_PAIRS`] of them,
+/// past which it is never less than the sweeps' width, which is never less than half the true.
 pub fn greatest_width(points: &[[f32; 3]]) -> f32 {
-    let d = |a: [f32; 3], b: [f32; 3]| {
-        let v = [f64::from(a[0]) - f64::from(b[0]), f64::from(a[1]) - f64::from(b[1]), f64::from(a[2]) - f64::from(b[2])];
-        v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
-    };
-    let Some(&first) = points.iter().find(|p| p.iter().all(|x| x.is_finite())) else { return 0.0 };
-    let (mut from, mut best) = (first, 0.0f64);
-    for _ in 0..4 {
-        let (far, dist) = points.iter().filter(|p| p.iter().all(|x| x.is_finite())).fold((from, 0.0f64), |m, &p| {
-            let x = d(from, p);
-            if x > m.1 {
-                (p, x)
-            } else {
-                m
-            }
-        });
-        best = best.max(dist);
-        from = far;
+    let mut p: Vec<[f64; 3]> = points.iter().filter(|p| p.iter().all(|x| x.is_finite())).map(|p| p.map(f64::from)).collect();
+    if p.is_empty() {
+        return 0.0;
     }
-    best.sqrt() as f32
+    p.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])).then(a[2].total_cmp(&b[2])));
+    p.dedup();
+    let d2 = |a: &[f64; 3], b: &[f64; 3]| (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]);
+    let n = p.len() as f64;
+    let c = p.iter().fold([0.0f64; 3], |s, q| [s[0] + q[0] / n, s[1] + q[1] / n, s[2] + q[2] / n]);
+    let mut by_reach: Vec<(f64, usize)> = p.iter().enumerate().map(|(i, q)| (d2(q, &c).sqrt(), i)).collect();
+    by_reach.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    let sweep = |start: usize| {
+        let (mut from, mut best) = (start, 0.0f64);
+        for _ in 0..4 {
+            let (far, dist) = p.iter().enumerate().fold((from, 0.0f64), |m, (i, q)| {
+                let x = d2(&p[from], q);
+                if x > m.1 {
+                    (i, x)
+                } else {
+                    m
+                }
+            });
+            best = best.max(dist);
+            from = far;
+        }
+        best
+    };
+    let mut best = sweep(0).max(sweep(by_reach[0].1)).sqrt();
+    let mut pairs = 0u64;
+    'outer: for (i, &(ri, a)) in by_reach.iter().enumerate() {
+        if ri + by_reach[0].0 <= best * (1.0 + WIDTH_TOLERANCE) {
+            break;
+        }
+        for &(rj, b) in &by_reach[..i] {
+            if ri + rj <= best * (1.0 + WIDTH_TOLERANCE) {
+                break;
+            }
+            pairs += 1;
+            if pairs > WIDTH_PAIRS {
+                break 'outer;
+            }
+            best = best.max(d2(&p[a], &p[b]).sqrt());
+        }
+    }
+    best as f32
 }
 
 /// Colour names in a recipe's JSON (any depth; bounded by the recipe's own size).
@@ -215,6 +257,8 @@ pub struct AssetFacts {
     /// How many round shapes have a triangle of their own in it (`round` keeps the ones the
     /// answer needs first).
     pub round_total: usize,
+    /// How many of them were not measured (whatever `round` keeps).
+    pub round_not_measured: usize,
     /// What its recipe is built of: each shape it names with its own outlines and its surface
     /// ([`specula_model::Made`]), and the surface nothing of that speaks for. Read as shape
     /// language by [`crate::built::built_of`] when a check or an answer wants it (some
@@ -304,6 +348,7 @@ impl AssetFacts {
             width_m: model.lods.first().map_or(0.0, |m| greatest_width(&m.positions)),
             round: model.extras.round.clone(),
             round_total: model.extras.round_total,
+            round_not_measured: model.extras.round_not_measured,
             made: model.extras.made.clone(),
             made_rest_m2: model.extras.made_rest_m2,
         }
@@ -340,7 +385,7 @@ impl AssetFacts {
                 ("round", Json::arr(self.round.iter().take(8).map(|r| r.to_json()))),
                 ("round_shapes", Json::from(self.round_total)),
                 ("round_kept", Json::from(self.round.len())),
-                ("not_measured", Json::from(self.faceting_unmeasured().count())),
+                ("not_measured", Json::from(self.round_not_measured.max(self.faceting_unmeasured().count()))),
                 ("level", Json::from("the finest")),
             ]);
             match self.faceting() {
@@ -419,5 +464,37 @@ mod tests {
         let ball = specula_model::Shape::sphere(0.5, 3);
         assert!((greatest_width(&ball.positions) - 1.0).abs() < 1e-3);
         assert_eq!(greatest_width(&[]), 0.0);
+    }
+
+    /// **The greatest width is the greatest distance between two points**, to its tolerance:
+    /// a plus of two bars, the shorter first (whose sweeps stay on the shorter bar), and drawn
+    /// clouds of points (bars, crosses, stars, blobs) held against every pair (distances only:
+    /// it is the same however they are turned).
+    #[test]
+    fn the_greatest_width_is_found_whole() {
+        let plus: Vec<[f32; 3]> = [[-0.5, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.0, -0.8], [0.0, 0.0, 0.8], [0.0, 0.01, 0.0]].to_vec();
+        assert!((greatest_width(&plus) - 1.6).abs() < 1e-6, "{}", greatest_width(&plus));
+        let mut seed = 0x51ad_u64;
+        let mut f = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for case in 0..60 {
+            // (Arms of drawn lengths from near the centre, each a little cloud.)
+            let arms = 1 + case % 6;
+            let mut pts: Vec<[f32; 3]> = Vec::new();
+            for _ in 0..arms {
+                let dir = [f() - 0.5, f() - 0.5, f() - 0.5];
+                let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
+                let reach = 0.2 + 3.0 * f();
+                for k in 0..40 {
+                    let t = reach * f64::from(k) / 39.0;
+                    pts.push([0, 1, 2].map(|i| (dir[i] / l * t + 0.05 * (f() - 0.5)) as f32));
+                }
+            }
+            let brute = pts.iter().flat_map(|a| pts.iter().map(move |b| ((0..3).map(|i| f64::from(a[i] - b[i]).powi(2)).sum::<f64>()).sqrt())).fold(0.0f64, f64::max);
+            let w = f64::from(greatest_width(&pts));
+            assert!(w <= brute * (1.0 + 1e-6) && w >= brute * (1.0 - 2e-6), "case {case}: {w} against {brute}");
+        }
     }
 }

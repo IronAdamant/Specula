@@ -136,6 +136,10 @@ fn what_cannot_be_measured_says_so() {
     let torus = one(r#"{"op":"torus","radius":0.7,"tube":0.1,"segments":12,"sides":5}"#, r#"{"op":"scale","by":[2,1,1]}"#);
     let (ring, tube): (Vec<&Round>, Vec<&Round>) = torus.extras.round.iter().partition(|r| r.count == "segments");
     assert!(ring[0].measured() && !tube[0].measured(), "{:?}", torus.extras.round);
+    // Past the eight not measured that are kept, the counts still count them all.
+    let list: Vec<String> = (0..11).map(|i| part(&format!("t{i}"), c, r#"{"op":"taper","from":1,"to":2}"#)).collect();
+    let m = parts(&list, "");
+    assert!(m.extras.round_total == 11 && m.extras.round_not_measured == 11 && m.extras.round.len() == 8, "{} kept, {} not measured of {}", m.extras.round.len(), m.extras.round_not_measured, m.extras.round_total);
     let d = the(&one(c, r#"{"op":"displace","amount":0.02,"scale":0.3},{"op":"scale","by":2}"#), "parts[0].shape");
     assert!(d.measured() && near(d.displaced_m, 0.04, 1e-4) && near(d.turn_deg, 45.0, 1e-4), "{d:?}");
 }
@@ -204,6 +208,30 @@ fn the_records_kept_are_the_ones_the_answer_needs() {
     // (The kept order: the furthest standing first; each later one of the front turns more.)
     assert_eq!(m.extras.round[0].turn_deg, 30.0);
     assert_eq!(m.extras.round[1].turn_deg, 120.0);
+}
+
+/// **The kept records never drop the answer**, however many shapes are the answer at some
+/// size (settled for the second review, which could not build it): seventy six-sided discs on
+/// one spot, each leant a little more (turning more) and scaled a little smaller (standing in
+/// less) than the one before, so that every one is the answer at some size, and all of them
+/// show at the asset's size (they stand in further than a 512th of its box's diagonal, which
+/// is no less than its greatest width). The one that turns the most is the answer, and is
+/// kept; so is every other, past the 64 kept otherwise.
+#[test]
+fn the_answer_is_kept_however_many_shapes_are_answers() {
+    let n = 70usize;
+    let list: Vec<String> = (0..n)
+        .map(|i| part(&format!("d{i}"), r#"{"op":"cylinder","radius":1,"height":0.01,"sides":6}"#, &format!(r#"{{"op":"lean","x":{}}},{{"op":"scale","by":{}}}"#, 0.03 * i as f32, (0..i).fold(1.0f32, |a, _| a * 0.97))))
+        .collect();
+    let m = parts(&list, "");
+    let b = m.lods[0].bounds();
+    let diag = (0..3).map(|k| (b.max[k] - b.min[k]) * (b.max[k] - b.min[k])).sum::<f32>().sqrt();
+    let all: Vec<Round> = (0..n).map(|i| the(&m, &format!("parts[{i}].shape"))).collect();
+    for w in all.windows(2) {
+        assert!(w[1].turn_deg > w[0].turn_deg && w[1].sag_m() < w[0].sag_m(), "each is the answer at some size: {:?} then {:?}", w[0], w[1]);
+    }
+    assert!(all.iter().all(|r| r.sag_m() >= diag / 512.0), "all show");
+    assert!(m.extras.round.len() == n && m.extras.round_total == n, "{} kept of {}", m.extras.round.len(), m.extras.round_total);
 }
 
 /// A scatter's round items are measured as each was placed: the largest placement speaks.
