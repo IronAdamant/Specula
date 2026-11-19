@@ -773,4 +773,61 @@ mod tests {
         let (body, neck) = (short[2][0] - short[1][0], short[5][0] - short[4][0]);
         assert!(body > 0.5 && neck > 0.5 && (body / neck - 1.0).abs() < 0.5, "body {body}, neck {neck}");
     }
+
+    /// What is pressed is pressed between its two ends, each as long as the outline is wide,
+    /// which keep their points where they were (moved along together): a round cone and an
+    /// oval of a hundred to one, shortened to six to one.
+    #[test]
+    fn a_pressed_outline_keeps_its_ends() {
+        use specula_model::made::{ellipse, tapered};
+        for (name, p) in [("round cone", tapered(0.5, 0.2, 100.0)), ("oval", ellipse(50.0, 0.5))] {
+            let short = at_most_long(&p);
+            let (lo, hi) = p.iter().fold((f32::MAX, f32::MIN), |m, q| (m.0.min(q[0]), m.1.max(q[0])));
+            let e = specula_model::made::half_extents(&short);
+            assert!((e[0] / e[1] - 6.0).abs() < 1e-3, "a {name} made {e:?}");
+            // (Laid along its axis, the distances between the points of each end are as they were.)
+            let gap = |s: &[[f32; 2]], i: usize, j: usize| ((s[i][0] - s[j][0]).powi(2) + (s[i][1] - s[j][1]).powi(2)).sqrt();
+            let end = |i: usize| p[i][0] - lo <= 1.0 || hi - p[i][0] <= 1.0;
+            let mut held = 0;
+            for i in 0..p.len() {
+                let j = (i + 1) % p.len();
+                if end(i) && end(j) && ((p[i][0] - lo <= 1.0) == (p[j][0] - lo <= 1.0)) {
+                    assert!((gap(&short, i, j) - gap(&p, i, j)).abs() < 1e-3, "a {name}: points {i} and {j} were {} apart, now {}", gap(&p, i, j), gap(&short, i, j));
+                    held += 1;
+                }
+            }
+            assert!(held >= 4, "a {name}: {held} pairs of points at its ends");
+        }
+    }
+
+    /// The line is drawn where it is said to be: an outline is shortened from six to one on
+    /// (not five, not eight), and a stretch is straight when its sides stay level within a
+    /// fiftieth of its width: a rod whose top steps up and down by 0.015 of its width every
+    /// width along has its length taken out (points are moved onto one place), and one whose
+    /// top steps by 0.025 is pressed (no two points meet).
+    #[test]
+    fn the_lines_are_where_they_are_said_to_be() {
+        assert_eq!(at_most_long(&rect(6.0, 1.0, 0.0)), rect(6.0, 1.0, 0.0));
+        let e = specula_model::made::half_extents(&at_most_long(&rect(6.5, 1.0, 0.0)));
+        assert!((e[0] / e[1] - 6.0).abs() < 1e-4, "{e:?}");
+        let stepped = |h: f32| -> Vec<[f32; 2]> {
+            let mut p = vec![[0.0, -0.5], [60.0, -0.5]];
+            for i in (0..60).rev() {
+                let y = 0.5 + if i % 2 == 0 { h } else { 0.0 };
+                p.push([i as f32 + 1.0, y]);
+                p.push([i as f32, y]);
+            }
+            p
+        };
+        let places = |p: &[[f32; 2]]| {
+            let mut x: Vec<u32> = p.iter().map(|q| q[0].to_bits()).collect();
+            x.sort_unstable();
+            x.dedup();
+            x.len()
+        };
+        for (h, cut) in [(0.015f32, true), (0.025, false)] {
+            let p = stepped(h);
+            assert_eq!(places(&at_most_long(&p)) < places(&p), cut, "a rod stepping by {h}");
+        }
+    }
 }

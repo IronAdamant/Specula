@@ -237,10 +237,11 @@ fn a_boolean_operand_counts_after_its_own_ops() {
     assert!(near(ball, ball_alone, 0.02), "a ball scaled by its own ops: {ball} against {ball_alone} as a part");
     adds_up(&union);
     let row = one(r#"{"op":"union","of":[{"op":"box","size":[6,0.2,1]},{"op":"cone","radius":0.2,"height":1,"sides":24,"ops":[{"op":"move","by":[-2.75,0.1,0]},{"op":"array","count":12,"offset":[0.5,0,0]}]}]}"#, "");
-    let cone = one(r#"{"op":"cone","radius":0.2,"height":1,"sides":24}"#, "");
-    let (cones, single) = (of(&row, "parts[0].shape.of[1]").area_m2, of(&cone, "parts[0].shape").area_m2);
-    // (Each cone loses its base, a sixth of it, and the slab hides a fifth of what is left.)
-    assert!(cones > 7.0 * single && cones < 12.0 * single, "twelve cones: {cones} m2, one {single} m2");
+    // (The slab with one cone where the first stands: each of the twelve stands on the slab as
+    // it does, and loses as much to it.)
+    let first = one(r#"{"op":"union","of":[{"op":"box","size":[6,0.2,1]},{"op":"cone","radius":0.2,"height":1,"sides":24,"ops":[{"op":"move","by":[-2.75,0.1,0]}]}]}"#, "");
+    let (cones, single) = (of(&row, "parts[0].shape.of[1]").area_m2, of(&first, "parts[0].shape.of[1]").area_m2);
+    assert!(near(cones, 12.0 * single, 1e-3), "twelve cones: {cones} m2, one {single} m2");
     adds_up(&row);
 }
 
@@ -536,4 +537,21 @@ fn a_groups_stretch_lands_on_the_axis_a_limb_runs_on() {
     let (one_, three) = (col("[1,1,1]"), col("[3,1,1]"));
     // (Its first side, toward `side` (Z) and along X: three times as long, as wide as it was.)
     assert!(near(three[1], 3.0 * one_[1], 0.01) && near(three[0], one_[0], 0.01), "{three:?} against {one_:?}");
+}
+
+/// A mirror that keeps both halves drops the faces that lie on its plane, and each shape's
+/// record keeps to its own triangles past them: a box standing with a face on the plane and
+/// a ball beside it, in one union, mirrored, each have what they have alone (a union of one).
+#[test]
+fn a_mirror_keeps_each_shape_to_its_own() {
+    let boxed = r#"{"op":"box","size":[1,1,1],"ops":[{"op":"move","by":[0,0,0.5]}]}"#;
+    let ball = r#"{"op":"sphere","radius":0.4,"subdivisions":2,"ops":[{"op":"move","by":[3,0.5,1]}]}"#;
+    let mirror = r#"{"op":"mirror","axis":"z","keep":true}"#;
+    let m = one(&format!(r#"{{"op":"union","of":[{boxed},{ball}]}}"#), mirror);
+    for (path, shape) in [("parts[0].shape.of[0]", boxed), ("parts[0].shape.of[1]", ball)] {
+        let alone = surface(&one(&format!(r#"{{"op":"union","of":[{shape}]}}"#), mirror));
+        assert!(near(of(&m, path).area_m2, alone, 1e-3), "{path}: {} against {alone} alone", of(&m, path).area_m2);
+    }
+    // (The box's face on the plane is gone: two boxes back to back, ten faces of 1 m2.)
+    assert!(near(of(&m, "parts[0].shape.of[0]").area_m2, 10.0, 1e-3));
 }
