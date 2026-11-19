@@ -1017,7 +1017,18 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       at most one render now lands a pass). Also: the missing test; the late line held by
       a default test; true words for uneven frames; a 2D picture that failed to load is
       warned of; a session closing while the job waits, and a model still building, each
-      a test. The timeline's preview job has the same spin and was left as it is.
+      a test. The timeline's preview job has the same spin and was left as it is. **That
+      short review said not to merge, for one finding** (2026-11-20; LIGHT.md, "Its
+      fourth review"): **with a window held to 20 frames a second a report takes 3.7
+      times as long as before** (4 s where it took 1.1 to 1.6), because a waiting job is
+      looked at once a frame and so one render lands a frame, where the spin landed nearly
+      four. At 60 frames a second and headless there is no slowdown, and the window keeps
+      its rate either way. Everything else held (the orders' table by the reviewer's own
+      simulation; nothing carried from one render to the next in 2,300 raw frames an
+      adapter; costs as the third review's; every seeded fault caught). **A fresh agent
+      is mending it** (a waiting job is looked at again within the frame's wait, as the
+      headless loop already does), with the timeline's preview job's spin in the same
+      change.
     - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
       PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
       builds: a large thin rounded cutter set a metre past the corner of what it cuts

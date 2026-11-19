@@ -427,7 +427,10 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       drawn in an order that changes from pair to pair by a fixed sequence, so that a load
       in step with the rounds cannot pass for a cost; the job waits while its render is
       on the graphics card, where it had spun; a 2D picture that failed to load is warned
-      of (LIGHT.md, "What was mended, third round"). A short review of that is running.
+      of (LIGHT.md, "What was mended, third round"). A short review of that said not to
+      merge for one finding: with a window held to 20 frames a second a report takes 3.7
+      times as long, since a waiting job lands one render a frame (LIGHT.md, "Its fourth
+      review").
     - **The rounded shape's levelled weights, reviewed** (2026-11-20): not to merge. A large
       thin rounded cutter set past the corner of what it cuts costs four times its charge
       by count, so the work limit does not bound such a build's time; other roundnesses

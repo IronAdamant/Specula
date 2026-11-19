@@ -620,3 +620,39 @@ was caught.
 rounds it is now about 3% where it was none. A slow drift is told one time in a thousand at
 five and seven frames. A machine that is merely uneven is still not advised on. Not run: an
 engine with a window, and a release build.
+
+## Its fourth review
+
+A fourth model (2026-11-20) reviewed the third round's mends alone, with engines running
+with and without a window on both adapters, and said **not to merge them, for one finding.
+It is not mended yet.**
+
+1. **Major: with a slow window, a report takes about 3.7 times as long as it did.** With a
+   window, step jobs are stepped once a frame. A job whose render is still on the graphics
+   card now waits for the next frame, so exactly one render lands a frame, where the old
+   spin landed nearly four. At a window held to 20 frames a second: nine frames a variant
+   took 1.07 to 1.64 s before and 3.95 to 4.04 s after; sixteen took 1.67 to 2.75 s and
+   6.71 to 6.83 s. At 60 frames a second there is no slowdown (1.29 and 1.31 s after
+   against 1.34 and 1.37 s), and headless none (252 and 355 ms against 346 and 420 ms).
+   The window held its rate in both builds. No call ran out of time in a run; by
+   arithmetic the largest report (187 renders) cannot end inside its call's 22 seconds
+   once a window falls under about eight and a half frames a second. "What was mended,
+   third round" above says the spin "could land two" renders a pass and says nothing of
+   this cost.
+2. *Minor:* the order of a round's places is the same in every report, so a load locked to
+   the rounds at one phase would hit the same feature every time (simulated: one costless
+   feature told in three reports of four at some phases; the 1% to 4% above is the mean
+   over phases). The old order did that at most phases. No such load was found.
+3. *Minor:* a late frame is measured against its variant's quickest third, **and never
+   fewer than two frames**, which the page does not say (it matters at five frames).
+
+Found sound: the orders' table, by a simulation of the reviewer's own written from this
+page; other loads it tried (a period of half, two and four rounds; a render that is slower
+after the view as it is; heat that builds and falls) raise nothing above even noise; the
+order is a pure function of the round, the place and the count; in about 2,300 raw frames
+an adapter a frame's time does not depend on its place in the round or on the render before
+it; the costs told agree with the third review's on both adapters; a waiting job is still
+dropped at its call's deadline; the warnings are `sight_frame`'s word for word; every
+seeded fault was caught; no validation message. A note it left: the timeline's preview job
+still spins as this one did (on this job's copy of that code the engine thread polled for
+four fifths of a headless report's time).
