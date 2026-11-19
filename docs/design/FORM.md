@@ -603,4 +603,44 @@ and **checked only when a style asks** for one.
     are (a box square, a ball and a capsule round, a can a third and two thirds, a cone
     pointed); the weighing and the naming; the check's two readings. Four seeded faults
     were each caught by one of them (a cutter recorded; surfaces left as generated; shapes
-    not weighed by surface; the recipe answering unasked). **Not reviewed.**
+    not weighed by surface; the recipe answering unasked).
+  - **Its first review** (another model, 2026-11-20, of `5781cc53`) **said not to merge it**:
+    seven major findings, each shown by a probe, and none mended yet. **What is written above
+    is the author's account, and these are what it gets wrong:**
+    1. **A boolean operand's own operations are not counted in its surface.** A ball of 5 cm
+       that its own `ops` scale by 20, unioned with a 1 m box, has 0.5% of the surface by the
+       record and 68% as a part of its own; a cone arrayed 12 times inside a union counts
+       once. The same in a sculpt: a mirrored or repeated primitive counts once, and
+       `elongate` is ignored (a box with a row of nine balls reads 13% round, where the balls
+       are about half of the surface).
+    2. **A shape recorded inside an included recipe keeps that recipe's own path**, so paths
+       collide (8 of Sepulcra's 54 recipes carry duplicates; `warding_stone`'s
+       `parts[0].shape` is both its plinth and its included column's box) and the check's fix
+       can name the wrong part.
+    3. **An include's unrecorded surface is credited to its recorded shapes.** A 0.2 m box
+       beside a 10 m terrain, included, is recorded at 100 m² (it has 0.24), and the reading
+       says all of the surface was read.
+    4. **A scatter records its items**, where this page says it records nothing, each
+       template once whatever was placed (boxes at weight 1 and balls at weight 20: boxes
+       66% by the record, balls about 86% in the model).
+    5. **Every operand of an intersection is recorded whole.** A box intersected with a
+       large sphere (the box itself, or a die with rounded corners) reads 95% round.
+    6. **An outline too thin to read is dropped without a word, so "a cylinder is a third
+       round and two thirds square" is false for a long or flat one.** A disc at 20 to 1
+       reads as said; a coin at 100 to 1 and a pole at 50 to 1 read 100% round. Legs, rods and
+       posts are past the line.
+    7. **A measured human figure reads 98% square** (its columns' side outlines have flat
+       ends, so every limb is a rectangle), where the same body sculpted of a ball, a capsule
+       and cones reads 99% round.
+    Smaller: a sculpt group's stretch is applied on the wrong axes; the cost has no ceiling
+    (64 shapes of 96 views: 38 s, and 12.8 MB in the cached model; Sepulcra's assets take 5
+    to 153 ms); no test holds the records of an extrude, a loft, a sweep, a torus, a capsule,
+    a plane, the finish's scaling, an include, a scatter or an intersection; a loft's lean, a
+    closed sweep's path and a sculpted cylinder's corner are not read; where the style does
+    not ask for the recipe and the silhouettes cannot be read, the recipe answers, which this
+    page did not say; a bucket and a mushroom cap read half pointed (the silhouette measure's
+    reading of a trapezoid). It found sound: the check's every branch, the parsing, the
+    determinism, the pinned props (no mesh changed), Sepulcra's 42, 11, 1 and 2, the
+    cutters, and that a box, a crate and a table read square and a ball, a torus and a
+    sculpted character round. The mends are the next work, by an agent that did not write
+    it, and reviewed again.

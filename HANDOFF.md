@@ -655,19 +655,26 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       it Sepulcra is 42 square, 11 round, 1 pointed, and the two readings agree on 20 props
       of 56: they are built of boxes and topped with points. **So the silhouettes answer
       the check unless a style says `shape_by = "recipe"`**, the other reading is said
-      beside the answer, and the fix names the recipe's largest shapes to change. Not
-      reviewed.
+      beside the answer, and the fix names the recipe's largest shapes to change. **Its
+      reviewer said not to merge it either** (2026-11-20): the record is wrong for a
+      boolean operand's own operations, for includes (paths collide and a terrain's surface
+      is credited to a box), for scatters and for intersections; an outline too thin to
+      read is dropped without a word (a pole reads 100% round); a measured human figure
+      reads 98% square (FORM.md, "Its first review"). None of it is mended yet; an agent
+      that did not write it is on it.
     - **Where its verification stands** (2026-11-19, night): the full gate passed on
       `bec48409` (everything of part 4 up to the form views in a before and after and in
       the line-up: 3,298 tests, the repeats, the slow-worker run, the speed budgets, clippy
       for both targets, both builds), and seven live checks on it (window, sight, terrain,
       GI, studio, procgen, `form_sheet_check`); the same had passed on `ea95a90d`,
-      `a80b3cf4` and `466e262b` before. The fourth shape-language measure is committed
-      after it and waits for a gate.
-      **Owed:** reviews, by models that did not write them, of faceting from the recipe,
-      the light report's mends and the levelled weights (the two reviewers started for them
-      were stopped by an interrupt and wait for the owner's word: "Open owner decisions"),
-      and of the fourth shape-language measure. Nothing of part 4 is pushed.
+      `a80b3cf4` and `466e262b` before. The fourth shape-language measure and the measure
+      from the recipe are committed after it (`6e9c490b`, `5781cc53`) and wait for a gate;
+      each was reviewed and neither is to be merged as it stands.
+      **Owed:** the mends of both shape-language measures and their reviews; and reviews,
+      by models that did not write them, of faceting from the recipe, the light report's
+      mends and the levelled weights (the two reviewers started for them were stopped by
+      an interrupt and wait for the owner's word: "Open owner decisions"). Nothing of
+      part 4 is pushed.
     - **The shape library: being built** (2026-11-19, at the owner's word above; builders
       on Opus, a fresh one a stage, in a worktree of their own, branch `m6-formae`; the
       brief and each stage's notes are in `.swarmnotes/m6/part4/formae/` on this machine).
