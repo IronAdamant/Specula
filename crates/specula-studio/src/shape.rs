@@ -4,57 +4,70 @@
 //! checked only when a style asks for one (`[taste] shape_language`).
 //!
 //! Measured on a silhouette mask, **each part at its own scale and weighed by its thickness**
-//! (its fourth version: the three before judged every part by a window of the whole shape's
-//! size and weighed turning alone, so that a string on a balloon counted for as much as the
-//! balloon, and a corner cut off flat by more than the window was two gentle turns).
+//! (since its fourth version; its fifth, after the fourth review, finds the parts and the
+//! sides from the shape and not from where the outline's walk happens to pass).
 //!
-//! 1. **How thick the piece is under each point of its outline**: the radius of the largest
-//!    disc inside the silhouette that touches the outline there ([`distances`], [`spine`],
-//!    [`thickness`]). In a corner or along a taper that falls to nothing at the tip, so the
-//!    outline is followed from the point, both ways, to the body it is a corner of, and not
-//!    across a **joint**, where the thickness leaps as no taper's does (a string meets its
-//!    balloon; a stick, its snowman). That is the point's **part**, and its thickness is the
-//!    scale everything about the point is taken at.
-//! 2. **The outline's turning**: traced, its long straight runs straightened to within a
-//!    pixel and a half and its curves smoothed, and the net turn taken within a window
-//!    [`WINDOW`] of the part's thickness long. A box's window is three tenths of its side; a
-//!    plank's, three tenths of its width.
-//! 3. **A corner or a curve**: a corner is turning in one place ([`KINK`], [`KINK_DEG`]; where
-//!    a straightened side meets another run, for certain: [`SIDES_DEG`]); a curve is turning
-//!    spread out, and is round however far it turns in all.
+//! 1. **The parts.** The outline is smoothed by the shape's scale and its **joints** found:
+//!    where it turns inward by [`JOINT_DEG`] in one place (the foot of a stalk, an armpit, the
+//!    gap between teeth, a bottle's neck). Under each point of the outline the piece is as
+//!    thick as the largest disc inside it that touches it there ([`distances`], [`spine`],
+//!    [`thickness`]). A point's part is as thick as **the most thickness about it once that
+//!    has been level** for [`PLATEAU`] times itself along the outline ([`first_plateau`]):
+//!    from a box's corner the thickness rises to the box's and stays (the corner is the
+//!    box's); from the end of a limb it is level at once (the end is the limb's, whether or
+//!    not the outline turns inward where the limb meets the body); along a taper it keeps
+//!    rising, to the taper's foot (a spike's tip is the spike's). It is not followed across a
+//!    joint.
+//! 2. **The turning**, each part smoothed and its direction taken along a chord at its own
+//!    thickness ([`SPAN`]), and the net turn taken within a window [`WINDOW`] of the part's
+//!    thickness long. A box's window is three tenths of its side; a plank's, three tenths of
+//!    its width.
+//! 3. **A corner or a curve**: a corner is turning in one place ([`KINK`], [`KINK_DEG`]); a
+//!    curve is turning spread out, and is round however far it turns in all.
 //! 4. **A corner's angle** is its window's net turn less the window's lopsidedness (what the
 //!    two sides of the window turn counts only as far as both do): the mouth of a slot in a
 //!    disc is a right angle, the rim's own turn being on one side of it only.
 //! 5. **Its class**: gentle up to [`ROUND_DEG`] (part of a curve: an octagon's corners),
-//!    square, or from [`POINTED_DEG`] a point. A corner with no straight side near it (the
-//!    end of an oval, the horn of a crescent) is never square: a curve, or from [`SOFT_DEG`] a
-//!    point.
+//!    square, or from [`POINTED_DEG`] a point. **A corner between two curves** (the end of an
+//!    oval, the horn of a crescent) is never square: a curve, or from [`SOFT_DEG`] a point.
+//!    Between two curves is two pieces of positive evidence, both from the smoothed outline: no
+//!    straight run near it ([`STRAIGHT_DEG`], [`SIDED`]) and the two sides of its window
+//!    bending ([`CURVING_DEG`]). A corner with neither is read by its angle, so a side that
+//!    was not found never makes a right angle a point.
 //! 6. **Its weight**: only outward turning counts (a notch, a slot, the inside corner of an L
 //!    count for nothing); a step's turn is the turn within its own window, and the window is
-//!    as long as the part is thick, so that **a part's turning counts by its thickness**: the
-//!    end of a hair, which turns right round, counts for a hair. A point counts double
-//!    ([`POINT_WEIGHT`]).
+//!    as long as the part is thick, so that **a part's turning counts by its thickness**. A
+//!    step takes its class from the corners near it of its own part, and of parts at least
+//!    half as thick ([`THINNER`]): a stalk's tip is not its rim's corner. A point counts
+//!    double ([`POINT_WEIGHT`]).
 //!
 //! So: a disc, an egg, a capsule, an oval up to three times as long as wide and a box rounded
-//! by a quarter of its shorter side are round, and so is a balloon on a string, a snowman with
-//! stick arms and a disc with a slot cut in it; a box is square, and so is one rounded by a
-//! tenth of its side or with its corners cut off by a seventh of it, a bar however thin, a
-//! table on thin legs and a comb; a triangle, a spike, a star, a crescent, a mace and an oval
-//! eight times as long as wide are pointed.
+//! by a third of its shorter side are round, and so is a balloon on a string, an apple with its
+//! stalk, a snowman with stick arms, a figure of a ball, a box and capsule limbs, and a disc
+//! with a slot cut in it; a box is square, and so is one rounded by a tenth of its side or with
+//! its corners cut off by a seventh of it, a bar however thin, a table on thin legs, a comb
+//! whose teeth are twelve pixels or more, a bottle and a box whose edges wobble by two pixels;
+//! a triangle, a spike, a star, a crescent, a mace and an oval five times as long as wide or
+//! more are pointed.
 //!
-//! **What it cannot say steadily** (measured: the tests have the numbers):
-//! - A corner rounded by between a tenth and a fifth of the box's shorter side is between
-//!   square and round, by degrees; a corner cut off flat by between a seventh and a fifth is
-//!   between square and eight-sided. The shares move by up to a fifth as the shape is turned.
-//! - An oval four to six times as long as wide is on the line between round and pointed, and
-//!   its lead goes by the angle it is turned to (its end is a dozen pixels round).
-//! - **A body bristling with more than about a dozen hair-thin parts** (a disc with sixteen
-//!   whiskers of one pixel) is read by its hairs or not at all: the inside corners at each
-//!   hair's foot take the rim's turning out of every window that reaches them, and nothing
-//!   of the rim is left. Two to eight hairs change nothing.
-//! - A part under four pixels thick is not read ([`MIN_THICK`]); a part whose window would be
-//!   under four steps is read coarsely and counts for little.
-//! - Holes are not traced. It reads outlines, not surfaces.
+//! **What it cannot say steadily** (measured at every degree, mirrored and shifted: the tests
+//! in `tests/shape_families.rs` hold the numbers, FORM.md has the table):
+//! - A corner rounded by between a sixth and a quarter of the box's shorter side is between
+//!   square and round, by degrees, and so is one cut off flat by a fifth. The share moves by
+//!   up to a quarter as a box of 0.8 by 0.4 or squarer is turned, by up to two fifths on a
+//!   plank a quarter as thick as long (0.8 by 0.2), and **by up to two thirds on one an eighth
+//!   as thick** (0.8 by 0.1: its corner is a few pixels round at 512, and the pixels decide).
+//! - An oval four times as long as wide is on the line between round and pointed, and its
+//!   lead goes by the angle it is turned to.
+//! - **A part under about six pixels thick** (a comb's tooth under twelve pixels across) has
+//!   its two corners smoothed into one end, and is read as a point.
+//! - A body bristling with more than about a dozen hair-thin parts is read by its hairs or not
+//!   at all. A part under four pixels thick is not read ([`MIN_THICK`]). Holes are not traced.
+//!   It reads outlines, not surfaces.
+//! - Shapes near half and half stay there and their lead says nothing: a half disc is half
+//!   round and half square (its two right angles are as real as its arc: a tombstone, a
+//!   mushroom, a dome on a flat base), and so are a dagger, an axe and a figure with its arms
+//!   at its sides.
 //!
 //! It needs pixels: the studio measures it on silhouettes of [`PIXELS`], and a piece under
 //! [`MIN_SIZE`] pixels across is not read at all (a thumbnail never is).
@@ -72,14 +85,15 @@ pub const ROUND_DEG: (f32, f32) = (45.0, 80.0);
 pub const POINTED_DEG: (f32, f32) = (96.0, 116.0);
 /// The window the net turn is taken in, as a share of **the part's own thickness** there (the
 /// radius of the largest disc inside the silhouette that touches the outline at that point,
-/// followed up a taper to its base: [`thickness`]). A box's window is three tenths of its
+/// taken as the part's: [`first_plateau`]). A box's window is three tenths of its
 /// side; a plank's, three tenths of its width; a hair's, nothing to speak of.
 pub const WINDOW: f32 = 0.6;
 /// The lengths that take the pixels out of the outline ([`CHORD`], [`SMOOTH`],
 /// [`STRAIGHT_RUN`]) are shares of the shape's size, or of this many times its greatest
 /// thickness where that is less: a bar a fourteenth as thick as long is smoothed as a thing
 /// of its own thickness, not of its length (smoothed by its length its square ends were
-/// gone).
+/// gone). Each part is smoothed, and its direction taken along, those shares of this many
+/// times its own thickness (since its fourth review: a comb's tooth was smoothed by the comb).
 pub const SPAN: f32 = 2.5;
 /// A corner is turning in one place; a curve is turning spread out. The window a kink is
 /// looked for in, as a share of the part's thickness (under a third of [`WINDOW`]) ...
@@ -87,28 +101,52 @@ pub const KINK: f32 = 0.18;
 /// ... and the net turn within it from which the outline begins to have a corner there, and
 /// by which it wholly has (degrees). Under it the outline is a curve however far it turns in
 /// the larger window: the end of an oval of three to one turns a hundred degrees within
-/// [`WINDOW`] and thirty within this, and is a curve; a corner cut off flat turns forty-five
-/// at each end of the cut, and is a corner, of the ninety the larger window holds.
-pub const KINK_DEG: (f32, f32) = (20.0, 60.0);
-/// Where a straightened side meets another, or a shorter straight run, the outline has a
-/// corner for certain, whatever the small window measures of it through the smoothing: from
-/// this turn between the two, and wholly by the second (degrees). (A corner cut off flat has two of forty-five; the chords a
-/// large circle is straightened into meet at under sixteen.)
-pub const SIDES_DEG: (f32, f32) = (30.0, 40.0);
-/// A corner with no straight side near it (the end of an oval, the horn of a crescent) is not
-/// square whatever its angle: it is part of a curve up to the first of these turns and a point
-/// from the second (degrees), and between them a share of each.
+/// [`WINDOW`] and under twenty within this, and is a curve; a corner cut off flat turns
+/// forty-five at each end of the cut, and each end is wholly a corner, of the ninety the
+/// larger window holds. (Twenty to sixty until its fourth review's mends, with a second
+/// source of corners beside it, which made a plank's rounded corners a lottery: [`of_mask`].)
+pub const KINK_DEG: (f32, f32) = (15.0, 45.0);
+/// A corner between two curves (the end of an oval, the horn of a crescent) is not square
+/// whatever its angle: it is part of a curve up to the first of these turns and a point from
+/// the second (degrees), and between them a share of each. Between two curves means both: no
+/// straight side near it ([`SIDED`]), and the two sides of its window bending
+/// ([`CURVING_DEG`]). A corner with neither is read by its angle alone.
 pub const SOFT_DEG: (f32, f32) = (70.0, 110.0);
-/// A corner has a straight side near it when this share of its window is straightened sides.
+/// A corner has a straight side near it when this share of the steps of its part about it are
+/// on a straight run ([`STRAIGHT_DEG`]).
 pub const SIDED: f32 = 0.2;
-/// A thickness under this many pixels is not read: the shape is `None`.
+/// The outline runs straight about a step when its window ([`WINDOW`]) turns by under the
+/// first of these, and not at all by the second (degrees); a step is on a straight run when
+/// such a window holds it.
+pub const STRAIGHT_DEG: (f32, f32) = (4.0, 8.0);
+/// The two sides of a corner's window bend when the less of the two turns by the first of
+/// these and wholly by the second (degrees for each step along them, from the corner's middle
+/// out to twice the window: the end of an oval of four to one bends by about one, a box's
+/// rounded corner by under a fifth beyond its arc).
+pub const CURVING_DEG: (f32, f32) = (0.4, 1.0);
+/// Where the outline turns inward by this much in one place (degrees) it is a joint between
+/// two parts: the foot of a stalk, the neck of a bottle, an armpit, the gap between two teeth.
+pub const JOINT_DEG: f32 = 30.0;
+/// A step is of a joint where the outline about it turns inward by this many degrees for every
+/// step (a sharp inward corner, or a tight inward curve: a slow one is part of a curve).
+pub const JOINT_EDGE: f32 = 0.5;
+/// The steps at each end of a part that its thickness is not taken from (and an eighth of the
+/// part at most): a joint's inside corner is touched by the thicker part's discs.
+pub const JOINT_MARGIN: usize = 6;
+/// A part is as thick as the most thickness about a step once that has been level for this
+/// many times itself along the outline ([`first_plateau`]) ...
+pub const PLATEAU: f32 = 6.0;
+/// ... rising by no more than this share of itself (and half a pixel) over that length ...
+pub const PLATEAU_RISE: f32 = 0.1;
+/// ... and for this many steps at the least (a few pixels of a thin taper are level by the
+/// pixels alone: a spike's tip was judged at its own few pixels at one angle in ninety).
+pub const PLATEAU_MIN: usize = 24;
+/// A step is classed by the corners near it of parts at least this share as thick as its own:
+/// a stalk too thin to leave a joint in the smoothed outline is not its rim's corner.
+pub const THINNER: f32 = 0.5;
+/// A thickness under this many pixels is not read: the shape is `None`; and the thickness about
+/// a step is not taken to be level ([`PLATEAU`]) until it is this much.
 pub const MIN_THICK: f32 = 4.0;
-/// Following the outline from a point to find the thickness of the part it belongs to: a rise
-/// of more than this many pixels within three steps, to more than twice what it was, is the
-/// joint with another, thicker part (a spike's foot on a ball), and is not followed; a taper
-/// rises by about three a step at the most. (And so is a rise by half, after the thickness
-/// has been level for twice its own length: a string meets its balloon.)
-pub const JOINT_PX: f32 = 15.0;
 /// Half the chord the outline's direction is taken along, as a share of the shape's size.
 pub const CHORD: f32 = 0.02;
 /// How far the outline is smoothed (a Gaussian's deviation), as a share of the shape's size,
@@ -516,6 +554,239 @@ fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// A part id for the steps of a joint, which belong to no part.
+const JOINT: u32 = u32::MAX;
+
+/// An outline smoothed and walked again in steps of one pixel of its own length, and which
+/// point of the outline each step lies after.
+struct Walked {
+    even: Vec<P>,
+    from: Vec<usize>,
+}
+
+/// `points` (closed, a pixel apart) smoothed, each point the weighted mean of its neighbours
+/// along it by a Gaussian of its own deviation `sigma` (so that the polygon's own corners on a
+/// curve run together into the curve), then walked again in steps of one pixel of its own
+/// length (smoothed, a slanted side's steps are shorter than the pixels were).
+fn walk(points: &[P], sigma: &[f32]) -> Walked {
+    let n = points.len();
+    let smooth: Vec<P> = (0..n)
+        .map(|i| {
+            let s = sigma[i];
+            let reach = ((3.0 * s).ceil() as usize).min(n / 2);
+            let (mut at, mut total) = ([points[i][0], points[i][1]], 1.0f32);
+            for k in 1..=reach {
+                let w = specula_core::dmath::exp(-0.5 * (k as f32 / s) * (k as f32 / s));
+                let (a, b) = (points[(i + k) % n], points[(i + n - k % n) % n]);
+                at = [at[0] + (a[0] + b[0]) * w, at[1] + (a[1] + b[1]) * w];
+                total += 2.0 * w;
+            }
+            [at[0] / total, at[1] / total]
+        })
+        .collect();
+    let length: f32 = (0..n).map(|i| dist(smooth[i], smooth[(i + 1) % n])).sum();
+    let count = length.round() as usize;
+    let step = length / count.max(1) as f32;
+    let (mut even, mut from) = (Vec::with_capacity(count), Vec::with_capacity(count));
+    let (mut i, mut walked, mut want) = (0usize, 0.0f32, 0.0f32);
+    while even.len() < count {
+        let (a, b) = (smooth[i % n], smooth[(i + 1) % n]);
+        let side = dist(a, b);
+        if side > 0.0 && walked + side >= want {
+            let t = (want - walked) / side;
+            even.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+            from.push(i % n);
+            want += step;
+        } else {
+            walked += side;
+            i += 1;
+            if i > 2 * n {
+                break;
+            }
+        }
+    }
+    Walked { even, from }
+}
+
+/// How far the outline turns from each step to the next (radians), its direction at a step
+/// being taken along a chord about it: from the middle of the `chord[i]` steps behind to the
+/// middle of those ahead (the mean of many points is steadier than two, and what is left of
+/// the pixels' steps on a slanted side made a square corner read as anything from 75 to 108
+/// degrees).
+fn turning(even: &[P], chord: &[usize]) -> Vec<f32> {
+    let count = even.len();
+    let mut at = vec![[0.0f64; 2]; 3 * count + 1];
+    for j in 0..3 * count {
+        let p = even[j % count];
+        at[j + 1] = [at[j][0] + f64::from(p[0]), at[j][1] + f64::from(p[1])];
+    }
+    let heading: Vec<f32> = (0..count)
+        .map(|i| {
+            let c = chord[i].min(count / 3);
+            let (ahead, behind) = ((i + count + 1, i + count + 1 + c), (i + count - c, i + count));
+            let d = [(at[ahead.1][0] - at[ahead.0][0]) - (at[behind.1][0] - at[behind.0][0]), (at[ahead.1][1] - at[ahead.0][1]) - (at[behind.1][1] - at[behind.0][1])];
+            // (The library's own arc tangent: the same on every machine.)
+            specula_core::dmath::atan2(d[1] as f32, d[0] as f32)
+        })
+        .collect();
+    (0..count)
+        .map(|i| {
+            let d = heading[(i + 1) % count] - heading[i];
+            if d > std::f32::consts::PI {
+                d - std::f32::consts::TAU
+            } else if d < -std::f32::consts::PI {
+                d + std::f32::consts::TAU
+            } else {
+                d
+            }
+        })
+        .collect()
+}
+
+/// Each value the median of the five about it, round a closed outline (a disc that touches
+/// one step alone is not the part's).
+fn median5(raw: &[f32]) -> Vec<f32> {
+    let count = raw.len();
+    (0..count)
+        .map(|i| {
+            let mut five = [raw[(i + count - 2) % count], raw[(i + count - 1) % count], raw[i], raw[(i + 1) % count], raw[(i + 2) % count]];
+            five.sort_by(f32::total_cmp);
+            five[2]
+        })
+        .collect()
+}
+
+/// The steps of the outline that are joints: where it turns inward (against `way`, its own
+/// way round) within `k` steps of each by [`JOINT_DEG`] or more in all, on through a run of
+/// such steps.
+fn joints(turn: &[f32], way: f32, k: usize) -> Vec<bool> {
+    let count = turn.len();
+    let k = k.min(count / 4).max(1);
+    let mut sum = vec![0.0f64; 3 * count + 1];
+    for j in 0..3 * count {
+        sum[j + 1] = sum[j] + f64::from(turn[j % count]);
+    }
+    let inward = |a: usize, b: usize| -((sum[b] - sum[a]) as f32) * way;
+    // (A step turns inward when its neighbourhood does by a degree for every step it holds.)
+    let edge = (2 * k + 1) as f32 * JOINT_EDGE.to_radians();
+    let candidate: Vec<bool> = (0..count).map(|i| inward(i + count - k, i + count + k + 1) >= edge).collect();
+    let mut joint = vec![false; count];
+    let Some(start) = (0..count).find(|i| !candidate[*i]) else {
+        return joint;
+    };
+    let mut i = 0;
+    while i < count {
+        let at = (start + i) % count;
+        if !candidate[at] {
+            i += 1;
+            continue;
+        }
+        let mut len = 0;
+        while i + len < count && candidate[(start + i + len) % count] {
+            len += 1;
+        }
+        let a = start + i + count;
+        if inward(a - k, a + len + k) >= JOINT_DEG.to_radians() {
+            for j in 0..len {
+                joint[(at + j) % count] = true;
+            }
+        }
+        i += len;
+    }
+    joint
+}
+
+/// How thick the part is that the step `at` of `raw` (the thickness under each step of a
+/// part's outline; `cyclic` when the part is the whole outline) is of: the most thickness
+/// within a length of the outline about the step, the length grown **until the thickness has
+/// been level for [`PLATEAU`] times itself**. From a box's corner the thickness rises as the
+/// sides go out, to the box's, and stays: the corner is the box's. From the end of a limb or a
+/// stalk it is level at once, for as long as the limb is: the end is the limb's, wherever the
+/// limb meets the body and whether or not the outline turns inward there. Along a taper it
+/// keeps rising (by more than [`PLATEAU_RISE`] over the length), to the taper's foot: a
+/// spike's tip is of the spike.
+fn first_plateau(raw: &[f32], at: usize, cyclic: bool) -> f32 {
+    let n = raw.len();
+    let limit = if cyclic { n / 2 } else { n };
+    let mut most = raw[at];
+    let mut seen: Vec<f32> = vec![most];
+    for l in 1..=limit {
+        let mut any = false;
+        for j in [at as isize - l as isize, (at + l) as isize] {
+            let j = if cyclic {
+                j.rem_euclid(n as isize) as usize
+            } else if j < 0 || j >= n as isize {
+                continue;
+            } else {
+                j as usize
+            };
+            most = most.max(raw[j]);
+            any = true;
+        }
+        if !any {
+            break;
+        }
+        seen.push(most);
+        let span = ((PLATEAU * most).ceil() as usize).max(PLATEAU_MIN);
+        if most >= MIN_THICK && l >= span && most - seen[l - span] <= PLATEAU_RISE * most + 0.5 {
+            break;
+        }
+    }
+    most
+}
+
+/// Each step's part (the outline between two joints; [`JOINT`] at a joint) and how thick the
+/// part is there ([`first_plateau`]). A part's first and last few steps are read as no
+/// thicker than the step within them (a joint's inside corner is touched by the thicker
+/// part's discs). A joint's steps take the thinner of the two parts beside them.
+fn parts(joint: &[bool], raw: &[f32]) -> (Vec<u32>, Vec<f32>) {
+    let count = raw.len();
+    let mut part = vec![JOINT; count];
+    let mut host = vec![0.0f32; count];
+    let Some(start) = (0..count).find(|i| joint[*i]) else {
+        return (vec![0; count], (0..count).map(|i| first_plateau(raw, i, true)).collect());
+    };
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut i = 1;
+    while i < count {
+        let at = (start + i) % count;
+        if joint[at] {
+            i += 1;
+            continue;
+        }
+        let mut len = 0;
+        while i + len < count && !joint[(start + i + len) % count] {
+            len += 1;
+        }
+        runs.push((start + i, len));
+        i += len;
+    }
+    for (id, (a, len)) in runs.iter().enumerate() {
+        let margin = (len / 8).min(JOINT_MARGIN);
+        let mut own: Vec<f32> = (0..*len).map(|k| raw[(a + k) % count]).collect();
+        for k in 0..margin {
+            own[k] = own[k].min(own[margin]);
+            own[len - 1 - k] = own[len - 1 - k].min(own[len - 1 - margin]);
+        }
+        for k in 0..*len {
+            part[(a + k) % count] = id as u32;
+            host[(a + k) % count] = first_plateau(&own, k, false);
+        }
+    }
+    // (A joint's steps, from the parts beside it.)
+    for i in 0..count {
+        if part[i] == JOINT {
+            let back = (1..count).map(|k| (i + count - k) % count).find(|j| part[*j] != JOINT);
+            let on = (1..count).map(|k| (i + k) % count).find(|j| part[*j] != JOINT);
+            host[i] = match (back, on) {
+                (Some(b), Some(o)) => host[b].min(host[o]),
+                _ => raw[i],
+            };
+        }
+    }
+    (part, host)
+}
+
 /// One silhouette's shape language. `None` for an empty mask, one too large to trace, or a
 /// piece too small to have a shape (under [`MIN_SIZE`] pixels across).
 pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
@@ -559,244 +830,102 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
     // below, which is as long as their steps there, takes them out.
     let long = (STRAIGHT_RUN * scale).max(8.0);
     let mut walked: Vec<P> = Vec::new();
-    // How long the straightened side is that each walked point is of (0: of none), and at the
-    // first point of a side that follows another, the turn between the two (degrees).
-    let mut met: Vec<f32> = Vec::new();
-    // (Each run: where its points begin, its length if it was straightened, and the turn
-    // from the run before it if that was straightened too.)
-    let mut runs: Vec<(usize, f32, f32)> = Vec::new();
-    let run = |k: usize| (points[kept[k % kept.len()]], points[kept[(k + 1) % kept.len()] % points.len()]);
     for (k, i) in kept.iter().enumerate() {
         let j = kept[(k + 1) % kept.len()];
-        let (a, b) = run(k);
-        let before = walked.len();
-        let straightened = dist(a, b) >= long;
-        if straightened {
+        let (a, b) = (points[*i], points[j % points.len()]);
+        if dist(a, b) >= long {
             let steps = (dist(a, b).round() as usize).max(1);
             walked.extend((0..steps).map(|k| [a[0] + (b[0] - a[0]) * k as f32 / steps as f32, a[1] + (b[1] - a[1]) * k as f32 / steps as f32]));
         } else {
             let end = if j > *i { j } else { points.len() };
             walked.extend_from_slice(&points[*i..end]);
         }
-        met.resize(walked.len(), 0.0);
-        let (c, d) = run(k + kept.len() - 1);
-        // (The turn where this run meets the one before it, when either is a straightened
-        // side and neither a speck: a corner cut off flat has a side on one hand and the cut,
-        // which may be too short to be straightened itself, on the other; within an arc both
-        // are short, and where an arc leaves a side the turn is half a chord's.)
-        let mut turned = f32::INFINITY;
-        if walked.len() > before && (straightened || dist(c, d) >= long) && dist(a, b) >= 6.0 && dist(c, d) >= 6.0 {
-            let (u, v) = (sub(d, c), sub(b, a));
-            turned = specula_core::dmath::atan2(cross(u, v), u[0] * v[0] + u[1] * v[1]).abs().to_degrees();
-            met[before] = turned;
-        }
-        runs.push((before, if straightened { dist(a, b) } else { 0.0 }, turned));
-    }
-    // A side is as long as the straightened runs that lie along one line are together: the
-    // straightening cuts a slanted side in two where its pixels' steps stray, and neither
-    // piece alone need be as long as a corner's window. (Runs that meet at under three degrees
-    // are of one side: the pieces of a cut side meet at under two and a half, the chords a
-    // long oval's flank is straightened into at five and more.)
-    let joined = |k: usize| runs.len() > 1 && runs[k].1 > 0.0 && runs[(k + runs.len() - 1) % runs.len()].1 > 0.0 && runs[k].2 < 3.0;
-    // (From a run that begins a side, on through the runs joined to it; all joined round a
-    // closed outline cannot be, since it turns once round.)
-    let mut side_of = vec![0.0f32; runs.len()];
-    for first in (0..runs.len()).filter(|k| !joined(*k)) {
-        let mut last = first;
-        let mut length = runs[first].1;
-        while joined((last + 1) % runs.len()) && (last + 1) % runs.len() != first {
-            last = (last + 1) % runs.len();
-            length += runs[last].1;
-        }
-        let mut k = first;
-        loop {
-            side_of[k] = length;
-            if k == last {
-                break;
-            }
-            k = (k + 1) % runs.len();
-        }
-    }
-    let mut sided = vec![0.0f32; walked.len()];
-    for (k, r) in runs.iter().enumerate() {
-        let end = runs.get(k + 1).map_or(walked.len(), |n| n.0);
-        sided[r.0..end].fill(side_of[k]);
     }
     let outline_points = points;
     let points = walked;
-    // Then smoothed: each point the weighted mean of its neighbours along it, by a Gaussian
-    // of a deviation of `SMOOTH` of the size (the outline is closed: round it goes), so that
-    // the polygon's own corners on a curve run together into the curve.
+    let (w, h) = (m.w as usize, m.h as usize);
+    // **The parts, from a first look** at the outline smoothed by the shape's own scale: where
+    // it turns inward by [`JOINT_DEG`] or more in one place (the foot of a stalk, the neck of a
+    // bottle, the armpit of a figure, the gap between two teeth) is a joint, and the outline
+    // between two joints is one part. A part's thickness is the largest disc that touches it
+    // (a corner's disc is small, and it is a corner of its part: a box's corner is as thick
+    // as the box). Concave turning is a property of the shape, not of where the outline's walk
+    // passes: a joint moves a pixel when the shape does. (Its fourth review: the joint was a
+    // leap in the thickness along the outline, which flickered as limbs and necks turned.)
+    let sigma_g = (SMOOTH * scale).max(2.0);
+    let chord_g = ((CHORD * scale).round() as usize).max(1);
+    let coarse = walk(&points, &vec![sigma_g; points.len()]);
+    if coarse.even.len() < 8 * chord_g.max(2) {
+        return None;
+    }
+    let turn_g = turning(&coarse.even, &vec![chord_g; coarse.even.len()]);
+    let way = if turn_g.iter().sum::<f32>() >= 0.0 { 1.0f32 } else { -1.0 };
+    let raw_g = median5(&thickness(&spine, &coarse.even, w, h));
+    let joint_g = joints(&turn_g, way, (2.0 * sigma_g).ceil() as usize + chord_g);
+    let (part_g, host_g) = parts(&joint_g, &raw_g);
+    // (Carried back to the outline's own points, to smooth each part by its thickness.)
     let n = points.len();
-    let sigma = (SMOOTH * scale).max(2.0);
-    let reach = (3.0 * sigma).ceil() as usize;
-    let weights: Vec<f32> = (0..=reach).map(|k| specula_core::dmath::exp(-0.5 * (k as f32 / sigma) * (k as f32 / sigma))).collect();
-    let total: f32 = weights[0] + 2.0 * weights[1..].iter().sum::<f32>();
-    let smooth: Vec<P> = (0..n)
-        .map(|i| {
-            let mut at = [points[i][0] * weights[0], points[i][1] * weights[0]];
-            for (k, w) in weights.iter().enumerate().skip(1) {
-                let (a, b) = (points[(i + k) % n], points[(i + n - k % n) % n]);
-                at = [at[0] + (a[0] + b[0]) * w, at[1] + (a[1] + b[1]) * w];
-            }
-            [at[0] / total, at[1] / total]
-        })
-        .collect();
-    // Walked again in steps of one pixel of its own length (smoothed, a slanted side's steps
-    // are shorter than the pixels were).
-    let length: f32 = (0..n).map(|i| dist(smooth[i], smooth[(i + 1) % n])).sum();
-    let count = length.round() as usize;
-    let chord = ((CHORD * scale).round() as usize).max(1);
-    if count < 8 * chord.max(2) {
+    let (mut host_w, mut part_w) = (vec![-1.0f32; n], vec![JOINT; n]);
+    for (e, src) in coarse.from.iter().enumerate() {
+        if host_w[*src] < 0.0 {
+            (host_w[*src], part_w[*src]) = (host_g[e], part_g[e]);
+        }
+    }
+    let first = host_w.iter().position(|t| *t >= 0.0)?;
+    for k in 1..n {
+        let (i, before) = ((first + k) % n, (first + k - 1) % n);
+        if host_w[i] < 0.0 {
+            (host_w[i], part_w[i]) = (host_w[before], part_w[before]);
+        }
+    }
+    // **Then each part is smoothed, and its direction taken, at its own thickness**: a comb's
+    // tooth of eight pixels by a deviation of two, its body by the body's. (Smoothed by the
+    // whole shape's size, a narrow tooth's square end was rounded into a half disc before its
+    // own window saw it, and a comb read as points: its fourth review.)
+    let sigma_w: Vec<f32> = host_w.iter().map(|t| (SMOOTH * SPAN * t).clamp(2.0, sigma_g)).collect();
+    let fine = walk(&points, &sigma_w);
+    let count = fine.even.len();
+    if count < 8 * chord_g.max(2) {
         return None;
     }
-    let step = length / count as f32;
-    let mut even: Vec<P> = Vec::with_capacity(count);
-    // (And which point of the smoothed outline each step lies after.)
-    let mut from: Vec<usize> = Vec::with_capacity(count);
-    let (mut i, mut walked, mut want) = (0usize, 0.0f32, 0.0f32);
-    while even.len() < count {
-        let (a, b) = (smooth[i % n], smooth[(i + 1) % n]);
-        let side = dist(a, b);
-        if side > 0.0 && walked + side >= want {
-            let t = (want - walked) / side;
-            even.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
-            from.push(i % n);
-            want += step;
-        } else {
-            walked += side;
-            i += 1;
-            if i > 2 * n {
-                break;
-            }
-        }
-    }
-    let count = even.len();
-    if count < 8 * chord.max(2) {
-        return None;
-    }
-    // How thick the part is that each step of the outline belongs to. Under a step the piece
-    // is as thick as the largest disc that touches it there; in a corner or along a taper
-    // that falls to nothing at the tip, so the step is followed along the outline, both ways,
-    // while the thickness rises as a taper's does, to the body the corner is a corner of (a
-    // box's corner: the box; a spike's tip: the spike's base). A sudden rise is the joint with
-    // another part and is not followed: a string's end belongs to the string.
-    let raw = thickness(&spine, &even, m.w as usize, m.h as usize);
-    let thick: Vec<f32> = (0..count)
-        .map(|i| {
-            let mut five = [raw[(i + count - 2) % count], raw[(i + count - 1) % count], raw[i], raw[(i + 1) % count], raw[(i + 2) % count]];
-            five.sort_by(f32::total_cmp);
-            five[2]
-        })
-        .collect();
-    // A joint, going on from step `at` by `way` (one step on, or one back): the thickness
-    // rises as no taper's does. Either it more than doubles, by more than [`JOINT_PX`], within
-    // three steps (a taper gains about three pixels a step at the most); or it has been level
-    // for twice its own length and then rises by half (a part of one width, a string or a
-    // stick, meeting a thicker one: a taper is never level before it rises).
-    let rises = |at: usize, way: usize| -> bool {
-        let here = thick[at];
-        let ahead = (1..=3).map(|k| thick[(at + k * way) % count]).fold(0.0f32, f32::max);
-        if ahead - here > JOINT_PX && ahead > 2.0 * here {
-            return true;
-        }
-        // (Looked for a little further on: where a stick meets a ball the thickness creeps
-        // up for a few steps before it leaps, the smoothed outline cutting the inside corner.)
-        let further = (1..=8).map(|k| thick[(at + k * way) % count]).fold(0.0f32, f32::max);
-        if further < 2.0 * here + 4.0 || thick[(at + way) % count] <= here + 0.5 {
-            return false;
-        }
-        let level = ((2.0 * here).round() as usize).clamp(6, count / 4);
-        let back = count - way;
-        (1..=level).all(|k| (thick[(at + k * back) % count] - here).abs() <= 1.0 + 0.08 * here)
-    };
-    // (One pass each way, twice round: the most thickness from a step on to the next joint.)
-    let up: Vec<bool> = (0..count).map(|i| rises(i, 1)).collect();
-    let down: Vec<bool> = (0..count).map(|i| rises(i, count - 1)).collect();
-    let mut onward = thick.clone();
-    let mut back = thick.clone();
-    for _ in 0..2 {
-        for i in (0..count).rev() {
-            if !up[i] {
-                onward[i] = onward[i].max(onward[(i + 1) % count]);
-            }
-        }
-        for i in 0..count {
-            if !down[i] {
-                back[i] = back[i].max(back[(i + count - 1) % count]);
-            }
-        }
-    }
-    let host: Vec<f32> = (0..count).map(|i| onward[i].max(back[i])).collect();
+    let (even, from) = (fine.even, fine.from);
+    let host: Vec<f32> = from.iter().map(|s| host_w[*s]).collect();
+    let part: Vec<u32> = from.iter().map(|s| part_w[*s]).collect();
+    let chord: Vec<usize> = host.iter().map(|t| ((CHORD * SPAN * t).round() as usize).clamp(1, chord_g)).collect();
+    let blur: Vec<usize> = from.iter().zip(&chord).map(|(s, c)| (2.0 * sigma_w[*s]).ceil() as usize + c).collect();
     let half: Vec<usize> = host.iter().map(|t| ((0.5 * WINDOW * t).round() as usize).clamp(2, (count / 8).max(2))).collect();
-    let blur = (2.0 * sigma).ceil() as usize + chord;
     let small: Vec<usize> = host.iter().zip(&half).map(|(t, h)| ((0.5 * KINK * t).round() as usize).clamp(2, *h)).collect();
-    // The outline's direction at each step (along a chord about it), how far it turns from
-    // one step to the next, and the net turn within the window about each step.
-    // (From the middle of the `chord` steps behind to the middle of those ahead: the mean of
-    // many points is steadier than two, and what is left of the pixels' steps on a slanted
-    // side made a square corner read as anything from 75 to 108 degrees.)
-    let mut ahead = [0.0f32; 2];
-    let mut behind = [0.0f32; 2];
-    for k in 1..=chord {
-        let (a, b) = (even[k % count], even[(count - k) % count]);
-        ahead = [ahead[0] + a[0], ahead[1] + a[1]];
-        behind = [behind[0] + b[0], behind[1] + b[1]];
-    }
-    let heading: Vec<f32> = (0..count)
-        .map(|i| {
-            let d = sub(ahead, behind);
-            // (On a step: the point just ahead joins the ones behind, and so round.)
-            let (enter, leave) = (even[(i + chord + 1) % count], even[(i + 1) % count]);
-            ahead = [ahead[0] + enter[0] - leave[0], ahead[1] + enter[1] - leave[1]];
-            let (enter, leave) = (even[i], even[(i + count - chord) % count]);
-            behind = [behind[0] + enter[0] - leave[0], behind[1] + enter[1] - leave[1]];
-            // (The library's own arc tangent: the same on every machine.)
-            specula_core::dmath::atan2(d[1], d[0])
-        })
-        .collect();
-    let turn: Vec<f32> = (0..count)
-        .map(|i| {
-            let d = heading[(i + 1) % count] - heading[i];
-            if d > std::f32::consts::PI {
-                d - std::f32::consts::TAU
-            } else if d < -std::f32::consts::PI {
-                d + std::f32::consts::TAU
-            } else {
-                d
-            }
-        })
-        .collect();
+    let turn = turning(&even, &chord);
     // (The turn so far, three times round, so that a window is a difference of two sums. In f64:
     // thousands of small turns are summed.)
-    // Which way round the outline goes: a closed outline turns once in all, one way or the
-    // other.
-    let way = if turn.iter().sum::<f32>() >= 0.0 { 1.0f32 } else { -1.0 };
     let mut sum = vec![0.0f64; 3 * count + 1];
     for j in 0..3 * count {
         sum[j + 1] = sum[j] + f64::from(turn[j % count]);
     }
     let net: Vec<f32> = (0..count).map(|i| (sum[i + count + half[i]] - sum[i + count - half[i]]) as f32).collect();
-    let fine: Vec<f32> = (0..count).map(|i| (sum[i + count + small[i]] - sum[i + count - small[i]]) as f32).collect();
+    let fine_net: Vec<f32> = (0..count).map(|i| (sum[i + count + small[i]] - sum[i + count - small[i]]) as f32).collect();
     // Only where the outline turns its own way round (outward: its bulges and its corners)
     // does it count; where it turns back on itself (a notch, a slot, the inside corner of an
     // L) it does not.
     let out: Vec<f32> = net.iter().map(|n| (n * way).max(0.0).to_degrees()).collect();
     // How much of a corner the outline has at each step: its turn within the small window.
     // (Either way: an inside corner is a corner too, and takes its turn back out of the window
-    // it shares with an outside one, as it does out of the window's net turn.)
-    let mut kink: Vec<f32> = fine.iter().map(|n| smoothstep(KINK_DEG.0, KINK_DEG.1, n.abs().to_degrees())).collect();
-    // (Where two straightened sides meet, a corner for certain: found at the step that lies
-    // after the meeting point, and as far about it as the smoothing spreads it.)
-    for (e, src) in from.iter().enumerate() {
-        let sure = smoothstep(SIDES_DEG.0, SIDES_DEG.1, met[*src]);
-        if sure > 0.0 && (e == 0 || from[e - 1] != *src) {
-            for k in 0..=2 * blur {
-                let j = (e + count - blur + k) % count;
-                kink[j] = kink[j].max(sure);
-            }
-        }
-    }
+    // it shares with an outside one, as it does out of the window's net turn.) (There was a
+    // second source of corners until its fourth review's mends: where two runs the
+    // straightening kept met at 30 to 40 degrees, a corner for certain. The chords a small
+    // rounded corner is straightened into meet so, or not, by the angle the shape is turned
+    // to, and a plank rounded by a sixth of its width swung from a twentieth round to three
+    // fifths.)
+    let kink: Vec<f32> = fine_net.iter().map(|n| smoothstep(KINK_DEG.0, KINK_DEG.1, n.abs().to_degrees())).collect();
+    // Where the outline runs straight: a window about it turns by under [`STRAIGHT_DEG`] (and
+    // wholly turns, by the second). A step is **on a side** where a straight window holds it
+    // (and so a corner's own steps are on its sides). That is positive evidence of a side, from
+    // how the smoothed outline turns, and a wobble of a pixel along it changes nothing. (Its
+    // fourth review: a side was a run the straightening kept within a pixel and a half, and a
+    // slanted side whose pixels wobbled by half a pixel was cut into runs too short to be
+    // sides: a box had none, and its right angles read as points.)
+    let straight: Vec<f32> = net.iter().map(|n| 1.0 - smoothstep(STRAIGHT_DEG.0, STRAIGHT_DEG.1, n.abs().to_degrees())).collect();
+    let on_side: Vec<f32> = (0..count).map(|i| (0..=2 * half[i]).map(|k| straight[(i + 2 * count - half[i] + k) % count]).fold(0.0f32, f32::max)).collect();
 
     // The corner's angle at each step: **the window's net turn, less its lopsidedness**. The
     // turn within the window is split into the middle (as wide as the small window, or as the
@@ -812,9 +941,13 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
     // again: two kinks that a window's end falls between are neither wholly one corner nor
     // wholly two, and a box whose corners are cut off goes from square to eight-sided by
     // degrees as the cut grows.
+    // And how far the two sides of the window bend, the less of the two: **positive evidence
+    // that a corner lies between two curves** (the end of an oval, the horn of a crescent), as
+    // a side is positive evidence of a side.
+    let mut curving = vec![0.0f32; count];
     let cornered: Vec<f32> = (0..count)
         .map(|i| {
-            let core = small[i].max(blur);
+            let core = small[i].max(blur[i]);
             let at = i + count;
             let net = |from: usize, to: usize| ((sum[to] - sum[from]) as f32) * way;
             let mean = [15usize, 20, 20, 24, 27]
@@ -826,38 +959,70 @@ pub fn of_mask(m: &Mask) -> Option<ShapeLanguage> {
                 })
                 .sum::<f32>()
                 / 5.0;
+            // (Along each side from the middle out to twice the window: the end of a long oval is
+            // straightened into chords near its tip, and its sides bend beyond them.)
+            let far = (2 * half[i]).min(count / 8);
+            if far >= core + 4 {
+                let bend = |from: usize, to: usize| ((sum[to] - sum[from]) as f32) * way;
+                let (before, after) = (bend(at - far, at - core), bend(at + core, at + far));
+                curving[i] = smoothstep(CURVING_DEG.0, CURVING_DEG.1, before.min(after).to_degrees() / (far - core) as f32);
+            }
             mean.to_degrees().clamp(0.0, 180.0)
+        })
+        .collect();
+    // How far about each step, each way, the steps of its own part reach (as far as its window
+    // reaches, and as far again as the smoothing spreads a corner's turn: on a thin part that
+    // is as far as the window itself, and the steps at the edge of a corner's turn were read
+    // as a curve); and how much of that runs straight, as a share of [`SIDED`].
+    let extent: Vec<(usize, usize)> = (0..count)
+        .map(|i| {
+            let reach = half[i] + blur[i];
+            let ours = |j: usize| part[j] == part[i] || part[j] == JOINT;
+            let on = (1..=reach).find(|k| !ours((i + k) % count)).map_or(reach, |k| k - 1);
+            let back = (1..=reach).find(|k| !ours((i + count - k) % count)).map_or(reach, |k| k - 1);
+            (back, on)
+        })
+        .collect();
+    let sided: Vec<f32> = (0..count)
+        .map(|i| {
+            let (back, on) = extent[i];
+            let sides: f32 = (0..=back + on).map(|k| on_side[(i + count - back + k) % count]).sum();
+            (sides / (back + on + 1) as f32 / SIDED).min(1.0)
         })
         .collect();
     let mut shares = [0.0f32; 3];
     let mut corners = 0u32;
     for (i, by) in out.iter().copied().enumerate() {
-        // Classed by the most the outline turns outward in any window near this step: a step
-        // beside a corner, whose own window holds only part of the corner's turn, is part of
-        // that corner and not of a gentle curve.
-        let (mut most, mut corner) = (0.0f32, 0.0f32);
-        // (As far as the window reaches, and as far again as the smoothing spreads a
-        // corner's turn: on a thin part that is as far as the window itself, and the steps
-        // at the edge of a corner's turn were read as a curve.)
-        let reach = half[i] + blur;
-        for k in 0..=2 * reach {
-            let j = (i + 2 * count - reach + k) % count;
-            most = most.max(cornered[j]);
+        // Classed by the most the outline turns outward in any window near this step, **of its
+        // own part**: a step beside a corner, whose own window holds only part of the corner's
+        // turn, is part of that corner and not of a gentle curve; a step of an apple's rim
+        // beside its stalk is of the rim, and the stalk's tip is not its corner (its fourth
+        // review: a stalk shorter than the rim's window took a quarter of a disc as a point).
+        let (back, on) = extent[i];
+        let (mut most, mut corner, mut at_most) = (0.0f32, 0.0f32, i);
+        for k in 0..=back + on {
+            let j = (i + count - back + k) % count;
+            // (A corner of a part much thinner than this step's is not this step's: a stalk too
+            // thin to leave a joint in the outline, smoothed, has its tip; the rim it stands on
+            // does not.)
+            if host[j] < THINNER * host[i] {
+                continue;
+            }
+            if cornered[j] > most {
+                (most, at_most) = (cornered[j], j);
+            }
             corner = corner.max(kink[j]);
         }
         // A curve where nothing near is a corner; where something is, the corner's own class
-        // by how far it turns: gently (an octagon's), squarely, or to a point.
-        // And a corner between two curves, with no straight side near, is never square: a
-        // curve still, or a point.
-        // (A side: a straightened run longer than the window, wholly one at twice as long. The
-        // flank of a long oval is straightened into chords near its end, each shorter than
-        // that.)
-        let window = (2 * half[i]) as f32;
-        let sides = (0..=2 * reach).map(|k| smoothstep(window, 2.0 * window, sided[from[(i + 2 * count - reach + k) % count]])).sum::<f32>() / (2 * reach + 1) as f32;
-        let has_side = (sides / SIDED).min(1.0);
+        // by how far it turns: gently (an octagon's), squarely, or to a point. And a corner
+        // between two curves is never square: a curve still, or a point. Between two curves
+        // means **both**, at the corner: no straight side near it, and the two sides of its
+        // window bend. A corner with neither evidence is read by its angle, so a missing side
+        // never makes a right angle a point.
+        let between_curves = (1.0 - sided[at_most]) * curving[at_most];
         let soft = smoothstep(SOFT_DEG.0, SOFT_DEG.1, most);
-        let round = 1.0 - corner * (has_side * smoothstep(ROUND_DEG.0, ROUND_DEG.1, most) + (1.0 - has_side) * soft);
-        let pointed = corner * (has_side * smoothstep(POINTED_DEG.0, POINTED_DEG.1, most) + (1.0 - has_side) * soft);
+        let round = 1.0 - corner * ((1.0 - between_curves) * smoothstep(ROUND_DEG.0, ROUND_DEG.1, most) + between_curves * soft);
+        let pointed = corner * ((1.0 - between_curves) * smoothstep(POINTED_DEG.0, POINTED_DEG.1, most) + between_curves * soft);
         // (A step's turn is the turn within its own window, and its window is as long as its
         // part is thick: summed over the steps, a part's turning counts by its thickness.
         // That is the weight: a hair's end, which turns right round, counts for a hair.)
@@ -1095,7 +1260,7 @@ mod tests {
             // (A box of 0.8 by 0.6: its rounding is given as a length, its shorter side being
             // 0.6. Rounded by a quarter of that side and more it is round; its fourth review's
             // measure judges a corner at the scale of the part it is a corner of.)
-            ("a box rounded by a quarter of its shorter side", |x, y| rounded(x, y, 0.4, 0.3, 0.14), Kind::Round, 0.9),
+            ("a box rounded by two fifths of its shorter side", |x, y| rounded(x, y, 0.4, 0.3, 0.24), Kind::Round, 0.95),
             ("a box rounded by a third of its shorter side", |x, y| rounded(x, y, 0.4, 0.3, 0.20), Kind::Round, 0.95),
             ("an egg", |x, y| if y < 0.0 { (x / 0.3).hypot(y / 0.42) < 1.0 } else { (x / 0.3).hypot(y / 0.28) < 1.0 }, Kind::Round, 0.95),
             // One thin part does not unmake a round body (its third review: a balloon on a
@@ -1107,7 +1272,7 @@ mod tests {
             ("a snowman with stick arms", |x, y| x.hypot(y - 0.2) < 0.24 || x.hypot(y + 0.16) < 0.17 || (y.abs() < 0.008 && x.abs() < 0.45), Kind::Round, 0.88),
             ("a disc with four whiskers", |x, y| x.hypot(y) < 0.3 || ((x.abs() < 0.004 || y.abs() < 0.004) && x.hypot(y) < 0.45), Kind::Round, 0.85),
             // (A corner cut off flat by less is still a corner: the test after this one.)
-            ("a box with its corners cut by a quarter of its shorter side", |x, y| x.abs() < 0.4 && y.abs() < 0.3 && x.abs() + y.abs() < 0.7 - 0.15, Kind::Round, 0.9),
+            ("a box with its corners cut by a third of its shorter side", |x, y| x.abs() < 0.4 && y.abs() < 0.3 && x.abs() + y.abs() < 0.7 - 0.2, Kind::Round, 0.9),
             ("a disc with a slot cut in it", |x, y| x.hypot(y) < 0.44 && !(x.abs() < 0.01 && y > 0.34), Kind::Round, 0.55),
             ("a disc with a notch cut in it", |x, y| x.hypot(y) < 0.44 && !(y > 0.24 && x.abs() < (y - 0.24) * 0.5), Kind::Round, 0.55),
             ("a cloud of five bumps", |x, y| x.hypot(y) < 0.2 || (x - 0.22).hypot(y - 0.05) < 0.16 || (x + 0.22).hypot(y - 0.05) < 0.16 || (x - 0.1).hypot(y + 0.14) < 0.15 || (x + 0.1).hypot(y + 0.14) < 0.15, Kind::Round, 0.9),
@@ -1252,7 +1417,10 @@ mod tests {
         ];
         for (long, inside) in ovals {
             let (lo, hi, lead, _) = turned(inside, 3.0);
-            assert!(hi[1] < 0.2, "an oval of {long} to 1 is up to {:.2} square", hi[1]);
+            // (A quarter at the most, and that at one angle in a few: an oval of four to one
+            // turned 18 degrees, where its ends are on the line and a little of each reads as a
+            // corner with a side. Its fourth review: a fifth.)
+            assert!(hi[1] < 0.3, "an oval of {long} to 1 is up to {:.2} square", hi[1]);
             if long <= 3.0 {
                 assert!(lo[0] > 0.85 && lead.iter().all(|l| *l == Kind::Round), "an oval of {long} to 1 is round: {:.2} at the least", lo[0]);
             }
