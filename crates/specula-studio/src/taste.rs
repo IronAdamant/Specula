@@ -75,17 +75,15 @@ pub struct Measured {
     pub worst: Option<ShotMeasure>,
     /// The subject under the game light (close framing), for flat lighting.
     pub lit: Option<Lightness>,
-    /// The shape language read from `outlines`, kept from its first reading ([`Measured::shape`]:
-    /// tracing three silhouettes of 512 pixels takes some milliseconds, and both the measures
-    /// and the check ask).
-    pub shape_read: std::sync::OnceLock<Option<crate::shape::ShapeLanguage>>,
 }
 
 impl Measured {
     /// The subject's shape language, from its larger silhouettes (`None` without them: a
-    /// thumbnail is under the size the measure reads at).
+    /// thumbnail is under the size the measure reads at). Read anew at each call (some
+    /// milliseconds a silhouette of 512 pixels: a reading kept inside went stale when a copy's
+    /// outlines were changed, and made two equal measures unequal: third review).
     pub fn shape(&self) -> Option<crate::shape::ShapeLanguage> {
-        *self.shape_read.get_or_init(|| crate::shape::of_masks(&self.outlines))
+        crate::shape::of_masks(&self.outlines)
     }
 }
 
@@ -126,8 +124,8 @@ pub fn check_subject(m: &Measured, rules: &StyleRules) -> Vec<Finding> {
     if let (Some(kind), Some(shape)) = (t.shape_language, m.shape()) {
         let pc = |x: f32| (x * 100.0).round();
         let fix = match kind {
-            crate::shape::Kind::Round => "round its corners with a radius of a tenth of its size or more (a roundness, a larger corner or round), and build it from balls, capsules and chains rather than boxes (a part thinner than a fifteenth of the whole ends in a point at this size)",
-            crate::shape::Kind::Square => "square it off: flat sides meeting at right angles, bevels kept under a tenth of its size, fewer curves and spikes in the outline",
+            crate::shape::Kind::Round => "round its corners with a radius of a tenth of its size or more (a roundness, a larger corner or round), and build it from balls, capsules and chains rather than boxes (a part thinner than a fifteenth of the whole ends in a point at this size, and a point counts double: a round body with a thin stalk, string or stick on it reads as pointed here, and is exempted by name if that is its look)",
+            crate::shape::Kind::Square => "square it off: flat sides meeting at right angles, bevels and rounded corners kept under a twentieth of its size (a wider one reads as round here, a chamfer too: exempt an asset whose wide bevels are its look), fewer curves and spikes in the outline",
             crate::shape::Kind::Pointed => "give the outline points: tapers that end in a tip, wedges, spikes and blades whose tips are under 65 degrees, in place of rounded and squared ends (a notch cut into it adds nothing: only what sticks out is read)",
         };
         out.push(finding(
@@ -222,7 +220,6 @@ mod tests {
             subject: "fence_a".into(),
             silhouettes: vec![comb],
             outlines: Vec::new(),
-            shape_read: Default::default(),
             gameplay: Some(ShotMeasure { px_height: 9.0, subject: flat, ring, edge }),
             phone: Some(ShotMeasure { px_height: 4.0, subject: flat, ring, edge }),
             worst: Some(ShotMeasure { px_height: 30.0, subject: flat, ring, edge }),
@@ -253,7 +250,18 @@ mod tests {
         // (The larger silhouettes are the ones read; a thumbnail alone is under the size the
         // measure reads at, and says nothing rather than something wrong: its second review.)
         assert!(boxy.shape().is_some_and(|s| s.square > 0.99));
-        assert_eq!(Measured { outlines: Vec::new(), shape_read: Default::default(), ..boxy.clone() }.shape(), None);
+        assert_eq!(Measured { outlines: Vec::new(), ..boxy.clone() }.shape(), None);
+        // (A copy with other outlines is read by its own, and reading changes nothing that two
+        // measures are compared by: its third review.)
+        let mut disc = Mask::empty(side, side);
+        for y in 0..side {
+            for x in 0..side {
+                let (dx, dy) = (x as f32 - side as f32 / 2.0, y as f32 - side as f32 / 2.0);
+                disc.on[(y * side + x) as usize] = dx.hypot(dy) < side as f32 * 0.4;
+            }
+        }
+        let other = Measured { outlines: vec![disc], ..boxy.clone() };
+        assert!(other.shape().is_some_and(|s| s.round > 0.95) && boxy == boxy.clone());
         let of = |toml: &str, m: &Measured| check_subject(m, &StyleRules::parse(toml, "style.toml", &|_| None).unwrap()).into_iter().find(|f| f.check == "shape_language");
         let f = of("[taste]\nshape_language = \"round\"\n", &boxy).unwrap();
         assert!(f.is_error() && f.value < 0.1 && f.limit == 0.5 && f.message.contains("square 100%") && f.fix.contains("round its corners"), "{f:?}");

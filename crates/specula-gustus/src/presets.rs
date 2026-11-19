@@ -90,8 +90,10 @@ pub const PRESETS: [Preset; 5] = [
         danger: "#e5484d",
         cant_afford: "#9a8f99",
         neutral_max_chroma: 0.08,
-        // (Friendly reads as round: most of an outline's turning in curves.)
-        shape: Some(("round", 0.5)),
+        // (Friendly reads as round, and this preset asked for it until the measure's third
+        // review: a ball with a string on it read as pointed, and a crate with wide bevels as
+        // round. No preset asks for a shape until the measure is settled: FORM.md.)
+        shape: None,
     },
     Preset {
         name: "muted",
@@ -486,10 +488,15 @@ mod tests {
         // A preset that asks for a shape language writes it as a taste rule; one that does not
         // writes none (the existing file above, of a moonlit game, got none).
         assert!(!toml.contains("shape_language") && !fresh.contains("shape_language"));
-        let (story, _) = compose(find("storybook").unwrap(), None, &[], "A friendly game", false).unwrap();
+        // (No shipped preset asks for one while the measure is unsettled: a preset that did
+        // would write it so.)
+        assert!(PRESETS.iter().all(|p| p.shape.is_none()));
+        let asking = Preset { shape: Some(("round", 0.5)), ..*find("storybook").unwrap() };
+        let (story, _) = compose(&asking, None, &[], "A friendly game", false).unwrap();
         let taste = specula_core::toml::parse(&story).unwrap().get("taste").cloned().unwrap();
         assert_eq!((taste.get("shape_language").and_then(Json::as_str), taste.get("shape_min_share").and_then(Json::as_f64)), (Some("round"), Some(0.5)));
-        assert_eq!(find("storybook").unwrap().to_json().get("shape").and_then(|s| s.get("language")).and_then(Json::as_str), Some("round"));
+        assert_eq!(asking.to_json().get("shape").and_then(|s| s.get("language")).and_then(Json::as_str), Some("round"));
+        assert!(find("storybook").unwrap().to_json().get("shape").is_some_and(Json::is_null));
         assert!(find("clean").unwrap().to_json().get("shape").is_some_and(Json::is_null));
         let o = Onboarding::new(Json::Null, "muted", "lead").unwrap();
         assert_eq!(Onboarding::parse(&o.to_text()).unwrap(), o);

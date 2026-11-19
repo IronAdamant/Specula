@@ -1701,7 +1701,7 @@ impl Ctx<'_> {
             let (rgba, _) = self.studio_angle(s, az, el, &neutral_rig(), px, false, true, None)?;
             outlines.push(Mask::from_silhouette(&rgba, px, px));
         }
-        let m = Measured { subject: s.name.clone(), silhouettes, outlines, gameplay: get("gameplay"), phone: get("phone"), worst: get("worst_light"), lit: Some(lit.measure.subject), shape_read: Default::default() };
+        let m = Measured { subject: s.name.clone(), silhouettes, outlines, gameplay: get("gameplay"), phone: get("phone"), worst: get("worst_light"), lit: Some(lit.measure.subject) };
         shots.push(("game_light".into(), lit));
         Ok((m, shots))
     }

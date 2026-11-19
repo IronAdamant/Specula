@@ -14,15 +14,15 @@ for the view that is asked about, at the size it will be shown**: one tool, `per
 
 ## What it does
 
-`perf_light {width, height, camera | eye, target | view_2d, frames, budget_ms}` (every argument
-optional; the view is `sight_frame`'s, by the same parser):
+`perf_light {width, height, camera | eye, target | view_2d, include_ui, frames, budget_ms}` (every
+argument optional; the view is `sight_frame`'s, by the same parser, `include_ui` with it):
 
 1. Draws the view offscreen **as the world has it**. That first render says what the view pays
    for: which of the world's features are on, whether baked GI was drawn, how many point lights
    the frame was given.
 2. For each feature that is on, draws the view **with that one feature left out**, and once
    more with all of them out (when more than one is on).
-3. Does that in **alternating rounds**, `frames` of them (3 to 16, 5 unless given), after one
+3. Does that in **alternating rounds**, `frames` of them (5 to 16, 9 unless given), after one
    round that is drawn and not counted, so that a machine that warms up or is busy for a moment
    moves every variant alike.
 4. Takes each render's GPU time from **the adapter's own timestamps** (first pass start to last
@@ -33,7 +33,14 @@ alone (`light_tools::strip`), never out of the world's settings. It is a step jo
 submitted in one step and landed in a later one, between frames, so the GPU's work never holds
 the engine thread ([WORKERS.md](WORKERS.md)); a view carries its own timings from the moment it
 settles (`Rendered::gpu`), because another offscreen render would have replaced the GPU's last
-record before the job asked for it.
+record before the job asked for it. **A measuring render lands its timings alone**: its image is
+not copied back, its subjects are not projected, and it takes no place in the flash watch.
+
+Before its first render it **waits for what the view is still loading** (models building,
+streamed cells, textures), as `sight_frame` does, for up to ten seconds, and then measures the
+view as it is and says so in `warnings`. And **a job whose call's time is nearly out answers with
+the rounds it has** (three seconds before the end, at the start of a round), saying how many: a
+timed-out call would answer nothing.
 
 ## What it answers
 
@@ -53,8 +60,11 @@ record before the job asked for it.
 **What is and is not said:**
 
 - **A cost inside the noise is not a cost.** `noise_ms` is the scatter of the noisier of the two
-  variants: three times the middle of its frames' distances from their median (and never under
-  a two-hundredth of the frame), which one late frame cannot spoil. A cost smaller than that has
+  variants: some times the middle of its frames' distances from their median (and never under
+  a two-hundredth of the frame), which one late frame cannot spoil. How many times goes by the
+  frames there are, so that two variants that cost the same are called apart about once in two
+  hundred: three for nine frames or more, four for seven or eight, six for five or six (by
+  simulation; three times at five frames called one costless feature in twenty a cost). A cost smaller than that has
   `told_from_noise: false`, and is never named in `give_up`. Other programs use the same GPU: on
   a busy machine small costs are not told from nothing, and the answer says so in place of a
   number to trust. (The least frame to the most was tried first: one frame of nine 0.3 ms late
@@ -62,7 +72,8 @@ record before the job asked for it.
 - **A feature that is off has no cost made up for it.** It is listed as off. To know what
   turning it on would cost, turn it on and ask again.
 - **`to_hold_budget` is an estimate**: costs measured apart do not add up exactly (shadows cost
-  more with more lights; fxaa costs by the pixels). It never estimates under what was measured
+  more with more lights; fxaa costs by the pixels). It names the costliest features that are
+  told from the noise until the estimate holds, passing over one that is not told. It never estimates under what was measured
   with everything out, it says so when even that is over the budget (**light is then not what
   keeps the view over**: draw less, or at a smaller size, or allow more time), and its note says
   to make the change and measure again.
@@ -71,6 +82,10 @@ record before the job asked for it.
   engine holds itself to is an integrated GPU ([perf/README.md](../../perf/README.md)).
 - **It measures the GPU.** What the CPU spends on a frame (culling, the draw lists, the game) is
   `perf_frame`'s and `perf_zones`' to say, and a window's frame also pays for presenting.
+  (`perf_frame`'s `offscreen` record is the GPU's last offscreen render: after a `perf_light` that
+  is one of its measuring renders, drawn without its light. Take a `sight_frame` before reading it.)
+- **Grading is on when it draws**: enabled, and with a value that is not neutral or a LUT. A
+  feature that is on in the settings and draws nothing is listed as off.
 
 ## What the engine's light has, and has not
 
@@ -124,9 +139,9 @@ no number to trust, said plainly.
 ## Bounds
 
 Every argument has its range in the schema (the view's are `sight_frame`'s: 64 to 2048 pixels a
-side; `frames` 3 to 16; `budget_ms` 0.1 to 1000). The work is bounded by them: at most eleven
+side; `frames` 5 to 16; `budget_ms` 0.1 to 1000). The work is bounded by them: at most eleven
 variants (the view as it is, nine features, all out) by seventeen rounds, 187 renders, one a
-step. The answer is a few kilobytes whatever the world. Read-only (`authority::access`), in the
+step, and by the call's own time (above). The answer is a few kilobytes whatever the world. Read-only (`authority::access`), in the
 `perf` family, named in the kit `find_slow_frame`.
 
 ## Tests
@@ -139,4 +154,25 @@ step. The answer is a few kilobytes whatever the world. Read-only (`authority::a
   FXAA on is measured; the report has those four on and the other five off, each measured alone
   and all together, in the rounds asked for and one more; and **the world is as it was** (the
   same revision, the same settings) and **no measuring render compiled a pipeline**. What each
-  costs is the machine's to say: the test holds what was drawn and counted, never a time.
+  costs is the machine's to say: the test holds what was drawn and counted, never a time. Two
+  jobs of two views stepped in turn both finish with their own timings; and a job given three
+  seconds answers early with the rounds it has.
+
+## Its first review
+
+A model that did not write it (2026-11-19) said **not to merge it**, with two major findings,
+both mended, each a case of a test. **`to_hold_budget` stopped at the first feature it could not
+tell from the noise**, so a dear and noisy feature hid a cheaper one that would have held the
+budget, and the note said nothing would. **Every measuring render copied its whole image back to
+the CPU on the engine thread and threw it away**: 19 of a step's 23 ms at 2048 pixels a side on
+the integrated GPU, 44 stalls in one call of 16 frames, and a call at the schema's limit timed out
+once with nothing to show. Smaller, mended too: the noise rule called a costless feature a cost
+one time in twenty at five frames and one in six at three (the least is five now, nine unless
+given, and the rule widens for fewer frames); grading was listed as on when it drew nothing; a
+view still loading was measured without waiting or saying; `include_ui` could not be asked for;
+and `perf_frame`'s offscreen record after a report is a measuring render's, which this page now
+says. It found sound: that no measuring render leaks into another view (two reports and nine
+`sight_frame` calls at once: every capture identical to one taken later), that the timings are
+each render's own, the job's handling of owners, closed sessions and deadlines, and every claim
+of what the engine's light has and has not, against the renderer. **These mends are not
+reviewed yet.**

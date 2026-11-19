@@ -355,6 +355,16 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       into each other, on silhouettes of 256 pixels, and is steady to a tenth over a quarter
       turn for fourteen known shapes. Sepulcra's 56 recipes lead square (31), pointed (18)
       and round (7). The form checks and it have their place in the critique.
+    - **The light report's first review** (2026-11-19): not to merge. Its advice for a budget
+      stopped at the first feature not told from the noise; every measuring render copied
+      its image back on the engine thread and threw it away. Both mended, with five smaller
+      findings (frames, the noise rule by frame count, grading, loading, `include_ui`, a
+      job that answers early when its call's time is nearly out).
+    - **Shape language, after its third review** (2026-11-19): not to merge, again: a crate
+      with wide bevels read as round and a ball on a string as pointed. It is not written a
+      fourth time on a guess: the shares stay a reported fact, the check stays for a style
+      that names it (its advice made true, its faults said), no preset asks for it, and what
+      it should become is the owner's to say (HANDOFF, "Open owner decisions").
     - **Faceting, from what a recipe names round** (2026-11-19; FORM.md): the form check that
       three tries could not make from a mesh. The modeller records how coarsely each shape
       a recipe names round was built (the turn between its faces, its radius); the facts

@@ -385,6 +385,17 @@ and **checked only when a style asks** for one.
 - **A corner's rounding moves the answer smoothly** (a test, every three degrees): from a
   fiftieth to a tenth of the size the box goes from square to round, the more rounded never the
   less round, and at no rounding does the share move by more than a quarter as the box is turned.
+- **What it gets wrong** (its third review; not mended: see "Where it stands" below):
+  - **A corner cut off flat by about a fifteenth of the size or more reads as round.** A
+    chamfer is two turns of 45°, each gentle by the rule above, as an octagon's are: a 0.8 by
+    0.6 box with its corners cut by 0.05 of its size is 44% round, and by 0.07 or more it is
+    100% round at every angle. A crate with wide bevels is a box to anyone who looks at it.
+  - **One thin part on a round body reads as pointed.** The end of a part thinner than the
+    window turns right round, and a point counts double, so it counts for as much as the
+    whole ball: a balloon on a string is 52% pointed, a cherry with its stem and a lollipop
+    the same, a snowman with stick arms 71%, a disc with four whiskers 84%. (Without the
+    double a spike is under half pointed, which its second review found. The measure weighs
+    turning; how large the part is that turns is not in it.)
 - **What it cannot say steadily**, by its own scale. A corner rounded by about a twentieth to a
   fourteenth of the size is between square and round, and the share moves by up to a fifth with
   the angle. A part about as thick as the window (a fifteenth of the size: a dagger's grip)
@@ -401,9 +412,9 @@ and **checked only when a style asks** for one.
   that kind is under it, with the three shares in its message and what to do in its fix;
   `[taste.allow]` exempts as for the other taste checks.
 - **In the presets.** A base style may carry the ask (`Preset::shape`), and the style configurator
-  writes it with the rest: `storybook` asks for round (half of what an outline says). The other
-  four ask for nothing: a moonlit graveyard, a muted or a noir game and the neutral stage are not
-  one shape.
+  writes it with the rest. **No shipped preset asks for one now**: `storybook` asked for round
+  until the measure's third review (a ball on a string would have failed it), and a moonlit
+  graveyard, a muted or a noir game and the neutral stage are not one shape.
 - **What it says of Sepulcra** (2026-11-19, its 56 recipes through `studio_check`, by the measure
   above): 30 lead pointed, 20 square and 6 round (`grave_rock` 0.98 round, `wall_segment` 0.61);
   the crypt is 0.65 square, the wraith 0.87 pointed, the iron gate 0.81 pointed, a tombstone 0.55
@@ -439,5 +450,29 @@ and **checked only when a style asks** for one.
   box (under 110 pixels nothing is read now, and the taste measures no longer fall back on the
   thumbnails); two ranges on this page were narrower than what a finer sweep found. It found
   sound: every edge case (no panic, no share out of range), the cost (nothing quadratic), the
-  wiring into the check, the critique and the studio's renders. **These mends are not reviewed
-  yet.**
+  wiring into the check, the critique and the studio's renders.
+- **Its third review** (another model, 2026-11-19) **said not to merge those mends.** The second
+  review's findings were gone by their own probes at 512 pixels (a box rounded by a sixteenth
+  now moves by an eighth, a spike is 63% to 72% pointed, a slotted disc is round), and twenty
+  kinds of shape held their lead at every degree of turn. And the mends had brought the two
+  faults listed above under "What it gets wrong": the chamfered box, to which the check's own
+  advice for a square style led ("bevels under a tenth"), and the ball with a thin stalk, which
+  the double weight of a point made. Smaller: the greatest width tried one hull point in four
+  and came out up to a fifth short on a sliver (every pair is tried now); a reading kept inside
+  the measures went stale in a copy (it is read anew at each call); the time to read a
+  silhouette was understated (4 to 13 ms each on a busy machine, and up to a second for a
+  spiral or a comb of one-pixel teeth, on the caller's own thread).
+- **Where it stands.** Three reviews by models that did not write it, three "do not merge",
+  each mend true to the review before and each bringing a fault of its own. What they share is
+  the measure's premise: it weighs **how the outline turns**, and a person weighs **how much of
+  the thing** is round, flat-sided or sharp. A string on a balloon and a spike turn alike; a
+  chamfer and a fillet turn alike. So, as of 2026-11-19: **the shares are reported for every
+  asset as what they are** (how its outline turns outward: in curves, at square corners, at
+  points); **the check stays for a style that asks for it by name, with its advice made true
+  to the measure and the two faults said in it; and no preset asks for it.** What it should
+  become is the owner's to say ([HANDOFF.md](../../HANDOFF.md), "Open owner decisions"):
+  leave it a reported fact; a fourth version that weighs parts by their size in the
+  silhouette; or, as faceting was settled, from what the recipe is built of (balls, capsules
+  and chains are round, boxes square, cones and wedges pointed, each by its surface), which
+  cannot speak for an imported mesh.
+

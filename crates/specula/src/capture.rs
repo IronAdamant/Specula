@@ -207,6 +207,12 @@ pub(crate) struct ViewInFlight {
     rgba: Option<Vec<u8>>,
     /// Its GPU timings, taken with its pixels.
     gpu: Option<specula_gpu::GpuTiming>,
+    /// A measuring render (`perf_light`): its timings are all that is wanted of it. Its
+    /// pixels are not copied back, its subjects are not projected and it takes no place in
+    /// the flash watch. (Landed like any view, each of a job's renders copied its whole image
+    /// to the CPU on the engine thread and threw it away: 19 of a step's 23 ms at 2048 pixels
+    /// a side, and a stall a render. Its first review.)
+    timings_only: bool,
 }
 
 impl ViewInFlight {
@@ -469,6 +475,14 @@ impl Engine {
     /// to warn of: as `sight_frame` sees it.
     pub(crate) fn frame_camera(&mut self, spec: &FrameSpec, session: &SessionInfo) -> Result<(Camera, Json, Option<String>), ToolOutput> {
         self.frame_view(spec, session).map(|v| (v.camera, v.source, v.warning))
+    }
+
+    /// How many things a view of this camera is still waiting for (models building, streamed
+    /// cells, sprite and effect textures, terrain): what `sight_frame` parks its call on.
+    pub(crate) fn view_loading(&mut self, camera: Camera, width: u32, height: u32, include_ui: bool) -> usize {
+        let views = [ViewReq { camera, width, height, include_ui, lod: None, source: Json::Null, warning: None }];
+        let streaming = self.stream_capture(&stream_views(&views));
+        self.building_in(&views) + self.two_d_waiting(&views, true) + streaming + self.vfx_textures_waiting(true) + self.terrain_waiting(&views)
     }
 
     fn frame_view(&mut self, spec: &FrameSpec, session: &SessionInfo) -> Result<ViewReq, ToolOutput> {
@@ -1033,13 +1047,14 @@ impl Engine {
             gi_stretch,
             rgba: None,
             gpu: None,
+            timings_only: self.captures.light.is_some(),
         };
         if !second_render {
             self.models.put_bones(bones);
             self.vfx.put_frame(fx);
             self.terrain.frame = terrains;
             submitted?;
-            if !project_now {
+            if !project_now && !v.timings_only {
                 v.projection = Some(self.project_on_worker(set));
             }
             return Ok(Submitted::Flying(Box::new(v)));
@@ -1154,6 +1169,12 @@ impl Engine {
         if v.rgba.is_some() {
             return Ok(());
         }
+        if v.timings_only {
+            // The timings of this render and no other: the record says which frame they are of.
+            v.gpu = self.gpu.last_frame_stats_of(FramePath::Offscreen).and_then(|s| s.gpu.filter(|g| g.frame == s.frame));
+            v.rgba = Some(Vec::new());
+            return Ok(());
+        }
         self.view_subjects(v);
         if v.ids {
             self.view_counts(v)?;
@@ -1178,7 +1199,7 @@ impl Engine {
         // The flash watch over this view's captures, from their own pixels at simulation time:
         // its place in the view's order is taken now, the pixels are fed where they go next (the
         // encode worker; see `Rendered::feed`).
-        let feed = self.flash.feed_for(v.view_key, v.time_s);
+        let feed = if v.timings_only { None } else { self.flash.feed_for(v.view_key, v.time_s) };
         // Terrain and water subjects say what they are (and how a terrain was drawn); the frame
         // record knows them too (their passes draw outside the mesh lists).
         for (i, k) in std::mem::take(&mut v.kinds) {

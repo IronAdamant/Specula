@@ -578,10 +578,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       slot cut in it failed "round" (only outward turning counts now). It is measured on
       512 pixels, and under 110 nothing is read. A test turns 28 known shapes through a
       quarter turn (steady to a tenth) and sweeps a corner's rounding every three degrees.
-      **What it cannot say steadily is written down**: a corner rounded by a twentieth to
-      a fourteenth of the size, and a part about a fifteenth of the size thick. Sepulcra's
-      recipes lead pointed (30 of 56), square (20) and round (6): no check is asked of it.
-      **These mends are not reviewed yet.**
+      **Its third reviewer said not to merge those mends** (2026-11-19, evening): the second
+      review's faults were gone, and the mends had brought two of their own. **A box whose
+      corners are cut off flat by a fifteenth of its size or more reads as wholly round**
+      (two turns of 45 degrees, each "gentle"), and the check's own advice for a square
+      style led there; **a ball with one thin stalk on it reads as pointed** (a balloon's
+      string: the double weight of a point). Three reviews, three "do not merge", each
+      mend true to the review before: the measure weighs how the outline turns, and a
+      person weighs how much of the thing is round, flat or sharp. **So it is made safe
+      and not written a fourth time on a guess**: the shares stay in every asset's facts as
+      what they are, the check stays only for a style that asks for it by name (its advice
+      now true to the measure, the two faults said in it), **no preset asks for it** (the
+      `storybook` preset did), and what it should become is in "Open owner decisions"
+      below. Sepulcra's recipes lead pointed (30 of 56), square (20) and round (6).
     - **Where its verification stands** (2026-11-19, evening): the full gate passed on
       `466e262b` (the mends of the fifth round of reviews and the light report: 3,296
       tests, the repeats, the slow-worker run, the speed budgets, clippy for both targets,
@@ -611,7 +620,14 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       integrated GPU Sepulcra's scene takes 2.6 ms at 720p and 5.6 at 1080p, nine tenths of
       it light and post (bloom, the sky and ambient occlusion the dearest); from a debug
       build the discrete GPU's times wandered and the report said no cost was told from the
-      noise, which is the answer wanted there. **Not reviewed yet.**
+      noise, which is the answer wanted there. **Its first reviewer said not to merge it**:
+      the advice for a budget stopped at the first noisy feature and could say nothing
+      would help when a cheaper one would; and every measuring render copied its whole
+      image back on the engine thread for nothing (stalls at large sizes). Mended, with
+      five smaller findings (at least five frames and nine unless given, with a noise rule
+      that widens for fewer; grading counted only when it draws; a loading view waited
+      for; `include_ui`; a job near its call's end answers with what it has). **These
+      mends are not reviewed yet.**
     - **Then:** the same in 2D; `form`
       on `sight_compare` and the line-up. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
@@ -1512,7 +1528,24 @@ Not decisions of this kind, and also with the owner: the seven items of
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-None at present. (The reference pictures' place was decided on 2026-11-17: a public repository of
+- **What shape language should become** (2026-11-19; [docs/design/FORM.md](docs/design/FORM.md),
+  "Shape language", "Where it stands"). It is one of the five items of "form within an agent's
+  reach" the owner asked for ("Add all"), with "shape language in the presets". Its measure has
+  failed three independent reviews: it weighs how an outline turns, and so a crate with wide
+  bevels reads as round and a balloon on a string as pointed. It is reported in every asset's
+  facts, a style may still ask for it by name, and no preset asks for it now. The choices:
+  1. **Leave it a reported fact**, with its limits said, and no check by default (where it is
+     now). Costs nothing more.
+  2. **A fourth version that weighs parts by their size in the silhouette.** About a day and a
+     fourth review, with no promise it passes: each of three versions fixed what the review
+     before found and brought a fault of its own.
+  3. **From what the recipe is built of**, as faceting was settled (balls, capsules and chains
+     round, boxes square, cones and wedges pointed, each by its surface). About half a day and
+     a review. It says nothing of an imported mesh, and little of how parts are arranged.
+  *Claude's recommendation:* 3, with 1's reported shares kept beside it: the recipe says what
+  a thing is made of, which is what a style means when it asks for "round".
+
+(The reference pictures' place was decided on 2026-11-17: a public repository of
 their own, [specula-imagines](https://github.com/IronAdamant/specula-imagines); the three before it were answered on 2026-11-16. Both are
 recorded at the top of this page.)
 

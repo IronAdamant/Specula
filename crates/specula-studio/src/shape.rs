@@ -27,6 +27,16 @@
 //! is square, and so is one whose corners are rounded by a thirtieth; a triangle, a spike, a
 //! star and a crescent are pointed.
 //!
+//! **What it gets wrong**, found by its third review and not mended (docs/design/FORM.md has
+//! the numbers, and says what is the owner's to decide):
+//! - **A corner cut off flat (a chamfer) by about a fifteenth of the size or more reads as
+//!   round**: it is two turns of 45 degrees, each gentle by the rule above, as an octagon's
+//!   are. A crate with wide bevels reads wholly round, where anyone would call it a box.
+//! - **One thin part on a round body reads as pointed**: a balloon's string, a cherry's stem,
+//!   a snowman's stick arms. The end of a part thinner than the window turns right round, and
+//!   a point counts double: as much as the whole ball. (Without the double a spike is not
+//!   pointed. The measure weighs turning, and a part's size is not in it.)
+//!
 //! **What it cannot say steadily**, by its own scale (the window):
 //! - a corner rounded by about a twentieth to a fourteenth of the size is between square and
 //!   round, and the share moves by up to a fifth as the shape is turned;
@@ -289,13 +299,13 @@ fn hull_of(points: &[P]) -> Vec<P> {
 }
 
 /// The furthest two points of a hull are apart: the shape's greatest width, whichever way it
-/// is turned. (Every pair of a thinned hull: a hull of a 512-pixel disc has under two thousand
-/// points, and one in `HULL_STEP` of them is tried against the rest.)
+/// is turned. Every pair is tried: a hull of a 512-pixel disc has under a hundred and fifty
+/// points. (One point in four was tried at first, and a sliver whose far tip fell between the
+/// ones tried came out a tenth to a fifth short: third review.)
 fn greatest_width(hull: &[P]) -> f32 {
-    const HULL_STEP: usize = 4;
     let mut most = 0.0f32;
-    for a in hull.iter().step_by(HULL_STEP) {
-        for b in hull {
+    for (i, a) in hull.iter().enumerate() {
+        for b in &hull[i + 1..] {
             most = most.max(dist(*a, *b));
         }
     }
