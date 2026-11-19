@@ -355,6 +355,12 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       into each other, on silhouettes of 256 pixels, and is steady to a tenth over a quarter
       turn for fourteen known shapes. Sepulcra's 56 recipes lead square (31), pointed (18)
       and round (7). The form checks and it have their place in the critique.
+    - **Shape language, a fourth version** (2026-11-19, at the owner's word): each part of a
+      silhouette is judged at its own thickness and counts by it (a distance transform, the
+      discs that fill the shape, the outline followed to the body a corner is of and not
+      across a joint). A corner cut off flat is a corner, a string on a balloon counts for a
+      string, a bar however thin is square, an oval is never square. Not reviewed; no preset
+      asks for it.
     - **The form views in a before and after, and in the line-up** (2026-11-19): `sight_compare`'s
       mark takes `form`, and its diff is drawn in the mark's view (a mark in clay shows a change
       of shape and not a change of colour); `studio_lineup` takes `form` and keeps its

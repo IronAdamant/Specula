@@ -632,24 +632,47 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       and not written a fourth time on a guess**: the shares stay in every asset's facts as
       what they are, the check stays only for a style that asks for it by name (its advice
       now true to the measure, the two faults said in it), **no preset asks for it** (the
-      `storybook` preset did), and what it should become is in "Open owner decisions"
-      below. Sepulcra's recipes lead pointed (30 of 56), square (20) and round (6).
+      `storybook` preset did). **A fourth version is built, at the owner's word** ("2 - 3
+      and I don't care if it takes longer": both a fourth silhouette measure and the measure
+      from the recipe). It keeps the turning and gives it what the three reviews found it
+      lacked: **every point of the outline belongs to a part with a thickness, is judged at
+      that thickness and counts by it** (FORM.md, "Shape language"). By the third review's
+      own probes its failing cases pass (cut boxes 96% to 99% square, a balloon on a string
+      and its like 92% to 100% round), bars however thin are square, and an oval is never
+      square; a convention moved with it (a box rounded by a tenth of its side is square,
+      and round only from about a quarter). What it cannot say steadily is written down (an
+      oval four to six times as long as wide; a body with more than a dozen hairs). **It is
+      not reviewed, and no preset asks for it.** Sepulcra's recipes by it: 29 lead pointed,
+      14 round, 13 square. **The measure from the recipe is designed and not built.**
     - **Where its verification stands** (2026-11-19, night): the full gate passed on
-      `ea95a90d` (everything of part 4 so far: 3,297 tests, the repeats, the slow-worker
-      run, the speed budgets, clippy for both targets, both builds), and seven live checks
-      on it (window, sight, terrain, GI, studio, procgen, `form_sheet_check`), the window's
-      picture looked at; the same had passed on `a80b3cf4` and `466e262b` before.
-      **Owed, and under way:** reviews, by models that did not write them, of faceting from
-      the recipe, the shape language's safe state, the light report's mends and the levelled
-      weights. Nothing of part 4 is pushed.
-    - **The shape library: being built** (2026-11-19, at the owner's word above; a builder
-      on Opus in a worktree of its own, branch `m6-formae`, in three stages: a crate
-      `specula-formae` of named plane figures and solids as a table, each with its
-      parameters, its measures in closed form held against what is built, and its anchors;
-      then the modeller taking a form as an outline or a solid in a recipe; then two
-      read-only tools and `docs/design/FORMAE.md`). Each stage is reviewed by Claude, who
-      did not write it, pictured in the engine and gated before it is merged. **Nothing of
-      it is merged yet.**
+      `bec48409` (everything of part 4 up to the form views in a before and after and in
+      the line-up: 3,298 tests, the repeats, the slow-worker run, the speed budgets, clippy
+      for both targets, both builds), and seven live checks on it (window, sight, terrain,
+      GI, studio, procgen, `form_sheet_check`); the same had passed on `ea95a90d`,
+      `a80b3cf4` and `466e262b` before. The fourth shape-language measure is committed
+      after it and waits for a gate.
+      **Owed:** reviews, by models that did not write them, of faceting from the recipe,
+      the light report's mends and the levelled weights (the two reviewers started for them
+      were stopped by an interrupt and wait for the owner's word: "Open owner decisions"),
+      and of the fourth shape-language measure. Nothing of part 4 is pushed.
+    - **The shape library: being built** (2026-11-19, at the owner's word above; builders
+      on Opus, a fresh one a stage, in a worktree of their own, branch `m6-formae`; the
+      brief and each stage's notes are in `.swarmnotes/m6/part4/formae/` on this machine).
+      A crate `specula-formae`: named shapes as a table, each described once as its exact
+      pieces (lines, arcs, curves), from which the count before building, the build, the
+      measures and the error at a detail are all derived. **Stage 1a, the plane figures:
+      built** (`c7b28461`: 65 plane figures, 12 curves, 67 aliases). **Claude's review of it
+      found 27 faults** with a test that draws all of a shape's parameters together (the
+      builder's tests moved one at a time): builds the library's own check refused, two
+      bands that crossed themselves at a coarse detail, a closed-form length that lost
+      digits. **A fresh agent investigated and mended them** (`859be3c5`: every build is
+      checked, and is a well-made shape or a refusal as data with its numbers and a detail
+      that holds; the test is the crate's now). **Stage 1b, the solids, is being built.**
+      Then 1c (2.5D: a plane figure raised, a solid drawn flat, a solid cut into layers),
+      the modeller, the engine's 2D item with two read-only tools and
+      `docs/design/FORMAE.md`, and further families. Each stage is reviewed by Claude, who
+      did not write it; the whole is pictured in the engine and gated before it is merged.
+      **Nothing of it is merged yet.**
     - **Faceting, from what a recipe names round: built** (2026-11-19, evening; FORM.md,
       "Faceting, from what the recipe names round"). The modeller records, for every shape
       a recipe names round (cylinder, cone, sphere, torus, capsule, lathe, a sculpt), the

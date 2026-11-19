@@ -366,60 +366,83 @@ reads as friendly, square as sturdy, pointed as dangerous: a convention of chara
 design, not a law. So it is **reported for every asset** (`studio_check`: `measures.thumbnails.shape`)
 and **checked only when a style asks** for one.
 
-- **The measure.** On three silhouettes of the asset (the taste checks' angles: front, side,
-  three-quarter), each **512 pixels** a side. The outline of the largest piece is traced; its long
-  straight runs (a tenth of the size or more) are straightened to within a pixel and a half, so
-  that the pixels' steps on a slanted side are gone, and its curves are left as pixels for the
-  smoothing that follows. At every point of it the **net turn of the outline within a window** a
-  fourteenth of the shape's size long is taken: nothing along a straight side, the window over
-  the radius round a curve, the corner's whole turn at a corner. Then:
-  - **Only outward turning counts**: bulges and corners. Where the outline turns back on itself
-    (a notch, a slot, the inside corner of an L, the cusp between two bumps of a cloud) it counts
-    for nothing, so one small cut does not unmake a disc.
-  - A point of the outline counts for its outward turn, and is part of a curve where the most
-    the outline turns in a window near it is under 45° (fading out by 80°), a point where that
-    is 96° or more (wholly by 116°: the corner's own angle is then 84° to 64° or less), and a
-    square corner between.
-  - **A point counts double**: a spike's tip is what is seen of it, and by turning alone it is
-    under half of a spike, whose base has two square corners.
-  - **The size is the shape's greatest width**, the same whichever way it is turned.
+- **The measure** (its fourth version, 2026-11-19: **each part at its own scale, weighed by
+  its thickness**). On three silhouettes of the asset (the taste checks' angles: front, side,
+  three-quarter), each **512 pixels** a side, the outline of the largest piece:
+  1. **How thick the piece is under each point of the outline**: the radius of the largest
+     disc inside the silhouette that touches the outline there (from an exact distance
+     transform and the discs no neighbour's disc holds). In a corner or along a taper that
+     falls to nothing at the tip, so the outline is followed from the point, both ways, to the
+     body it is a corner of; and not across a **joint**, where the thickness leaps as no
+     taper's does (a string meets its balloon, a stick its snowman, a spike's foot its ball).
+     That is the point's **part**, and its thickness is the scale the point is judged at.
+  2. **The turning**: the outline's long straight runs are straightened to within a pixel and
+     a half, its curves smoothed, and the net turn is taken within a window **six tenths of
+     the part's thickness** long. A box's window is three tenths of its shorter side; a
+     plank's, three tenths of its width; a hair's, nothing to speak of.
+  3. **A corner or a curve.** A corner is turning in one place (20° to 60° within a window a
+     third as long; and for certain where a straightened side meets another straight run at
+     30° to 40° or more: the two ends of a corner cut off flat). A curve is turning spread
+     out, and is round however far it turns in all.
+  4. **A corner's angle** is its window's net turn less the window's lopsidedness: what the
+     two sides of the window turn counts only as far as both do. A box's corner is 90°; two
+     kinks in one window (a cut corner) are one corner of their sum; the mouth of a slot in a
+     disc is a right angle, the rim's own turn being on one side only. (The window has soft
+     ends, so a growing cut goes from one corner to two by degrees.)
+  5. **Its class**: gentle under 45° (part of a curve, fading out by 80°: an octagon's
+     corners), a point from 96° (wholly by 116°), square between. **A corner with no straight
+     side near it is never square**: the end of an oval or the horn of a crescent is part of a
+     curve up to 70° and a point from 110°.
+  6. **Its weight.** Only outward turning counts (a notch, a slot, the inside corner of an L,
+     the cusp between two bumps of a cloud count for nothing). A step's turn is the turn
+     within its own window, and the window is as long as the part is thick: **a part's
+     turning counts by its thickness.** The end of a hair turns right round and counts for a
+     hair. A point counts double.
 
-  The shares (`round`, `square`, `pointed`) sum to 1; `leading` names the largest; `convexity` is
-  the outline's area over its hull's; `corners` counts the places it turns outward by 60° or
-  more (an L has five). The three silhouettes' means are the asset's.
-- **Known shapes, turned through a quarter turn** (a test; each share steady to a tenth, every
-  ten degrees): a disc, an ellipse of 3 to 1, an octagon, capsules down to a sixth as thick as
-  they are long, a box rounded by a twelfth of its size or more, a cloud of five bumps and **a
-  disc with a slot or a notch cut in it** are round; a box, an L, a cross, bars down to an eighth
-  as thick as they are long, a box rounded by a twenty-fifth, a pentagon and a house are square;
-  a triangle, stars of five and of twelve points, **spikes of 8, 15 and 25 degrees** (62% to 72%
-  pointed), a thin diamond and a crescent are pointed. A hexagon, whose corners turn 60°, is
-  between round and square and stays there (about 65% round).
-- **A corner's rounding moves the answer smoothly** (a test, every three degrees): from a
-  fiftieth to a tenth of the size the box goes from square to round, the more rounded never the
-  less round, and at no rounding does the share move by more than a quarter as the box is turned.
-- **What it gets wrong** (its third review; not mended: see "Where it stands" below):
-  - **A corner cut off flat by about a fifteenth of the size or more reads as round.** A
-    chamfer is two turns of 45°, each gentle by the rule above, as an octagon's are: a 0.8 by
-    0.6 box with its corners cut by 0.05 of its size is 44% round, and by 0.07 or more it is
-    100% round at every angle. A crate with wide bevels is a box to anyone who looks at it.
-  - **One thin part on a round body reads as pointed.** The end of a part thinner than the
-    window turns right round, and a point counts double, so it counts for as much as the
-    whole ball: a balloon on a string is 52% pointed, a cherry with its stem and a lollipop
-    the same, a snowman with stick arms 71%, a disc with four whiskers 84%. (Without the
-    double a spike is under half pointed, which its second review found. The measure weighs
-    turning; how large the part is that turns is not in it.)
-- **What it cannot say steadily**, by its own scale. A corner rounded by about a twentieth to a
-  fourteenth of the size is between square and round, and the share moves by up to a fifth with
-  the angle. A part about as thick as the window (a fifteenth of the size: a dagger's grip)
-  ends between a square end and a point, and reads as either by the angle; thinner, it ends in a
-  point whatever its end, so a fence of flat bars reads pointed; and what is smaller than the
-  window (a comb's teeth, a bevel) is a ripple or nothing. Holes are not traced. It reads
-  outlines, not surfaces: a ball on a square plinth seen from the front is both.
-- **It needs pixels.** A piece under 110 pixels across is not read at all (a thumbnail never is:
-  on 64 pixels a square read as wholly round at one angle in five), so the studio renders the
-  three silhouettes again at 512 for it; on 256 the transition above swings twice as far. Three
-  silhouettes of 512 take 2 to 3 ms each to read (release), once: the reading is kept.
+  The shares (`round`, `square`, `pointed`) sum to 1; `leading` names the largest; `convexity`
+  is the outline's area over its hull's; `corners` counts its corners of 60° or more (an L has
+  five). The three silhouettes' means are the asset's.
+- **Known shapes, turned through a quarter turn** (a test of 42 shapes; each share steady to a
+  tenth, every ten degrees). **Round:** a disc, an egg, an oval of 3 to 1, an octagon, capsules
+  to a sixth as thick as long, a box rounded by a quarter of its shorter side or more, a cloud
+  of five bumps, a disc with a slot or a notch cut in it, and **a balloon on a string, a
+  cherry with its stem, a lollipop, a bomb with its fuse, a snowman with stick arms and a disc
+  with four whiskers**. **Square:** a box, an L, a cross, **bars from a fifth to a fourteenth
+  as thick as long, a table on thin legs, a comb**, a box rounded by a tenth of its side or
+  less, a pentagon and a house. **Pointed:** a triangle, stars of five and of twelve points,
+  spikes of 8, 15 and 25 degrees (65% to 73%), a thin diamond, a crescent, **a mace** and an
+  oval eight times as long as wide. A hexagon, whose corners turn 60°, is between round and
+  square and stays there (61% round).
+- **Three families go from one class to the next by degrees** (three tests, every three
+  degrees, the share moving by a fifth at most as the shape is turned):
+  - **a corner's rounding**: square to a tenth of the box's shorter side, round from a
+    quarter, a share of each between, the more rounded never the less round, and at no
+    rounding anything of it a point;
+  - **a corner cut off flat**: square while the cut is under a seventh of the side (98% to
+    79% square for a 0.8 by 0.6 box cut by 0.05 to 0.09 of its size: the third review's failing
+    case), eight-sided and round from a quarter, never squarer for a larger cut;
+  - **an oval**: round to three times as long as wide, pointed from eight, **and at no length
+    more than a fifth square**.
+- **What it cannot say steadily**, measured:
+  - In the bands above (a rounding of a tenth to a fifth of the side, a cut of a seventh to a
+    fifth) the share moves by up to a fifth with the angle.
+  - **An oval four to six times as long as wide is on the line between round and pointed**,
+    and its lead goes by the angle it is turned to (its end is a dozen pixels round at 512).
+  - **A body bristling with more than about a dozen hair-thin parts** (a disc with sixteen
+    whiskers of one pixel) is read by its hairs or not at all: the inside corners at each
+    hair's foot take the rim's turning out of every window that reaches them. Two to eight
+    hairs change nothing. (Two tries at stopping windows at such feet made a slotted disc
+    pointed and are not in it.)
+  - A corner on a curve reads a few degrees over its own angle; a part under four pixels
+    thick is not read; holes are not traced. It reads outlines, not surfaces: a ball on a
+    square plinth seen from the front is both.
+- **It needs pixels.** A piece under 110 pixels across is not read at all (a thumbnail never
+  is), so the studio renders the three silhouettes again at 512 for it. A shape in one of the
+  bands above swings further the smaller it is drawn (a box rounded by a sixth of its side:
+  74% to 81% round at 512 pixels, 35% to 78% at 256, and anything from square to round at 150);
+  out of the bands a square, a disc, a triangle and a star read the same from 512 down to 140. A silhouette of 512
+  takes 10 to 16 ms to read (release, measured on this laptop: the distance transform 4 ms of
+  it), on the caller's own thread, and is read anew at each call.
 - **The rule.** `style.toml`: `[taste] shape_language = "round"` (or `"square"`, `"pointed"`) and
   `shape_min_share` (0.5 unless given): the check `shape_language` fails an asset whose share of
   that kind is under it, with the three shares in its message and what to do in its fix;
@@ -428,12 +451,12 @@ and **checked only when a style asks** for one.
   writes it with the rest. **No shipped preset asks for one now**: `storybook` asked for round
   until the measure's third review (a ball on a string would have failed it), and a moonlit
   graveyard, a muted or a noir game and the neutral stage are not one shape.
-- **What it says of Sepulcra** (2026-11-19, its 56 recipes through `studio_check`, by the measure
-  above): 30 lead pointed, 20 square and 6 round (`grave_rock` 0.98 round, `wall_segment` 0.61);
-  the crypt is 0.65 square, the wraith 0.87 pointed, the iron gate 0.81 pointed, a tombstone 0.55
-  square. A graveyard of crosses, spires and iron: no check is asked of it. (By the measure
-  before its second review, which did not count a point double and counted notches, it was 31
-  square, 18 pointed and 7 round.)
+- **What it says of Sepulcra** (2026-11-19, its 56 recipes through `studio_check`, by the
+  fourth version): **29 lead pointed, 14 round and 13 square** (`grave_rock` wholly round,
+  the wraith 0.80 pointed, the angel 0.63 pointed, the crypt 0.59 square, a tombstone 0.41
+  pointed with the rest shared, the fallen pediment a third of each). (By the third version: 30 pointed, 20 square
+  and 6 round; by the measure before its second review: 31 square, 18 pointed and 7 round.) A
+  graveyard of crosses, spires and iron: no check is asked of it.
 - **Its first review** (a model that did not write it, 2026-11-19) **said not to merge it.** The
   measure then counted the corners of a straightened polygon with hard lines between the classes:
   a box rounded by an eighth of its size was round upright and square turned six degrees; a
@@ -467,25 +490,44 @@ and **checked only when a style asks** for one.
 - **Its third review** (another model, 2026-11-19) **said not to merge those mends.** The second
   review's findings were gone by their own probes at 512 pixels (a box rounded by a sixteenth
   now moves by an eighth, a spike is 63% to 72% pointed, a slotted disc is round), and twenty
-  kinds of shape held their lead at every degree of turn. And the mends had brought the two
-  faults listed above under "What it gets wrong": the chamfered box, to which the check's own
-  advice for a square style led ("bevels under a tenth"), and the ball with a thin stalk, which
-  the double weight of a point made. Smaller: the greatest width tried one hull point in four
+  kinds of shape held their lead at every degree of turn. And the mends had brought two faults
+  of their own. **A corner cut off flat by about a fifteenth of the size or more read as
+  round** (a chamfer is two turns of 45°, each gentle by the rule: a 0.8 by 0.6 box cut by 0.07
+  of its size was 100% round at every angle), and the check's own advice for a square style
+  led there ("bevels under a tenth"). **One thin part on a round body read as pointed** (its
+  end turns right round, and a point counted double: a balloon on a string 52% pointed, a
+  snowman with stick arms 71%, a disc with four whiskers 84%). Smaller: the greatest width tried one hull point in four
   and came out up to a fifth short on a sliver (every pair is tried now); a reading kept inside
   the measures went stale in a copy (it is read anew at each call); the time to read a
   silhouette was understated (4 to 13 ms each on a busy machine, and up to a second for a
   spiral or a comb of one-pixel teeth, on the caller's own thread).
-- **Where it stands.** Three reviews by models that did not write it, three "do not merge",
-  each mend true to the review before and each bringing a fault of its own. What they share is
-  the measure's premise: it weighs **how the outline turns**, and a person weighs **how much of
-  the thing** is round, flat-sided or sharp. A string on a balloon and a spike turn alike; a
-  chamfer and a fillet turn alike. So, as of 2026-11-19: **the shares are reported for every
-  asset as what they are** (how its outline turns outward: in curves, at square corners, at
-  points); **the check stays for a style that asks for it by name, with its advice made true
-  to the measure and the two faults said in it; and no preset asks for it.** What it should
-  become is the owner's to say ([HANDOFF.md](../../HANDOFF.md), "Open owner decisions"):
-  leave it a reported fact; a fourth version that weighs parts by their size in the
-  silhouette; or, as faceting was settled, from what the recipe is built of (balls, capsules
-  and chains are round, boxes square, cones and wedges pointed, each by its surface), which
-  cannot speak for an imported mesh.
-
+- **Its fourth version** (2026-11-19; the owner, shown the three choices: "2 - 3 and I don't
+  care if it takes longer": a fourth silhouette measure that weighs parts by their size, **and**
+  the measure from what a recipe is built of). The three reviews shared one finding under
+  their different ones: the measure weighed **how the outline turns**, with one window for the
+  whole shape, and a person weighs **how much of the thing** is round, flat-sided or sharp. The
+  fourth version keeps the turning and gives it what it lacked: every point of the outline
+  belongs to a part with a thickness, is judged at that thickness and counts by it. It was
+  tuned against one table of fifty-six shapes printed at every angle (the `table` test, which writes it to a file and is
+  ignored), and then run through the third review's own probes before it
+  was shown to anyone: sixty kinds of shape at every degree of a quarter turn, mirrored and
+  shifted by part of a pixel, hold their lead in every mask at 512 pixels (boxes, bars to a
+  fourteenth, an L, a cross, letters, crescents, stars, a gear, polygons, triangles of 30 to
+  70 degrees, houses), but for a thick C with square-cut ends, which is a tenth pointed-led
+  (its cut corners are of 77 degrees, on the line). (Three of that probe's shapes are cut by
+  the picture's edge as they turn, and say nothing.) **What changed for the three reviews' cases**, by their probes:
+  - the third review's cut boxes (0.05, 0.07, 0.09 of the size) pass a square style at 96% to
+    99% square, and lead square in all 120 turned masks each (they read 0% square);
+  - its balloon, cherry, lollipops, bomb and snowman pass a round style at 92% to 100% round,
+    and lead round in all 72 masks each (they led pointed); two to sixteen whiskers of one
+    pixel leave a disc wholly round;
+  - bars to a fourteenth as thick as long, a table's legs and a comb's teeth are square (they
+    read pointed, a documented limit of the third version);
+  - **a convention moved**: a corner is judged at the scale of its part, so a box rounded by
+    a tenth of its shorter side is square (it was round from a sixteenth of the whole size),
+    and round only from about a quarter. A crate with softened edges is a crate.
+  **It has not been reviewed.** The check stays as it was made safe: for a style that asks by
+  name, and no preset asks, until a model that did not write it has tried to break it.
+- **From what the recipe is built of**: the second measure the owner asked for. **Not built
+  yet** (designed: each named shape's own outlines, weighed by its surface, read by the same
+  classes; it tells an agent which part to change, and cannot speak for an imported mesh).

@@ -124,9 +124,9 @@ pub fn check_subject(m: &Measured, rules: &StyleRules) -> Vec<Finding> {
     if let (Some(kind), Some(shape)) = (t.shape_language, m.shape()) {
         let pc = |x: f32| (x * 100.0).round();
         let fix = match kind {
-            crate::shape::Kind::Round => "round its corners with a radius of a tenth of its size or more (a roundness, a larger corner or round), and build it from balls, capsules and chains rather than boxes (a part thinner than a fifteenth of the whole ends in a point at this size, and a point counts double: a round body with a thin stalk, string or stick on it reads as pointed here, and is exempted by name if that is its look)",
-            crate::shape::Kind::Square => "square it off: flat sides meeting at right angles, bevels and rounded corners kept under a twentieth of its size (a wider one reads as round here, a chamfer too: exempt an asset whose wide bevels are its look), fewer curves and spikes in the outline",
-            crate::shape::Kind::Pointed => "give the outline points: tapers that end in a tip, wedges, spikes and blades whose tips are under 65 degrees, in place of rounded and squared ends (a notch cut into it adds nothing: only what sticks out is read)",
+            crate::shape::Kind::Round => "round each part's corners with a radius of a quarter of that part's thickness or more (a roundness, a larger corner or round), and build it from balls, capsules and chains rather than boxes; a thin stalk, string or stick on a round body changes nothing, and an oval over about four times as long as wide comes to points",
+            crate::shape::Kind::Square => "square it off: flat sides meeting at right angles, with rounded corners kept under a tenth of the part's thickness and corners cut off flat under a seventh of it (wider, the part goes round by degrees), fewer curves and spikes in the outline",
+            crate::shape::Kind::Pointed => "give the outline points: tapers that end in a tip, wedges, spikes and blades whose tips are under 65 degrees and whose foot is thick (a spike counts by the thickness of its foot, a hair by its own: nothing), in place of rounded and squared ends; a notch cut into it adds nothing, only what sticks out is read",
         };
         out.push(finding(
             rules,
@@ -264,7 +264,7 @@ mod tests {
         assert!(other.shape().is_some_and(|s| s.round > 0.95) && boxy == boxy.clone());
         let of = |toml: &str, m: &Measured| check_subject(m, &StyleRules::parse(toml, "style.toml", &|_| None).unwrap()).into_iter().find(|f| f.check == "shape_language");
         let f = of("[taste]\nshape_language = \"round\"\n", &boxy).unwrap();
-        assert!(f.is_error() && f.value < 0.1 && f.limit == 0.5 && f.message.contains("square 100%") && f.fix.contains("round its corners"), "{f:?}");
+        assert!(f.is_error() && f.value < 0.1 && f.limit == 0.5 && f.message.contains("square 100%") && f.fix.contains("round each part's corners"), "{f:?}");
         let f = of("[taste]\nshape_language = \"square\"\nshape_min_share = 0.8\n", &boxy).unwrap();
         assert!(f.passed && f.value > 0.9 && (f.limit - 0.8).abs() < 1e-6, "{f:?}");
         let f = of("[taste]\nshape_language = \"pointed\"\nallow = { \"crate*\" = [\"shape_language\"] }\n", &boxy).unwrap();
@@ -278,7 +278,7 @@ mod tests {
         let found = check_subject(&boxy, &rules);
         let refs: Vec<&crate::Finding> = found.iter().collect();
         let said = crate::critique::critique("crate_a", None, &refs, &rules).to_string();
-        assert!(said.contains("shape_language") && said.contains("round its corners") && !said.contains("\"verdict\":\"ok\"}],\"next\":[]"), "{said}");
+        assert!(said.contains("shape_language") && said.contains("round each part's corners") && !said.contains("\"verdict\":\"ok\"}],\"next\":[]"), "{said}");
     }
 
     /// Every taste check and every form check belongs to a pass of the critique: a failure
