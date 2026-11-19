@@ -1037,7 +1037,7 @@ fn apart(net: &[f32], sum: &[f64], way: f32, half: &[usize], blur: &[usize], wor
     for p in peaks.drain(..) {
         if let Some(&q) = corners.last() {
             if (net[q] > 0.0) == (net[p] > 0.0) {
-                let low = (q..=p).map(|j| v(j)).fold(f32::INFINITY, f32::min);
+                let low = (q..=p).map(&v).fold(f32::INFINITY, f32::min);
                 *work += (p - q + 1) as u64;
                 if low >= 0.5 * v(q).min(v(p)) {
                     if v(p) > v(q) {
@@ -1052,7 +1052,7 @@ fn apart(net: &[f32], sum: &[f64], way: f32, half: &[usize], blur: &[usize], wor
     // (And round the end to the first.)
     if corners.len() > 2 {
         let (q, p) = (corners[corners.len() - 1], corners[0]);
-        if (net[q] > 0.0) == (net[p] > 0.0) && (q..=p + count).map(|j| v(j)).fold(f32::INFINITY, f32::min) >= 0.5 * v(q).min(v(p)) {
+        if (net[q] > 0.0) == (net[p] > 0.0) && (q..=p + count).map(&v).fold(f32::INFINITY, f32::min) >= 0.5 * v(q).min(v(p)) {
             if v(q) > v(p) {
                 corners[0] = q;
             }
