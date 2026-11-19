@@ -698,7 +698,17 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       bands that crossed themselves at a coarse detail, a closed-form length that lost
       digits. **A fresh agent investigated and mended them** (`859be3c5`: every build is
       checked, and is a well-made shape or a refusal as data with its numbers and a detail
-      that holds; the test is the crate's now). **Stage 1b, the solids, is being built.**
+      that holds; the test is the crate's now). **Stage 1b, the solids: built** (2026-11-20,
+      `fe382c13`: 82 solids, flat and curved, 79 aliases, and three operators that make a
+      prism, a pyramid or a turned solid of any one-ring plane figure). **Claude's review
+      of it found five faults**, again by drawing the parameters at their corners together,
+      and at odd details: a long or flat superellipsoid builds a mesh that is not the shape
+      (a needle of 10 km came out 8 m long, its error said small); a turned figure's closed
+      volume loses its digits when the section is thin and far from the axis (up to a
+      thousandth); on strongly stretched forms a corner's normal points behind its own
+      face; one form is marked flat that is curved; and the crate's tests add twelve
+      minutes to the gate. **A fresh agent is investigating and mending them**; stage 1c
+      does not start until it has.
       Then 1c (2.5D: a plane figure raised, a solid drawn flat, a solid cut into layers),
       the modeller, the engine's 2D item with two read-only tools and
       `docs/design/FORMAE.md`, and further families. Each stage is reviewed by Claude, who
