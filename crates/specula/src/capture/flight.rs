@@ -398,9 +398,11 @@ impl Engine {
         // A form view's pipelines are a set of their own, built on a worker the first time one
         // is asked for: the view waits for them, a pass at a time. (Compiled inside its first
         // render they held the engine thread 440 ms: second review of the form views.)
-        let wants_form = match &p.job {
-            Job::Frame(spec) => !spec.form.is_world(),
-            Job::Orbit(o) => !o.form.is_world(),
+        let wants_form = match (&p.job, &p.state) {
+            (Job::Frame(spec) | Job::Mark { frame: spec, .. }, _) => !spec.form.is_world(),
+            (Job::Orbit(o), _) => !o.form.is_world(),
+            // A diff is drawn in its mark's view.
+            (Job::Diff { .. }, State::Diff { view, .. }) => !view.form.is_world(),
             _ => false,
         };
         if wants_form {
@@ -436,8 +438,8 @@ impl Engine {
         let none = ov::Spec::default();
         let (opts, gi, form) = match (&p.job, &p.state) {
             (Job::Frame(spec), _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, hud: true, fill: None }, Some(spec.gi), spec.form),
-            (Job::Mark { frame: spec, .. }, _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, hud: true, fill: None }, None, crate::sight_tools::Form::default()),
-            (Job::Diff { .. }, State::Diff { view: v, .. }) => (ViewOpts { include_ui: v.include_ui, lod: v.lod, time_s: p.time_s, overlays: &v.overlays, caption: None, ids: v.ids, hud: true, fill: None }, None, crate::sight_tools::Form::default()),
+            (Job::Mark { frame: spec, .. }, _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, hud: true, fill: None }, None, spec.form),
+            (Job::Diff { .. }, State::Diff { view: v, .. }) => (ViewOpts { include_ui: v.include_ui, lod: v.lod, time_s: p.time_s, overlays: &v.overlays, caption: None, ids: v.ids, hud: true, fill: None }, None, v.form),
             (Job::Query(q), _) => (ViewOpts { include_ui: view.include_ui, lod: q.frame.lod, time_s: p.time_s, overlays: &none, caption: None, ids: true, hud: true, fill: None }, None, crate::sight_tools::Form::default()),
             // The window hides the game's interface while the editor is open: the pick sees what the human does.
             (Job::Pick(_), _) => (ViewOpts { include_ui: true, lod: None, time_s: p.time_s, overlays: &none, caption: None, ids: true, hud: false, fill: None }, None, crate::sight_tools::Form::default()),
@@ -994,6 +996,7 @@ impl Engine {
             time_s: spec.time_s,
             overlays: spec.overlays,
             ids: spec.ids,
+            form: spec.form,
         };
         let key = self.swarm.key(session);
         let on_screen = r.subjects.iter().filter(|s| s.on_screen).count();
@@ -1022,6 +1025,9 @@ impl Engine {
             ("evicted", Json::arr(evicted.into_iter().map(Json::from))),
             ("warnings", Json::Null),
         ]);
+        if !spec.form.is_world() {
+            out.set("form", spec.form.packet_json(spec.form.scale_for(&view.camera)));
+        }
         let warnings = taken.warnings;
         let (w, h) = (spec.width, spec.height);
         let bytes = pixels.len() as u64;
@@ -1085,6 +1091,8 @@ impl Engine {
         let frame = self.frames_captured;
         let ticks_since = taken.tick.saturating_sub(marked_tick);
         let (name, camera) = (name.to_owned(), view.camera.to_json());
+        // The mark's form view, which this render was drawn in too.
+        let form = (!view.form.is_world()).then(|| view.form.packet_json(view.form.scale_for(&view.camera)));
         self.offload_capture_made(session, to, bytes, make, png, "sight", move |(sw, sh, factor, pixels, subjects), png_bytes, saved, more| {
             warnings.extend(more);
             let packet_path = saved.as_ref().map(|p| p.with_extension("json"));
@@ -1112,6 +1120,9 @@ impl Engine {
                 ("subjects", subjects),
                 ("warnings", Json::Arr(warnings)),
             ]);
+            if let Some(form) = form {
+                packet.set("form", form);
+            }
             save_packet(&mut packet, packet_path.as_ref());
             ToolOutput {
                 content: vec![Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) }, Content::Text(packet.to_pretty())],
@@ -1327,6 +1338,59 @@ mod tests {
         let (_, out) = run(&mut e, &[&formed, &world], |_| {});
         assert_eq!(packet(&out[0]).get("form").and_then(|f| f.get("view")).and_then(Json::as_str), Some("clay"));
         assert!(packet(&out[1]).get("form").is_none());
+    }
+
+    /// A mark taken in a form view is diffed in the same view, so the comparison shows a change
+    /// of shape and nothing else: a cube that only changes colour leaves a clay mark's diff
+    /// with no changed pixel and the world mark's with many; a cube that changes size changes
+    /// both. The mark's and the diff's answers say which view they are, and the list does.
+    #[test]
+    fn a_mark_in_a_form_view_is_diffed_in_it_and_shows_shape_alone() {
+        let Some(mut e) = engine("form-compare") else { return };
+        // Straight at the front of the cube at (2, 0, 3), from +z.
+        let view = r#""eye": [2, 0, 9], "target": [2, 0, 3], "width": 128, "height": 128, "fov_y_deg": 30"#;
+        let mut call = 100;
+        let mut compare = |e: &mut Engine, args: String| {
+            call += 1;
+            let rx = ask(e, "sight_compare", &args, call, soon());
+            let (_, out) = run(e, &[&rx], |_| {});
+            packet(&out[0])
+        };
+        let set = |e: &mut Engine, change: &str| {
+            let id = e.world.resolve(&crate::world::EntityKey::Path("/c20".into())).expect("the cube at (2, 0, 3)");
+            let (_, spec) = crate::tools::parse_set(&Json::parse(&format!(r#"{{"id": {id}, {change}}}"#)).unwrap()).unwrap();
+            e.world.commit(&mut e.swarm, 0, Writer::new("t", Some("t")), journal::Kind::Set, crate::write_policy::Rule::World, |wd| wd.update(&crate::world::EntityKey::Id(id), spec, "t").map(|x| x.id)).unwrap();
+        };
+        let changed = |p: &Json| p.get("pixels").and_then(|x| x.get("changed_px")).and_then(Json::as_u64).unwrap_or_else(|| panic!("a diff with its changed pixels: {p:?}"));
+        let form_of = |p: &Json| p.get("form").and_then(|f| f.get("view")).and_then(Json::as_str).map(str::to_owned);
+
+        let world_mark = compare(&mut e, format!(r#"{{"action": "mark", "name": "world", {view}}}"#));
+        let clay_mark = compare(&mut e, format!(r#"{{"action": "mark", "name": "clay", {view}, "form": "clay"}}"#));
+        assert_eq!((form_of(&world_mark), form_of(&clay_mark).as_deref()), (None, Some("clay")), "a mark says its form view, and the world's says none");
+        // Nothing changed: neither differs from its mark (the clay diff is drawn in clay; drawn
+        // as the world it would differ from its clay mark all over).
+        let (w0, c0) = (compare(&mut e, r#"{"action": "diff", "name": "world"}"#.into()), compare(&mut e, r#"{"action": "diff", "name": "clay"}"#.into()));
+        assert_eq!((changed(&w0), changed(&c0)), (0, 0), "an unchanged world differs from neither mark");
+        assert_eq!((form_of(&w0), form_of(&c0).as_deref()), (None, Some("clay")), "a diff says the view it was drawn in");
+        // A change of colour alone: the world's comparison sees it, the clay one does not.
+        set(&mut e, r##""color": "#c0392b""##);
+        let (w1, c1) = (compare(&mut e, r#"{"action": "diff", "name": "world"}"#.into()), compare(&mut e, r#"{"action": "diff", "name": "clay"}"#.into()));
+        assert!(changed(&w1) > 500, "the world's comparison sees a cube that turned red: {} px", changed(&w1));
+        assert_eq!(changed(&c1), 0, "in clay a change of colour is no change");
+        // A change of shape: both see it.
+        set(&mut e, r#""scale": [0.5, 1.6, 0.5]"#);
+        let (w2, c2) = (compare(&mut e, r#"{"action": "diff", "name": "world"}"#.into()), compare(&mut e, r#"{"action": "diff", "name": "clay"}"#.into()));
+        assert!(changed(&w2) > 500 && changed(&c2) > 500, "both comparisons see a cube that changed size: {} and {} px", changed(&w2), changed(&c2));
+        // The list names the view of a mark that has one.
+        let list = compare(&mut e, r#"{"action": "list"}"#.into());
+        let forms: Vec<(String, Option<String>)> = list
+            .get("marks")
+            .and_then(Json::as_array)
+            .unwrap()
+            .iter()
+            .map(|m| (m.get("name").and_then(Json::as_str).unwrap().to_owned(), m.get("form").and_then(Json::as_str).map(str::to_owned)))
+            .collect();
+        assert!(forms.contains(&("world".into(), None)) && forms.contains(&("clay".into(), Some("clay".into()))), "{forms:?}");
     }
 
     /// A form view (`sight_frame form`, `sight_orbit form`) draws the same surfaces as shape

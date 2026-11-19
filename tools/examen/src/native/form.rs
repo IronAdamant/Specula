@@ -10,7 +10,10 @@
 //! - a form tile shows the subject against the form views' neutral ground and a silhouette
 //!   against white, and nothing of the stage (no floor, no figure);
 //! - clay is a warm grey, lit; normals are colours;
-//! - no frame of the sheet compiled a pipeline (the form views' set is built on a worker).
+//! - a line-up asked for in clay is shape alone too: the subject where each view's box says, on
+//!   the form views' ground with no floor, and the reference figure and cube beside it (a
+//!   line-up is for scale: its references stay), and the packet says which view it is;
+//! - no frame of either compiled a pipeline (the form views' set is built on a worker).
 
 use specula_core::Json;
 
@@ -30,7 +33,7 @@ const RECIPE: &str = r#"{
       "shape": { "op": "box", "size": [0.3, 0.9, 0.3] } },
     { "name": "ball", "material": "painted", "color": "accent",
       "shape": { "op": "sphere", "radius": 0.24, "subdivisions": 3 },
-      "ops": [ { "op": "move", "by": [0, 1.1, 0] } ] }
+      "ops": [ { "op": "move", "by": [0, 0.88, 0] } ] }
   ]
 }
 "#;
@@ -116,10 +119,48 @@ pub fn form_sheet(cx: &mut Cx) -> Result<String, String> {
         }
     }
 
+    // The line-up as shape alone.
+    let lineup = cx.call(port, lead, "studio_lineup", r#"{"subjects": ["recipes/post.json"], "form": "clay", "width": 640, "response_format": "detailed"}"#)?;
+    expect(text(&lineup, "form") == Some("clay") && at(&lineup, "rig").is_some_and(Json::is_null), "a line-up in clay does not say so (form: clay, and no rig)", &lineup)?;
+    let lpath = text(&lineup, "image.path").ok_or("the line-up's answer has no picture")?.to_owned();
+    let lbytes = std::fs::read(&lpath).map_err(|e| format!("{lpath}: {e}"))?;
+    let limage = specula_core::png::decode(&lbytes).map_err(|e| format!("{lpath}: {e:?}"))?;
+    let lpx = |x: u32, y: u32| -> [u8; 3] {
+        let i = ((y * limage.width + x) * 4) as usize;
+        [limage.rgba[i], limage.rgba[i + 1], limage.rgba[i + 2]]
+    };
+    let boxes = at(&lineup, "subjects.0.boxes").and_then(Json::as_array).ok_or_else(|| format!("the line-up's subject has no boxes: {}", super::short(&lineup)))?.to_vec();
+    expect(boxes.len() == 2, "a line-up does not give its subject a box in each of its two views", &lineup)?;
+    for b in &boxes {
+        let view = text(b, "view").unwrap_or("?").to_owned();
+        let Some([bx, by, bw, bh]) = rect(b, "box") else { return Err(format!("the line-up's {view} box is not four numbers: {}", super::short(b))) };
+        // The subject fills the middle column of its box, in clay (a lit warm grey on the shaft).
+        let column: u32 = (by + 2..by + bh.saturating_sub(2)).map(|y| u32::from(!is_ground(lpx(bx + bw / 2, y)))).sum();
+        let mid = lpx(bx + bw / 2, by + bh * 3 / 4);
+        let clay = mid[0] >= mid[2] && mid[1] > 50 && mid[0].abs_diff(mid[1]) < 40;
+        // No floor: a lit line-up's floor runs to both edges of the picture all the way down the
+        // view. Here the two edge columns are ground for every row the subject spans and a
+        // little under it, and so are the corners above.
+        let under = (by..(by + bh + 12).min(limage.height)).map(|y| u32::from(!is_ground(lpx(1, y))) + u32::from(!is_ground(lpx(limage.width - 2, y)))).sum::<u32>();
+        let corner = is_ground(lpx(2, by.saturating_sub(by.min(4)) + 2)) && is_ground(lpx(limage.width - 3, by + 2));
+        // The references are drawn: clear of the subject's box, in the rows it spans, something
+        // stands that is not ground (the figure is taller than the post and to its left).
+        let beside: u32 = (by..by + bh).map(|y| (0..limage.width).filter(|x| (*x + 6 < bx || *x > bx + bw + 6) && !is_ground(lpx(*x, y))).count() as u32).sum();
+        if column * 10 < bh.saturating_sub(4) * 8 || !clay || under > 0 || !corner || beside < 200 {
+            return Err(format!(
+                "the line-up's {view} view in clay: {column} of {} pixels down the middle of the subject's box are the subject (its shaft {mid:?}); {under} pixels of the picture's two edge columns beside it are not ground (of {} rows: a floor would fill them); the corners are ground: {corner}; {beside} pixels beside its box are not ground (the references) (box {:?}; {lpath})",
+                bh.saturating_sub(4),
+                bh + 12,
+                [bx, by, bw, bh]
+            ));
+        }
+        seen += 1;
+    }
+
     // No frame of it compiled a pipeline: the form views' set was built on a worker.
     let perf = cx.call(port, lead, "perf_frame", "{}")?;
     let hitched = at(&perf, "errors").and_then(Json::as_array).is_some_and(|e| e.iter().any(|x| super::short(x).contains("pipeline_created_after_warm")));
     expect(!hitched, "a frame compiled a pipeline after the engine was warm", &perf)?;
     cx.stop(port)?;
-    Ok(format!("{seen} form and silhouette tiles show the subject alone where their view's box says; no pipeline compiled by a frame ({path})"))
+    Ok(format!("{seen} form tiles, silhouette tiles and line-up views in clay show what their view's box says, the line-up with its references and no floor; no pipeline compiled by a frame ({path}, {lpath})"))
 }

@@ -147,7 +147,8 @@ pub enum StudioCall {
     /// No subjects: the stage's description.
     Stage { subjects: Vec<SubjectSpec>, view: View, rig: Option<RigName>, size: [u32; 2], references: bool, format: Format },
     Sheet { sheet: SheetSpec, mark: Option<String>, format: Format },
-    Lineup { subjects: Vec<SubjectSpec>, rig: RigName, width: u32, format: Format },
+    /// (`form`: the line-up as shape alone, in one of the form views; none is the lit line-up.)
+    Lineup { subjects: Vec<SubjectSpec>, rig: RigName, width: u32, form: Option<specula_gpu::FormView>, format: Format },
     Compare { from: CompareFrom, sheet: SheetSpec, format: Format },
     Check { subject: SubjectSpec, siblings: Option<Vec<SubjectSpec>>, tile: u32, image: bool, format: Format },
     Style { subjects: Vec<SubjectSpec>, folder: Option<String>, variants: bool, format: Format },
@@ -342,12 +343,25 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<StudioCall, String>> {
             Ok(StudioCall::Sheet { sheet: sheet_arg(args, subjects)?, mark: mark_arg(args, "mark")?, format: format(args)? })
         })(),
         "studio_lineup" => (|| {
-            check_keys(args, name, &[&["subjects", "rig", "width", "response_format"]])?;
+            check_keys(args, name, &[&["subjects", "rig", "width", "form", "response_format"]])?;
             let subjects = subjects_arg(args, MAX_SUBJECTS, true)?;
             if subjects.is_empty() {
                 return Err("a line-up needs 'subjects'".into());
             }
-            Ok(StudioCall::Lineup { subjects, rig: rig_arg(args)?.unwrap_or(RigName::Neutral), width: int_arg(args, "width", 256, MAX_SHEET_PX as u64)?.unwrap_or(1600) as u32, format: format(args)? })
+            // The line-up as shape alone: one of the form views ("world" is the lit line-up).
+            let form = match args.get("form").filter(|v| !v.is_null()) {
+                None => None,
+                Some(v) => match v.as_str().and_then(specula_gpu::FormView::parse) {
+                    Some(specula_gpu::FormView::World) => None,
+                    Some(view) => Some(view),
+                    None => return Err(format!("'form' must be one of {}", specula_gpu::FormView::NAMES.join(", "))),
+                },
+            };
+            // (A rig lights the lit line-up: with a form view it would do nothing, so it is refused.)
+            if form.is_some() && args.get("rig").is_some_and(|v| !v.is_null()) {
+                return Err("'rig' lights the lit line-up: a form view has no light of the world's, so leave 'rig' out with 'form'".into());
+            }
+            Ok(StudioCall::Lineup { subjects, rig: rig_arg(args)?.unwrap_or(RigName::Neutral), width: int_arg(args, "width", 256, MAX_SHEET_PX as u64)?.unwrap_or(1600) as u32, form, format: format(args)? })
         })(),
         "studio_compare" => (|| {
             check_keys(args, name, &[&["mark", "before", "after", "views", "passes", "rig", "tile", "references", "response_format"]])?;
@@ -493,9 +507,27 @@ pub fn definitions() -> Vec<ToolDef> {
             description: format!(
                 "Line-up: subjects (1..12) side by side at true relative scale beside the 1.8 m figure and the 1 m cube, front and three-quarter, on one image. {stage_note} \
                  The packet gives each subject's height (m and as a ratio to the figure), its box in each view, and the silhouette distinctness matrix (IoU of 64 px \
-                 silhouettes fitted to their own boxes, mean of front, side and three-quarter; over style.toml [taste] silhouette_max_iou reads as the same thing)."
+                 silhouettes fitted to their own boxes, mean of front, side and three-quarter; over style.toml [taste] silhouette_max_iou reads as the same thing). \
+                 With form (clay, normals, curvature, stripes) the line-up is shape alone, the figure and the cube with it and no ground: siblings' forms side by side, \
+                 whatever their colours."
             ),
-            input_schema: schema(vec![("subjects", t("array", subj)), ("rig", t("string", "neutral (default), game or worst")), ("width", t("integer", "Image width, 256..2048 (default 1600)")), fmt()], &["subjects"]),
+            input_schema: schema(
+                vec![
+                    ("subjects", t("array", subj)),
+                    ("rig", t("string", "neutral (default), game or worst; not with form")),
+                    ("width", t("integer", "Image width, 256..2048 (default 1600)")),
+                    (
+                        "form",
+                        Json::obj([
+                            ("type", Json::from("string")),
+                            ("enum", Json::arr(specula_gpu::FormView::NAMES.map(Json::from))),
+                            ("description", Json::from("The line-up as shape alone, as sight_frame's form (default world: the lit line-up)")),
+                        ]),
+                    ),
+                    fmt(),
+                ],
+                &["subjects"],
+            ),
         },
         ToolDef {
             name: "studio_compare".into(),
@@ -593,6 +625,14 @@ mod tests {
         assert_eq!(sheet.subjects.len(), 33);
         assert!(bad("studio_sheet", &batch(MAX_SHEET_SUBJECTS + 1)).contains("at most 48"));
         assert!(bad("studio_lineup", &batch(13).replace(r#", "views": ["three_quarter", "gameplay"]"#, "")).contains("at most 12"));
+        // A line-up takes a form view (the world's is the lit line-up), and no rig with it.
+        let lineup = |more: &str| parse("studio_lineup", &Json::parse(&format!(r#"{{"subjects": ["a.json"]{more}}}"#)).unwrap());
+        assert!(matches!(lineup(r#", "form": "clay""#), Some(Ok(StudioCall::Lineup { form: Some(specula_gpu::FormView::Clay), .. }))));
+        assert!(matches!(lineup(r#", "form": "world", "rig": "game""#), Some(Ok(StudioCall::Lineup { form: None, rig: RigName::Game, .. }))));
+        assert!(matches!(lineup(""), Some(Ok(StudioCall::Lineup { form: None, .. }))));
+        for refused in [r#", "form": "mesh""#, r#", "form": 3"#, r#", "form": "clay", "rig": "game""#] {
+            assert!(lineup(refused).is_some_and(|r| r.is_err()), "{refused}");
+        }
         assert!(bad("studio_sheet", r#"{"recipe": "../x.json"}"#).contains("recipe"));
         assert!(bad("studio_sheet", r#"{"recipe": "a.json", "views": ["sideways"]}"#).contains("a view is"));
         assert!(bad("studio_sheet", r#"{"recipe": "a.json", "subjects": ["b.json"]}"#).contains("not both"));

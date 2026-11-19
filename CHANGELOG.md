@@ -355,6 +355,10 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       into each other, on silhouettes of 256 pixels, and is steady to a tenth over a quarter
       turn for fourteen known shapes. Sepulcra's 56 recipes lead square (31), pointed (18)
       and round (7). The form checks and it have their place in the critique.
+    - **The form views in a before and after, and in the line-up** (2026-11-19): `sight_compare`'s
+      mark takes `form`, and its diff is drawn in the mark's view (a mark in clay shows a change
+      of shape and not a change of colour); `studio_lineup` takes `form` and keeps its
+      reference figure and cube.
     - **`pediment_fallen`'s floating rubble, mended at the owner's word** (2026-11-19): one of
       the approved prop's three rubble blocks hung 8 cm over the ground (the array's jitter
       turns a copy about the prop's origin) and another 9 mm. The three are written out one by

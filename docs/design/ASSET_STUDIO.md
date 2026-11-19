@@ -77,7 +77,8 @@ lightness, contrast against its surround and the LOD drawn.
   of blocks (the fewest that give the largest tile within 2048 px), so one sheet shows a whole batch: the M4
   exit set's 33 props are 4 columns of 176 px tiles. Tiles (96) and renders (128) still bound a sheet.
 - **Line-up** (`studio_lineup`): siblings side by side at true relative scale with the human and the cube, front and
-  three-quarter, on one image, plus the silhouette distinctness matrix between them.
+  three-quarter, on one image, plus the silhouette distinctness matrix between them. With `form` (clay, normals,
+  curvature, stripes) it is the same line-up as shape alone, the references with it ([FORM.md](FORM.md)).
 - **Before/after** (`studio_compare`): either two subjects rendered now (two parameter sets, two recipe files), or a
   **mark**: `studio_sheet {mark: "v1"}` keeps that sheet (pixels, per-tile numbers, findings) in memory for the
   calling agent; after editing the recipe, `studio_compare {mark: "v1"}` renders the same sheet again and returns

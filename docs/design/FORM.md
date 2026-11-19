@@ -151,7 +151,20 @@ takes is kept, so a form tile's box is its colour tile's), the subject alone on 
 shot is shown at the shot's own size and level. Not measured: the taste checks read the colour and
 silhouette passes as before.
 
-**Not yet:** `studio_lineup`, a filmstrip and `sight_compare` do not take `form`. A view of the surface's thickness, and the
+**In a before and after** (2026-11-19): `sight_compare`'s `mark` takes `form` (and `form_scale`),
+and its `diff` is drawn in the mark's view, never one of its own. So a mark taken in clay answers
+one question, "did the shape change?": a cube that only turned red leaves the clay diff with no
+changed pixel and the world's diff with thousands; a cube that changed size changes both. The
+mark's answer, the diff's packet and the list of marks say which view a mark is in. (Not
+reviewed.)
+
+**In the line-up** (2026-11-19): `studio_lineup` takes `form`. The siblings stand as shape alone
+on the neutral ground with no floor, **with the 1.8 m figure and the 1 m cube beside them**: a
+line-up is for scale, so its references stay (a sheet's form tile leaves them out). No `rig`
+goes with it, and the packet says the view and no rig. The distinctness matrix is measured as
+before, from silhouettes. `form_sheet_check` holds it live. (Not reviewed.)
+
+**Not yet:** a filmstrip does not take `form`. A view of the surface's thickness, and the
 silhouette alone, are not built (the studio's silhouette frames are the nearest).
 
 ## The form checks

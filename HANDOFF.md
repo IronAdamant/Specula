@@ -238,7 +238,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     another form with preset numbers), the geometry (metres over a wide range; a detail from
     coarse to fine with its error known) and the cost (the size of a build known before it
     is built). One catalogue lists the shapes and the human figure. Where it stands is under
-    part 4 below.
+    part 4 below. **And again, later that night**: "The shape library must be built. Cubes,
+    circles, triangles, pyramids, ovals, egg shapes and all other existing basic shapes must
+    be built. All in Rust and generated in 2D, 2,5D and 3D. Go nuts. If there's a issue then
+    deploy a fresh agent of whatever model to investigate before moving on". *Claude's
+    reading:* every basic shape in all three; 2.5D as the three things the word means in
+    games (a plane figure raised into a slab, a token, a pillow or a relief; a solid drawn
+    flat in a fixed view with its hidden faces removed; a solid cut into layers); more
+    families after the required ones; and **a failure nobody can explain is investigated by a
+    fresh agent before the work goes on**, which holds for all work here from now on.
+  - **Shape language: both** (the same night, shown the three choices in "Open owner
+    decisions" as they stood): "2 - 3 and I don't care if it takes longer." So a fourth
+    silhouette measure that weighs parts by their size is built, **and** the measure from
+    what a recipe is built of; each is reviewed by a model that did not write it.
   - **Nothing is removed while the owner is away** (the same message): "I'm offsite right
     now, so I won't be able to grant you permissions for removal of old data FYI. Await for
     my confirmation for once Im back on site until then everything else is good." So no old
@@ -535,7 +547,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       on the backs too; the arm lies on the shoulder as a separate capsule; the trunk is a box
       with hard vertical edges; an elbow band; a seam where the legs meet the trunk).
       **The studio's sheets take them as passes** (2026-11-19: `"passes": ["colour", "clay",
-      "curvature"]`; not reviewed). Not yet: `studio_lineup` and `sight_compare`. **Its reviewer said not to
+      "curvature"]`; not reviewed). **`sight_compare` and `studio_lineup` take them too**
+      (2026-11-19, later: a mark taken in a form view is diffed in it, so the comparison
+      shows a change of shape and nothing else; a line-up in clay keeps its figure and cube;
+      not reviewed). **Its reviewer said not to
       merge**: clay's light did not come with the camera when looking down; `gi` views with a
       form drew things that are not there; an inside-out shape looked right, and the
       description promised hard edges in curvature, which cannot show them; and the world's
@@ -664,8 +679,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       that widens for fewer; grading counted only when it draws; a loading view waited
       for; `include_ui`; a job near its call's end answers with what it has). **These
       mends are not reviewed yet.**
-    - **Then:** the same in 2D; `form`
-      on `sight_compare` and the line-up. And on the figure, by what the form views show: the plate front and back, the arm
+    - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.
   - **The research behind parts 4 and 5 is in** ([docs/research/library/](docs/research/library/README.md):
@@ -1564,23 +1578,14 @@ Not decisions of this kind, and also with the owner: the seven items of
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-- **What shape language should become** (2026-11-19; [docs/design/FORM.md](docs/design/FORM.md),
-  "Shape language", "Where it stands"). It is one of the five items of "form within an agent's
-  reach" the owner asked for ("Add all"), with "shape language in the presets". Its measure has
-  failed three independent reviews: it weighs how an outline turns, and so a crate with wide
-  bevels reads as round and a balloon on a string as pointed. It is reported in every asset's
-  facts, a style may still ask for it by name, and no preset asks for it now. The choices:
-  1. **Leave it a reported fact**, with its limits said, and no check by default (where it is
-     now). Costs nothing more.
-  2. **A fourth version that weighs parts by their size in the silhouette.** About a day and a
-     fourth review, with no promise it passes: each of three versions fixed what the review
-     before found and brought a fault of its own.
-  3. **From what the recipe is built of**, as faceting was settled (balls, capsules and chains
-     round, boxes square, cones and wedges pointed, each by its surface). About half a day and
-     a review. It says nothing of an imported mesh, and little of how parts are arranged.
-  *Claude's recommendation:* 3, with 1's reported shares kept beside it: the recipe says what
-  a thing is made of, which is what a style means when it asks for "round".
+- **Whether the two reviews the interrupt stopped are run again** (2026-11-19, night). An
+  interrupt sent to ask a question stopped every agent then running, the two reviewers among
+  them, and a stopped agent is started again only at the owner's word. Until then four pieces
+  have no review by a model that did not write them: faceting from the recipe, the shape
+  language's safe state, the light report's mends and the rounded shape's levelled weights.
 
+(What shape language should become was decided on 2026-11-19: both a fourth silhouette
+measure and the measure from the recipe, recorded at the top of this page.)
 (The reference pictures' place was decided on 2026-11-17: a public repository of
 their own, [specula-imagines](https://github.com/IronAdamant/specula-imagines); the three before it were answered on 2026-11-16. Both are
 recorded at the top of this page.)

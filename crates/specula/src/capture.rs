@@ -636,8 +636,12 @@ impl Engine {
                 }
             }
             SightCall::Compare(CompareCall::List) => {
-                let marks = self.marks.names(&key).into_iter().map(|(n, frame, size)| {
-                    Json::obj([("name", Json::from(n)), ("frame", Json::from(frame)), ("size", Json::arr(size.map(Json::from)))])
+                let marks = self.marks.names(&key).into_iter().map(|(n, frame, size, form)| {
+                    let mut j = Json::obj([("name", Json::from(n)), ("frame", Json::from(frame)), ("size", Json::arr(size.map(Json::from)))]);
+                    if !form.is_world() {
+                        j.set("form", Json::from(form.view.name()));
+                    }
+                    j
                 });
                 ToolOutput::text(Json::obj([("marks", Json::arr(marks)), ("max", Json::from(compare::MAX_MARKS_PER_AGENT))]).to_string())
             }
