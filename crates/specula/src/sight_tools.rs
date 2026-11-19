@@ -399,9 +399,10 @@ fn parse_compare(args: &Json) -> Result<CompareCall, String> {
     let action = string_arg(args, "action")?.unwrap_or("");
     match action {
         "mark" => {
-            // A mark takes sight_frame's view arguments.
+            // A mark takes sight_frame's view arguments, its form view among them (the diff is
+            // then drawn in the same view: the mark's, never an argument of its own).
             let frame_keys: &[&str] = &["width", "height", "eye", "target", "fov_y_deg", "time_s", "include_ui", "lod"];
-            check_keys(args, "sight_compare mark", &[&["action", "name"], frame_keys, FRAME_EXTRA_KEYS])?;
+            check_keys(args, "sight_compare mark", &[&["action", "name"], frame_keys, FRAME_EXTRA_KEYS, crate::tools::FRAME_FORM_KEYS])?;
             let name = label_arg(args, "name", true)?.expect("required");
             let frame = parse_frame(args)?;
             Ok(CompareCall::Mark { name, frame: Box::new(frame) })
@@ -629,7 +630,9 @@ pub fn definitions() -> Vec<ToolDef> {
                           mark's exact camera and settings and return one image (before | after | heat; heat shows \
                           changed pixels from red to white over the after image in grey) with numbers: changed_pct, \
                           mean_diff and max_diff (0..255), boxes of changed regions, and which subjects were added, \
-                          removed, moved or changed visibility. list and delete manage your marks (at most 8, least \
+                          removed, moved or changed visibility. A mark taken with form (clay, normals, curvature, \
+                          stripes) is diffed in the same view: only a change of shape shows, whatever happened to \
+                          colours, materials and light. list and delete manage your marks (at most 8, least \
                           recently used dropped first)."
                 .into(),
             input_schema: schema(
@@ -646,6 +649,8 @@ pub fn definitions() -> Vec<ToolDef> {
                     ],
                     view_props(),
                     overlay_props(),
+                    // (mark only: the diff is drawn in its mark's view.)
+                    form_schema(),
                 ]
                 .concat(),
                 &["action"],
@@ -713,7 +718,14 @@ mod tests {
         assert_eq!(o.form.view, FormView::Stripes);
         assert!(call("sight_orbit", r#"{"point":[0,0,0],"form":"mesh"}"#).is_err());
         // The other tools that take a frame's view do not take a form view, and say so as an unknown argument.
-        assert!(call("sight_compare", r#"{"action":"mark","name":"a","form":"clay"}"#).is_err());
+        // A mark takes a form view; a diff is drawn in its mark's and takes none.
+        let SightCall::Compare(CompareCall::Mark { frame, .. }) = call("sight_compare", r#"{"action":"mark","name":"a","form":"curvature","form_scale":0.2}"#).unwrap() else { panic!("a mark") };
+        assert_eq!(frame.form, Form { view: FormView::Curvature, scale: Some(0.2) });
+        let SightCall::Compare(CompareCall::Mark { frame, .. }) = call("sight_compare", r#"{"action":"mark","name":"a"}"#).unwrap() else { panic!("a mark") };
+        assert!(frame.form.is_world());
+        for bad in [r#"{"action":"diff","name":"a","form":"clay"}"#, r#"{"action":"mark","name":"a","form":"mesh"}"#, r#"{"action":"mark","name":"a","form_scale":0.2}"#, r#"{"action":"list","form":"clay"}"#] {
+            assert!(call("sight_compare", bad).is_err(), "{bad}");
+        }
         assert!(call("sight_query", r#"{"name":"a","form":"clay"}"#).is_err());
         // Its scale without one given: a twentieth of the view's half height where the camera looks.
         let cam = crate::sight::Camera::new(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 90.0);

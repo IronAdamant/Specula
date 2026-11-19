@@ -1668,6 +1668,10 @@ pub struct TwoDGpu {
     pub chunk_uploads: u64,
     /// Textures loaded or reloaded since start-up.
     pub texture_loads: u64,
+    /// Captures' fresh checks of a texture file ([`TwoDGpu::check_now`]), and the file times
+    /// read for them on the calling thread, since start-up: one each a capture, at its request.
+    pub fresh_checks: u64,
+    pub stats_here: u64,
     /// A finished texture the last pump's budget held back (uploaded first by the next one).
     held: Option<Done>,
     /// In-world text: the glyph store, this frame's glyphs, layouts.
@@ -1690,6 +1694,8 @@ impl TwoDGpu {
             problem_count: 0,
             chunk_uploads: 0,
             texture_loads: 0,
+            fresh_checks: 0,
+            stats_here: 0,
             held: None,
             text: Default::default(),
         }
@@ -1782,11 +1788,13 @@ impl TwoDGpu {
     ///   recent to trust.
     pub fn check_now(&mut self, path: &str, stat_here: bool) {
         let Some(t) = self.textures.get_mut(path) else { return };
+        self.fresh_checks += 1;
         if t.loading || t.checking {
             t.recheck = true;
             return;
         }
         if stat_here {
+            self.stats_here += 1;
             let now = stamp_of(&self.assets.join(path));
             if now == t.stamp && !recent(now) {
                 return;

@@ -573,6 +573,8 @@ struct Src {
     col: [Rgba; 3],
     tag: u8,
     leaf: u32,
+    /// What it was made as ([`Shape::owners`]).
+    owner: u32,
 }
 
 /// The grid: metres = `origin + grid · step`.
@@ -621,7 +623,7 @@ fn leaf_polys(shape: &Shape, leaf: u32, grid: &Grid, srcs: &mut Vec<Src>, budget
             budget.dropped += 1;
             continue;
         };
-        srcs.push(Src { pos: p, col: t.map(|i| shape.colors[i as usize]), tag: shape.tags.get(ti).copied().unwrap_or(TAG_FACE), leaf });
+        srcs.push(Src { pos: p, col: t.map(|i| shape.colors[i as usize]), tag: shape.tags.get(ti).copied().unwrap_or(TAG_FACE), leaf, owner: shape.owners.get(ti).copied().unwrap_or(crate::shape::NO_OWNER) });
         let src = (srcs.len() - 1) as u32;
         let v = (0..3).map(|k| Vtx { edge: edges[k], p: g[k].map(|c| c as f64) }).collect();
         out.push(Poly::new(support, v, src));
@@ -1642,6 +1644,7 @@ fn to_shape(polys: &[Poly], grid: &Grid, srcs: &[Src], budget: &mut Budget) -> R
     let mut s = Shape { positions: points.iter().map(|p| grid.metres(*p)).collect(), ..Shape::default() };
     let mut colors: Vec<Option<Rgba>> = vec![None; s.positions.len()];
     let mut leaf = Vec::with_capacity(tris.len());
+    let owned = srcs.iter().any(|s| s.owner != crate::shape::NO_OWNER);
     // A vertex shared by pieces of different sources takes the first one's colour; pieces with
     // other colours get their own vertex.
     let mut dup: HashMap<(u32, [u32; 4]), u32> = HashMap::new();
@@ -1667,6 +1670,11 @@ fn to_shape(polys: &[Poly], grid: &Grid, srcs: &[Src], budget: &mut Budget) -> R
         s.tris.push(tri);
         s.tags.push(src.tag);
         leaf.push(src.leaf);
+        // (What it was made as: its piece's input triangle's. A face merged from pieces of one
+        // operand on one plane is triangulated as one, and all of it is its first piece's.)
+        if owned {
+            s.owners.push(src.owner);
+        }
     }
     s.colors = colors.into_iter().map(|c| c.unwrap_or([1.0; 4])).collect();
     Ok((s, leaf, Cleanup { t_junctions, non_manifold_edges: non_manifold, slivers }))
@@ -1960,6 +1968,16 @@ pub use bevel::{Bevel, BevelStats, MAX_ROUND_SEGMENTS};
 /// edges) or added (concave ones) in the same exact plane space, so faces stay exactly flat and
 /// merge back into few triangles.
 pub fn evaluate_bevelled(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Budget) -> Result<(Shape, CsgStats, BevelStats), CsgError> {
+    evaluate_bevelled_leaves(tree, bevel, budget).map(|(s, _, st, bs)| (s, st, bs))
+}
+
+/// A result and the leaf each of its triangles came from.
+type Sourced = (Shape, Vec<u32>);
+
+/// [`evaluate_bevelled`], with the leaf (operand, in the tree's depth-first order) each of the
+/// result's triangles came from: a triangle of a bevel's tube has a number past the tree's
+/// leaves. (Every face of the result is a piece of one operand's face, so this is exact.)
+pub fn evaluate_bevelled_leaves(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Budget) -> Result<(Shape, Vec<u32>, CsgStats, BevelStats), CsgError> {
     let (mut ses, input) = Session::new(tree)?;
     let polys = eval_node(tree, &ses.grid, &mut ses.srcs, &mut ses.leaf_id, budget)?;
     let (shape, leaf, cl) = to_shape(&polys, &ses.grid, &ses.srcs, budget)?;
@@ -1978,7 +1996,7 @@ pub fn evaluate_bevelled(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Bud
     };
     let Some(b) = bevel.filter(|b| b.width > 0.0) else {
         let st = stats(&shape, budget);
-        return Ok((shape, st, BevelStats::default()));
+        return Ok((shape, leaf, st, BevelStats::default()));
     };
     let (cutters, fillers, mut bs) = bevel::tubes(&shape, &leaf, b, budget)?;
     let add = |tubes: Vec<Shape>, ses: &mut Session, budget: &mut Budget, bs: &mut BevelStats| -> Vec<Vec<Poly>> {
@@ -1995,12 +2013,13 @@ pub fn evaluate_bevelled(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Bud
     };
     let cut = add(cutters, &mut ses, budget, &mut bs);
     let fill = add(fillers, &mut ses, budget, &mut bs);
-    let apply = |cut: Vec<Vec<Poly>>, fill: Vec<Vec<Poly>>, budget: &mut Budget| -> Result<Shape, CsgError> {
+    let apply = |cut: Vec<Vec<Poly>>, fill: Vec<Vec<Poly>>, budget: &mut Budget| -> Result<Sourced, CsgError> {
         let mut out = multi_difference(polys.clone(), disjoint_groups(cut, budget)?, budget)?;
         if !fill.is_empty() {
             out = multi_union(out, disjoint_groups(fill, budget)?, budget)?;
         }
-        Ok(to_shape(&out, &ses.grid, &ses.srcs, budget)?.0)
+        let (s, l, _) = to_shape(&out, &ses.grid, &ses.srcs, budget)?;
+        Ok((s, l))
     };
     let mut done = apply(cut.clone(), fill.clone(), budget);
     if matches!(&done, Err(e) if e.kind != CsgErrorKind::Limit) {
@@ -2019,7 +2038,7 @@ pub fn evaluate_bevelled(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Bud
             }
             Ok((keep, dropped))
         };
-        let retried = (|| -> Result<Option<(Shape, usize)>, CsgError> {
+        let retried = (|| -> Result<Option<(Sourced, usize)>, CsgError> {
             let (cut, dc) = alone(cut, true, budget)?;
             let (fill, df) = alone(fill, false, budget)?;
             if dc + df == 0 || cut.len() + fill.len() == 0 {
@@ -2041,15 +2060,15 @@ pub fn evaluate_bevelled(tree: &CsgTree, bevel: Option<&Bevel>, budget: &mut Bud
         }
     }
     match done {
-        Ok(s) => {
+        Ok((s, l)) => {
             let st = stats(&s, budget);
-            Ok((s, st, bs))
+            Ok((s, l, st, bs))
         }
         // The bevel is a finish: when its booleans can't be done the edges stay sharp (the stats
         // say so); running out of budget is still an error.
         Err(e) if e.kind != CsgErrorKind::Limit => {
             let st = stats(&shape, budget);
-            Ok((shape, st, BevelStats { failed: Some(e.message), ..bs }))
+            Ok((shape, leaf, st, BevelStats { failed: Some(e.message), ..bs }))
         }
         Err(e) => Err(e),
     }

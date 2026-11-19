@@ -355,6 +355,49 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       into each other, on silhouettes of 256 pixels, and is steady to a tenth over a quarter
       turn for fourteen known shapes. Sepulcra's 56 recipes lead square (31), pointed (18)
       and round (7). The form checks and it have their place in the critique.
+    - **Shape language from what a recipe is built of** (2026-11-19, the second measure the
+      owner asked for): the modeller records each shape a recipe names with its own outlines
+      and its surface (`ModelExtras.made`); the studio reads them (`built_of` in
+      `studio_check`), and a style may have it answer the check (`[taste] shape_by =
+      "recipe"`). The silhouettes answer unless it does; the fix names the shapes to change.
+      Its first review (2026-11-20) said not to merge it (FORM.md, "Its first review"), and
+      an agent that did not write it mended what it found: booleans say which operand each
+      face came from (`csg::evaluate_bevelled_leaves`), a sculpt's primitives are weighed by
+      their triangles (`sdf::surface_by_primitive`), includes and scatters record truly, thin
+      outlines are read, a column's outline has its caps. Their review said not to merge them
+      (one ratio for every record under an operation; long outlines pressed flat: FORM.md,
+      "Its second review"). A third agent mended those (2026-11-20): every triangle knows
+      the record it was made as (`Shape::owners`) through every operation, and a record's
+      surface is measured on its own triangles in the finished model; a long outline keeps
+      both ends and loses length only where its sides run straight; the record never
+      refuses a build; each record is held against the same shape built alone (FORM.md,
+      "What was mended, second round"). Its review said merge (FORM.md, "Its third
+      review"): every record exact against a truth of the reviewer's own, no mesh changed;
+      one rule held by no test and a long wobbling rod that reads round, both small.
+    - **Shape language, a sixth version** (2026-11-20, by an agent that wrote none before,
+      on the fifth review's findings and a changed way of holding the measure): 103 common
+      assets with the lead a person would give each, written before measuring, and the
+      rate stated on them (90 of 103 in every mask); thresholds free of the size a shape
+      is drawn at; every loop's steps counted and held (a coiled shape costs 5 times a
+      disc, where it cost 300); nothing under 192 pixels across is read; what it still
+      misreads is named and pinned (FORM.md, "Its sixth version"). Not reviewed yet.
+    - **Shape language, a fifth version** (2026-11-20, by an agent that did not write the
+      fourth, on its review's findings): sides from the smoothed outline, a part's thickness
+      where it levels off, joints where the outline turns inward, each part smoothed at its
+      own thickness, the advice tried by a test, about 150 shapes held as they turn
+      (`tests/shape_families.rs`). Its limits are in FORM.md. Its review said not to merge it
+      (a coiled shape takes seconds; lenses and leaves read square; FORM.md, "Its fifth
+      review").
+    - **Shape language, a fourth version** (2026-11-19, at the owner's word): each part of a
+      silhouette is judged at its own thickness and counts by it (a distance transform, the
+      discs that fill the shape, the outline followed to the body a corner is of and not
+      across a joint). A corner cut off flat is a corner, a string on a balloon counts for a
+      string, a bar however thin is square, an oval is never square. Its review said not to
+      merge it (five major findings: FORM.md, "Its fourth review"); no preset asks for it.
+    - **The form views in a before and after, and in the line-up** (2026-11-19): `sight_compare`'s
+      mark takes `form`, and its diff is drawn in the mark's view (a mark in clay shows a change
+      of shape and not a change of colour); `studio_lineup` takes `form` and keeps its
+      reference figure and cube.
     - **`pediment_fallen`'s floating rubble, mended at the owner's word** (2026-11-19): one of
       the approved prop's three rubble blocks hung 8 cm over the ground (the array's jitter
       turns a copy about the prop's origin) and another 9 mm. The three are written out one by
@@ -364,7 +407,22 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       stopped at the first feature not told from the noise; every measuring render copied
       its image back on the engine thread and threw it away. Both mended, with five smaller
       findings (frames, the noise rule by frame count, grading, loading, `include_ui`, a
-      job that answers early when its call's time is nearly out).
+      job that answers early when its call's time is nearly out). A second review of those
+      mends (2026-11-20) stopped early on a refused permission, before it ran the engine;
+      by reading it found that the wait for a loading view can keep itself waiting, and by
+      simulation that the noise rule does not hold on a machine that is busy by turns
+      (LIGHT.md, "Its second review, which stopped early"). A fresh agent reproduced the
+      findings in a running engine and mended them (2026-11-20): one way to wait for a
+      loading view, shared with `sight_frame`; a cut-short answer says it is partial and
+      advises nothing from too few rounds; no copy on the graphics card either; and each
+      cost is read from the difference of two frames of the same round, every second round
+      drawn backwards, with the answer saying when the machine was too busy to advise
+      (`light_noise.rs`; LIGHT.md, "What was mended, second round"). Not reviewed yet.
+    - **The rounded shape's levelled weights, reviewed** (2026-11-20): not to merge. A large
+      thin rounded cutter set past the corner of what it cuts costs four times its charge
+      by count, so the work limit does not bound such a build's time; other roundnesses
+      than the ones levelled at run 1.2 to 1.6 times the plain rate
+      (PROCEDURAL_MODELLING.md, tier 3, "An eighth"). Not mended yet.
     - **Shape language, after its third review** (2026-11-19): not to merge, again: a crate
       with wide bevels read as round and a ball on a string as pointed. It is not written a
       fourth time on a guess: the shares stay a reported fact, the check stays for a style
@@ -374,7 +432,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       three tries could not make from a mesh. The modeller records how coarsely each shape
       a recipe names round was built (the turn between its faces, its radius); the facts
       give the coarsest whose facets show at the asset's size, and `[form] max_facet_deg`
-      limits it. A prism is an extruded outline and says nothing.
+      limits it. A prism is an extruded outline and says nothing. Its first review
+      (2026-11-20) said not to merge it: the radius is the recipe's and not the built
+      model's, so the same mesh passes or fails by how its recipe wrote it; a sculpt speaks
+      by its tightest radius alone; a shape nobody sees fails; the verdict moves as the
+      asset is turned (FORM.md, "Its first review"). Not mended yet.
     - **The light report** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)): `perf_light`
       measures what each light feature of a view costs on the machine the engine runs on, at
       the size asked, by the GPU's own timestamps: the view as the world has it, each feature

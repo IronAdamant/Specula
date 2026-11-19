@@ -43,6 +43,9 @@ pub struct MarkView {
     pub time_s: Option<f32>,
     pub overlays: crate::sight_overlay::Spec,
     pub ids: bool,
+    /// The form view the mark was taken in (the world, unless the mark asked for one): the diff
+    /// renders in the same, so that the two images differ only by what changed.
+    pub form: crate::sight_tools::Form,
 }
 
 /// What a mark remembers besides its view.
@@ -202,10 +205,10 @@ impl Marks {
         Some(m)
     }
 
-    pub fn names(&self, owner: &str) -> Vec<(String, u64, [u32; 2])> {
+    pub fn names(&self, owner: &str) -> Vec<(String, u64, [u32; 2], crate::sight_tools::Form)> {
         self.by_owner
             .get(owner)
-            .map(|ms| ms.iter().map(|(n, m)| (n.clone(), m.data.frame, [m.view.width, m.view.height])).collect())
+            .map(|ms| ms.iter().map(|(n, m)| (n.clone(), m.data.frame, [m.view.width, m.view.height], m.view.form)).collect())
             .unwrap_or_default()
     }
 
@@ -650,6 +653,7 @@ mod tests {
             time_s: None,
             overlays: Default::default(),
             ids: true,
+            form: Default::default(),
         }
     }
 

@@ -343,7 +343,7 @@ impl Ctx<'_> {
         }
     }
 
-    /// A shape node with its own `ops` applied.
+    /// A shape node with its own `ops` applied (its triangles keep what they were made as).
     fn shape_and_ops(&self, n: &Node, seed: u64) -> Result<Shape, RecipeError> {
         let mut s = self.shape(n)?;
         if !matches!(n.op.as_str(), "union" | "difference" | "intersection" | "sdf") {
@@ -387,15 +387,26 @@ impl Ctx<'_> {
                 continue;
             }
             let plain = matches!(k.get("ops"), Some(Val::List(l)) if l.is_empty()) && k.get("bevel").is_none();
-            if Self::csg_kind(&k.op).is_some() && plain {
-                let (t, n2) = self.csg_tree(k, depth + 1)?;
-                kids.push(t);
-                tris += n2;
-            } else {
-                let s = self.shape_and_ops(k, stream_seed(self.seed, &k.path))?;
-                tris += s.triangle_count();
-                kids.push(CsgTree::Leaf(s));
+            // (What a difference takes away is not what the thing is made of: nothing built
+            // for its second operand and after is recorded as that.)
+            let cutter = op == CsgOp::Difference && i > 0;
+            if cutter {
+                self.tally.cutting.set(self.tally.cutting.get() + 1);
             }
+            let built = if Self::csg_kind(&k.op).is_some() && plain {
+                self.csg_tree(k, depth + 1)
+            } else {
+                self.shape_and_ops(k, stream_seed(self.seed, &k.path)).map(|s| {
+                    let n2 = s.triangle_count();
+                    (CsgTree::Leaf(s), n2)
+                })
+            };
+            if cutter {
+                self.tally.cutting.set(self.tally.cutting.get() - 1);
+            }
+            let (t, n2) = built?;
+            kids.push(t);
+            tris += n2;
         }
         if kids.is_empty() {
             return Err(e(&n.at("of"), ErrorCode::Geometry, "every operand is switched off"));
@@ -409,6 +420,9 @@ impl Ctx<'_> {
         let segments = self.int(n, "bevel_segments", 1, 1, csg::MAX_ROUND_SEGMENTS as i64)?;
         let bevel = (width > 0.0).then_some(Bevel { width, segments });
         let mut budget = csg::Budget { max_work: self.work_left(&n.path, csg::MAX_WORK)?, ..csg::Budget::default() };
+        // (Each face of the result is a piece of one operand's face, and keeps what that was
+        // made as: a cut's wall is its cutter's, and a bevel's strips are its tubes', which no
+        // record speaks for.)
         let res = csg::evaluate_bevelled(&tree, bevel.as_ref(), &mut budget);
         self.spend(budget.work);
         let (shape, st, bs) = res.map_err(|er| csg_err(&n.path, er))?;
@@ -749,7 +763,7 @@ impl Ctx<'_> {
         };
         let room = MAX_MODEL_TRIANGLES.saturating_sub(self.tally.triangles.get()).min(MAX_PART_TRIANGLES);
         let opts = sdf::MeshOptions { resolution: res, bounds, seed: stream_seed(self.seed, &n.path), max_triangles: room, max_work: self.work_left(&n.path, sdf::MAX_WORK)?, color: self.paint.get() };
-        let (shape, st) = sdf::mesh(&tree, &opts).map_err(|er| {
+        let (mut shape, st) = sdf::mesh(&tree, &opts).map_err(|er| {
             let mut out = e(&n.path, if er.limit { ErrorCode::Limit } else { ErrorCode::Geometry }, er.message);
             out.measured = er.measured;
             out.limit = er.max;
@@ -757,25 +771,42 @@ impl Ctx<'_> {
         })?;
         self.spend(st.work);
         self.tally.grow(&n.path, 0, shape.triangle_count())?;
+        // What it is built of: its primitives' own outlines (a figure's are a body's limbs and
+        // trunk, read the same way), each weighed by the surface its triangles have in the
+        // finished model. Which primitive made each triangle is asked within a limit of its own
+        // for the whole build, never the build's: what is past it is no record's.
+        let mut asked = None;
+        if !self.coarse && self.tally.cutting.get() == 0 {
+            let left = sdf::MAX_OWNER_BUILD_WORK.saturating_sub(self.tally.owner_work.get());
+            let a = sdf::primitive_of_triangles(&tree, opts.seed, &shape, sdf::MAX_OWNER_ASKED, left);
+            self.tally.owner_work.set(self.tally.owner_work.get().saturating_add(a.work));
+            self.tally.made_sculpt(&n.path, if figure { "figure" } else { "sdf" }, crate::made::of_sculpt(&tree), &a.of, &mut shape);
+            asked = Some((a.asked, a.work, a.of.iter().filter(|&&o| o == crate::shape::NO_OWNER).count()));
+        }
         // A sculpt is round where its tree is: its surface is cut into cells, and round its
         // tightest ball, limb or section a cell turns the surface by the cell over the radius.
         if let Some(radius) = sdf::least_radius(&tree) {
             let turn = 2.0 * dmath::asin((st.cell / (2.0 * radius)).min(1.0)).to_degrees();
             self.round(n, "sdf", turn, radius);
         }
-        self.stat(
-            &n.path,
-            Json::obj([
-                ("op", Json::from(n.op.as_str())),
-                ("resolution", Json::from(res)),
-                ("grid", Json::arr(st.dims.map(Json::from))),
-                ("cell_m", Json::Num(dmath::round_f64(st.cell as f64 * 1e4) / 1e4)),
-                ("samples_evaluated", Json::from(st.samples_evaluated)),
-                ("blocks_skipped", Json::from(st.blocks_skipped)),
-                ("work", Json::from(st.work)),
-                ("triangles", Json::from(shape.triangle_count())),
-            ]),
-        );
+        let mut j = vec![
+            ("op", Json::from(n.op.as_str())),
+            ("resolution", Json::from(res)),
+            ("grid", Json::arr(st.dims.map(Json::from))),
+            ("cell_m", Json::Num(dmath::round_f64(st.cell as f64 * 1e4) / 1e4)),
+            ("samples_evaluated", Json::from(st.samples_evaluated)),
+            ("blocks_skipped", Json::from(st.blocks_skipped)),
+            ("work", Json::from(st.work)),
+            ("triangles", Json::from(shape.triangle_count())),
+        ];
+        // (Which primitive made its triangles: how many were asked, at what work of the
+        // build's own limit for it, and how many were left unanswered, no record's.)
+        if let Some((count, work, unanswered)) = asked {
+            j.push(("owners_asked", Json::from(count)));
+            j.push(("owners_work", Json::from(work)));
+            j.push(("owners_unanswered", Json::from(unanswered)));
+        }
+        self.stat(&n.path, Json::obj(j));
         check_extent(&shape, &n.path)?;
         Ok(shape)
     }
@@ -1178,7 +1209,8 @@ impl Gen<'_, '_> {
         let (places, st) = scatter::scatter(&spec, &ground_fn, c.work_left(&n.path, scatter::MAX_WORK)?).map_err(|er| e(&n.at(er.field), if er.limit { ErrorCode::Limit } else { ErrorCode::OutOfRange }, er.message))?;
         c.spend(st.work);
         self.scattered.push((self.part.name.clone(), places.iter().map(|p| [p.position[0], p.position[2]]).collect()));
-        // Each item's variants, built once.
+        // Each item's variants, built once. (Their copies keep what each triangle was made as:
+        // an item is recorded by what was placed of it.)
         let mut built: Vec<Vec<Vec<BuiltPart>>> = Vec::new();
         for (ii, it) in items.iter().enumerate() {
             let variants = c.int(it, "variants", 1, 1, MAX_VARIANTS as i64)?;
@@ -1228,7 +1260,8 @@ impl Gen<'_, '_> {
         for p in &places {
             let vs = &built[p.item as usize];
             let t = p.transform();
-            for q in &vs[(p.variant % vs.len() as u64) as usize] {
+            let v = (p.variant % vs.len() as u64) as usize;
+            for q in &vs[v] {
                 let mut s = q.shape.clone();
                 s.transform(&t);
                 match by_mat.iter_mut().find(|b| b.material == q.material && b.smooth_angle == q.smooth_angle) {
@@ -1271,9 +1304,12 @@ fn build_include(asset: &str, vals: &[(String, f64)], seed: u64, params: &BuildP
     let child = Recipe::parse(text, params.style).map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?;
     let refs: Vec<(&str, f64)> = vals.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     stack.push(asset.to_string());
+    let mark = tally.made.borrow().len();
     let res = build_parts(&child, &refs, seed, params, stack, tally, coarse);
     stack.pop();
-    Ok(res.map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?.0)
+    let built = res.map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?.0;
+    tally.made_included(mark, path, asset);
+    Ok(built)
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -343,10 +343,7 @@ impl Engine {
         let mut wait = CaptureWait { presented_at, parked_at: None, cut_by_deadline: false };
         // Upload what is built, so models that start a pipeline variant build are waited for.
         let zp = profile::zone("sight.sync");
-        for e in self.sync_meshes() {
-            eprintln!("specula: {e}");
-        }
-        self.models.refresh_ready(&mut self.gpu);
+        self.capture_sync();
         drop(zp);
         let zv = profile::zone("sight.views");
         let views = match self.job_views(&job, &session) {
@@ -359,10 +356,9 @@ impl Engine {
         drop(zv);
         // Its views become stream sources: what they need starts uploading now.
         let zw = profile::zone("sight.waiting");
-        let streaming = self.stream_capture(&stream_views(&views));
         // `fresh`: sprite and tileset files in view are checked for changes now, so the capture
         // shows them as they are at the request.
-        let ready = self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 && streaming == 0 && self.vfx_textures_waiting(true) == 0 && self.terrain_waiting(&views) == 0;
+        let ready = self.views_waiting(&views, true) == 0;
         drop(zw);
         if ready {
             // Started now, its views needn't be worked out again (auto-framing reads the bounds of
@@ -386,19 +382,13 @@ impl Engine {
             return;
         }
         let _z = profile::zone("parked_captures");
-        for e in self.sync_meshes() {
-            eprintln!("specula: {e}");
-        }
-        self.models.refresh_ready(&mut self.gpu);
+        self.capture_sync();
         let now = Instant::now();
         let waiters = std::mem::take(&mut self.capture_waiters);
         for w in waiters {
             let building = match self.job_views(&w.job, &w.session) {
-                Ok(views) => {
-                    // Edits since it parked are filed (no old proxy drawn) and its views stay sources.
-                    let streaming = self.stream_capture(&stream_views(&views));
-                    self.building_in(&views) + self.two_d_waiting(&views, false) + streaming + self.vfx_textures_waiting(false) + self.terrain_waiting(&views)
-                }
+                // Edits since it parked are filed (no old proxy drawn) and its views stay sources.
+                Ok(views) => self.views_waiting(&views, false),
                 Err(out) => {
                     let _ = w.reply.send(out);
                     continue;
@@ -477,12 +467,31 @@ impl Engine {
         self.frame_view(spec, session).map(|v| (v.camera, v.source, v.warning))
     }
 
-    /// How many things a view of this camera is still waiting for (models building, streamed
-    /// cells, sprite and effect textures, terrain): what `sight_frame` parks its call on.
-    pub(crate) fn view_loading(&mut self, camera: Camera, width: u32, height: u32, include_ui: bool) -> usize {
+    /// What a capture does before it asks whether its views are ready, at its request and at
+    /// every look while it waits: built models uploaded, and which are ready refreshed.
+    pub(crate) fn capture_sync(&mut self) {
+        for e in self.sync_meshes() {
+            eprintln!("specula: {e}");
+        }
+        self.models.refresh_ready(&mut self.gpu);
+    }
+
+    /// How many things `views` are still waiting for (models building, streamed cells, sprite
+    /// and effect textures, terrain): what a capture waits on. The one way to wait, for
+    /// `sight_frame` and `perf_light` alike: `fresh` once, at the request (sprite, tileset and
+    /// effect texture files in view are checked for changes now, so the capture shows them as
+    /// they are when it was asked for); then only looks (`fresh: false`). A fresh question
+    /// at every look kept its own wait going (a check in flight orders another one), and read
+    /// file times on the engine thread at every look (the light report's second review).
+    fn views_waiting(&mut self, views: &[ViewReq], fresh: bool) -> usize {
+        let streaming = self.stream_capture(&stream_views(views));
+        self.building_in(views) + self.two_d_waiting(views, fresh) + streaming + self.vfx_textures_waiting(fresh) + self.terrain_waiting(views)
+    }
+
+    /// [`Engine::views_waiting`] for one view of this camera.
+    pub(crate) fn view_waiting(&mut self, camera: Camera, width: u32, height: u32, include_ui: bool, fresh: bool) -> usize {
         let views = [ViewReq { camera, width, height, include_ui, lod: None, source: Json::Null, warning: None }];
-        let streaming = self.stream_capture(&stream_views(&views));
-        self.building_in(&views) + self.two_d_waiting(&views, true) + streaming + self.vfx_textures_waiting(true) + self.terrain_waiting(&views)
+        self.views_waiting(&views, fresh)
     }
 
     fn frame_view(&mut self, spec: &FrameSpec, session: &SessionInfo) -> Result<ViewReq, ToolOutput> {
@@ -636,8 +645,12 @@ impl Engine {
                 }
             }
             SightCall::Compare(CompareCall::List) => {
-                let marks = self.marks.names(&key).into_iter().map(|(n, frame, size)| {
-                    Json::obj([("name", Json::from(n)), ("frame", Json::from(frame)), ("size", Json::arr(size.map(Json::from)))])
+                let marks = self.marks.names(&key).into_iter().map(|(n, frame, size, form)| {
+                    let mut j = Json::obj([("name", Json::from(n)), ("frame", Json::from(frame)), ("size", Json::arr(size.map(Json::from)))]);
+                    if !form.is_world() {
+                        j.set("form", Json::from(form.view.name()));
+                    }
+                    j
                 });
                 ToolOutput::text(Json::obj([("marks", Json::arr(marks)), ("max", Json::from(compare::MAX_MARKS_PER_AGENT))]).to_string())
             }
@@ -995,6 +1008,10 @@ impl Engine {
             if second_render {
                 let rendered = if opts.ids { self.gpu.render_with_ids_occluded(target, &frame, &ids, &occluders) } else { self.gpu.render(target, &frame) };
                 rendered.map_err(|e| gpu_failure("render", &e, self.windowed))
+            } else if self.captures.light.is_some() && !opts.ids {
+                // A measuring render of `perf_light` wants its timings alone: its image is not
+                // copied back, on the GPU or by the host.
+                self.gpu.render_async_timings(target, &frame).map_err(|e| gpu_failure("render", &e, self.windowed))
             } else {
                 self.gpu.render_async(target, &frame, opts.ids.then_some((&ids[..], &occluders[..]))).map_err(|e| gpu_failure("render", &e, self.windowed))
             }

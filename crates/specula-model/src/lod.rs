@@ -49,7 +49,7 @@ pub fn cluster(shape: &Shape, cell: f32, origin: V3) -> Shape {
         .collect();
     let positions: Vec<V3> = sum.iter().zip(&count).map(|(s, &n)| s.map(|v| (v / n as f64) as f32)).collect();
     let colors = csum.iter().zip(&count).map(|(s, &n)| s.map(|v| (v / n as f64) as f32)).collect();
-    let mut out = Shape { positions, colors, tris: Vec::new(), tags: Vec::new(), bevel_tint: shape.bevel_tint };
+    let mut out = Shape { positions, colors, tris: Vec::new(), tags: Vec::new(), bevel_tint: shape.bevel_tint, owners: Vec::new() };
     let mut seen: HashMap<[u32; 3], ()> = HashMap::new();
     for (t, &tag) in shape.tris.iter().zip(&shape.tags) {
         let m = [remap[t[0] as usize], remap[t[1] as usize], remap[t[2] as usize]];

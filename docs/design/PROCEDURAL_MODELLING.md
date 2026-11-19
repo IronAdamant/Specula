@@ -220,7 +220,40 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     same evening, with its own probe**: 1.04 to 1.09 times for boxes a quarter to a ninth as
     thick as long, 0.75 to 0.87 for the foil and the hair. The rest was noise; the weights
     were moved by what was left (the thick one up a ninth, the thinnest down a tenth), and
-    every case measured now runs at or under the plain cut's rate.
+    every case measured now runs at or under the plain cut's rate. **An eighth** (2026-11-20,
+    of those levelled weights, by counting the solve's steps and powers in real builds)
+    **said not to merge them. None of this is mended yet, so the sentences above about
+    what a rounded shape costs are not all true**:
+    1. **A large, thin rounded cutter set past the corner of what it cuts costs four times
+       its charge by count** (and timed four to seven times, on a busy machine): a 2 m box
+       with a rounded sheet of 100 m by 0.1 mm subtracted from it, a metre past its corner,
+       where the sheet cuts nothing. A difference keeps every child, every sample near the
+       box is one to three metres from a 50 m shape (too near to take the far estimate), the
+       first steps fail there, and 98% of the solves fall back to the sure way at 119 steps
+       each. A build at the work limit then runs several times as long as the limit is
+       meant to allow: **the limit does not bound the time for such a recipe.** A sheet of
+       10 m, a ten-thousandth as thick, timed about three times. The test samples a 2 m box
+       round shapes of under a metre and does not reach that region.
+    2. *Medium:* **at roundnesses the levelling did not try, shapes inside the tested range
+       run 1.2 to 1.6 times the plain cut's rate**: a foil a nine-thousandth as thick at a
+       roundness of 0.3 (1.58, where the same foil at 0.5 runs 0.83), a hair at 0.05 (1.35),
+       a board a twentieth as thick at 0.99 (1.24). The weights were levelled at one
+       roundness a shape, and the cost moves by about two to one across roundness.
+    3. *Medium:* **two sentences above are false**: "up to one in eight left to the sure
+       way" (measured 14% and 15% in the tested range, and half to nearly all in finding
+       1), and "a dozen to twenty powers a sample outside the shape" (the calibrated cube
+       takes over 22).
+    4. *Minor:* the weights before the levelling pass both tests, so nothing holds the
+       levelling; and leaving a box's third size out of its thinness passes too, so a plank
+       thin along its depth could be charged as thick.
+    Found sound: the grading has no step (swept from 1 to 1 to a hundred-millionth as thick),
+    thinner than its cap is not under-charged away from finding 1, discs and needles are
+    cheap at every thinness, the earlier reviews' cases hold, Sepulcra's approved props
+    build as they did, and nothing panicked in 1,500 builds and two million samples. A lone
+    cube of roundness 0.3 at a resolution of 88 built before the levelling and is refused
+    now (as meant: the old weight under-charged it; no recipe here uses `roundness`). Not
+    checked: rounded shapes under a twist, a bend or a repeat; whether the field is right
+    where the solve falls back most.
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded
@@ -392,6 +425,50 @@ stops within milliseconds, and one that finished anyway is kept and cached.
 Recipes with booleans, sculpts or generators take **the coarse rebuild as LOD 1** (no bevels, half
 the SDF resolution, a coarser terrain grid) when it saves at least 10%: clustering would fold their
 cuts and recesses. Later LODs cluster as before.
+
+### What a recipe is built of (`crate::made`, `Model.extras.made`)
+
+Every build records, for each shape the recipe names, its own outlines along its own axes and
+**its own surface in the finished model**; what no record speaks for is `made_rest_m2` (the
+studio reads it as shape language: [FORM.md](FORM.md), "From what the recipe is built of").
+**The surface is measured, never reckoned** (since the record's second review, 2026-11-20):
+every triangle of the finest level carries what it was made as (`Shape::owners`, a slot of
+the build's record; empty, and free, where nothing asked, as at the far level), and a record's
+surface is summed from its own triangles of the finished parts, once, at the end
+(`made::gather`). How each piece of the modeller keeps the tie:
+
+- **Operations**: a move, a turn, a scale by a vector, a taper, a twist, a lean, a bend and a
+  displacement move points and leave each triangle's owner as it is; a copy (`array`,
+  `radial`, `mirror`) copies it; a subdivision gives a triangle's four pieces its owner; a weld
+  drops it with the triangles it drops. So a part's, an operand's and a finish's operations
+  change each shape by its own factor.
+- **Booleans**: every face of the result is a piece of one input triangle's face and keeps
+  that triangle's owner. A cutter has none: the wall it cuts is the rest. A bevel's strips are
+  its tubes': the rest. **Not kept exactly**: inside one boolean, coplanar pieces of one
+  operand with one colour and tag are joined into one face before they are cut into
+  triangles, and the face is its first piece's; only an operand that holds several shapes (a
+  nested boolean with ops of its own, a sculpt) can blur so.
+- **Sculpts**: `sdf::primitive_of_triangles` gives each triangle of the mesh to the primitive
+  whose field is the tree's at its middle (in a union the nearest, in an intersection the
+  furthest, in a difference the first child or the cutter that made the wall; in a smooth
+  blend the nearest takes the blend). Every triangle is asked up to 16,384 (`MAX_OWNER_ASKED`)
+  and every so many past it (asked every other, no primitive's share moved by more than 0.13%
+  of the whole on a measured figure). The asking spends a limit of its own for the whole build
+  (`MAX_OWNER_BUILD_WORK`, about an eighth of a second at the most), **never the build's**: a
+  triangle not asked within it is the rest, and the sculpt's stat says how many
+  (`owners_unanswered`). Each primitive that adds is a slot of its own, so a mirror's and a
+  repeat's copies, an elongation and what an intersection leaves are counted as meshed, and
+  the part's operations after it as they changed each.
+- **Includes**: records carry the including part's path as its errors do
+  (`parts[1].include(gem).parts[0].shape`). **Scatters**: each item is recorded by the surface
+  of what was placed of it (each copy carries its variant's owners), under its path in the
+  items; a variant never placed has no record, and an item's variants are one record (one
+  record a path, everywhere).
+- **Bounds**: 512 shapes and 8,192 slots recorded while building; then the 64 shapes with the
+  most surface, each with at most 96 outlines (its largest primitives', the rest's weight as
+  an outline of no points, read as not read), and at most 256 outlines of 128 points in all
+  (a quarter of a megabyte). The finest level is measured before its parts are welded at
+  10 µm.
 
 ### Agent tools
 

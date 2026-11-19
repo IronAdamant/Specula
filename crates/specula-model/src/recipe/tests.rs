@@ -610,3 +610,94 @@ fn what_a_recipe_names_round_says_how_coarsely_it_was_built() {
     // A model of boxes says nothing.
     assert!(build_with(&one_part(r#"{"op":"box","size":[1,1,1]}"#, ""), &[]).unwrap().extras.round.is_empty());
 }
+
+/// What a recipe is built of: each shape it names is recorded with its own outlines and its
+/// surface in the model. A part's operations change the surface and not the outlines (three
+/// copies count three times); what a boolean takes away is not recorded; a sculpt's
+/// primitives are, the one a difference takes away left out; and what nothing speaks for is
+/// said. (The far level, where it is built again coarsely, has a tally of its own: it cannot
+/// add to this one.)
+#[test]
+fn what_a_recipe_is_built_of_is_recorded_with_its_surface() {
+    let part = |name: &str, shape: &str, ops: &str| format!(r#"{{ "name": "{name}", "material": "stone", "shape": {shape}, "ops": [{ops}] }}"#);
+    let text = format!(
+        r#"{{ "recipe": 1, "name": "made", "lods": [0.25], "parts": [{}] }}"#,
+        [
+            part("crate", r#"{"op":"box","size":[1,2,3]}"#, ""),
+            part("posts", r#"{"op":"box","size":[0.5,0.5,0.5]}"#, r#"{"op":"move","by":[4,0,0]},{"op":"array","count":3,"offset":[1,0,0]}"#),
+            part("ball", r#"{"op":"sphere","radius":0.5,"subdivisions":3}"#, r#"{"op":"move","by":[-4,0,0]},{"op":"scale","by":2}"#),
+            part("spire", r#"{"op":"cone","radius":0.3,"height":1,"sides":24}"#, r#"{"op":"move","by":[0,0,6]}"#),
+            part("holed", r#"{"op":"difference","of":[{"op":"box","size":[2,2,2],"ops":[]},{"op":"cylinder","radius":0.4,"height":3,"ops":[]}]}"#, r#"{"op":"move","by":[0,0,-6]}"#),
+            part("bead", r#"{"op":"sdf","resolution":24,"tree":{"op":"difference","of":[{"op":"sphere","radius":0.3},{"op":"box","size":[0.2,0.2,2]}]}}"#, r#"{"op":"move","by":[8,0,0]}"#),
+            part("urn", r#"{"op":"lathe","profile":[[0.1,0],[0.3,0.4],[0.2,0.8]],"segments":10}"#, r#"{"op":"move","by":[-8,0,0]}"#),
+        ]
+        .join(", ")
+    );
+    let model = build_with(&text, &[]).unwrap();
+    let made = &model.extras.made;
+    let of = |path: &str| made.iter().find(|m| m.path == path).unwrap_or_else(|| panic!("nothing recorded at {path}: {:?}", made.iter().map(|m| m.path.as_str()).collect::<Vec<_>>()));
+    let near = |a: f32, b: f32, rel: f32| (a - b).abs() <= rel * b;
+    // A box: three rectangles, and its own surface.
+    let c = of("parts[0].shape");
+    assert_eq!((c.what, c.views.len()), ("box", 3));
+    assert!(c.views.iter().all(|(p, w)| p.len() == 4 && *w == c.views[0].1) && near(c.area_m2, 22.0, 1e-3), "{c:?}");
+    // Three copies of a box of half a metre: three times its surface, and one record.
+    let p = of("parts[1].shape");
+    assert!(near(p.area_m2, 3.0 * 1.5, 1e-3), "three copies: {}", p.area_m2);
+    // A ball scaled by two has four times the surface; its outline is a circle still.
+    let b = of("parts[2].shape");
+    assert_eq!((b.what, b.views.len(), b.views[0].0.len()), ("sphere", 1, 48));
+    assert!(near(b.area_m2, 4.0 * std::f32::consts::PI, 0.03), "a ball of radius 1 as built: {}", b.area_m2);
+    // A cone: its section (twenty-four sides: a circle) and a triangle, the triangle twice.
+    let s = of("parts[3].shape");
+    assert_eq!((s.what, s.views.len(), s.views[1].0.len()), ("cone", 2, 3));
+    assert!(near(s.views[1].1, 2.0 * s.views[0].1, 1e-5), "{:?}", s.views.iter().map(|v| v.1).collect::<Vec<_>>());
+    // A box with a hole cut through it: the box is recorded, the cylinder that cut it is not,
+    // and the record's surface is what is left of the box (its faces less the two discs). The
+    // hole's wall is the cylinder's surface, and no record speaks for it.
+    let h = of("parts[4].shape.of[0]");
+    assert!(h.what == "box" && near(h.area_m2, 24.0 - 2.0 * std::f32::consts::PI * 0.16, 0.02), "{h:?}");
+    assert!(!made.iter().any(|m| m.path == "parts[4].shape.of[1]"), "what a difference takes away is not what the thing is made of");
+    // A sculpt: its ball's three circles; the box it is cut by adds nothing.
+    let d = of("parts[5].shape");
+    assert_eq!((d.what, d.views.len()), ("sdf", 3));
+    assert!(d.views.iter().all(|(p, _)| p.len() == 48), "{:?}", d.views.iter().map(|v| v.0.len()).collect::<Vec<_>>());
+    // A lathe: its section (ten sides) and its profile mirrored.
+    let u = of("parts[6].shape");
+    assert_eq!((u.what, u.views[0].0.len(), u.views[1].0.len()), ("lathe", 10, 6));
+    // Seven shapes in all, the largest first, and all the model's surface spoken for but the
+    // walls the two cuts made (the hole's, 2.5 m2 a side of 0.4 m by 2 m; the bead's slot).
+    assert_eq!(made.len(), 7, "{:?}", made.iter().map(|m| m.path.as_str()).collect::<Vec<_>>());
+    assert!(made.windows(2).all(|w| w[0].area_m2 >= w[1].area_m2));
+    let spoken: f32 = made.iter().map(|m| m.area_m2).sum();
+    let wall = 2.0 * std::f32::consts::PI * 0.4 * 2.0;
+    assert!(model.extras.made_rest_m2 >= 0.97 * wall && model.extras.made_rest_m2 <= wall + 0.6, "of {spoken} m2, {} is spoken for by nothing", model.extras.made_rest_m2);
+    // The same recipe says the same.
+    assert_eq!(build_with(&text, &[]).unwrap().extras.made, *made);
+}
+
+/// While a model is built, at most 512 shapes are recorded and 8,192 slots of outlines kept
+/// (a sculpt has one for each primitive): a shape past them is no record's, and its triangles
+/// say so.
+#[test]
+fn the_tallys_record_is_bounded() {
+    let tally = Tally::default();
+    let views = || vec![(made::circle(1.0), 1.0)];
+    for i in 0..600 {
+        let mut s = Shape::cuboid([1.0; 3], 0.0).unwrap();
+        tally.making.replace(Some(("box", views())));
+        tally.made_now(&format!("parts[{i}].shape"), &mut s);
+        assert_eq!(s.owners.is_empty(), i >= 512, "shape {i}");
+    }
+    assert_eq!(tally.made.borrow().len(), 512);
+    // (Sculpts of 127 primitives: 64 fill 8,128 slots, the 65th 64 of its 127.)
+    let tally = Tally::default();
+    let mut ball = Shape::cuboid([1.0; 3], 0.0).unwrap();
+    let of: Vec<u32> = (0..ball.tris.len() as u32).map(|t| t * 10).collect();
+    for i in 0..66 {
+        tally.made_sculpt(&format!("parts[{i}].shape"), "sdf", (0..127).map(|_| Some(views())).collect(), &of, &mut ball);
+    }
+    assert_eq!(tally.slots.borrow().len(), 8192);
+    assert_eq!(tally.made.borrow().len(), 65, "the 66th sculpt has no slot left");
+    assert_eq!(ball.owners.iter().filter(|&&o| o != crate::shape::NO_OWNER).count(), 0, "{:?}", ball.owners);
+}

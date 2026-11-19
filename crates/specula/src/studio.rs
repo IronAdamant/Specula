@@ -919,14 +919,6 @@ impl Engine {
                     d.surface = specula_gpu::Surface { roughness: 0.9, specular: 0.05, ..specula_gpu::Surface::default() };
                     draws.push(d);
                 }
-                if let Some(at) = req.refs {
-                    for (c, s, sphere, col) in reference_parts(at) {
-                        let Some(mesh) = self.meshes.get(if sphere { Shape::Sphere } else { Shape::Cube }) else { continue };
-                        let mut d = DrawItem::new(mesh, Mat4::from_trs(c, Quat::IDENTITY, s).to_cols_array(), [col[0], col[1], col[2], 1.0]);
-                        d.surface = specula_gpu::Surface { roughness: 0.8, specular: 0.15, ..specula_gpu::Surface::default() };
-                        draws.push(d);
-                    }
-                }
                 let mut env = environment(rig, cam, igpu, reach, studio_shadow_map(&self.world.env().light.shadow));
                 if let Some(fog) = req.extra.as_ref().and_then(|x| x.fog) {
                     env.fog = fog;
@@ -938,6 +930,17 @@ impl Engine {
                 [1.0, 1.0, 1.0, 1.0],
             ),
         };
+        // The references (the 1.8 m figure and the 1 m cube): in a lit render, and in a form
+        // view that asks for them (a line-up as shape alone still wants its scale), never in a
+        // silhouette, which is the subject's alone.
+        if let Some(at) = req.refs.filter(|_| req.light.is_some() || req.form.is_some()) {
+            for (c, s, sphere, col) in reference_parts(at) {
+                let Some(mesh) = self.meshes.get(if sphere { Shape::Sphere } else { Shape::Cube }) else { continue };
+                let mut d = DrawItem::new(mesh, Mat4::from_trs(c, Quat::IDENTITY, s).to_cols_array(), [col[0], col[1], col[2], 1.0]);
+                d.surface = specula_gpu::Surface { roughness: 0.8, specular: 0.15, ..specula_gpu::Surface::default() };
+                draws.push(d);
+            }
+        }
         let first_subject = draws.len();
         for p in &req.subjects {
             let m = Mat4::from_trs(p.at, Quat::from_axis_angle(Vec3::Y, p.yaw.to_radians()), p.scale);
@@ -1452,8 +1455,8 @@ impl Ctx<'_> {
                 }
                 self.studio_output(out.w, out.h, &out.rgba, packet, answer, true)
             }
-            StudioCall::Lineup { subjects, rig, width, format } => match self.studio_staged(&subjects, &mut bibles) {
-                Ok(staged) => self.studio_lineup(&staged, rig, width, format),
+            StudioCall::Lineup { subjects, rig, width, form, format } => match self.studio_staged(&subjects, &mut bibles) {
+                Ok(staged) => self.studio_lineup(&staged, rig, width, form, format),
                 Err(e) => e,
             },
             StudioCall::Compare { from, sheet, format } => self.studio_compare(&agent, from, sheet, format, &mut bibles),
@@ -1701,7 +1704,10 @@ impl Ctx<'_> {
             let (rgba, _) = self.studio_angle(s, az, el, &neutral_rig(), px, false, true, None)?;
             outlines.push(Mask::from_silhouette(&rgba, px, px));
         }
-        let m = Measured { subject: s.name.clone(), silhouettes, outlines, gameplay: get("gameplay"), phone: get("phone"), worst: get("worst_light"), lit: Some(lit.measure.subject) };
+        // And what its recipe is built of, read as shape language (each shape's own outline,
+        // some milliseconds each, on this caller's thread as the silhouettes are).
+        let built = specula_studio::built::built_of(&s.facts.made, s.facts.made_rest_m2);
+        let m = Measured { subject: s.name.clone(), silhouettes, outlines, gameplay: get("gameplay"), phone: get("phone"), worst: get("worst_light"), lit: Some(lit.measure.subject), built };
         shots.push(("game_light".into(), lit));
         Ok((m, shots))
     }
@@ -1960,7 +1966,7 @@ impl Ctx<'_> {
         Ok(SheetOut { w, h, rgba, tiles, subjects })
     }
 
-    fn studio_lineup(&mut self, staged: &[Staged], rig: RigName, width: u32, format: Format) -> ToolOutput {
+    fn studio_lineup(&mut self, staged: &[Staged], rig: RigName, width: u32, form: Option<specula_gpu::FormView>, format: Format) -> ToolOutput {
         let rules = staged[0].rules().clone();
         let rig = match rig {
             RigName::Neutral => neutral_rig(),
@@ -1981,7 +1987,10 @@ impl Ctx<'_> {
         for (vi, (name, az, el)) in views.iter().enumerate() {
             let y0 = vi as u32 * (view_h + label_h);
             let cam = fit(lo, hi, *az, *el, FIT_FOV, w as f32 / view_h as f32, 1.04);
-            let frame = match self.stage_render(&placed, fig, &cam, w, view_h, Light::Rig(&rig, false)) {
+            // (As shape alone when a form view was asked for: the subjects, the figure and the
+            // cube, with no ground and no light of the rig's.)
+            let light = form.map_or(Light::Rig(&rig, false), Light::Form);
+            let frame = match self.stage_render(&placed, fig, &cam, w, view_h, light) {
                 Ok(f) => f,
                 Err(e) => return e,
             };
@@ -2021,7 +2030,9 @@ impl Ctx<'_> {
             ("schema", Json::from(sight::SCHEMA)),
             ("kind", Json::from("studio_lineup")),
             ("render_scale", r3(self.render_scale)),
-            ("rig", rig.to_json()),
+            // (A form view has no rig: the packet says which view it is.)
+            ("rig", if form.is_some() { Json::Null } else { rig.to_json() }),
+            ("form", form.map_or(Json::Null, |v| Json::from(v.name()))),
             ("views", Json::Arr(cams)),
             ("subjects", Json::Arr(subjects.clone())),
             ("silhouette_iou", Json::arr(matrix.iter().map(|row| Json::arr(row.iter().map(|x| r3(*x)))))),
@@ -2310,6 +2321,9 @@ impl Ctx<'_> {
                 // reported for every subject, checked when the style asks for one.
                 ("shape", measured.shape().map_or(Json::Null, |s| s.to_json())),
                 ("shape_px", Json::from(specula_studio::shape::PIXELS)),
+                // And what its recipe is built of, read the same way: each shape it names by
+                // its own outline and its surface, the largest named.
+                ("built_of", measured.built.as_ref().map_or(Json::Null, |b| b.to_json())),
             ]),
         );
         let mut packet = Json::obj([

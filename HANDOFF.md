@@ -226,6 +226,58 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     already a recipe of numbers (a character is the base with other numbers), and what it lacks is
     the rig; so **the rig by construction comes next in part 4's slice 2**, before more work on
     the surface, with every body sharing one skeleton's names so that one motion drives them all.
+  - **A library of shapes, in 2D and 3D, beside the figures** (the owner, 2026-11-19, away from
+    the machine): "it may be worth building a library of shapes in 2D and 3D in this phase and
+    save them as skeleton library alongside the human figures. All in Rust. Must be scalable.
+    This way, it will make things easier for you. Best to start now, so build in all known
+    shapes with a sub agent then report once done." *Claude's reading:* base templates an
+    agent starts from by name and changes by numbers, as a character is the measured figure
+    with other numbers. "All known shapes" has no end, so it is a table that is cheap to add
+    to, filled with the plane figures and solids that have names, and plain about what is
+    not in it. "Scalable" in three senses: the table (a form is one entry; a name can be
+    another form with preset numbers), the geometry (metres over a wide range; a detail from
+    coarse to fine with its error known) and the cost (the size of a build known before it
+    is built). One catalogue lists the shapes and the human figure. Where it stands is under
+    part 4 below. **And again, later that night**: "The shape library must be built. Cubes,
+    circles, triangles, pyramids, ovals, egg shapes and all other existing basic shapes must
+    be built. All in Rust and generated in 2D, 2,5D and 3D. Go nuts. If there's a issue then
+    deploy a fresh agent of whatever model to investigate before moving on". *Claude's
+    reading:* every basic shape in all three; 2.5D as the three things the word means in
+    games (a plane figure raised into a slab, a token, a pillow or a relief; a solid drawn
+    flat in a fixed view with its hidden faces removed; a solid cut into layers); more
+    families after the required ones; and **a failure nobody can explain is investigated by a
+    fresh agent before the work goes on**, which holds for all work here from now on.
+  - **Shape language: both** (the same night, shown the three choices in "Open owner
+    decisions" as they stood): "2 - 3 and I don't care if it takes longer." So a fourth
+    silhouette measure that weighs parts by their size is built, **and** the measure from
+    what a recipe is built of; each is reviewed by a model that did not write it.
+  - **Nothing is removed while the owner is away** (the same message): "I'm offsite right
+    now, so I won't be able to grant you permissions for removal of old data FYI. Await for
+    my confirmation for once Im back on site until then everything else is good." So no old
+    data is deleted and no deletion is asked for until the owner says they are back. What
+    waits for them on this machine: the folders `C:\sr-i3` (empty), `C:\sr-j1` and `C:\sr-j2`
+    (reviewers' worktrees) and, when its branch is merged, `C:\sf-formae` (the shape
+    library's builder).
+  - **Back, and three answers** (the owner, 2026-11-20, home between two sleeps, asked what
+    needed them: "1 - relaunch, and 2 - go ahead. I'll ge[t] you permission and as for the
+    decision. At your discretion").
+    - *The two stopped reviews are run again.* Two fresh reviewers on Opus, each in a
+      worktree of its own at `f173b170` (`C:\sr-k1`: faceting from the recipe and the shape
+      check's safe state; `C:\sr-k2`: the light report's mends and the rounded shape's
+      weights). Their briefs and reports are in `.swarmnotes/m6/part4/reviews/` on this
+      machine.
+    - *Old data may be removed again.* `C:\sr-i3` (empty) is gone. `C:\sr-j1`, `C:\sr-j2`,
+      `C:\sr-k1`, `C:\sr-k2` and `C:\sf-formae` are in use; each goes when its branch is
+      merged or its review is in. The folders the list of "never delete" names stay as they
+      are.
+    - *What a reviewer of the silhouette measure may refuse it for is Claude's to set.* Five
+      reviews each found shapes it misreads, and each mend was true to the review before.
+      The bar from the sixth on: a reviewer refuses it for unbounded cost, a panic, a
+      result that is not the same twice, a false sentence in the documents or the advice,
+      a reading that flips as the shape turns inside the limits it states, a regression
+      nobody listed, or a rule no test holds. A shape outside its set of common assets that
+      it misreads steadily counts in the rate it states, and is not a refusal. The rate is
+      said with the measure wherever it is used.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
@@ -515,7 +567,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       on the backs too; the arm lies on the shoulder as a separate capsule; the trunk is a box
       with hard vertical edges; an elbow band; a seam where the legs meet the trunk).
       **The studio's sheets take them as passes** (2026-11-19: `"passes": ["colour", "clay",
-      "curvature"]`; not reviewed). Not yet: `studio_lineup` and `sight_compare`. **Its reviewer said not to
+      "curvature"]`; not reviewed). **`sight_compare` and `studio_lineup` take them too**
+      (2026-11-19, later: a mark taken in a form view is diffed in it, so the comparison
+      shows a change of shape and nothing else; a line-up in clay keeps its figure and cube;
+      not reviewed). **Its reviewer said not to
       merge**: clay's light did not come with the camera when looking down; `gi` views with a
       form drew things that are not there; an inside-out shape looked right, and the
       description promised hard edges in curvature, which cannot show them; and the world's
@@ -574,7 +629,8 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       the crease checks as not measured; triangles with no area fail the loose check).
     - **Shape language: built** (2026-11-19; FORM.md, "Shape language"): how round, square
       or pointed an asset's outline is, in every asset's taste measures; a style may ask for
-      one (`[taste] shape_language`), and the `storybook` preset asks for round. With it the
+      one (`[taste] shape_language`), and the `storybook` preset asked for round then (no
+      preset does now). With it the
       five items of "form within an agent's reach" are all built. **Its first reviewer said
       not to merge it** (corners counted on a polygon with hard lines between the classes:
       it flipped under small turns), and it was written again as the net turn of a smoothed
@@ -597,16 +653,176 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       and not written a fourth time on a guess**: the shares stay in every asset's facts as
       what they are, the check stays only for a style that asks for it by name (its advice
       now true to the measure, the two faults said in it), **no preset asks for it** (the
-      `storybook` preset did), and what it should become is in "Open owner decisions"
-      below. Sepulcra's recipes lead pointed (30 of 56), square (20) and round (6).
-    - **Where its verification stands** (2026-11-19, evening): the full gate passed on
-      `466e262b` (the mends of the fifth round of reviews and the light report: 3,296
-      tests, the repeats, the slow-worker run, the speed budgets, clippy for both targets,
-      both builds), and seven live checks on it (window, sight, terrain, GI, studio, procgen,
-      `form_sheet_check`), the window's pictures looked at on both adapters; the same had
-      passed on `24bfe7de` before those mends. **Owed:** a review, by models that did not
-      write them, of the fifth round's mends (shape language, the rounded field's guard and
-      thin weight, the form checks) and of the light report. Nothing of part 4 is pushed.
+      `storybook` preset did). **A fourth version is built, at the owner's word** ("2 - 3
+      and I don't care if it takes longer": both a fourth silhouette measure and the measure
+      from the recipe). It keeps the turning and gives it what the three reviews found it
+      lacked: **every point of the outline belongs to a part with a thickness, is judged at
+      that thickness and counts by it** (FORM.md, "Shape language"). By the third review's
+      own probes its failing cases pass (cut boxes 96% to 99% square, a balloon on a string
+      and its like 92% to 100% round), bars however thin are square, and an oval is never
+      square; a convention moved with it (a box rounded by a tenth of its side is square,
+      and round only from about a quarter). What it cannot say steadily is written down (an
+      oval four to six times as long as wide; a body with more than a dozen hairs). **Its
+      reviewer said not to merge it** (the fourth review of this measure, the fourth "do
+      not merge"): a box whose edges wobble by half a pixel reads 0% square at some angles;
+      the joint rule flickers on limbs and necks (a character, a bottle, an axe swing by a
+      third to a half as they turn); the bands swing by a half on a plank; the advice for a
+      round style leads into a failure; long thin comb teeth read as points (FORM.md, "Its
+      fourth review"). **A fifth version mends them** (2026-11-20, by an agent that did not
+      write the fourth; FORM.md, "Its fifth version"): a side is a stretch of the smoothed
+      outline that runs straight; a part is as thick as the thickness about a point once
+      it has levelled off, and joints are where the outline turns inward; each part is
+      smoothed at its own thickness; the advice texts are tried by a test; about 150 shapes
+      are held every nine degrees, and every degree in an ignored run. By its own account:
+      a wobbling box is 95% to 100% square at every angle, the character leads round in
+      every mask, the bottles lead square. **Its limits, as its author states them:** a
+      part under six pixels thick still reads as a point; a thin plank in the rounding band
+      swings by a third to two thirds; a dagger, a tombstone and a 4 to 1 oval sit on a
+      line and flip; the median step is held by no test; the worst case costs twelve times
+      a disc. **Its reviewer said not to merge it** (the fifth review, the fifth "do not
+      merge"; FORM.md, "Its fifth review"): a coiled shape takes ten seconds to read (the
+      search for a part's level thickness is quadratic; the fourth version took 33 ms);
+      a lens, a leaf and a teardrop read a third to a half square (the fourth read them
+      right); an apple's stalk of 9 to 11 pixels flickers; the round advice fails on a
+      thin plank; five of its rules are held by no test; under 384 pixels an oval reads
+      square. **A sixth version mends most of it, under a changed way of working**
+      (2026-11-20, by an agent that wrote none of the five before; merged; FORM.md, "Its
+      sixth version"). What changed in how it is held, since five reviews each found
+      shapes the author had not tried: a set of 103 common assets was written down with
+      the lead a person would give each **before** the measure was run on them, and the
+      measure states its rate on it; every threshold is free of the size the shape is
+      drawn at, or is a stated floor of the pixel grid; every loop counts its steps, and
+      a test holds the count; a rule no test needs was taken out; every earlier
+      reviewer's probe is a permanent test. By its author's account: **it leads as a
+      person would on 90 of the 103 in every mask (87%; the fifth version 89)**; its cost
+      is linear (a coil of thin wire 5 times a disc, where it was 300 times; the worst
+      found, a comb of one-pixel teeth, 15 times); a leaf and a teardrop read round; a
+      stalk no longer flickers; thin limbs read; nothing under 192 pixels across is read
+      (it was 110), and from there a shape reads the same at four sizes. **What it still
+      gets wrong, named in FORM.md and pinned by tests:** thirteen of the common assets (a
+      sword with a round guard, a cumulus cloud, a fish, a cat, a bell, a cauldron, a
+      castle tower, an aeroplane and five more); shapes that swing with the angle (a T, a
+      star of sixteen shallow points, a lens with tips of 90 degrees, a notched disc,
+      which was steady before); a body with sixteen hairs is not read at all. **Not
+      reviewed yet: a sixth review is running, held to the bar set on 2026-11-20 at the
+      top of this page.** Sepulcra is not counted again by it. No preset asks for it, and
+      the check exists only for a style that asks by name. Sepulcra's recipes
+      by the fourth version: 29 lead pointed, 14 round, 13 square. **The measure from the recipe is built too** (the modeller records
+      each named shape's own outlines and its surface; the studio reads them by the same
+      measure, weighed by surface: `built_of` in `studio_check`, with the shapes named). By
+      it Sepulcra is 42 square, 11 round, 1 pointed, and the two readings agree on 20 props
+      of 56: they are built of boxes and topped with points. **So the silhouettes answer
+      the check unless a style says `shape_by = "recipe"`**, the other reading is said
+      beside the answer, and the fix names the recipe's largest shapes to change. **Its
+      reviewer said not to merge it either** (2026-11-20): the record is wrong for a
+      boolean operand's own operations, for includes (paths collide and a terrain's surface
+      is credited to a box), for scatters and for intersections; an outline too thin to
+      read is dropped without a word (a pole reads 100% round); a measured human figure
+      reads 98% square (FORM.md, "Its first review"). **An agent that did not write it has
+      mended all of it** (2026-11-20; FORM.md, "What was mended"): a record's surface is
+      now that shape's own surface in the finished model, and what no record speaks for is
+      the rest. A boolean says exactly which operand each face of its result came from; a
+      sculpt's primitives are weighed by the triangles their field made; an include's
+      records carry its path; a scatter records what it placed; an outline is read at six
+      to one at most, so a pole and a coin read as a can does; a column's outline has its
+      caps, and the measured figure reads round. By its own account nineteen faults seeded
+      back were each caught, Sepulcra's counts did not move, and reading costs 9 to 243 ms
+      an asset. **Their reviewer said not to merge them** (2026-11-20; FORM.md, "Its
+      second review"): an operation that is not the same in every direction (a scale by a
+      vector, a taper, a bend) moves surface from one record to another, since all records
+      under it are scaled by one ratio (a flattened box and ball read 72% square where the
+      model is 59% round); and a long outline with a point in its middle is pressed flat
+      at both ends (a spear's shaft and a sword's blade read square). Smaller: a recipe of
+      52 sculpts that built before is refused for work. What it found sound: no mesh
+      changed, booleans, includes and scatters. **A third agent has mended them**
+      (2026-11-20, merged; FORM.md, "What was mended, second round"): nothing is scaled by
+      a ratio any more. **Every triangle knows which record it was made as** (one number a
+      triangle, kept through merges, mirrors, welds, subdivisions, copies and booleans,
+      and absent where nothing asks), and a record's surface is summed from its own
+      triangles in the finished model, once, at the end. A long outline is turned to its
+      long axis and loses length only where its two sides run straight and level, both
+      ends kept as they are. The record never refuses a build (its asking has a limit of
+      its own, and what is past it goes to the rest). A test holds each record against
+      the same shape built alone, for 28 recipes from a fixed sequence, and every cap is
+      held by a test that fails when it moves. By its own account every fault seeded back
+      was caught, four of them only after it added a test; no mesh changed; Sepulcra's
+      counts did not move (42 square, 11 round, 1 pointed, 2 unread). **Its limits, as its
+      author states them:** inside one boolean operand that holds several shapes, pieces
+      on one plane go to the first of them; a bevel's strips and a cut's walls belong to
+      no record; a long taper's middle gets steeper when shortened; a crescent and a
+      strongly squared oval past 8 to 1 read differently at the two picture sizes; the
+      reading of Sepulcra's slowest asset went from 223 to 309 ms, unexplained on a busy
+      machine. **Its reviewer said merge** (2026-11-20; FORM.md, "Its third review"): the
+      first "merge" either shape measure has had. It held the tie against a truth of its
+      own (78 random trees of booleans with every operation, each record exact; 78 more
+      recipes bit for bit the same built twice), showed that no mesh changed (88 recipes
+      hash the same with the record switched off), and reproduced Sepulcra's counts. It
+      found one rule no test holds (the snap of five degrees to a side: small in effect),
+      that a long rod with wobbling sides reads round when pressed (57% to 66% round at
+      30 to 1 where it is square at its own length; nothing of Sepulcra's), and two tests
+      weaker than they say. **Those three are small and not mended yet: they are the
+      first job of the agent that mends faceting**, which builds on the same tie.
+    - **Where its verification stands** (2026-11-19, night): the full gate passed on
+      `bec48409` (everything of part 4 up to the form views in a before and after and in
+      the line-up: 3,298 tests, the repeats, the slow-worker run, the speed budgets, clippy
+      for both targets, both builds), and seven live checks on it (window, sight, terrain,
+      GI, studio, procgen, `form_sheet_check`); the same had passed on `ea95a90d`,
+      `a80b3cf4` and `466e262b` before. The fourth shape-language measure and the measure
+      from the recipe are committed after it (`6e9c490b`, `5781cc53`) and wait for a gate;
+      each was reviewed and neither is to be merged as it stands.
+      **Owed:** the mends of both shape-language measures and their reviews; and reviews,
+      by models that did not write them, of faceting from the recipe, the light report's
+      mends and the levelled weights (the two reviewers started for them were stopped by
+      an interrupt; at the owner's word of 2026-11-20 two fresh ones are running). Nothing
+      of part 4 is pushed.
+    - **The shape library: being built** (2026-11-19, at the owner's word above; builders
+      on Opus, a fresh one a stage, in a worktree of their own, branch `m6-formae`; the
+      brief and each stage's notes are in `.swarmnotes/m6/part4/formae/` on this machine).
+      A crate `specula-formae`: named shapes as a table, each described once as its exact
+      pieces (lines, arcs, curves), from which the count before building, the build, the
+      measures and the error at a detail are all derived. **Stage 1a, the plane figures:
+      built** (`c7b28461`: 65 plane figures, 12 curves, 67 aliases). **Claude's review of it
+      found 27 faults** with a test that draws all of a shape's parameters together (the
+      builder's tests moved one at a time): builds the library's own check refused, two
+      bands that crossed themselves at a coarse detail, a closed-form length that lost
+      digits. **A fresh agent investigated and mended them** (`859be3c5`: every build is
+      checked, and is a well-made shape or a refusal as data with its numbers and a detail
+      that holds; the test is the crate's now). **Stage 1b, the solids: built** (2026-11-20,
+      `fe382c13`: 82 solids, flat and curved, 79 aliases, and three operators that make a
+      prism, a pyramid or a turned solid of any one-ring plane figure). **Claude's review
+      of it found five faults**, again by drawing the parameters at their corners together,
+      and at odd details: a long or flat superellipsoid builds a mesh that is not the shape
+      (a needle of 10 km came out 8 m long, its error said small); a turned figure's closed
+      volume loses its digits when the section is thin and far from the axis (up to a
+      thousandth); on strongly stretched forms a corner's normal points behind its own
+      face; one form is marked flat that is curved; and the crate's tests add twelve
+      minutes to the gate. **A fresh agent investigated and mended them** (`028b895e`): the
+      superellipsoid, the ellipsoid and the elliptic cylinder are a profile turned on a
+      ring, cut so that the axis points are samples at every detail, with a proof in place
+      of the crossing search and an error that is a bound; a turned figure's volume is
+      Pappus's from the section's own measures; a normal behind its face is proved
+      impossible for solids of revolution and refused as data elsewhere; the tests' default
+      run is under two minutes, the full runs marked and listed. It also found a fault of
+      stage 1a (edges nearer each other than the floor passed as well made; refused now).
+      **Claude ran its own probe again, unchanged and wider: the mends hold, and one small
+      fault is left** (a very shallow lens built two parts in a thousand million wider
+      than its radius), which is the next builder's first job. **Stage 1c, 2.5D: built**
+      (2026-11-20, `19e4be0a`). The lens was a rounding fault of arcs with far centres
+      (every sample is placed from an arc's exact ends now). Built: a plane figure raised
+      five ways (`slab`, `bevelled`, `pillow`, `stepped`, `relief`), holes included, with
+      caps proved to tile their region once; a solid drawn flat in eight named views or
+      any parallel one, hidden surfaces removed (`draw`); a solid cut by a plane or into
+      layers (`slice`, `layers`). **Claude's review held all of it with checks of its own**
+      (8,289 raised builds; 6,268 drawings held at 492,756 points against a ray cast; 7,096
+      cuts held at 172,379 points against a parity; its probe's first run had 918 faults
+      that were all the probe's own, corrected and run again), **and found two small
+      faults**: a slab of a needle triangle is refused for an inset a slab does not have,
+      and one refusal names an inset as holding that does not. They are the next builder's
+      first job. **Stage 2, the modeller, is being built** by a fresh agent.
+      Then the engine's 2D item with two read-only tools and
+      `docs/design/FORMAE.md`, and further families. Each stage is reviewed by Claude, who
+      did not write it; the whole is pictured in the engine and gated before it is merged.
+      **Nothing of it is merged yet.**
     - **Faceting, from what a recipe names round: built** (2026-11-19, evening; FORM.md,
       "Faceting, from what the recipe names round"). The modeller records, for every shape
       a recipe names round (cylinder, cone, sphere, torus, capsule, lathe, a sculpt), the
@@ -615,7 +831,23 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       show at the asset's size, and a style may limit it (`[form] max_facet_deg`: the check
       `faceting`). With it **every form check the owner asked for is built**. Sepulcra's
       props are faceted on purpose (the median 90 degrees a face, rings of three sides):
-      its style gives no limit. **Not reviewed yet.**
+      its style gives no limit. **Its reviewer said not to merge it** (2026-11-20; FORM.md,
+      "Its first review"): what each shape records is right, and what is done with it is
+      not. The radius is the recipe's and the size the built model's, so the same mesh
+      passes or fails by how its recipe wrote it (a scale, an include, a taper); a sculpt
+      speaks by its tightest radius alone, so a bead of 2 mm hides a coarse ball; a shape
+      nobody sees fails; the verdict moves as the asset is turned; the capsule's advice
+      names the wrong number; five rules are held by no test. **Not mended yet: give no
+      style a `max_facet_deg` until it is.** Its mend waits for the recipe measure's third
+      round to be merged, which ties each piece of geometry to its record: the same tie
+      gives a round shape its radius in the built model and whether any of it is seen. The
+      reviewer was refused the permission to seed faults in its worktree (the brief both
+      forbade changing tracked files and asked for seeded faults: the lead's mistake), so
+      its "no test holds it" findings are by reading; the mender seeds them on its branch.
+      **The shape check's safe state, reviewed with it, holds**: no preset asks for a
+      shape, nothing else writes the setting, and a style that does not name the check is
+      never failed by it. One small finding: a style that asks, where neither the outline
+      nor the recipe could be read, gets no finding at all and not a "not measured".
     - **The light report: built** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)):
       `perf_light` draws a view offscreen as the world has it and with each light feature
       that is on left out (the sun's shadows, ambient occlusion, bloom, anti-aliasing, fog,
@@ -634,10 +866,39 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       image back on the engine thread for nothing (stalls at large sizes). Mended, with
       five smaller findings (at least five frames and nine unless given, with a noise rule
       that widens for fewer; grading counted only when it draws; a loading view waited
-      for; `include_ui`; a job near its call's end answers with what it has). **These
-      mends are not reviewed yet.**
-    - **Then:** the same in 2D; `form`
-      on `sight_compare` and the line-up. And on the figure, by what the form views show: the plate front and back, the arm
+      for; `include_ui`; a job near its call's end answers with what it has). **A second
+      reviewer was given the mends and stopped early** (2026-11-20; LIGHT.md, "Its second
+      review, which stopped early"): it was refused the permission for a temporary counter
+      in a tracked file of its own worktree, and stopped as its brief told it to, before
+      it had run the engine. By reading it found one major fault (the wait for a loading
+      view asks freshly at every step, so in 2D it can keep itself waiting the whole ten
+      seconds, and it reads file times on the engine thread), two small ones, and by
+      simulation that the noise rule calls a costless feature a cost up to one time in
+      eleven on a machine that is busy by turns. Its provisional verdict is not to merge.
+      The rounded shape's levelled weights, given to the same reviewer, were not looked
+      at; a fresh reviewer took them (below). **A fresh agent then reproduced the light
+      report's findings in a running engine and mended them** (2026-11-20; LIGHT.md, "What
+      was mended, second round"). What it saw: the wait kept a view with a just-written
+      sprite waiting about two seconds, not ten, on both adapters; only 2D textures renew
+      their own wait. Now there is one way to wait, shared with `sight_frame`; a cut-short
+      answer says it is partial and gives no advice from too few rounds; a measuring
+      render copies nothing on the graphics card either; and **the noise rule reads each
+      cost from the difference of two frames of the same round**, with every second round
+      drawn backwards, and says when the machine was too busy to advise. By its own
+      simulation a costless feature is called a cost under 1% of the time where it was up
+      to 12%; **what it gave up for that: on a machine busy in short bursts a real cost of
+      a twentieth of the frame is told only a fifth to a third of the time**, and then the
+      answer says the machine was not steady and advises nothing. **Not reviewed yet.**
+    - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
+      PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
+      builds: a large thin rounded cutter set a metre past the corner of what it cuts
+      costs four times its charge (a 100 m sheet subtracted from a 2 m box, cutting
+      nothing; four to seven times by a busy machine's clock), so **for such a recipe the
+      work limit does not bound the build's time**; at roundnesses the levelling did not
+      try, thin shapes run 1.2 to 1.6 times the plain rate; two sentences of the document
+      are false; nothing holds the levelling by a test. No recipe in the repository uses
+      `roundness`. **Not mended yet.**
+    - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.
   - **The research behind parts 4 and 5 is in** ([docs/research/library/](docs/research/library/README.md):
@@ -1155,7 +1416,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
 - **Pre-M3 cleanup done (2026-10-17):** an outside review (Grok) listed gaps and the owner approved fixing them
   before M3. All merged, each reviewed:
   - current docs; a CI guard against session links in commit messages; a pinned MCP revision test; a Markdown link
-    check and one owner-decisions list (`crates/specula/tests/docs_links.rs`); Linux clippy in CI.
+    check and one owner-decisions list (now `tools/examen/tests/docs_links.rs`); Linux clippy in CI.
   - with `include_ui`, opaque HUD panels (alpha >= 0.9) hide what's under them in sight packets
     (`id_buffer.ui_occluders`; textured interface quads never hide anything).
   - the sky eases into the horizon (no crisp line).
@@ -1529,30 +1790,19 @@ These held all through M5 and were written down nowhere in the repository until 
 ## Open owner decisions
 
 This is the **one list** of decisions waiting for the owner (other docs link here instead of keeping their own;
-`crates/specula/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
+`tools/examen/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
 answer where it applies. What was decided is recorded by date above (2026-10-22, and 2026-11-12 to 16).
 Not decisions of this kind, and also with the owner: the seven items of
 [docs/M5_CHECKLIST.md](docs/M5_CHECKLIST.md) that keep a part for them (none has failed), the raw
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-- **What shape language should become** (2026-11-19; [docs/design/FORM.md](docs/design/FORM.md),
-  "Shape language", "Where it stands"). It is one of the five items of "form within an agent's
-  reach" the owner asked for ("Add all"), with "shape language in the presets". Its measure has
-  failed three independent reviews: it weighs how an outline turns, and so a crate with wide
-  bevels reads as round and a balloon on a string as pointed. It is reported in every asset's
-  facts, a style may still ask for it by name, and no preset asks for it now. The choices:
-  1. **Leave it a reported fact**, with its limits said, and no check by default (where it is
-     now). Costs nothing more.
-  2. **A fourth version that weighs parts by their size in the silhouette.** About a day and a
-     fourth review, with no promise it passes: each of three versions fixed what the review
-     before found and brought a fault of its own.
-  3. **From what the recipe is built of**, as faceting was settled (balls, capsules and chains
-     round, boxes square, cones and wedges pointed, each by its surface). About half a day and
-     a review. It says nothing of an imported mesh, and little of how parts are arranged.
-  *Claude's recommendation:* 3, with 1's reported shares kept beside it: the recipe says what
-  a thing is made of, which is what a style means when it asks for "round".
+Nothing is open (2026-11-20).
 
+(Whether the two reviews an interrupt stopped are run again was decided on 2026-11-20: they
+are, recorded at the top of this page with the owner's word on removals.)
+(What shape language should become was decided on 2026-11-19: both a fourth silhouette
+measure and the measure from the recipe, recorded at the top of this page.)
 (The reference pictures' place was decided on 2026-11-17: a public repository of
 their own, [specula-imagines](https://github.com/IronAdamant/specula-imagines); the three before it were answered on 2026-11-16. Both are
 recorded at the top of this page.)

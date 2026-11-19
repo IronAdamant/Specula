@@ -1200,6 +1200,136 @@ pub fn eval_cost(n: &SdfNode) -> u64 {
     }
 }
 
+/// Triangles of one sculpt's mesh each asked which primitive made it
+/// ([`primitive_of_triangles`]): every triangle of an ordinary sculpt (a measured man's whole
+/// figure is about 8,000; a character of capsules at resolution 64 about 7,000; thirty balls at
+/// resolution 64, 11,664). A mesh of more is asked at every so many of its triangles, each
+/// answer standing for those after it until the next: the mesher writes its triangles block by
+/// block, so a run of them lies together, and only the runs that cross from one primitive to
+/// another are given wrongly. Measured (2026-11-20) on a woman's figure body (16,492 triangles)
+/// against every triangle asked: asked every other, no primitive's share of the surface moved
+/// by more than 0.1% of the whole (8% of its own, for one of 1% or more); every fourth, 0.35%
+/// (15%); every eighth, 0.7% (30%). A mesh of up to twice this is asked every other triangle.
+pub const MAX_OWNER_ASKED: usize = 16_384;
+/// The work ([`eval_cost`]'s units) all the sculpts of one build may spend asking their
+/// triangles which primitive made them. **It is a limit of its own and never the build's**, so
+/// the record never refuses a build: what is past it is not asked, and those triangles are no
+/// record's (the rest; the sculpt's stat says how many). A query costs what its descent
+/// evaluates (each group's children on the way down to one primitive), at the weights the
+/// mesher is charged by. Measured on the reference laptop while other builds ran (2026-11-20):
+/// a figure's tree takes about a nanosecond a unit, so this is about an eighth of a second at
+/// the most; a woman's figure body asked every other triangle spends 27 million, a man's whole
+/// figure 26 million; 52 sculpts of 32 ellipsoids at resolution 48 (70,200 triangles) reach it
+/// with 11% of their triangles unasked.
+pub const MAX_OWNER_BUILD_WORK: u64 = 120_000_000;
+
+/// Which primitive (numbered in the order they are met depth first: every primitive counted, a
+/// half space and what a difference takes away among them) made each triangle of `shape` (the
+/// tree's mesh, in the tree's frame): the one whose field is the tree's at the triangle's
+/// middle (in a union the nearest; in an intersection the furthest; in a difference the first
+/// child where it stands and a later one where it cut, which is that later one's). In a
+/// smooth blend the nearest takes the blend. Every triangle is asked up to `max_asked`
+/// ([`MAX_OWNER_ASKED`] in a build); past it, every so many, each answer standing for the
+/// triangles after it until the next. `max_work` bounds the work: a triangle not answered
+/// within it is [`crate::shape::NO_OWNER`]. The work spent never passes `max_work`.
+pub fn primitive_of_triangles(tree: &SdfNode, seed: u64, shape: &crate::shape::Shape, max_asked: usize, max_work: u64) -> Asked {
+    let none = crate::shape::NO_OWNER;
+    let mut asked = Asked { of: vec![none; shape.tris.len()], work: 0, asked: 0 };
+    let prepared = prepare(tree, seed, &mut 0);
+    let counts = Counted::of(&prepared);
+    if shape.tris.is_empty() || counts.prims == 0 {
+        return asked;
+    }
+    let stride = shape.tris.len().div_ceil(max_asked.max(1)).max(1);
+    let p = |i: u32| shape.positions.get(i as usize).copied().unwrap_or([0.0; 3]);
+    let mut last = none;
+    for (i, t) in shape.tris.iter().enumerate() {
+        if i % stride == 0 {
+            // (A cancelled build stops asking: it fails at its next charge.)
+            if asked.asked % 4096 == 4095 && crate::work::cancelled() {
+                break;
+            }
+            let mid = math3::scale(math3::add(math3::add(p(t[0]), p(t[1])), p(t[2])), 1.0 / 3.0);
+            let mut cost = 0u64;
+            let who = counts.owner(mid, 0, &mut cost);
+            // (A question past the limit is not counted, nor its answer kept: the limit holds.)
+            if asked.work.saturating_add(cost) > max_work {
+                break;
+            }
+            asked.work += cost;
+            asked.asked += 1;
+            last = who as u32;
+        }
+        asked.of[i] = last;
+    }
+    asked
+}
+
+/// What [`primitive_of_triangles`] found.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Asked {
+    /// Each triangle's primitive ([`crate::shape::NO_OWNER`]: not answered).
+    pub of: Vec<u32>,
+    /// The work spent ([`eval_cost`]'s units).
+    pub work: u64,
+    /// The triangles asked.
+    pub asked: usize,
+}
+
+/// A prepared tree with how many primitives each node holds, and what evaluating it costs.
+struct Counted<'a> {
+    n: &'a Prepared,
+    prims: usize,
+    cost: u64,
+    kids: Vec<Counted<'a>>,
+}
+
+impl<'a> Counted<'a> {
+    fn of(n: &'a Prepared) -> Counted<'a> {
+        match &n.kind {
+            PKind::Prim(p) => Counted { n, prims: 1, cost: prim_cost(p) + modifiers_cost(&n.m), kids: Vec::new() },
+            PKind::Group { kids, smooth, .. } => {
+                let kids: Vec<Counted> = kids.iter().map(Counted::of).collect();
+                let cost = group_cost(kids.iter().map(|k| k.cost).sum(), kids.len(), *smooth) + modifiers_cost(&n.m);
+                Counted { n, prims: kids.iter().map(|k| k.prims).sum(), cost, kids }
+            }
+        }
+    }
+
+    /// The primitive (numbered from `base`) whose field is this node's at `p` (in the node's
+    /// parent's frame); `cost` gets what was evaluated to find it.
+    fn owner(&self, p: V3, base: usize, cost: &mut u64) -> usize {
+        let PKind::Group { op, .. } = &self.n.kind else { return base };
+        if self.kids.is_empty() {
+            return base;
+        }
+        let q = local(self.n, p);
+        let mut best = (0usize, 0.0f32);
+        for (i, k) in self.kids.iter().enumerate() {
+            let d = eval(k.n, q);
+            *cost = cost.saturating_add(k.cost);
+            // (What decides: the least in a union, the most in an intersection; in a
+            // difference the most of the first and the others turned inside out.)
+            let v = match op {
+                Combine::Union | Combine::Near => -d,
+                Combine::Intersection => d,
+                Combine::Difference => {
+                    if i == 0 {
+                        d
+                    } else {
+                        -d
+                    }
+                }
+            };
+            if i == 0 || v > best.1 {
+                best = (i, v);
+            }
+        }
+        let before: usize = self.kids[..best.0].iter().map(|k| k.prims).sum();
+        self.kids[best.0].owner(q, base + before, cost)
+    }
+}
+
 /// [`eval_cost`] of a prepared tree (a pruned one costs what is left of it).
 /// A tree's field at a point (negative inside), for tests that ask where a surface is.
 #[cfg(test)]
@@ -3051,5 +3181,52 @@ mod tests {
         let ground = mesh(&half, &MeshOptions { bounds: Some(([-1.0; 3], [1.0; 3])), ..opts(16) }).unwrap().0;
         assert_eq!(ground.open_edge_count(), 0, "closed at the bounds");
     }
-}
 
+    /// Asking which primitive made each triangle: every triangle up to 16,384, every other one
+    /// of up to twice that; a limit on the work is never passed, and what is past it is
+    /// unanswered.
+    #[test]
+    fn a_sculpts_triangles_are_asked_up_to_their_limits() {
+        let mut far = prim(Prim::Sphere { radius: 0.5 });
+        far.m.at = [5.0, 0.0, 0.0];
+        let ball = SdfNode { kind: Kind::Group { op: Combine::Union, kids: vec![prim(Prim::Sphere { radius: 0.5 }), far], smooth: 0.0 }, m: Modifiers::default() };
+        let at = |n: usize| Shape { positions: vec![[0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 0.5]], colors: vec![[1.0; 4]; 3], tris: vec![[0, 1, 2]; n], tags: vec![0; n], ..Shape::default() };
+        let asked = |n: usize, work: u64| primitive_of_triangles(&ball, 1, &at(n), MAX_OWNER_ASKED, work);
+        assert_eq!(asked(16_384, u64::MAX).asked, 16_384, "every triangle of 16,384");
+        assert_eq!(asked(16_385, u64::MAX).asked, 8_193, "every other of one more");
+        assert_eq!(MAX_OWNER_ASKED, 16_384);
+        let a = asked(1000, u64::MAX);
+        assert!(a.of.iter().all(|&o| o == 0) && a.work > 0);
+        let per = a.work / 1000;
+        let short = asked(1000, 100 * per + per / 2);
+        assert!(short.asked == 100 && short.work == 100 * per && short.of[99] == 0 && short.of[100] == crate::shape::NO_OWNER, "{} asked, {} spent", short.asked, short.work);
+    }
+
+    /// Asked every other triangle, a measured man's primitives' shares of the surface are within
+    /// two tenths of a percent of the whole of what they are with every triangle asked (the rule
+    /// [`MAX_OWNER_ASKED`] states for a mesh of up to twice its triangles).
+    #[test]
+    fn asking_every_other_triangle_moves_a_share_by_little() {
+        let body = specula_corpus::Body::typical(specula_corpus::Sex::Male);
+        let tree = crate::figure::tree(&body, &crate::figure::Shaping::default(), crate::figure::Part::Whole);
+        let (shape, _) = mesh(&tree, &MeshOptions { max_work: u64::MAX, ..opts(crate::figure::Part::Whole.resolution()) }).unwrap();
+        let n = shape.tris.len();
+        let shares = |asked: usize| -> Vec<f64> {
+            let a = primitive_of_triangles(&tree, 1, &shape, asked, u64::MAX);
+            let mut s: Vec<f64> = Vec::new();
+            let mut total = 0.0;
+            for (t, &o) in shape.tris.iter().zip(&a.of) {
+                let area = f64::from(crate::made::triangle_area(&shape, *t));
+                total += area;
+                if s.len() <= o as usize {
+                    s.resize(o as usize + 1, 0.0);
+                }
+                s[o as usize] += area;
+            }
+            s.into_iter().map(|x| x / total).collect()
+        };
+        let (all, half) = (shares(n), shares(n.div_ceil(2)));
+        let worst = (0..all.len().max(half.len())).map(|i| (all.get(i).copied().unwrap_or(0.0) - half.get(i).copied().unwrap_or(0.0)).abs()).fold(0.0, f64::max);
+        assert!(n > 4000 && worst < 0.002 && worst > 0.0, "{n} triangles; a share moved by {worst}");
+    }
+}

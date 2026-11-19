@@ -77,7 +77,8 @@ lightness, contrast against its surround and the LOD drawn.
   of blocks (the fewest that give the largest tile within 2048 px), so one sheet shows a whole batch: the M4
   exit set's 33 props are 4 columns of 176 px tiles. Tiles (96) and renders (128) still bound a sheet.
 - **Line-up** (`studio_lineup`): siblings side by side at true relative scale with the human and the cube, front and
-  three-quarter, on one image, plus the silhouette distinctness matrix between them.
+  three-quarter, on one image, plus the silhouette distinctness matrix between them. With `form` (clay, normals,
+  curvature, stripes) it is the same line-up as shape alone, the references with it ([FORM.md](FORM.md)).
 - **Before/after** (`studio_compare`): either two subjects rendered now (two parameter sets, two recipe files), or a
   **mark**: `studio_sheet {mark: "v1"}` keeps that sheet (pixels, per-tile numbers, findings) in memory for the
   calling agent; after editing the recipe, `studio_compare {mark: "v1"}` renders the same sheet again and returns
@@ -134,7 +135,12 @@ Each is a measured number against a `[taste]` threshold. Failures are errors in 
   The mean contrast is still reported (`mean_contrast`).
 - **Shape language:** how round, square or pointed the thumbnail silhouettes' outline is
   ([FORM.md](FORM.md), "Shape language"): reported for every subject (`measures.thumbnails.shape`), and checked
-  (`shape_language`) only when the style gives `[taste] shape_language`.
+  (`shape_language`) only when the style gives `[taste] shape_language`. Beside it, what the recipe is **built
+  of** (`measures.thumbnails.built_of`): each shape the recipe names read by its own outlines and weighed by its own
+  surface in the model, with the share of the surface that was read (`read_share`: what no record speaks for, an
+  outline the measure cannot read and what is past the reading budget all count as not read) and the eight largest
+  shapes by path ([FORM.md](FORM.md), "From what the recipe is built of"); a style answers the check by it with
+  `shape_by = "recipe"`.
 - **Palette distance and neutral saturation:** from the asset's surface colours, as above.
 - **Scale against reference figures:** the build's extents (lowest to highest point) against `[[scale]]`, reported
   also as a ratio to the 1.8 m figure. How far the lowest point floats above the ground is checked on its own

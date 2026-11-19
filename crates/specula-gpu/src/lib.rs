@@ -142,6 +142,7 @@ pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphRes
 pub use effects::{f16_bits, Decal, DecalMode, Effects, Particle, ParticleMaterial, MAX_DECALS, MAX_PARTICLES, MAX_PARTICLE_MATERIALS};
 pub use gi::{check as gi_check, GiFrame, GiQuality, GiView, GiVolume, GI_PROBE_BYTES, IRRADIANCE_VIEW_MIN_SPREAD, MAX_GI_PROBES, MAX_GI_VOLUMES};
 pub use idbuffer::{IdCounts, IdCoverage, IdImage};
+pub use gpu::Readbacks;
 pub use atlas::{pack_atlas, Atlas, AtlasError, AtlasImage, AtlasOptions, AtlasRect, Flipbook, Playback};
 pub use sprite::{sprite_sphere, text_sphere, tiles_sphere, view_2d, Billboard, Draw2d, GlyphInstance, ShapeDraw, Sprite, SpriteBlend, TextFrame, TextRun, TileChunk, View2d};
 pub use tilemap::{TileCell, TileGrid, CHUNK as TILE_CHUNK, MAX_TILE_FRAMES, ORIENT_FLIP_X, ORIENT_FLIP_Y, ORIENT_SWAP_XY};
@@ -1554,6 +1555,18 @@ impl Gpu {
     /// destroying its target) first waits for it. The window's frames don't.
     pub fn render_async(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<(&[u32], &[[u32; 4]])>) -> Result<(), GpuError> {
         self.inner.render_async(target, frame, ids)
+    }
+
+    /// [`Gpu::render_async`] with no ID buffer and no copy of the image back: a render whose
+    /// timings are all that is wanted. The same render, with only the copy into the readback
+    /// buffer left out of its submission; a later [`Gpu::read_rgba8`] of the target makes it.
+    pub fn render_async_timings(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
+        self.inner.render_async_timings(target, frame)
+    }
+
+    /// Offscreen images copied back on the GPU, and read by the host, since start-up.
+    pub fn readbacks(&self) -> Readbacks {
+        self.inner.readbacks()
     }
 
     /// Whether a [`Gpu::render_async`] is in flight (not yet settled).

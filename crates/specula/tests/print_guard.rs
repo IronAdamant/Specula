@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 /// `(file, outputs allowed)`: the files that had console output on 2026-10-29.
 const ALLOWED: [(&str, usize); 69] = [
-    ("crates/specula/src/capture.rs", 3),
+    ("crates/specula/src/capture.rs", 2),
     ("crates/specula/src/disk.rs", 4),
     ("crates/specula/src/evidence.rs", 5),
     ("crates/specula/src/fpguard.rs", 1),
