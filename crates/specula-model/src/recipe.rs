@@ -1155,9 +1155,14 @@ pub struct ModelExtras {
     pub terrain_transform: Option<Affine>,
     /// Per generator or boolean: its path and what it did (counts, work), bounded.
     pub stats: Vec<(String, Json)>,
-    /// The shapes the recipe names round, and how coarsely each was built ([`Round`]): the
-    /// ones whose facets stand furthest off the true curve first, at most [`MAX_ROUND`].
+    /// The shapes the recipe names round, and how coarsely each was built, measured in the
+    /// finished model ([`Round`], [`crate::facet`]): those with a triangle of their own left,
+    /// at most [`MAX_ROUND`], kept in the order the answer is read by (the ones not measured
+    /// first, then every shape that is the coarsest seen at some size, then the rest).
     pub round: Vec<Round>,
+    /// How many round shapes have a triangle of their own in the finished model (`round` keeps
+    /// at most [`MAX_ROUND`] of them).
+    pub round_total: usize,
     /// What the recipe is built of ([`crate::Made`]): each shape it names with its own outlines
     /// and its own surface in the finished model, measured on the triangles that carry it
     /// ([`crate::Shape::owners`]: what its operations, a boolean and a scatter left of it), one
@@ -1171,35 +1176,7 @@ pub struct ModelExtras {
     pub made_rest_m2: f32,
 }
 
-/// A shape a recipe names round (a cylinder, a cone, a sphere, a torus, a capsule, a lathe, a
-/// sculpt), and how coarsely it was built: **what a mesh alone cannot say** (a box and a
-/// four-sided cylinder are one mesh; whether a ten-sided column is a coarse cylinder or a
-/// prism is what its maker meant, and the recipe says which: a prism is an extruded outline
-/// of ten sides, a cylinder is a cylinder).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Round {
-    /// Where in the recipe (`parts[2].shape`, `parts[0].shape.of[1]`).
-    pub path: String,
-    /// The shape's name in the recipe.
-    pub what: &'static str,
-    /// The turn between neighbouring faces round it, degrees: 360 over a cylinder's sides.
-    pub turn_deg: f32,
-    /// The radius it turns at, metres, as the recipe gives it (before the part's own scale).
-    pub radius_m: f32,
-}
-
-impl Round {
-    /// How far the middle of a facet stands in from the true curve, metres: what is seen of
-    /// the faceting in a silhouette.
-    pub fn sag_m(&self) -> f32 {
-        self.radius_m * (1.0 - dmath::cos(self.turn_deg.to_radians() * 0.5))
-    }
-
-    pub fn to_json(&self) -> Json {
-        let r = |x: f32, k: f64| Json::from(dmath::round_f64(f64::from(x) * k) / k);
-        Json::obj([("path", Json::from(self.path.as_str())), ("shape", Json::from(self.what)), ("turn_deg", r(self.turn_deg, 100.0)), ("radius_m", r(self.radius_m, 1.0e4)), ("sag_m", r(self.sag_m(), 1.0e5))])
-    }
-}
+pub use crate::facet::Round;
 
 /// Round shapes kept for one model's facts.
 pub const MAX_ROUND: usize = 64;
@@ -1469,7 +1446,13 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
             f64::from(math3::length(math3::cross(math3::sub(b, a), math3::sub(c, a)))) * 0.5
         })
         .sum();
-    let (made, made_rest_m2) = tally.made_of(&built.iter().map(|b| &b.shape).collect::<Vec<_>>(), surface as f32);
+    let finished: Vec<&Shape> = built.iter().map(|b| &b.shape).collect();
+    // (Round shapes first: `made_of` takes the record.)
+    let (round, round_total) = {
+        let paths: Vec<String> = tally.made.borrow().iter().map(|r| r.path.clone()).collect();
+        crate::facet::finish(&tally.rounds.borrow(), &paths, &finished)
+    };
+    let (made, made_rest_m2) = tally.made_of(&finished, surface as f32);
     Ok(Model {
         name: recipe.name.clone(),
         bounds: lods[0].bounds(),
@@ -1483,7 +1466,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         budget: (min_t, max_t),
         notes,
         rig: rig.map(|(r, _)| r),
-        extras: ModelExtras { textures, terrain, terrain_transform, stats, round: tally.round.take(), made, made_rest_m2 },
+        extras: ModelExtras { textures, terrain, terrain_transform, stats, round, round_total, made, made_rest_m2 },
         wind,
     })
 }
@@ -1601,8 +1584,11 @@ struct Tally {
     terrain_transform: std::cell::Cell<Option<Affine>>,
     /// Boolean and texture work spent so far (all budgets are per build).
     work: std::cell::Cell<u64>,
-    /// The shapes named round so far ([`Round`]), the [`MAX_ROUND`] that sag the most.
-    round: std::cell::RefCell<Vec<Round>>,
+    /// What the shape being built noted of how round it is, until it has a slot.
+    round_notes: std::cell::RefCell<Vec<crate::facet::Note>>,
+    /// The round shapes so far, each on its slot, with what has been done to them since
+    /// ([`crate::facet`]), at most [`crate::facet::MAX_RECS`].
+    rounds: std::cell::RefCell<Vec<crate::facet::Rec>>,
     /// What the fine level is built of so far ([`crate::Made`]): each shape the recipe names,
     /// in the order built (a path and what it is).
     made: std::cell::RefCell<Vec<made::Record>>,
@@ -1623,36 +1609,81 @@ impl Tally {
     /// The shape at `path` is built as `s`: what was noted of it is kept, and every triangle of
     /// `s` is its.
     fn made_now(&self, path: &str, s: &mut Shape) {
-        let Some((what, views)) = self.making.take() else { return };
-        let views = crate::made::views(views);
-        if views.is_empty() || s.tris.is_empty() {
+        let notes = self.round_notes.take();
+        let views = self.making.take().map(|(what, views)| (what, crate::made::views(views))).filter(|(_, v)| !v.is_empty());
+        if s.tris.is_empty() || (views.is_none() && notes.is_empty()) {
             return;
         }
         let mut records = self.made.borrow_mut();
         let mut slots = self.slots.borrow_mut();
         if records.len() < crate::made::MAX_KEPT && slots.len() < crate::made::MAX_SLOTS {
-            slots.push(made::Slot { record: records.len() as u32, views });
+            // (A shape whose outlines are not kept, a cutter, still has a slot for its round
+            // shapes: one that speaks for nothing in what the model is built of.)
+            let what = views.as_ref().map_or_else(|| notes.first().map_or("", |n| n.what), |v| v.0);
+            let speaks = views.is_some();
+            slots.push(made::Slot { record: records.len() as u32, views: views.map(|v| v.1).unwrap_or_default(), speaks });
             records.push(made::Record { path: path.to_string(), what });
-            s.own(slots.len() as u32 - 1);
+            let slot = slots.len() as u32 - 1;
+            s.own(slot);
+            drop((records, slots));
+            for note in notes {
+                self.round_on(note, slot, crate::facet::phase_of(s));
+            }
+        }
+    }
+
+    /// A round shape's note, on its slot.
+    fn round_on(&self, note: crate::facet::Note, slot: u32, phase: f64) {
+        if !(note.turn_deg.is_finite() && note.radius.is_finite() && note.turn_deg > 0.0 && note.radius > 0.0) {
+            return;
+        }
+        let record = self.slots.borrow().get(slot as usize).map_or(0, |s| s.record);
+        let mut recs = self.rounds.borrow_mut();
+        if recs.len() < crate::facet::MAX_RECS {
+            recs.push(crate::facet::Rec { note, record, slot, phase, maps: vec![crate::facet::IDENTITY], many: None, displaced: 0.0, unknown: None });
+        }
+    }
+
+    /// An operation did `mv` to the triangles of `owners` (a shape's): the round shapes among
+    /// them carry it. Nothing to do when nothing round was built.
+    fn moved(&self, owners: &[u32], mv: &crate::facet::Moved) {
+        let mut recs = self.rounds.borrow_mut();
+        if recs.is_empty() || owners.is_empty() {
+            return;
+        }
+        let here = crate::facet::slots_in(owners);
+        for r in recs.iter_mut().filter(|r| here.binary_search(&r.slot).is_ok()) {
+            r.moved(mv);
         }
     }
 
     /// The sculpt at `path` is built as `s`: `views` holds each of its primitives' outlines (in
     /// the tree's depth-first order; none for one that does not add to it), and `of` says which
     /// primitive made each triangle of `s` ([`crate::shape::NO_OWNER`]: none, or not asked).
-    fn made_sculpt(&self, path: &str, what: &'static str, views: Vec<Option<made::Views>>, of: &[u32], s: &mut Shape) {
+    /// `rounds` holds each primitive's round note (the same order; none for one with nothing
+    /// round), and `views` is empty for a cutter, which is not what the model is built of:
+    /// a primitive that is round has a slot even where it adds nothing (what a difference
+    /// takes away leaves walls), one that speaks for nothing.
+    fn made_sculpt(&self, path: &str, what: &'static str, views: Vec<Option<made::Views>>, rounds: Vec<Option<crate::facet::Note>>, of: &[u32], s: &mut Shape) {
+        // (A cutter has no outlines: it speaks for nothing in what the model is built of.)
+        let speaks = !views.is_empty();
         let mut records = self.made.borrow_mut();
         let mut slots = self.slots.borrow_mut();
         if records.len() >= crate::made::MAX_KEPT || of.len() != s.tris.len() {
             return;
         }
         let record = records.len() as u32;
-        let mut slot_of = vec![crate::shape::NO_OWNER; views.len()];
-        for (i, v) in views.into_iter().enumerate() {
-            let v = crate::made::views(v.unwrap_or_default());
-            if !v.is_empty() && slots.len() < crate::made::MAX_SLOTS {
-                slot_of[i] = slots.len() as u32;
-                slots.push(made::Slot { record, views: v });
+        let mut slot_of = vec![crate::shape::NO_OWNER; views.len().max(rounds.len())];
+        let mut round_slots = Vec::new();
+        for (i, slot) in slot_of.iter_mut().enumerate() {
+            let v = if speaks { crate::made::views(views.get(i).cloned().flatten().unwrap_or_default()) } else { Vec::new() };
+            let round = rounds.get(i).cloned().flatten();
+            if (!v.is_empty() || round.is_some()) && slots.len() < crate::made::MAX_SLOTS {
+                *slot = slots.len() as u32;
+                slots.push(made::Slot { record, views: v.clone(), speaks: !v.is_empty() });
+                if let Some(r) = round {
+                    round_slots.push((r, *slot));
+                }
             }
         }
         if slot_of.iter().all(|&x| x == crate::shape::NO_OWNER) {
@@ -1661,6 +1692,21 @@ impl Tally {
         }
         records.push(made::Record { path: path.to_string(), what });
         s.owners = of.iter().map(|&p| slot_of.get(p as usize).copied().unwrap_or(crate::shape::NO_OWNER)).collect();
+        drop((records, slots));
+        for (note, slot) in round_slots {
+            self.round_on(note, slot, 0.0);
+        }
+    }
+
+    /// Which primitive made each triangle of a sculpt's mesh `shape`, asked as a build asks
+    /// it: every triangle up to [`crate::sdf::MAX_OWNER_ASKED`], every so many past it, within
+    /// what is left of the build's own limit for it ([`crate::sdf::MAX_OWNER_BUILD_WORK`]),
+    /// which is spent.
+    pub(crate) fn ask_owners(&self, tree: &crate::sdf::SdfNode, seed: u64, shape: &Shape) -> crate::sdf::Asked {
+        let left = crate::sdf::MAX_OWNER_BUILD_WORK.saturating_sub(self.owner_work.get());
+        let a = crate::sdf::primitive_of_triangles(tree, seed, shape, crate::sdf::MAX_OWNER_ASKED, left);
+        self.owner_work.set(self.owner_work.get().saturating_add(a.work));
+        a
     }
 
     /// The records made from `from` on were made inside an include at `at` (`parts[1].include`)
@@ -1676,20 +1722,6 @@ impl Tally {
     /// finest level's `surface` ([`crate::made::gather`]).
     fn made_of(&self, shapes: &[&Shape], surface: f32) -> (Vec<crate::Made>, f32) {
         crate::made::gather(&self.made.take(), &self.slots.take(), shapes, surface)
-    }
-
-    /// A shape named round was built this coarsely. Kept if it is among the [`MAX_ROUND`]
-    /// whose facets stand furthest off their curve.
-    fn rounded(&self, round: Round) {
-        if !(round.turn_deg.is_finite() && round.radius_m.is_finite() && round.turn_deg > 0.0 && round.radius_m > 0.0) {
-            return;
-        }
-        let mut list = self.round.borrow_mut();
-        let at = list.partition_point(|r| r.sag_m() >= round.sag_m());
-        if at < MAX_ROUND {
-            list.insert(at, round);
-            list.truncate(MAX_ROUND);
-        }
     }
 
     /// A piece of `old` triangles is about to become `new`: fail before allocating if that
@@ -2096,11 +2128,13 @@ impl Ctx<'_> {
         self.tally.making.replace(Some((what, views)));
     }
 
-    /// The shape at `n` is one the recipe names round, built with `turn_deg` between its faces
-    /// at `radius_m` (not for the coarse far level, which is coarse on purpose).
-    fn round(&self, n: &Node, what: &'static str, turn_deg: f32, radius_m: f32) {
+    /// The shape being built is one the recipe names round, built with `turn_deg` between its
+    /// faces at `radius_m` by its number `count` (of `value`); `ring`: round its own Y axis
+    /// (not for the coarse far level, which is coarse on purpose). Kept with the shape's slot
+    /// once it is built, and measured in the finished model ([`crate::facet`]).
+    fn round(&self, what: &'static str, count: &'static str, value: u32, turn_deg: f32, radius_m: f32, ring: bool) {
         if !self.coarse {
-            self.tally.rounded(Round { path: n.path.clone(), what, turn_deg, radius_m });
+            self.tally.round_notes.borrow_mut().push(crate::facet::Note { what, count, count_value: value, turn_deg: f64::from(turn_deg), radius: f64::from(radius_m), ring: ring.then_some(value), primitive: None });
         }
     }
 
@@ -2325,7 +2359,7 @@ impl Ctx<'_> {
                 let top = if n.op == "cone" { 0.0 } else { self.ranged(n, "radius_top", radius as f64, 0.0, 1e4)? };
                 let height = self.positive(n, "height", 1.0)?;
                 let sides = self.int(n, "sides", 12, 3, 256)?;
-                self.round(n, if n.op == "cone" { "cone" } else { "cylinder" }, 360.0 / sides as f32, radius.max(top));
+                self.round(if n.op == "cone" { "cone" } else { "cylinder" }, "sides", sides, 360.0 / sides as f32, radius.max(top), true);
                 // (Its own section, and what it is from the side, which two of its three views are.)
                 self.made(if n.op == "cone" { "cone" } else { "cylinder" }, vec![(made::ngon(sides, radius.max(top)), 1.0), (made::trapezoid(radius, top, height), 2.0)]);
                 let bevel = if n.op == "cone" { 0.0 } else { self.ranged(n, "bevel", 0.0, 0.0, 100.0)? };
@@ -2335,7 +2369,7 @@ impl Ctx<'_> {
                 let (r, sub) = (self.positive(n, "radius", 1.0)?, self.int(n, "subdivisions", 1, 0, 5)?);
                 // (A twenty-sided ball's faces turn 41.8 degrees from one to the next, and each
                 // subdivision halves that.)
-                self.round(n, "sphere", 41.81 / (1u32 << sub) as f32, r);
+                self.round("sphere", "subdivisions", sub, 41.81 / (1u32 << sub) as f32, r, false);
                 self.made("sphere", vec![(made::circle(r), 1.0)]);
                 (20 * 4usize.pow(sub), Box::new(move || Ok(Shape::sphere(r, sub))))
             }
@@ -2347,8 +2381,8 @@ impl Ctx<'_> {
                 }
                 let (segs, sides) = (self.int(n, "segments", 24, 3, 512)?, self.int(n, "sides", 8, 3, 64)?);
                 // (Round the ring, and round the tube: two rounds, each with its own radius.)
-                self.round(n, "torus", 360.0 / segs as f32, radius + tube);
-                self.round(n, "torus", 360.0 / sides as f32, tube);
+                self.round("torus", "segments", segs, 360.0 / segs as f32, radius + tube, true);
+                self.round("torus", "sides", sides, 360.0 / sides as f32, tube, false);
                 self.made("torus", vec![(made::circle(radius + tube), 1.0), (made::stadium(2.0 * (radius + tube), tube), 2.0)]);
                 (2 * segs as usize * sides as usize, Box::new(move || Ok(Shape::torus(radius, tube, segs, sides))))
             }
@@ -2356,7 +2390,8 @@ impl Ctx<'_> {
                 let (r, h) = (self.positive(n, "radius", 0.5)?, self.positive(n, "height", 2.0)?);
                 let (segs, rings) = (self.int(n, "segments", 12, 3, 256)?, self.int(n, "rings", 3, 1, 32)?);
                 // (Round its axis, and over each end: a quarter turn in `rings` bands.)
-                self.round(n, "capsule", (360.0 / segs as f32).max(90.0 / rings as f32), r);
+                self.round("capsule", "segments", segs, 360.0 / segs as f32, r, true);
+                self.round("capsule", "rings", rings, 90.0 / rings as f32, r, false);
                 self.made("capsule", vec![(made::circle(r), 1.0), (made::stadium(h.max(2.0 * r), r), 2.0)]);
                 (2 * segs as usize * (2 * rings as usize + 1), Box::new(move || Ok(Shape::capsule(r, h, segs, rings))))
             }
@@ -2436,7 +2471,7 @@ impl Ctx<'_> {
                 let prof: Vec<V2> = rows.iter().map(|r| [r[0], r[1]]).collect();
                 let segs = self.int(n, "segments", 16, 3, 256)?;
                 // (Round its axis, at its widest; its profile's own corners are its maker's.)
-                self.round(n, "lathe", 360.0 / segs as f32, prof.iter().map(|p| p[0]).fold(0.0f32, f32::max));
+                self.round("lathe", "segments", segs, 360.0 / segs as f32, prof.iter().map(|p| p[0]).fold(0.0f32, f32::max), true);
                 self.made("lathe", vec![(made::ngon(segs, prof.iter().map(|p| p[0]).fold(0.0f32, f32::max)), 1.0), (made::mirrored(&prof), 2.0)]);
                 let caps = self.bool(n, "caps", true);
                 (2 * segs as usize * (prof.len() + 1), Box::new(move || Ok(Shape::lathe(&prof, segs, caps))))
@@ -2621,12 +2656,16 @@ impl Ctx<'_> {
             _ => v * crate::work::TIER1_POINT,
         };
         charge(self.tally, &n.path, units)?;
+        use crate::facet::{linear, Moved};
+        let mut mv: Option<Moved> = None;
         match n.op.as_str() {
             "move" => s.transform(&Affine::translate(within("by", self.vec3(n, "by", [0.0; 3])?, MAX_EXTENT_M)?)),
             "rotate" => {
                 let d = within("deg", self.vec3(n, "deg", [0.0; 3])?, 36_000.0)?;
                 let t = Affine::rotate_euler_deg([d[0] as f64, d[1] as f64, d[2] as f64]);
-                s.transform(&pivoted(t, within("pivot", self.vec3(n, "pivot", [0.0; 3])?, MAX_EXTENT_M)?));
+                let t = pivoted(t, within("pivot", self.vec3(n, "pivot", [0.0; 3])?, MAX_EXTENT_M)?);
+                mv = Some(Moved::Linear(linear(&t)));
+                s.transform(&t);
             }
             "scale" => {
                 let by = match n.get("by") {
@@ -2639,13 +2678,23 @@ impl Ctx<'_> {
                 if by.iter().any(|v| !(v.abs() >= 1e-4 && v.abs() <= 1e4)) {
                     return Err(e(&n.at("by"), ErrorCode::OutOfRange, "scale factors must be 1e-4..1e4 in size"));
                 }
-                s.transform(&pivoted(Affine::scale(by), within("pivot", self.vec3(n, "pivot", [0.0; 3])?, MAX_EXTENT_M)?));
+                let t = pivoted(Affine::scale(by), within("pivot", self.vec3(n, "pivot", [0.0; 3])?, MAX_EXTENT_M)?);
+                mv = Some(Moved::Linear(linear(&t)));
+                s.transform(&t);
             }
-            "mirror" => s.mirror(axis_index(self.str(n, "axis", "x")), self.bool(n, "keep", true)),
+            "mirror" => {
+                let (axis, keep) = (axis_index(self.str(n, "axis", "x")), self.bool(n, "keep", true));
+                let mut m = [1.0f32; 3];
+                m[axis] = -1.0;
+                let m = linear(&Affine::scale(m));
+                mv = Some(if keep { Moved::Copies(vec![linear(&Affine::IDENTITY), m]) } else { Moved::Linear(m) });
+                s.mirror(axis, keep);
+            }
             "array" => {
                 let mut rng = Rng::new(seed, 1);
                 let jitter = self.jitter(n)?;
-                s.array_linear(self.int(n, "count", 2, 1, 256)?, within("offset", self.vec3(n, "offset", [0.0; 3])?, MAX_EXTENT_M)?, &mut rng, &jitter);
+                let copies = s.array_linear(self.int(n, "count", 2, 1, 256)?, within("offset", self.vec3(n, "offset", [0.0; 3])?, MAX_EXTENT_M)?, &mut rng, &jitter);
+                mv = Some(Moved::Copies(copies.iter().map(linear).collect()));
             }
             "radial" => {
                 let mut rng = Rng::new(seed, 2);
@@ -2655,7 +2704,8 @@ impl Ctx<'_> {
                 }
                 let angle = self.ranged(n, "angle", 360.0, -3600.0, 3600.0)?;
                 let jitter = self.jitter(n)?;
-                s.array_radial(self.int(n, "count", 6, 1, 256)?, axis, angle as f64, &mut rng, &jitter);
+                let copies = s.array_radial(self.int(n, "count", 6, 1, 256)?, axis, angle as f64, &mut rng, &jitter);
+                mv = Some(Moved::Copies(copies.iter().map(linear).collect()));
             }
             "subdivide" => s.subdivide(self.int(n, "levels", 1, 0, 4)?),
             "displace" => {
@@ -2663,12 +2713,27 @@ impl Ctx<'_> {
                 if self.coarse {
                     return Ok(()); // surface detail: none at the far level
                 }
-                s.displace(amount, self.positive(n, "scale", 0.5)?, self.int(n, "octaves", 2, 1, 6)?, seed, within("axes", self.vec3(n, "axes", [1.0; 3])?, 10.0)?);
+                let axes = within("axes", self.vec3(n, "axes", [1.0; 3])?, 10.0)?;
+                mv = Some(Moved::Displaced(f64::from(amount.abs() * axes.iter().fold(0.0f32, |m, a| m.max(a.abs())))));
+                s.displace(amount, self.positive(n, "scale", 0.5)?, self.int(n, "octaves", 2, 1, 6)?, seed, axes);
             }
-            "taper" => s.taper(axis_index(self.str(n, "axis", "y")), self.ranged(n, "from", 1.0, 0.0, 100.0)?, self.ranged(n, "to", 1.0, 0.0, 100.0)?),
-            "twist" => s.twist(self.ranged(n, "deg_per_m", 0.0, -36_000.0, 36_000.0)? as f64),
-            "lean" => s.lean([self.ranged(n, "x", 0.0, -100.0, 100.0)?, self.ranged(n, "z", 0.0, -100.0, 100.0)?]),
-            "bend" => s.bend(self.ranged(n, "deg_per_m", 0.0, -720.0, 720.0)? as f64),
+            "taper" => {
+                mv = Some(Moved::Unknown("tapered (not affine)"));
+                s.taper(axis_index(self.str(n, "axis", "y")), self.ranged(n, "from", 1.0, 0.0, 100.0)?, self.ranged(n, "to", 1.0, 0.0, 100.0)?)
+            }
+            "twist" => {
+                mv = Some(Moved::Unknown("twisted (not affine)"));
+                s.twist(self.ranged(n, "deg_per_m", 0.0, -36_000.0, 36_000.0)? as f64)
+            }
+            "lean" => {
+                let l = [self.ranged(n, "x", 0.0, -100.0, 100.0)?, self.ranged(n, "z", 0.0, -100.0, 100.0)?];
+                mv = Some(Moved::Linear([[1.0, 0.0, 0.0], [f64::from(l[0]), 1.0, f64::from(l[1])], [0.0, 0.0, 1.0]]));
+                s.lean(l)
+            }
+            "bend" => {
+                mv = Some(Moved::Unknown("bent (not affine)"));
+                s.bend(self.ranged(n, "deg_per_m", 0.0, -720.0, 720.0)? as f64)
+            }
             "weld" => s.weld(self.ranged(n, "eps", 1e-4, 1e-7, 1.0)?),
             "color" => s.set_color(self.color(n, "color")),
             "gradient" => {
@@ -2698,6 +2763,9 @@ impl Ctx<'_> {
             "ground_shade" => s.ground_shade(self.ranged(n, "amount", 0.3, 0.0, 1.0)?, self.positive(n, "height", 0.5)?),
             "bevel_tint" => s.bevel_tint = Some((self.color(n, "color"), self.ranged(n, "amount", 1.0, 0.0, 1.0)?)),
             other => return Err(e(&n.path, ErrorCode::UnknownOp, format!("unknown op '{other}'"))),
+        }
+        if let Some(mv) = mv {
+            self.tally.moved(&s.owners, &mv);
         }
         self.tally.settle(predicted, s.triangle_count());
         // An op stopped part way by a cancel fails here.

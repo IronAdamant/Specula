@@ -162,7 +162,7 @@ fn every_record_is_its_shape_alone() {
         let mut parts = Vec::new();
         // (Each named shape: its path, its node, the ops it goes through in order, and whether
         // a union may hide some of it.)
-        let mut named: Vec<(String, String, Vec<String>, bool)> = Vec::new();
+        let mut named: Vec<(String, String, Vec<String>, Option<String>)> = Vec::new();
         for k in 0..1 + s.pick(3) {
             let ops = part_ops(&mut s);
             let x = 8.0 * k as f32;
@@ -171,7 +171,7 @@ fn every_record_is_its_shape_alone() {
                 0 => {
                     let (shape, own) = a_shape(&mut s, false);
                     parts.push(format!(r#"{{ "name": "p{k}", "material": "stone", "shape": {shape}, "ops": [{}] }}"#, joined(&[&own, &ops, &place])));
-                    named.push((format!("parts[{k}].shape"), shape, vec![own, ops, place], false));
+                    named.push((format!("parts[{k}].shape"), shape, vec![own, ops, place], None));
                 }
                 1 => {
                     let overlap = s.next() < 0.4;
@@ -181,7 +181,11 @@ fn every_record_is_its_shape_alone() {
                         let apart = if overlap { format!(r#"{{"op":"move","by":[{},0,0]}}"#, 0.3 * i as f32) } else { format!(r#"{{"op":"move","by":[{},0,0]}}"#, 2.5 * i as f32) };
                         let own = joined(&[&own, &apart]);
                         of.push(format!(r#"{},"ops":[{own}]}}"#, &shape[..shape.len() - 1]));
-                        named.push((format!("parts[{k}].shape.of[{i}]"), format!(r#"{{"op":"union","of":[{}]}}"#, of[i]), vec![ops.clone(), place.clone()], overlap));
+                    }
+                    for i in 0..of.len() {
+                        // (What hides an overlapping operand: the others, as one union.)
+                        let others = overlap.then(|| of.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, x)| x.as_str()).collect::<Vec<_>>().join(","));
+                        named.push((format!("parts[{k}].shape.of[{i}]"), of[i].clone(), vec![ops.clone(), place.clone()], others));
                     }
                     parts.push(format!(r#"{{ "name": "p{k}", "material": "stone", "shape": {{"op":"union","of":[{}]}}, "ops": [{}] }}"#, of.join(","), joined(&[&ops, &place])));
                 }
@@ -192,7 +196,7 @@ fn every_record_is_its_shape_alone() {
                         let (shape, own) = a_shape(&mut s, false);
                         let inner = format!(r#"{{"op":"scale","by":[{},1,{}]}},{{"op":"move","by":[{},0,0]}}"#, s.within(0.5, 1.5), s.within(0.5, 1.5), 3.0 * j as f32);
                         kid.push(format!(r#"{{ "name": "q{j}", "material": "stone", "shape": {shape}, "ops": [{}] }}"#, joined(&[&own, &inner])));
-                        named.push((format!("parts[{k}].include({name}).parts[{j}].shape"), shape, vec![own, inner, ops.clone(), place.clone()], false));
+                        named.push((format!("parts[{k}].include({name}).parts[{j}].shape"), shape, vec![own, inner, ops.clone(), place.clone()], None));
                     }
                     lib.insert(name.clone(), format!(r#"{{ "name": "{name}", "parts": [{}] }}"#, kid.join(", ")));
                     parts.push(format!(r#"{{ "name": "p{k}", "include": "{name}", "ops": [{}] }}"#, joined(&[&ops, &place])));
@@ -206,14 +210,30 @@ fn every_record_is_its_shape_alone() {
         let whole = surface(&m);
         // (Nothing here is cut, bevelled or generated: every triangle is a named shape's.)
         assert!(near(spoken, whole, 1e-3) && m.extras.made_rest_m2 <= 1e-3 * whole, "{text}: records {spoken} of {whole} m2");
-        for (path, shape, ops, overlap) in &named {
-            let alone = make(&format!(r#"{{ "name": "a", "parts": [ {{ "name": "a", "material": "stone", "shape": {shape}, "ops": [{}] }} ], "finish": [{finish}] }}"#, joined(&ops.iter().map(String::as_str).collect::<Vec<_>>())));
-            let truth = surface(&alone);
+        for (path, shape, ops, others) in &named {
+            let ops = joined(&ops.iter().map(String::as_str).collect::<Vec<_>>());
+            let alone = |shape: &str| surface(&make(&format!(r#"{{ "name": "a", "parts": [ {{ "name": "a", "material": "stone", "shape": {shape}, "ops": [{ops}] }} ], "finish": [{finish}] }}"#)));
             let said = m.extras.made.iter().find(|x| &x.path == path).map_or(0.0, |x| x.area_m2);
-            if *overlap {
-                assert!(said <= truth * 1.01, "{path} in {text}: {said} m2, more than alone ({truth})");
-                checked.1 += 1;
+            if let Some(others) = others {
+                // (Held exactly, by set algebra over three other builds: with X the operand and
+                // U the rest, X's surface outside U is (|X ∪ U| + |X − U| − |U|) / 2, each built
+                // with the same ops after it: within two parts in a thousand (each boolean cuts on
+                // its own grid). Where a taper, a twist or a bend follows, each build's
+                // differently cut pieces bend differently, and a mirror that keeps both halves
+                // welds each build's seam its own way: no build is a truth there (5% off seen),
+                // and the record is held to no more than the operand alone.)
+                let u = format!(r#"{{"op":"union","of":[{others}]}}"#);
+                let unsure = ["taper", "twist", "bend", "mirror"].iter().any(|d| ops.contains(d) || finish.contains(d));
+                if unsure {
+                    let solo = alone(&format!(r#"{{"op":"union","of":[{shape}]}}"#));
+                    assert!(said <= solo * 1.01, "{path} in {text}: {said} m2, alone {solo}");
+                } else {
+                    let truth = 0.5 * (alone(&format!(r#"{{"op":"union","of":[{shape},{others}]}}"#)) + alone(&format!(r#"{{"op":"difference","of":[{shape},{u}]}}"#)) - alone(&u));
+                    assert!(truth > 0.0 && near(said, truth, 2e-3), "{path} in {text}: recorded {said} m2, outside the others {truth}");
+                    checked.1 += 1;
+                }
             } else {
+                let truth = alone(&if path.contains(".of[") { format!(r#"{{"op":"union","of":[{shape}]}}"#) } else { shape.clone() });
                 // (A union operand's truth is the union of it alone, so that its faces are cut into
                 // the triangles the boolean makes of them, which a taper, a twist or a bend after it
                 // then bends: within a part in a thousand (the boolean's grid); a shape alone, in
@@ -223,7 +243,50 @@ fn every_record_is_its_shape_alone() {
             }
         }
     }
-    assert!(checked.0 >= 40 && checked.1 >= 4, "{checked:?} shapes checked exactly and hidden");
+    assert!(checked.0 >= 40, "{checked:?} shapes checked apart and overlapping (held exactly by the next test)");
+}
+
+/// **An overlapping union's operand is held exactly** (not only to "no more than alone", which
+/// a record of nothing passes): by set algebra over three other builds, X's surface outside the
+/// rest U is (|X ∪ U| + |X − U| − |U|) / 2. Unions of two and three overlapping shapes, each
+/// with its own ops (a scale by a vector, a turn) and none of its faces in another's plane (where
+/// two faces lie in one plane, which operand keeps it is the boolean's choice), under part ops that scale by a vector, copy
+/// and subdivide, and a finish that scales: within two parts in a thousand (each build's
+/// boolean cuts on its own grid).
+#[test]
+fn an_overlapping_operand_is_held_exactly() {
+    let mut s = Seq(20_261_121);
+    let mut held = 0;
+    for round in 0..24 {
+        let mut of = Vec::new();
+        for i in 0..2 + s.pick(2) {
+            let (shape, own) = a_shape(&mut s, true);
+            let own = joined(&[&own, &format!(r#"{{"op":"move","by":[{},{},{}]}}"#, 0.25 * i as f32, 0.13 * i as f32, 0.1 * i as f32)]);
+            of.push(format!(r#"{},"ops":[{own}]}}"#, &shape[..shape.len() - 1]));
+        }
+        let mut ops = vec![format!(r#"{{"op":"scale","by":[{},{},{}]}}"#, s.within(0.3, 2.0), s.within(0.3, 2.0), s.within(0.3, 2.0))];
+        if s.next() < 0.4 {
+            ops.push(format!(r#"{{"op":"array","count":{},"offset":[0,0,{}]}}"#, 2 + s.pick(2), s.within(3.0, 6.0)));
+        }
+        if s.next() < 0.3 {
+            ops.push(r#"{"op":"subdivide","levels":1}"#.to_string());
+        }
+        let ops = ops.join(",");
+        let finish = format!(r#"{{"op":"scale","by":[{},{},{}]}}"#, s.within(0.5, 2.0), s.within(0.5, 2.0), s.within(0.5, 2.0));
+        let build = |shape: &str| make(&format!(r#"{{ "name": "o{round}", "parts": [ {{ "name": "p", "material": "stone", "shape": {shape}, "ops": [{ops}] }} ], "finish": [{finish}] }}"#));
+        let whole = format!(r#"{{"op":"union","of":[{}]}}"#, of.join(","));
+        let m = build(&whole);
+        for i in 0..of.len() {
+            let others = of.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, x)| x.as_str()).collect::<Vec<_>>().join(",");
+            let u = format!(r#"{{"op":"union","of":[{others}]}}"#);
+            let truth = 0.5 * (surface(&build(&format!(r#"{{"op":"union","of":[{},{others}]}}"#, of[i]))) + surface(&build(&format!(r#"{{"op":"difference","of":[{},{u}]}}"#, of[i]))) - surface(&build(&u)));
+            let path = format!("parts[0].shape.of[{i}]");
+            let said = m.extras.made.iter().find(|x| x.path == path).map_or(0.0, |x| x.area_m2);
+            assert!((said - truth).abs() <= 2e-3 * surface(&m), "{path} of {whole} under [{ops}], finish [{finish}]: recorded {said} m2, outside the others {truth}");
+            held += usize::from(truth > 0.01 * surface(&m));
+        }
+    }
+    assert!(held >= 30, "{held} operands held with surface of their own");
 }
 
 /// A boolean operand's own ops count in its surface: a ball its own ops scale by twenty has

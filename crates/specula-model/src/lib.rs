@@ -99,6 +99,7 @@ pub mod error;
 pub mod figure;
 pub mod exact;
 pub mod expr;
+pub mod facet;
 pub mod lod;
 pub mod made;
 pub mod math3;

@@ -589,21 +589,25 @@ fn what_a_recipe_names_round_says_how_coarsely_it_was_built() {
     assert!(matches!(of("parts[0].shape")[..], [r] if r.what == "cylinder" && near(r.turn_deg, 60.0) && near(r.radius_m, 0.5)), "{round:?}");
     assert!(matches!(of("parts[1].shape")[..], [r] if near(r.turn_deg, 30.0) && near(r.radius_m, 0.1)));
     assert!(matches!(of("parts[2].shape")[..], [r] if r.what == "cone" && near(r.turn_deg, 15.0)));
-    assert!(matches!(of("parts[3].shape")[..], [r] if r.what == "sphere" && near(r.turn_deg, 41.81 / 4.0) && near(r.radius_m, 0.4)));
+    assert!(matches!(of("parts[3].shape")[..], [r] if r.what == "sphere" && r.turn_deg > 41.81 / 4.0 - 0.01 && r.turn_deg < 1.2 * 41.81 / 4.0 && near(r.radius_m, 0.4)));
     // A torus turns twice: round its ring and round its tube.
     let ring = of("parts[4].shape");
     assert!(ring.len() == 2 && ring.iter().any(|r| near(r.turn_deg, 15.0) && near(r.radius_m, 0.75)) && ring.iter().any(|r| near(r.turn_deg, 60.0) && near(r.radius_m, 0.05)), "{ring:?}");
-    assert!(matches!(of("parts[5].shape")[..], [r] if r.what == "capsule" && near(r.turn_deg, 45.0) && near(r.radius_m, 0.2)));
+    // A capsule turns twice too: round its axis (by its segments) and over its ends (by its rings).
+    let pill = of("parts[5].shape");
+    assert!(pill.len() == 2 && pill.iter().any(|r| r.count == "segments" && near(r.turn_deg, 22.5)) && pill.iter().any(|r| r.count == "rings" && near(r.turn_deg, 45.0) && near(r.radius_m, 0.2)), "{pill:?}");
     assert!(matches!(of("parts[6].shape")[..], [r] if r.what == "lathe" && near(r.turn_deg, 36.0) && near(r.radius_m, 0.3)));
     // A prism and a box are what they are named: nothing is said of them.
     assert!(of("parts[7].shape").is_empty() && of("parts[8].shape").is_empty());
     // A sculpt: its cells against its tightest radius.
-    assert!(matches!(of("parts[9].shape")[..], [r] if r.what == "sdf" && near(r.radius_m, 0.3) && r.turn_deg > 2.0 && r.turn_deg < 20.0), "{:?}", of("parts[9].shape"));
+    assert!(matches!(of("parts[9].shape.tree#0")[..], [r] if r.what == "sdf" && r.count == "resolution" && r.count_value == 24 && near(r.radius_m, 0.3) && r.turn_deg > 2.0 && r.turn_deg < 20.0), "{round:?}");
     // The far level, built with half of every count, added nothing: one fact a round.
-    assert_eq!(round.len(), 9);
-    // The ones that stand furthest in from their curve come first: the six-sided column, by
-    // 6.7 cm (half a metre, less its cosine of thirty degrees).
-    assert!(round.windows(2).all(|w| w[0].sag_m() >= w[1].sag_m()));
+    assert!(round.len() == 10 && model.extras.round_total == 10);
+    // Kept in the order the answer reads: first the furthest standing, the six-sided column by
+    // 6.7 cm (half a metre, less its cosine of thirty degrees); then each that turns more than
+    // all before it; then the rest by how far they stand in.
+    let front = round.iter().scan(f32::NEG_INFINITY, |best, r| { let more = r.turn_deg > *best; *best = best.max(r.turn_deg); Some(more) }).take_while(|m| *m).count();
+    assert!(round[..front].windows(2).all(|w| w[0].sag_m() >= w[1].sag_m() && w[0].turn_deg < w[1].turn_deg) && round[front..].windows(2).all(|w| w[0].sag_m() >= w[1].sag_m()), "{round:?}");
     assert!(round[0].path == "parts[0].shape" && near(round[0].sag_m(), 0.5 * (1.0 - 0.8660254)), "{:?}", round[0]);
     let j = round[0].to_json();
     assert_eq!((j.get("shape").and_then(Json::as_str), j.get("turn_deg").and_then(Json::as_f64)), (Some("cylinder"), Some(60.0)));
@@ -676,6 +680,22 @@ fn what_a_recipe_is_built_of_is_recorded_with_its_surface() {
     assert_eq!(build_with(&text, &[]).unwrap().extras.made, *made);
 }
 
+/// A build asks every triangle of a sculpt of up to 16,384 which primitive made it, and every
+/// other one of 16,385: held by what the build's own asking does, not by the constant.
+#[test]
+fn a_build_asks_up_to_its_cap() {
+    use crate::sdf::{Combine, Kind, Modifiers, Prim, SdfNode};
+    let one = |x: f32| SdfNode { kind: Kind::Prim(Prim::Sphere { radius: 0.5 }), m: Modifiers { at: [x, 0.0, 0.0], ..Modifiers::default() } };
+    let ball = SdfNode { kind: Kind::Group { op: Combine::Union, kids: vec![one(0.0), one(5.0)], smooth: 0.0 }, m: Modifiers::default() };
+    let at = |n: usize| Shape { positions: vec![[0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 0.5]], colors: vec![[1.0; 4]; 3], tris: vec![[0, 1, 2]; n], tags: vec![0; n], ..Shape::default() };
+    for (n, asked) in [(16_384usize, 16_384usize), (16_385, 8_193)] {
+        let tally = Tally::default();
+        let a = tally.ask_owners(&ball, 1, &at(n));
+        assert_eq!(a.asked, asked, "a sculpt of {n} triangles");
+        assert!(tally.owner_work.get() == a.work && a.work > 0);
+    }
+}
+
 /// While a model is built, at most 512 shapes are recorded and 8,192 slots of outlines kept
 /// (a sculpt has one for each primitive): a shape past them is no record's, and its triangles
 /// say so.
@@ -695,7 +715,7 @@ fn the_tallys_record_is_bounded() {
     let mut ball = Shape::cuboid([1.0; 3], 0.0).unwrap();
     let of: Vec<u32> = (0..ball.tris.len() as u32).map(|t| t * 10).collect();
     for i in 0..66 {
-        tally.made_sculpt(&format!("parts[{i}].shape"), "sdf", (0..127).map(|_| Some(views())).collect(), &of, &mut ball);
+        tally.made_sculpt(&format!("parts[{i}].shape"), "sdf", (0..127).map(|_| Some(views())).collect(), Vec::new(), &of, &mut ball);
     }
     assert_eq!(tally.slots.borrow().len(), 8192);
     assert_eq!(tally.made.borrow().len(), 65, "the 66th sculpt has no slot left");

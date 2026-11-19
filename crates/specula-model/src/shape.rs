@@ -688,29 +688,34 @@ impl Shape {
         }
     }
 
-    /// Copies the shape `count` times; copy k gets `place(k)` applied after its jitter.
-    fn array_with(&mut self, count: u32, rng: &mut Rng, jitter: &Jitter, place: impl Fn(u32) -> Affine) {
+    /// Copies the shape `count` times; copy k gets `place(k)` applied after its jitter. Each
+    /// copy's transform, in order.
+    fn array_with(&mut self, count: u32, rng: &mut Rng, jitter: &Jitter, place: impl Fn(u32) -> Affine) -> Vec<Affine> {
         let src = self.clone();
         let mut out = Shape { bevel_tint: src.bevel_tint, ..Shape::default() };
+        let mut each = Vec::with_capacity(count.max(1) as usize);
         for k in 0..count.max(1) {
             let mut c = src.clone();
-            c.transform(&place(k).then_after(&jitter.sample(rng)));
+            let t = place(k).then_after(&jitter.sample(rng));
+            c.transform(&t);
+            each.push(t);
             out.merge(&c);
         }
         *self = out;
+        each
     }
 
-    /// `count` copies, each `offset` further along.
-    pub fn array_linear(&mut self, count: u32, offset: V3, rng: &mut Rng, jitter: &Jitter) {
-        self.array_with(count, rng, jitter, |k| Affine::translate(math3::scale(offset, k as f32)));
+    /// `count` copies, each `offset` further along (each copy's transform, in order).
+    pub fn array_linear(&mut self, count: u32, offset: V3, rng: &mut Rng, jitter: &Jitter) -> Vec<Affine> {
+        self.array_with(count, rng, jitter, |k| Affine::translate(math3::scale(offset, k as f32)))
     }
 
     /// `count` copies around `axis` (through the origin), spread over `angle_deg`
-    /// (360 = evenly around the full circle).
-    pub fn array_radial(&mut self, count: u32, axis: V3, angle_deg: f64, rng: &mut Rng, jitter: &Jitter) {
+    /// (360 = evenly around the full circle). Each copy's transform, in order.
+    pub fn array_radial(&mut self, count: u32, axis: V3, angle_deg: f64, rng: &mut Rng, jitter: &Jitter) -> Vec<Affine> {
         let full = (angle_deg.abs() - 360.0).abs() < 1e-9;
         let step = if full || count <= 1 { angle_deg / count.max(1) as f64 } else { angle_deg / (count - 1) as f64 };
-        self.array_with(count, rng, jitter, |k| Affine::rotate_about_deg(axis, step * k as f64));
+        self.array_with(count, rng, jitter, |k| Affine::rotate_about_deg(axis, step * k as f64))
     }
 
     /// Merges vertices closer than `eps` (grid-snapped; first vertex wins) and drops triangles
