@@ -188,7 +188,9 @@ fn main() {
     per_vertex("ao (concavity shade)", &|s| s.concavity_shade(0.3));
     per_vertex("noise tint", &|s| s.noise_tint(0.1, 0.5, 1));
     per_vertex("subdivide 1 (per input vertex)", &|s| s.subdivide(1));
-    per_vertex("array x4 (per input vertex)", &|s| s.array_linear(4, [11.0, 0.0, 0.0], &mut rng(), &specula_model::shape::Jitter::default()));
+    per_vertex("array x4 (per input vertex)", &|s| {
+        s.array_linear(4, [11.0, 0.0, 0.0], &mut rng(), &specula_model::shape::Jitter::default());
+    });
     per_vertex("finalize", &|s| drop(s.finalize(30.0, "m")));
     let mesh = plane.finalize(30.0, "m");
     for kind in [specula_model::ColliderKind::ConvexHull, specula_model::ColliderKind::Capsule] {

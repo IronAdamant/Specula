@@ -26,7 +26,11 @@
 //! record's ([`crate::made`]); each of its smooth surfaces gives a faceting record
 //! ([`crate::Round`]) of the turn measured between its neighbouring faces and the surface's
 //! radius (`Mesh::rounds`); a curved outline by name gives one of the turn between its
-//! neighbouring chords and its arcs' radius (`Spec::facets`).
+//! neighbouring chords and its arcs' radius (`Spec::facets`), on the shape made of it. Each is
+//! measured in the finished model as every round shape is ([`crate::facet`]): under a uniform
+//! scale as built and scaled; under an uneven stretch, a taper, a twist or a bend not measured,
+//! and said so. **A solid's record of what it is built of is its hull** along each axis: a
+//! torus reads as its disc seen from above, a star solid as its hull.
 
 use specula_formae::{self as formae, raise, Built, Found, Kind as FKind, Mesh as FMesh};
 
@@ -369,6 +373,18 @@ impl Ctx<'_> {
         .with_numbers(f64::from(least), f64::from(crate::mesh::MIN_TRIANGLE_AREA)))
     }
 
+    /// The faceting records of a form (`what`, its table name) built at `detail`: one for each
+    /// `(turn between neighbouring faces or chords in degrees, radius)` its build measured,
+    /// noted on the shape being built ([`Ctx::round`]), its number `detail`. None is a ring
+    /// round the shape's own Y axis of `detail` sides (a form's surfaces are not one), so under
+    /// a stretch that is not the same every way the finished model says it is not measured;
+    /// under a move, a turn or a uniform scale it is measured, the radius and the sag scaled.
+    fn form_rounds(&self, what: &'static str, detail: u32, list: impl IntoIterator<Item = (f64, f64)>) {
+        for (turn, radius) in list {
+            self.round(what, "detail", detail, turn as f32, radius as f32, false);
+        }
+    }
+
     /// The form's parameters as given, evaluated: `(name, value)` for each the recipe gives.
     fn form_values(&self, n: &Node, found: &Found) -> Result<Vec<(&'static str, f64)>, RecipeError> {
         let Some(Val::Obj(args)) = n.get("args") else { return Ok(Vec::new()) };
@@ -413,10 +429,8 @@ impl Ctx<'_> {
         }
         let ring: Vec<[f64; 3]> = o.rings[0].iter().map(|p| [p[0], 0.0, -p[1]]).collect();
         hold_floor(&ring, path, &format!("the outline '{word}'"))?;
-        if !self.coarse && self.tally.cutting.get() == 0 {
-            if let Ok(Some((turn, radius))) = spec.facets(detail) {
-                self.tally.rounded(Round { path: path.to_string(), what: found.form.name, turn_deg: turn as f32, radius_m: radius as f32 });
-            }
+        if let Ok(Some((turn, radius))) = spec.facets(detail) {
+            self.form_rounds(found.form.name, detail, [(turn, radius)]);
         }
         Ok(ring.iter().map(|p| [p[0] as f32, p[2] as f32]).collect())
     }
@@ -478,9 +492,7 @@ impl Ctx<'_> {
         };
         let mut s = to_shape(&mesh, &n.path)?;
         let what = found.form.name;
-        for r in mesh.rounds() {
-            self.round(n, what, r.turn_deg as f32, r.radius as f32);
-        }
+        self.form_rounds(what, detail, mesh.rounds().iter().map(|r| (r.turn_deg, r.radius)));
         // Its outlines: a raised figure's own outer ring and the boxes it is raised to (as an
         // extruded outline's); a solid's hull seen along each of its axes.
         let views = match (&solid, spec.build(detail)) {

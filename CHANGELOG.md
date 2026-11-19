@@ -380,7 +380,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       rate stated on them (90 of 103 in every mask); thresholds free of the size a shape
       is drawn at; every loop's steps counted and held (a coiled shape costs 5 times a
       disc, where it cost 300); nothing under 192 pixels across is read; what it still
-      misreads is named and pinned (FORM.md, "Its sixth version"). Not reviewed yet.
+      misreads is named and pinned (FORM.md, "Its sixth version"). Its review said not to
+      merge it: ten rules held by no default test, advice that leads to shapes it misreads
+      (an overhang's two corners read as one point), readings that swing inside what is
+      called steady, and 71% on the reviewer's own 59 assets where the author's set gave
+      87% (FORM.md, "Its sixth review").
     - **Shape language, a fifth version** (2026-11-20, by an agent that did not write the
       fourth, on its review's findings): sides from the smoothed outline, a part's thickness
       where it levels off, joints where the outline turns inward, each part smoothed at its
@@ -417,12 +421,19 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       advises nothing from too few rounds; no copy on the graphics card either; and each
       cost is read from the difference of two frames of the same round, every second round
       drawn backwards, with the answer saying when the machine was too busy to advise
-      (`light_noise.rs`; LIGHT.md, "What was mended, second round"). Not reviewed yet.
+      (`light_noise.rs`; LIGHT.md, "What was mended, second round"). Its review said not to
+      merge for one missing test, and found the tool sound in every run on both adapters
+      (LIGHT.md, "Its third review").
     - **The rounded shape's levelled weights, reviewed** (2026-11-20): not to merge. A large
       thin rounded cutter set past the corner of what it cuts costs four times its charge
       by count, so the work limit does not bound such a build's time; other roundnesses
       than the ones levelled at run 1.2 to 1.6 times the plain rate
-      (PROCEDURAL_MODELLING.md, tier 3, "An eighth"). Not mended yet.
+      (PROCEDURAL_MODELLING.md, tier 3, "An eighth"). Mended by an agent that did not write
+      it (2026-11-20): the solve starts at the point of the surface that reaches furthest
+      along a guessed normal (beside a thin sheet's rim it had started millions of times
+      short), and a build is charged for the powers its solve takes past what the weight
+      covers, so the work limit bounds the time whatever the shape. One weight; the
+      thinness grading is gone. Not reviewed yet.
     - **Shape language, after its third review** (2026-11-19): not to merge, again: a crate
       with wide bevels read as round and a ball on a string as pointed. It is not written a
       fourth time on a guess: the shares stay a reported fact, the check stays for a style
@@ -436,7 +447,15 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       (2026-11-20) said not to merge it: the radius is the recipe's and not the built
       model's, so the same mesh passes or fails by how its recipe wrote it; a sculpt speaks
       by its tightest radius alone; a shape nobody sees fails; the verdict moves as the
-      asset is turned (FORM.md, "Its first review"). Not mended yet.
+      asset is turned (FORM.md, "Its first review"). Mended by an agent that did not write
+      it (2026-11-20; `facet.rs`): how far a facet stands in is measured in the finished
+      model, from each round shape's own triangles and the linear map every operation
+      carried to them; a shape tapered, twisted or bent is said to be not measured; a
+      sculpt speaks for each primitive that has surface; an unseen cutter says nothing;
+      the asset's size is its greatest width; the advice names the right count. Its
+      review said not to merge it: a ring whose axis is no longer square to it (a lean; an
+      odd turn then an uneven scale) is measured wrongly and called measured, and the
+      sphere's advice names too few subdivisions (FORM.md, "Its second review").
     - **The light report** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)): `perf_light`
       measures what each light feature of a view costs on the machine the engine runs on, at
       the size asked, by the GPU's own timestamps: the view as the world has it, each feature

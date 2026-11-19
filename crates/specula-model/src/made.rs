@@ -75,6 +75,10 @@ pub(crate) struct Record {
 pub(crate) struct Slot {
     pub record: u32,
     pub views: Views,
+    /// Whether it is part of what the model is built of. A slot that is not is there only for
+    /// a round shape's facets ([`crate::facet`]): a cutter's (its walls), a sculpt's primitive
+    /// that a difference takes away; [`gather`] passes it by, as the rest.
+    pub speaks: bool,
 }
 
 /// Slots in one build (past them, a shape's triangles are no record's).
@@ -145,7 +149,7 @@ pub(crate) fn gather(records: &[Record], slots: &[Slot], shapes: &[&Shape], surf
     // (By path, in the order built.)
     let mut by_path: std::collections::BTreeMap<&str, (&'static str, Vec<usize>)> = std::collections::BTreeMap::new();
     for (i, slot) in slots.iter().enumerate() {
-        let Some(r) = records.get(slot.record as usize) else { continue };
+        let Some(r) = records.get(slot.record as usize).filter(|_| slot.speaks) else { continue };
         if area[i].is_finite() && area[i] > 0.0 {
             by_path.entry(r.path.as_str()).or_insert((r.what, Vec::new())).1.push(i);
         }

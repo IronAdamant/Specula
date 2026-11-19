@@ -78,7 +78,7 @@ fn every_plane_figure_extrudes_or_is_raised() {
                 sound(&m, f.name);
                 extruded += 1;
                 if f.curved {
-                    assert!(m.extras.round.iter().any(|r| r.path == "parts[0].shape.outline" && r.turn_deg > 0.0), "{}: no faceting record", f.name);
+                    assert!(m.extras.round.iter().any(|r| r.path == "parts[0].shape" && r.what == f.name && r.count == "detail" && r.turn_deg > 0.0), "{}: no faceting record", f.name);
                 }
             }
             Err(er) if er.message.contains("holes") => {

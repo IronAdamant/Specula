@@ -775,19 +775,33 @@ impl Ctx<'_> {
         // trunk, read the same way), each weighed by the surface its triangles have in the
         // finished model. Which primitive made each triangle is asked within a limit of its own
         // for the whole build, never the build's: what is past it is no record's.
+        // A sculpt is round where its tree is: its surface is cut into cells, and round each
+        // primitive's tightest curve a cell turns the surface by the cell over the radius. Each
+        // primitive with something round speaks for its own triangles (a cutter's, and a
+        // primitive a difference takes away, for the walls they leave).
+        let what = if figure { "figure" } else { "sdf" };
+        let rounds: Vec<Option<crate::facet::Note>> = sdf::round_radii(&tree)
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| {
+                r.map(|radius| crate::facet::Note {
+                    what,
+                    count: "resolution",
+                    count_value: res,
+                    turn_deg: 2.0 * dmath::asin_f64((f64::from(st.cell) / (2.0 * f64::from(radius))).min(1.0)).to_degrees(),
+                    radius: f64::from(radius),
+                    ring: None,
+                    primitive: Some(i),
+                })
+            })
+            .collect();
         let mut asked = None;
-        if !self.coarse && self.tally.cutting.get() == 0 {
-            let left = sdf::MAX_OWNER_BUILD_WORK.saturating_sub(self.tally.owner_work.get());
-            let a = sdf::primitive_of_triangles(&tree, opts.seed, &shape, sdf::MAX_OWNER_ASKED, left);
-            self.tally.owner_work.set(self.tally.owner_work.get().saturating_add(a.work));
-            self.tally.made_sculpt(&n.path, if figure { "figure" } else { "sdf" }, crate::made::of_sculpt(&tree), &a.of, &mut shape);
+        let cutting = self.tally.cutting.get() > 0;
+        if !self.coarse && (!cutting || rounds.iter().any(Option::is_some)) {
+            let a = self.tally.ask_owners(&tree, opts.seed, &shape);
+            let views = if cutting { Vec::new() } else { crate::made::of_sculpt(&tree) };
+            self.tally.made_sculpt(&n.path, what, views, rounds, &a.of, &mut shape);
             asked = Some((a.asked, a.work, a.of.iter().filter(|&&o| o == crate::shape::NO_OWNER).count()));
-        }
-        // A sculpt is round where its tree is: its surface is cut into cells, and round its
-        // tightest ball, limb or section a cell turns the surface by the cell over the radius.
-        if let Some(radius) = sdf::least_radius(&tree) {
-            let turn = 2.0 * dmath::asin((st.cell / (2.0 * radius)).min(1.0)).to_degrees();
-            self.round(n, "sdf", turn, radius);
         }
         let mut j = vec![
             ("op", Json::from(n.op.as_str())),
@@ -1257,10 +1271,16 @@ impl Gen<'_, '_> {
         self.tally.grow(&n.path, 0, copies)?;
         // Copies merged by material.
         let mut by_mat: Vec<BuiltPart> = Vec::new();
+        // (Each item's variant's places, for the round shapes in it: each place a copy.)
+        let mut placed: Vec<Vec<Vec<crate::facet::M3>>> = built.iter().map(|vs| vec![Vec::new(); vs.len()]).collect();
         for p in &places {
             let vs = &built[p.item as usize];
             let t = p.transform();
             let v = (p.variant % vs.len() as u64) as usize;
+            let l = crate::facet::linear(&t);
+            if !placed[p.item as usize][v].contains(&l) {
+                placed[p.item as usize][v].push(l);
+            }
             for q in &vs[v] {
                 let mut s = q.shape.clone();
                 s.transform(&t);
@@ -1268,6 +1288,12 @@ impl Gen<'_, '_> {
                     Some(b) => b.shape.merge(&s),
                     None => by_mat.push(BuiltPart { shape: s, ..q.clone() }),
                 }
+            }
+        }
+        for (vs, maps) in built.iter().zip(placed) {
+            for (pieces, maps) in vs.iter().zip(maps) {
+                let owners: Vec<u32> = pieces.iter().flat_map(|q| q.shape.owners.iter().copied()).collect();
+                self.tally.moved(&owners, &crate::facet::Moved::Copies(maps));
             }
         }
         if by_mat.is_empty() {

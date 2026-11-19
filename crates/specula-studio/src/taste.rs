@@ -158,8 +158,24 @@ pub fn check_subject(m: &Measured, rules: &StyleRules) -> Vec<Finding> {
             (false, Some(b), None) => Some((b.share(kind), format!("{} (its silhouettes could not be read)", by_recipe(b)))),
             (_, None, None) => None,
         };
-        if let Some((value, message)) = said {
-            out.push(finding(rules, "shape_language", s, value, t.shape_min_share, Bound::Min, "share", "shape_min_share", format!("{message}, where the style asks for a {} shape", kind.name()), &fix));
+        match said {
+            Some((value, message)) => out.push(finding(rules, "shape_language", s, value, t.shape_min_share, Bound::Min, "share", "shape_min_share", format!("{message}, where the style asks for a {} shape", kind.name()), &fix)),
+            // Neither reading could be made: said as not measured, and failed, as the form
+            // checks are: never a pass by saying nothing.
+            None => {
+                let mut f = Finding::flag(
+                    "shape_language",
+                    s,
+                    true,
+                    format!("{} taste.shape_language", rules.source),
+                    format!("its shape language was not measured: neither its silhouettes nor its recipe could be read, where the style asks for a {} shape", kind.name()),
+                    "stage it so its silhouettes can be read (at least 110 pixels across), or give it a recipe; if it is right as it is, exempt the asset in [taste.allow]".to_string(),
+                );
+                if rules.taste.allows(s, "shape_language") {
+                    f.exempt = true;
+                }
+                out.push(f);
+            }
         }
     }
     if let Some(g) = &m.gameplay {
@@ -292,7 +308,9 @@ mod tests {
         let f = of("[taste]\nshape_language = \"pointed\"\nallow = { \"crate*\" = [\"shape_language\"] }\n", &boxy).unwrap();
         assert!(!f.passed && f.exempt && !f.is_error(), "{f:?}");
         let nothing = Measured { subject: "ghost".into(), silhouettes: vec![Mask::empty(64, 64)], ..Measured::default() };
-        assert!(of("[taste]\nshape_language = \"round\"\n", &nothing).is_none());
+        // (Nothing could be read: a failure that says it was not measured, not silence.)
+        let none = of("[taste]\nshape_language = \"round\"\n", &nothing).expect("said");
+        assert!(none.is_error() && none.message.contains("not measured"), "{none:?}");
 
         // And a failed shape reaches the critique, with what to do (its first review: no pass
         // owned the check, so the critique said "ok").
@@ -348,10 +366,13 @@ mod tests {
         let little = Measured { built: Some(BuiltOf { read: 0.4, ..boxes.clone() }), ..ball_of_boxes.clone() };
         let f = of("[taste]\nshape_language = \"round\"\nshape_by = \"recipe\"\n", &little).unwrap();
         assert!(!f.is_error() && f.value > 0.95 && f.message.contains("no recipe speaks for most of this asset") && !f.message.contains("built of"), "{f:?}");
-        // With no silhouettes read the recipe answers; with neither, nothing is asked.
+        // With no silhouettes read the recipe answers; with neither, it fails saying it was not
+        // measured (the faceting review's tenth finding: no pass by silence), and a style may
+        // allow it by name.
         let unseen = Measured { outlines: Vec::new(), ..ball_of_boxes.clone() };
         assert!(of("[taste]\nshape_language = \"round\"\n", &unseen).is_some_and(|f| f.is_error() && f.message.contains("its silhouettes could not be read")));
-        assert!(of("[taste]\nshape_language = \"round\"\n", &Measured { subject: "x".into(), ..Measured::default() }).is_none());
+        assert!(of("[taste]\nshape_language = \"round\"\n", &Measured { subject: "x".into(), ..Measured::default() }).is_some_and(|f| f.is_error() && f.message.contains("not measured")));
+        assert!(of("[taste]\nshape_language = \"round\"\nallow = { \"x\" = [\"shape_language\"] }\n", &Measured { subject: "x".into(), ..Measured::default() }).is_some_and(|f| f.exempt && !f.is_error()));
         // The fix names three shapes at the most, the largest first: of four boxes, not the least.
         let four = BuiltOf {
             parts: vec![part("parts[0].shape", "box", 0.4, [0.0, 1.0, 0.0]), part("parts[1].shape", "box", 0.3, [0.0, 1.0, 0.0]), part("parts[2].shape", "cone", 0.2, [0.0, 0.2, 0.8]), part("parts[3].shape", "box", 0.1, [0.0, 1.0, 0.0])],

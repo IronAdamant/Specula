@@ -830,4 +830,115 @@ mod tests {
             assert_eq!(places(&at_most_long(&p)) < places(&p), cut, "a rod stepping by {h}");
         }
     }
+
+    /// The axis an outline is laid along, by its area alone (second moments), in degrees from
+    /// X: held apart from [`long_axis`], which snaps it.
+    fn moment_tilt(p: &[[f32; 2]]) -> f64 {
+        let n = p.len();
+        let (mut a, mut cx, mut cy, mut xx, mut yy, mut xy) = (0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0);
+        for i in 0..n {
+            let (x0, y0, x1, y1) = (f64::from(p[i][0]), f64::from(p[i][1]), f64::from(p[(i + 1) % n][0]), f64::from(p[(i + 1) % n][1]));
+            let c = x0 * y1 - x1 * y0;
+            a += c;
+            cx += (x0 + x1) * c;
+            cy += (y0 + y1) * c;
+            xx += (x0 * x0 + x0 * x1 + x1 * x1) * c;
+            yy += (y0 * y0 + y0 * y1 + y1 * y1) * c;
+            xy += (x0 * y1 + 2.0 * x0 * y0 + 2.0 * x1 * y1 + x1 * y0) * c;
+        }
+        let (mx, my) = (cx / (3.0 * a), cy / (3.0 * a));
+        let (sxx, syy, sxy) = (xx / (6.0 * a) - mx * mx, yy / (6.0 * a) - my * my, xy / (12.0 * a) - mx * my);
+        (0.5 * (2.0 * sxy).atan2(sxx - syy)).to_degrees()
+    }
+
+    /// An outline is laid along a long straight side that lies within five degrees of its long
+    /// axis, so that side comes out exactly level: an L of thirty to one whose foot tilts its
+    /// axis by one to four degrees (and the same turned by 37 degrees). A side that leans by
+    /// more is not the one it is laid along: a kite whose four sides lean 4.5 degrees off its
+    /// axis is laid along a side (its two tips no longer level), one whose sides lean 5.5 is
+    /// laid along its axis (its tips level). And an outline within a ten-thousandth of an axis
+    /// is laid along that axis exactly: an oval turned by 0.002 degrees keeps its points'
+    /// heights as they were, one turned by 0.02 degrees does not.
+    #[test]
+    fn a_side_within_five_degrees_is_laid_level() {
+        let turned = |p: &[[f32; 2]], deg: f64| -> Vec<[f32; 2]> {
+            let (s, c) = specula_model::dmath::sin_cos_deg(deg);
+            p.iter().map(|q| [(c * f64::from(q[0]) - s * f64::from(q[1])) as f32, (s * f64::from(q[0]) + c * f64::from(q[1])) as f32]).collect()
+        };
+        let mut tilts = Vec::new();
+        // (Feet of one to six widths along and two to four high; only those that tilt the axis by
+        // one to four degrees, on an L still past six to one.)
+        for (along, foot) in [1.0f32, 2.0, 4.0, 6.0].into_iter().flat_map(|a| [2.0f32, 3.0, 4.0].map(|f| (a, f))) {
+            let l = vec![[0.0, 0.0], [30.0, 0.0], [30.0, 1.0], [along, 1.0], [along, foot], [0.0, foot]];
+            let tilt = moment_tilt(&l).abs();
+            if !(1.0..=4.0).contains(&tilt) || at_most_long(&l) == l {
+                continue;
+            }
+            tilts.push(tilt);
+            for deg in [0.0, 37.0] {
+                let out = at_most_long(&turned(&l, deg));
+                let level = (out[0][1] - out[1][1]).abs();
+                assert!(level < 1e-5, "an L tilted {tilt:.2} degrees off its foot side, turned by {deg}: its side is {level} off level");
+            }
+        }
+        assert!(tilts.len() >= 3 && tilts.iter().any(|t| *t < 2.0) && tilts.iter().any(|t| *t > 3.0), "the Ls tilt by {tilts:?}");
+        for (lean, laid_on_a_side) in [(4.5f64, true), (5.5, false)] {
+            let h = 15.0 * specula_model::dmath::sin_cos_deg(lean).0 / specula_model::dmath::sin_cos_deg(lean).1;
+            let kite = vec![[-15.0, 0.0], [0.0, -h as f32], [15.0, 0.0], [0.0, h as f32]];
+            let out = at_most_long(&kite);
+            let tips_level = (out[0][1] - out[2][1]).abs() < 1e-4;
+            assert_eq!(!tips_level, laid_on_a_side, "a kite whose sides lean {lean} degrees: {out:?}");
+        }
+        let oval = specula_model::made::ellipse(25.0, 0.5);
+        for (deg, exact) in [(0.002f64, true), (0.02, false)] {
+            let p = turned(&oval, deg);
+            let out = at_most_long(&p);
+            let moved = (0..p.len()).map(|i| ((out[i][1] - out[0][1]) - (p[i][1] - p[0][1])).abs()).fold(0.0f32, f32::max);
+            assert_eq!(moved < 2e-5, exact, "an oval turned by {deg} degrees: its points' heights moved by {moved}");
+        }
+    }
+
+    /// A rod whose sides wobble keeps its reading while its wobble is within [`STRAIGHT`] of
+    /// its width peak to peak (its length is taken out of it, the wobble as it was): 1.8%, with
+    /// a wavelength of half, one and two widths, at 12, 30 and 100 to one, leads square at 384
+    /// and 512 pixels by three quarters or more, as the plain rod does. Past it, the rod is pressed (no two points meet),
+    /// which shortens the wobble's wavelength and steepens it: a limit, stated in FORM.md
+    /// ("What was mended, third round") with its numbers.
+    #[test]
+    fn a_rod_that_wobbles_within_the_straight_line_reads_as_a_rod() {
+        let noisy = |aspect: f32, pp: f32, wl: f32| -> Vec<[f32; 2]> {
+            let k = (aspect * 8.0 / wl).max(8.0) as usize;
+            let (mut lo, mut hi) = (Vec::new(), Vec::new());
+            for i in 0..=k {
+                let x = aspect * i as f32 / k as f32;
+                let y = 0.5 * pp * specula_model::dmath::sin_cos_f64(std::f64::consts::TAU * f64::from(x / wl)).0 as f32;
+                lo.push([x, y]);
+                hi.push([x, 1.0 + 0.7 * y]);
+            }
+            hi.reverse();
+            lo.extend(hi);
+            lo
+        };
+        for wl in [0.5f32, 1.0, 2.0] {
+            for aspect in [12.0f32, 30.0, 100.0] {
+                let p = noisy(aspect, 0.018, wl);
+                for side in [PIXELS, 512] {
+                    let s = read_at(&p, side).unwrap();
+                    // (Shortened to six to one with its wobble as it was, a wobble of half a
+                    // width shows at 512 pixels: up to a sixth round there.)
+                    assert!(s.square > 0.75 && leading(s.round, s.square, s.pointed) == Kind::Square, "a rod {aspect} to 1 wobbling by 1.8% every {wl} widths, at {side}: {s:?}");
+                }
+            }
+        }
+        let places = |p: &[[f32; 2]]| {
+            let mut x: Vec<u32> = p.iter().map(|q| q[0].to_bits()).collect();
+            x.sort_unstable();
+            x.dedup();
+            x.len()
+        };
+        for pp in [0.03f32, 0.06] {
+            let p = noisy(30.0, pp, 1.0);
+            assert_eq!(places(&at_most_long(&p)), places(&p), "a rod wobbling by {pp} is pressed, not cut");
+        }
+    }
 }

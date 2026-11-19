@@ -703,9 +703,28 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       sword with a round guard, a cumulus cloud, a fish, a cat, a bell, a cauldron, a
       castle tower, an aeroplane and five more); shapes that swing with the angle (a T, a
       star of sixteen shallow points, a lens with tips of 90 degrees, a notched disc,
-      which was steady before); a body with sixteen hairs is not read at all. **Not
-      reviewed yet: a sixth review is running, held to the bar set on 2026-11-20 at the
-      top of this page.** Sepulcra is not counted again by it. No preset asks for it, and
+      which was steady before); a body with sixteen hairs is not read at all. **Its
+      reviewer said not to merge it** (the sixth review, the sixth "do not merge", held to
+      the bar at the top of this page; FORM.md, "Its sixth review"). It is better held
+      than the fifth and, as a measure, **no better on assets it was not tuned on: 42 of
+      59 common assets of the reviewer's own lead as a person would (71%), the same as
+      the fifth version scores; the author's 87% holds only on the author's set.** Ten
+      of 32 rules are held by no default test (the default sweep was made coarser in the
+      last commit and the seeded faults not run again), so its central promise was not
+      kept. **Its advice leads into failures**: a pedestal, a bookshelf with a cornice, a
+      box with an overhanging slab read three quarters pointed, because an overhang
+      shorter than six times its thickness is judged at the body's thickness and its two
+      square corners become one point; about seven of the reviewer's misread assets share
+      that one cause. A staircase and a comb of 16-pixel teeth swing inside what the
+      document calls steady, and size still moves a few assets. **A seventh version is
+      being made for those causes only** (the overhang; every rule held by a default
+      test; the document true), with both corpora joined (162 assets) and the rate
+      stated on the half it was not tuned on. **Claude's recommendation, for the owner to
+      confirm ("Open owner decisions"): the seventh is the last round that chases the
+      reading. If its reviewer finds it held and its sentences true, it is offered to a
+      style that asks by name with its rate said beside it, whatever that rate is; if
+      not, the check answers by the recipe measure alone and the silhouette's shares stay
+      in the facts as numbers.** Sepulcra is not counted again by it. No preset asks for it, and
       the check exists only for a style that asks by name. Sepulcra's recipes
       by the fourth version: 29 lead pointed, 14 round, 13 square. **The measure from the recipe is built too** (the modeller records
       each named shape's own outlines and its surface; the studio reads them by the same
@@ -760,8 +779,9 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       found one rule no test holds (the snap of five degrees to a side: small in effect),
       that a long rod with wobbling sides reads round when pressed (57% to 66% round at
       30 to 1 where it is square at its own length; nothing of Sepulcra's), and two tests
-      weaker than they say. **Those three are small and not mended yet: they are the
-      first job of the agent that mends faceting**, which builds on the same tie.
+      weaker than they say. **Those three were mended by the agent that mended faceting**
+      (below: "Faceting, from what a recipe names round"); that change is in the faceting
+      review's hands.
     - **Where its verification stands** (2026-11-19, night): the full gate passed on
       `bec48409` (everything of part 4 up to the form views in a before and after and in
       the line-up: 3,298 tests, the repeats, the slow-worker run, the speed budgets, clippy
@@ -818,9 +838,27 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       that were all the probe's own, corrected and run again), **and found two small
       faults**: a slab of a needle triangle is refused for an inset a slab does not have,
       and one refusal names an inset as holding that does not. They are the next builder's
-      first job. **Stage 2, the modeller, is being built** by a fresh agent.
-      Then the engine's 2D item with two read-only tools and
-      `docs/design/FORMAE.md`, and further families. Each stage is reviewed by Claude, who
+      first job. **Stage 2, the modeller takes the library: built** (2026-11-20,
+      `0bd6d900`, with both faults mended first: a slab needs no miter; a miter keeps its
+      digits at a needle's tip; an inset is named as holding only after it was built). A
+      recipe can say an outline by a form's name
+      (`"outline": {"form": "heart", "args": {"width": 1}, "detail": 64}`), a solid by
+      name (`{"op": "form", "form": "icosahedron", "args": {"edge": 0.5}}`) and a plane
+      figure raised (`{"op": "form", "form": "annulus", "raise": {"as": "slab",
+      "thickness": 0.1}}`), every number an expression if wanted, every word and key
+      checked against the library's table, and what `f32` cannot hold refused as data.
+      **Claude's review held it against the library's own builds** (2,047 solids, 1,586
+      raised figures, 846 extruded outlines: each closed, the library's volume, where the
+      library builds it, the same twice) **and found one fault**: an outline by name
+      smaller than the modeller's 10 µm weld extrudes into a model that is not closed
+      and is accepted (a semicircle of 0.1 mm; 10 of 856). The modeller's own outlines
+      have always done the same, which is why nothing caught it. Also standing: the
+      crate's default tests run over their time; a form's work weight is a guess; a
+      solid's record of what it is built of is its hull (a torus reads as a disc).
+      Those are the next builder's first jobs. **Stage 3, the engine's side, is being
+      built** by a fresh agent.
+      Stage 3 is the engine's 2D item with two read-only tools and
+      `docs/design/FORMAE.md`; then further families. Each stage is reviewed by Claude, who
       did not write it; the whole is pictured in the engine and gated before it is merged.
       **Nothing of it is merged yet.**
     - **Faceting, from what a recipe names round: built** (2026-11-19, evening; FORM.md,
@@ -837,13 +875,41 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       passes or fails by how its recipe wrote it (a scale, an include, a taper); a sculpt
       speaks by its tightest radius alone, so a bead of 2 mm hides a coarse ball; a shape
       nobody sees fails; the verdict moves as the asset is turned; the capsule's advice
-      names the wrong number; five rules are held by no test. **Not mended yet: give no
-      style a `max_facet_deg` until it is.** Its mend waits for the recipe measure's third
-      round to be merged, which ties each piece of geometry to its record: the same tie
-      gives a round shape its radius in the built model and whether any of it is seen. The
-      reviewer was refused the permission to seed faults in its worktree (the brief both
-      forbade changing tracked files and asked for seeded faults: the lead's mistake), so
-      its "no test holds it" findings are by reading; the mender seeds them on its branch.
+      names the wrong number; five rules are held by no test. The reviewer was refused the
+      permission to seed faults in its worktree (the brief both forbade changing tracked
+      files and asked for seeded faults: the lead's mistake), so its "no test holds it"
+      findings were by reading. **A fresh agent has mended all of it** (2026-11-20, merged;
+      FORM.md, "What was mended" under the faceting section; new module `facet.rs`): **how
+      far a facet stands in is measured in the finished model.** Every round shape's
+      triangles are known there (the recipe record's tie), every operation's linear map is
+      carried to it (turns, scales, mirrors, each copy of an array), and at the end each
+      shape is measured: exactly for moves, turns and even scales, exactly on the ellipse
+      for a ring under any stretch, face by face for a sphere. A shape tapered, twisted or
+      bent is said to be **not measured**, and the check fails saying so; it never gives
+      a number that is false. A sculpt speaks for each of its primitives that has surface;
+      a shape with no triangle of its own says nothing; the asset's size is its greatest
+      width; the advice names the count that made the turn and how many would hold the
+      limit. By its own account every seeded fault was caught, and no mesh changed.
+      **What it found on the way:** a sphere's faces stand in three to four times further
+      than the old figure said. Sepulcra by it: 41 recipes name something round, 39 (it
+      was 36) show a round shape turning more than 20 degrees, four of them newly (their
+      coarsest is a sphere stretched unevenly), which leaves one of the old 36 that no
+      longer shows and that its author did not find. **What it cannot know:** whether a
+      whole shape is hidden inside another part (allow such an asset by name). **Its
+      reviewer said not to merge it** (2026-11-20; FORM.md, "Its second review"), on a
+      truth of its own over 400 random chains of operations: spheres and rings whose
+      axis stays square to them are exact, and **a ring leant over, or turned by an odd
+      angle and then scaled unevenly, is measured wrongly and still called measured**
+      (up to three times the true stand-in; a leant cylinder passes a limit it breaks);
+      and the sphere's advice names too few subdivisions (it takes each to halve the
+      turn; they do not). None of Sepulcra's props has such a ring. The prop that
+      stopped showing is `grave_bell`, rightly: its facets are nine tenths of a pixel at
+      the size the studio reads. **A third mender is on it, with the reviewer's probe as
+      the test it must pass. Give no style a `max_facet_deg` until a reviewer says
+      merge.** The recipe measure's three small findings were mended with it (the
+      snap held by a test; the wobbling rod's limit stated and held: up to 1.8% of the
+      width a long rod is cut and reads square, past it it is pressed and reads rounder;
+      the two weak tests made exact).
       **The shape check's safe state, reviewed with it, holds**: no preset asks for a
       shape, nothing else writes the setting, and a style that does not name the check is
       never failed by it. One small finding: a style that asks, where neither the outline
@@ -888,7 +954,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       simulation a costless feature is called a cost under 1% of the time where it was up
       to 12%; **what it gave up for that: on a machine busy in short bursts a real cost of
       a twentieth of the frame is told only a fifth to a third of the time**, and then the
-      answer says the machine was not steady and advises nothing. **Not reviewed yet.**
+      answer says the machine was not steady and advises nothing. **Its reviewer said not
+      to merge, for one missing test** (2026-11-20; LIGHT.md, "Its third review"), and
+      that with it it would say merge: in every run, on both adapters, quiet and beside a
+      second engine, the tool told every real cost, never advised from a busy run, and
+      left `sight_frame` byte for byte as it was. What it found: the wait's giving way to
+      the call's time is held by no test; a load that keeps step with the rounds under
+      the line for a late frame would make a third of costless features look like costs
+      (simulated; no real source of one found); a merely uneven machine is called busy
+      and told another program was running; a few sentences. **A fresh agent is mending
+      those; Claude reads that narrow change itself.**
     - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
       PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
       builds: a large thin rounded cutter set a metre past the corner of what it cuts
@@ -897,7 +972,22 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       work limit does not bound the build's time**; at roundnesses the levelling did not
       try, thin shapes run 1.2 to 1.6 times the plain rate; two sentences of the document
       are false; nothing holds the levelling by a test. No recipe in the repository uses
-      `roundness`. **Not mended yet.**
+      `roundness`. **A fresh agent found the cause and mended it** (2026-11-20, merged;
+      PROCEDURAL_MODELLING.md, "What was mended after it"). The cause: beside a thin
+      sheet's rim the solve started from how far the shape reaches along the face's
+      normal, millions of times short of how far it reaches along the true one, and
+      never recovered. It now starts at the point of the surface that reaches furthest
+      along a guessed normal, which is the answer itself for any sample on that point's
+      normal. **And a build is now charged for what its solve does**: the weight covers
+      17 powers a sample, and powers past that are charged as the mesh is made, so no
+      recipe can take more than 1.25 times the calibrated case's powers for a unit of
+      work, whatever its shape. The thinness grading is gone (one weight). By its own
+      count the review's worst case went from 4.1 times its charge to within the bound,
+      and the worst of 1,188 builds is 1.14 times. **Not reviewed yet (a review is
+      running), and not timed: the quiet-machine timing is owed**
+      (`cargo run --release -p specula-model --example rounded_rates 5`). A recipe whose
+      samples take more than 17 powers on average is charged more than before and may be
+      refused where it built.
     - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.
@@ -1797,7 +1887,18 @@ Not decisions of this kind, and also with the owner: the seven items of
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-Nothing is open (2026-11-20).
+- **How long the silhouette measure of shape language is chased** (2026-11-20). Six versions,
+  six reviews, six "do not merge"; the recipe measure passed its third review. The sixth
+  silhouette version is well held and reads no better than the fifth on assets it was not
+  tuned on (71% of a reviewer's own 59; FORM.md, "Its sixth review"). A seventh is being
+  made for the one traced cause (overhangs) and the tests. Claude recommends that it be the
+  last round that chases the reading: accepted with its rate said beside it if its reviewer
+  finds it held and true, and otherwise left in the facts as numbers while the check
+  answers by the recipe measure alone. The owner said before "I don't care if it takes
+  longer", so the rounds go on unless they say to stop.
+- **An empty folder to remove**: `C:\sr-k2t`, made by a reviewer by mistake. It was refused
+  the permission to remove it and asked the lead to; the lead does not do for an agent what
+  the agent was refused, so it waits for the owner's word or hand.
 
 (Whether the two reviews an interrupt stopped are run again was decided on 2026-11-20: they
 are, recorded at the top of this page with the owner's word on removals.)

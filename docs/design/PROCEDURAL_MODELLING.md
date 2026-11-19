@@ -107,9 +107,15 @@ Normals are the modeller's (by the part's smooth angle, as every generator's): t
 normals do not pass through `Shape`, which holds none. UVs and colours are as every generator's.
 What it records: a form shape is a named shape for `crate::made` (its outlines: a raised
 figure's ring and the boxes it is raised to, a solid's convex hull seen along each axis), and a
-faceting record (`Round`) for each smooth surface, of the turn measured between its faces
-(`Mesh::rounds`); an outline by name records the turn between its chords and its arcs' radius
-(`Spec::facets`). `tests/formae_recipes.rs` holds all of it.
+faceting record (`Round`, count `detail`) for each smooth surface, of the turn measured between
+its faces (`Mesh::rounds`); an outline by name gives the shape made of it one of the turn
+between its chords and its arcs' radius (`Spec::facets`). Both are measured in the finished
+model as every round shape is (`crate::facet`): under a uniform scale as built and scaled,
+under an uneven stretch, a taper, a twist or a bend not measured, and said so.
+**A solid's record of what it is built of is its hull, not its form**: exact for a convex
+solid; **a torus reads as its disc** seen from above, a stellated solid as its hull, a raised
+figure with holes as its outer ring (FORM.md, "From what the recipe is built of").
+`tests/formae_recipes.rs` and `tests/facet_record.rs` hold all of it.
 
 ## Tiers 2-4 as built (2026-10-22)
 
@@ -202,20 +208,19 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   (a superquadric, a superellipse: Barr, 1981). The shape keeps its sizes whatever its roundness, so
   it can be turned up or down without anything else moving. **What it costs:** a roundness
   of 1 is the cheap one (no power to take: six times a plain box's sample); any other value solves
-  for the nearest point with a dozen to twenty powers a sample outside the shape, over twenty times
-  a plain box's. So a cube of roundness 0.3 builds at a resolution of 64 on under half of the work
-  limit and is refused at 96, where the same cube at roundness 1 takes a third of the limit (a test
-  holds this); a thin board has an eighth of a cube's samples at the same resolution. **A very thin
-  rounded shape costs more a sample than a thick one**: down to a twentieth as thick as it is
-  long a sample costs what a cube's does, and from there to a two-thousandth the weight rises to
-  about 1.4 times (a foil, a hair: more of their samples take more steps, and up to one in eight
-  is left to the sure way). The weights are **set against the plain primitives' own rate, not
-  against a time**: a build at the work limit is to take what a plain box cut from a plain box
-  takes there, whatever the machine and its state. Measured on a quiet machine (2026-11-19,
-  release, one thread, four interleaved runs each against the plain cut in the same run): a
-  2 m box with a rounded shape cut out of it, whose every sample is outside the rounded shape,
-  runs at 0.86 to 0.99 of the plain cut's rate for a cube and for boxes a quarter to a ninth as
-  thick as long, and at 0.76 to 0.95 for a thin disc, a foil and a hair. It is not the modifier `round`
+  for the nearest point, with about ten to forty powers a sample outside the shape on average (177 the most seen) (a cube of
+  roundness 0.3 cut from a 2 m box: 16 a sample, inside and out). Its weight, one for every
+  thinness, pays for 17 powers a sample; **what the samples take past that is charged as they
+  take it**, 84 units a power over the build, so the work limit bounds what any recipe of
+  rounded shapes takes, wherever they are sampled: no build takes more than one power for
+  every 84 units (since the eighth review, below). So a cube of roundness 0.3 builds at a
+  resolution of 64 on under half of the work limit (0.47), still builds at 84 (0.96) and is
+  refused at 88 (1.04) and at 96 (1.28), where the same cube at roundness 1 takes a third of the
+  limit (a test holds 64 and 96); a thin board has an eighth of a cube's samples at the same
+  resolution (a board a tenth as thick, 0.07 of the limit at 64 and 0.18 at 96). The count is
+  the measure, not a time: the calibrated case (that cube cut from the box) takes 9.5 powers
+  for every thousand units, and on a quiet machine (2026-11-19, before the eighth review's
+  mends, at 13 powers a thousand units) it ran at 0.97 of the plain cut's rate. It is not the modifier `round`
   (a swelling by a radius in metres, on any node) nor `corner` (an edge radius in metres, which cannot
   be given with it). A rounded cylinder has one radius. On an outline that is not a `rect` it is
   refused, as `segments` is where it would do nothing.
@@ -238,8 +243,9 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     first steps giving up far from a rounded needle (71 steps a sample, a cut that ran 3.6 s):
     they are now taken on each share **to the power less one**, in which every equation is
     nearly a straight line however low the roundness, each from the most its own equation
-    allows. A test holds a plate, a needle, a cube and a board, at six roundnesses, to under 25
-    steps a sample in a 2 m box with no more than one in twenty left to the sure way, the
+    allows. A test holds a plate, a needle, a cube and a board (and since the eighth review
+    a foil and a hair), at six roundnesses, to under 20 powers a sample in a 2 m box and 30
+    just off the surface, with no more than one in 200 left to the sure way, the
     reviews' points to the distance, and scans out to 100 m for steps. A test holds the field
     against a distance found by search, on six shapes to 100:1 at six roundnesses, and swollen
     meshes against the unswollen surface at every roundness, for swellings to three times the
@@ -253,15 +259,15 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     and the solve cannot be stopped by its limits; a test builds that recipe). **And a foil or a
     hair cost up to 1.7 times a plain cut's rate under the one weight**, with up to 11% of
     their samples left to the sure way where the test's four shapes had 5% at most: thin shapes
-    have a weight of their own now, the test holds a foil and a hair to under thirty steps a
-    sample and one in eight left over, and the weights are said against the plain primitives'
-    rate (the time the comment gave, 1.3 s at the limit, was measured on a cooler machine than
-    the reviewer's or this one an afternoon later). **A seventh** (2026-11-19) **said merge**:
+    had a weight of their own from then until the eighth review, the test held a foil and a
+    hair to under thirty steps a sample and one in eight left over, and the weights were
+    said against the plain primitives' rate (the time the comment gave, 1.3 s at the limit,
+    was measured on a cooler machine than the reviewer's or this one an afternoon later). **A seventh** (2026-11-19) **said merge**:
     the panic gone by every reproduction and by sweeps from a kilometre to the end of the
     numbers, with no step count over 200. It counted the solve's steps by thinness and found
     the thin weight's one line at an eighth in the wrong place: the steps are the same from a
     half to a twentieth as thick as long and rise only far thinner, so a plank a hair under an
-    eighth was charged 1.7 times its neighbour. The weight is graded now, by the logarithm of
+    eighth was charged 1.7 times its neighbour. The weight was graded then, by the logarithm of
     the thinness from a twentieth to a two-thousandth. Its timings, taken while two other
     builds ran, could not settle whether shapes near a seventh were under-priced by a fifth
     (it saw up to 1.75 times the plain cut's rate). **Measured again on a quiet machine the
@@ -270,8 +276,7 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     were moved by what was left (the thick one up a ninth, the thinnest down a tenth), and
     every case measured now runs at or under the plain cut's rate. **An eighth** (2026-11-20,
     of those levelled weights, by counting the solve's steps and powers in real builds)
-    **said not to merge them. None of this is mended yet, so the sentences above about
-    what a rounded shape costs are not all true**:
+    **said not to merge them** (what was mended after it follows the list):
     1. **A large, thin rounded cutter set past the corner of what it cuts costs four times
        its charge by count** (and timed four to seven times, on a busy machine): a 2 m box
        with a rounded sheet of 100 m by 0.1 mm subtracted from it, a metre past its corner,
@@ -302,6 +307,66 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     now (as meant: the old weight under-charged it; no recipe here uses `roundness`). Not
     checked: rounded shapes under a twist, a bend or a repeat; whether the field is right
     where the solve falls back most.
+    **What was mended after it** (2026-11-20, by a builder that wrote none of it):
+    - *The cause of 1.* The solve's `mu` is the distance times how far the shape reaches
+      along the normal at the nearest point. It was started along the normal at the first
+      touching plane's foot, brought onto the surface: beside the rim of a 100 m sheet a
+      ten-thousandth as thick that is the normal of the face, along which the sheet reaches
+      a twentieth of a millimetre, where along the true normal (out of its edge) it reaches
+      over 60 m. `mu` began three hundred thousand to five million times too small, the first
+      steps went the wrong way and stopped at their floor (traced sample by sample), and the
+      sure way ran. Now the start is the point of the surface that reaches furthest along a
+      guess of the normal taken from where the sample lies: past the hard shape, the way out
+      of it from its nearest point; inside it, the way to the sample from the foot's point of
+      the surface. There every unknown of the first steps is known with no power taken, and
+      it is the answer itself for any sample on that point's normal, at any thinness. Both
+      halves were needed (a sweep of 20,160 places, from a tenth of a millimetre to ten sizes
+      out, thin to a hundred-millionth along each axis, fourteen roundnesses: 3,044 places
+      averaged over 40 powers a sample before, none after; the right `mu` with each share
+      started at the most its equation allows was nearly as bad as before). The review's
+      samples arrive in 13 to 19 powers (were 27 to 127), over 3.9 million samples all but
+      0.04% arrive, and none takes more than 177 powers.
+    - *The bound.* The limit is charged as the build goes, so it can charge what the solve
+      does: every power is counted, the weight pays for 17 a sample, and what the samples
+      take past that over the build is charged at 84 units a power at the next charge (one
+      sample's spare powers pay for another's). No sample can take more than 510 powers
+      (counted from the code: the gradients and the start, ten first steps, the sure way's
+      twelve steps of at most twelve powers a share), so between two charges at most a
+      batch's samples run unpaid, and the colours are charged every 64 vertices. Whatever a
+      recipe is, its build takes no more than one power for each 84 units it is charged:
+      five quarters of what the calibrated case takes. The same recipe is charged the same
+      on every machine.
+    - *2 and 4.* With the start mended a thin shape's samples take what a cube's do (17.7 to
+      18.5 powers a sample at the worst roundness for each thinness, from 1:1 to a
+      hundred-millionth, for shapes a metre across cut from the box's middle), so the weight
+      is one again, for every thinness and every axis; the levelling is the charge, and a
+      test holds it by count over the review's cases, planks thin along each axis in turn,
+      sheets to 10 km and to a hundred-millionth, a disc past a corner, stacked scales, a
+      stretch, a twist, a bend, a repeat, a displacement, a smooth blend of three, and three
+      thinnesses at eight roundnesses each: no case takes over five quarters of the
+      calibrated case's powers for its work, nor two and a half times its powers a sample.
+      Over 1,188 builds (a box and a disc, 1 m to 50 m, 1:1 to a hundred-millionth, eleven
+      roundnesses, over the middle, beside an edge and past a corner) the dearest takes 1.14
+      times the calibrated case's powers for its work (a 2 m sheet a millionth as thick cut
+      through the middle, 37 powers a sample, charged for what it takes past the weight).
+    - *3.* The sentences about what it costs are rewritten above with these counts.
+    - *The field there.* A test holds it against a distance found by search, past the
+      corner of sheets from 2 m to 100 m and a thousandth to a millionth as thick.
+    - *What changed for recipes that built before:* nothing in Sepulcra (its asset tests
+      pass; no recipe here uses `roundness`). A lone cube of roundness 0.3 is charged as
+      before (0.47 of the limit at 64, refused at 88); a thin shape costs less than under the
+      graded weight; and a sample that takes more than its weight pays for what it takes, so
+      a recipe whose samples are dear can now be refused where it built.
+    - *Left as it is:* the charge is in powers, and a power's time against a unit of plain
+      work was last timed on a busy machine (about 48 units); whether the calibrated case
+      still runs at the plain cut's rate now that it takes fewer powers a sample (16 where it
+      took 22) is for a quiet machine: `cargo run --release -p specula-model --example
+      rounded_rates` times the calibrated case and the dearest by count against a plain cut
+      in the same run, with each one's powers a thousand units (by count the dearest takes
+      1.14 times the calibrated case's powers for its work, so it should run at no more than
+      about 1.14 times the calibrated case's rate, if time goes with the powers). Asking
+      which primitive made each triangle (`primitive_of_triangles`) is charged at the
+      weights only, not for powers past them.
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded
