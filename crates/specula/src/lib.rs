@@ -148,6 +148,7 @@ pub mod launch_store;
 pub mod timeline_audio;
 mod gi;
 mod gi_tools;
+mod light_tools;
 pub mod terrain;
 mod model_export;
 mod paint_tools;
@@ -3277,6 +3278,11 @@ impl Engine {
             self.start_anim_job(request);
             return;
         }
+        if matches!(request.command, Command::PerfLight(_)) {
+            // A measuring render per step (see `light_tools`).
+            self.start_light_job(request);
+            return;
+        }
         if matches!(request.command, Command::Timeline(timeline_tools::TimelineCall::Preview { .. } | timeline_tools::TimelineCall::Check(_))) {
             // A tile or a slice of samples per step (see `timeline_tools`).
             self.start_timeline_job(request);
@@ -3510,7 +3516,7 @@ impl Engine {
                 let stats = stats.or_else(|| self.gpu.last_frame_stats_of(FramePath::Offscreen));
                 ToolOutput::text(perf::memory_json(&self.profiler, stats.as_ref(), limit).to_string())
             }
-            Command::PerfCapture(_) | Command::Playtest(_) | Command::Editor(_) => unreachable!("answered above"),
+            Command::PerfCapture(_) | Command::PerfLight(_) | Command::Playtest(_) | Command::Editor(_) => unreachable!("answered above"),
             Command::Time(op) if playtest_engine::clock_refused(op, self.playtests.running()) => playtest_engine::clock_busy(),
             // A script has the clock (`--script`): nobody else's word moves it. An agent that
             // reached the run's port and resumed it turned the machine's time into ticks, and
@@ -4146,6 +4152,7 @@ fn call_class(command: &Command) -> Class {
         Command::StudioRender(_) | Command::StudioDone(_) => Class::Read,
         Command::Vfx(call) => vfx_tools::call_class(call),
         Command::Timeline(call) => timeline_tools::call_class(call),
+        Command::PerfLight(_) => Class::Render,
         Command::Gi(call) => gi_tools::call_class(call),
         Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelExport(..) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,

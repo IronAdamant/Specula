@@ -122,6 +122,9 @@ pub struct CaptureQueue {
     /// The form view the view being submitted is drawn as, with its curvature scale (`sight_frame
     /// form`): set for that one render, as the GI view is.
     pub(super) form: Option<(specula_gpu::FormView, f32)>,
+    /// The light the view being submitted is drawn without (`perf_light`): set for that one
+    /// render, as the form view is.
+    pub(crate) light: Option<crate::light_tools::Without>,
     /// A step job's view in flight (`timeline_preview`'s tiles), with the job's own slot: submitted
     /// in one step and landed in a later one, so the GPU's work never holds the engine thread.
     /// Landed like the flight before any other offscreen render ([`Engine::land_capture_flight`]),

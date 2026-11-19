@@ -1354,8 +1354,10 @@ at once.
   only act as a guide in this case"): it reports what light this machine can run, from what it measured
   there, so an agent can say so plainly; nothing depends on ray-tracing hardware or a vendor's kit, and
   vendor-neutral ray queries may only ever be an optional faster path. In M6 that report covers the light
-  the engine has (the quality presets, the baked probes); the note's ladder of light is after M6 unless
-  the scope talk moves a rung, and how the report is made is not designed.
+  the engine has (the world's settings, the baked probes); the note's ladder of light is after M6 unless
+  the scope talk moves a rung. **The report is built** (2026-11-19, `perf_light`:
+  [design/LIGHT.md](design/LIGHT.md)): a view is drawn with each light feature left out in turn, and what
+  each costs on this adapter is answered against a budget, with what the engine's light has and has not.
 - [ ] ➕ **A library of sample assets, for any game** (owner, 2026-11-16, at the start of M6: "I'm actually
   thinking on this. But add 1 more part here"): "Build up the assets of animals, fantasy creatures like
   dragons, undead, and both tech and living assets, and tech like robots. Set up animation. Keep them as

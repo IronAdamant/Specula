@@ -355,6 +355,24 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       into each other, on silhouettes of 256 pixels, and is steady to a tenth over a quarter
       turn for fourteen known shapes. Sepulcra's 56 recipes lead square (31), pointed (18)
       and round (7). The form checks and it have their place in the critique.
+    - **The light report** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)): `perf_light`
+      measures what each light feature of a view costs on the machine the engine runs on, at
+      the size asked, by the GPU's own timestamps: the view as the world has it, each feature
+      that is on left out in turn, and all of them out, in alternating rounds. It says what is
+      told from the noise and what is not, whether the view holds a budget and what to give up
+      when it does not, and what the engine's light has and has not (it never uses ray-tracing
+      hardware). Nothing in the world is changed. A capture now carries its own GPU timings.
+    - **A fifth round of reviews** (2026-11-19, afternoon), of the three pieces written again
+      after the fourth: none to merge. *Shape language:* the shape's size was its bounding
+      box's longer side, which grows as the shape is turned, so a box rounded by a sixteenth
+      of its size was round or square by its angle; a spike read under half pointed; one slot
+      made a disc fail "round". The size is the greatest width, a point counts double, only
+      outward turning counts, and it is measured on 512 pixels. *Roundness:* a recipe could
+      make the solve panic (a sample too far for numbers), and thin rounded shapes cost up
+      to 1.7 times their weight; guarded, and priced by a weight of their own. *The form
+      checks:* a stray vertex's missing normal switched the shading measures off and their
+      checks passed on nothing; unmeasured shading now fails them, and unreadable triangles
+      are counted.
     - **A fourth round of reviews** (2026-11-19). *The form views:* merge, with four small
       findings mended. *The form checks:* faceting still read nothing on the engine's own
       coarse cylinders, and is **taken out** after three tries: a mesh alone cannot say what

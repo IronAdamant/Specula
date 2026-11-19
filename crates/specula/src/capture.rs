@@ -129,6 +129,10 @@ pub(crate) struct Rendered {
     pub(crate) gi_drawn: bool,
     pub(crate) gi_error: Option<String>,
     pub(crate) gi_stretch: Option<(f32, f32)>,
+    /// This view's own GPU timings, read as it settled (`None` on a queue without timestamps,
+    /// or when their read failed). Taken with the view: a later offscreen render replaces
+    /// the GPU's last record before a step job gets to ask for it.
+    pub(crate) gpu: Option<specula_gpu::GpuTiming>,
 }
 
 /// A view's subjects being projected on a worker. **Whoever gets there first projects them**
@@ -201,6 +205,8 @@ pub(crate) struct ViewInFlight {
     gi_stretch: Option<(f32, f32)>,
     /// Its pixels, once read ([`Engine::render_view_read`]).
     rgba: Option<Vec<u8>>,
+    /// Its GPU timings, taken with its pixels.
+    gpu: Option<specula_gpu::GpuTiming>,
 }
 
 impl ViewInFlight {
@@ -459,6 +465,12 @@ impl Engine {
     }
 
     /// The camera of a sight_frame-style spec: a named camera, eye/target, or auto-framing.
+    /// The camera a capture's view arguments mean, how it was chosen (for a packet), and what
+    /// to warn of: as `sight_frame` sees it.
+    pub(crate) fn frame_camera(&mut self, spec: &FrameSpec, session: &SessionInfo) -> Result<(Camera, Json, Option<String>), ToolOutput> {
+        self.frame_view(spec, session).map(|v| (v.camera, v.source, v.warning))
+    }
+
     fn frame_view(&mut self, spec: &FrameSpec, session: &SessionInfo) -> Result<ViewReq, ToolOutput> {
         let (camera, source, warning) = match (&spec.camera, spec.eye, spec.target) {
             (Some(c), _, _) => {
@@ -910,6 +922,10 @@ impl Engine {
         if let Some((view, scale)) = form {
             sight::form_frame(&mut frame, view, scale);
         }
+        // `perf_light`: this render leaves some of the world's light out, to say what it costs.
+        if let Some(without) = self.captures.light {
+            crate::light_tools::strip(&mut frame, without);
+        }
         let second_render = painted && opts.ids && opts.overlays.has(Kind::Bounds);
         let mut overlays = None;
         // A hosted game's interface (include_ui), under the debug overlays.
@@ -1016,6 +1032,7 @@ impl Engine {
             gi_error,
             gi_stretch,
             rgba: None,
+            gpu: None,
         };
         if !second_render {
             self.models.put_bones(bones);
@@ -1146,6 +1163,8 @@ impl Engine {
         }
         let _z = profile::zone("sight.readback");
         v.rgba = Some(self.gpu.read_rgba8(v.target).map_err(|e| gpu_failure("readback", &e, self.windowed))?);
+        // The timings of this render and no other: the record says which frame they are of.
+        v.gpu = self.gpu.last_frame_stats_of(FramePath::Offscreen).and_then(|s| s.gpu.filter(|g| g.frame == s.frame));
         Ok(())
     }
 
@@ -1196,6 +1215,7 @@ impl Engine {
             gi_drawn: v.gi_drawn,
             gi_error: v.gi_error,
             gi_stretch: v.gi_stretch,
+            gpu: v.gpu,
         })
     }
 

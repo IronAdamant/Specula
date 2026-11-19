@@ -231,6 +231,8 @@ pub enum Command {
     PerfMemory { limit: usize },
     /// perf_capture: answered once the frames are recorded.
     PerfCapture(CaptureSpec),
+    /// perf_light: what the light of a view costs here, a render a step (`light_tools`).
+    PerfLight(Box<crate::light_tools::LightSpec>),
     Time(TimeOp),
     /// A tool the hosted game added.
     Game { name: String, args: Json },
@@ -1009,6 +1011,7 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
             Ok(Command::PerfMemory { limit: int_arg(args, "limit", 1, 50)?.unwrap_or(10) as usize })
         }
         "perf_capture" => parse_perf_capture(args).map(Command::PerfCapture),
+        "perf_light" => crate::light_tools::parse(args).map(|spec| Command::PerfLight(Box::new(spec))),
         "time_control" => {
             check_keys(args, name, &[&["action", "ticks", "scale"]])?;
             parse_time(args).map(Command::Time)
@@ -3064,6 +3067,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::timeline_tools::definitions())
     .chain(crate::taste_tools::definitions())
     .chain(crate::gi_tools::definitions())
+    .chain(crate::light_tools::definitions())
     .chain(crate::terrain_tools::definitions())
     .chain(crate::paint_tools::definitions())
     .chain(crate::model_export::definitions())

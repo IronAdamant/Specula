@@ -475,7 +475,14 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       the power less one, where every equation is nearly a straight line: 13 to 18 steps a
       sample for a plate, a needle, a cube and a board at six roundnesses (a test), and the
       cuts the reviews found run inside the budget. A roundness of 0.5 is no longer a cheap
-      one. **This is not reviewed yet.** Two
+      one. **A sixth reviewer said not to merge that**: the distance held everywhere (to 1.3
+      parts in ten thousand against a nearest point of its own, on shapes to 1:1000), and a
+      recipe within the parser's limits made the solve panic (a rounded box under seven
+      scales of a thousandth: a sample too far for numbers), and a foil or a hair cost up to
+      1.7 times a plain cut's rate under the one weight. Mended: such a sample has the bound
+      for its distance, thin rounded shapes (under an eighth as thick as long) have a weight
+      of their own, and the weights are set against the plain primitives' rate and not
+      against a time. **This is not reviewed yet.** Two
       limits of the same kind are written down and not mended: inside a rounded shape the
       field is a bound, so a `shell` or a shrinking of one is thinner than asked beside its
       corners; and a column's field is in units of its narrower half size, so `round` and a
@@ -546,19 +553,31 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       tries: a mesh alone cannot say what was meant to be round (a box and a four-sided
       cylinder are one mesh). It belongs at build time, from what a recipe says is round
       (segments, subdivisions, a field's resolution against its radii): **not built, and owed**
-      (the owner asked for every form check). **These mends are not reviewed yet.**
+      (the owner asked for every form check). **A fourth reviewer said not to merge those**:
+      one stray vertex with a normal of no length, used by nothing, switched the shading
+      measures off, and the checks that limit them passed on nothing; a triangle written
+      from another corner moved the small relief by a tenth; vertices no triangle uses were
+      all welded before the first look at whether to stop; unreadable triangles passed.
+      Mended (shading judged on the vertices in use, and unmeasured shading fails its checks;
+      `unread_triangles`). **These mends are not reviewed yet.**
     - **Shape language: built** (2026-11-19; FORM.md, "Shape language"): how round, square
       or pointed an asset's outline is, in every asset's taste measures; a style may ask for
       one (`[taste] shape_language`), and the `storybook` preset asks for round. With it the
       five items of "form within an agent's reach" are all built. **Its first reviewer said
-      not to merge it**: counting the corners of a polygon, with hard lines between the
-      classes, it flipped under small turns, called a capsule pointed, and a failed check
-      never reached the critique. **Written again** as the net turn of a smoothed outline
-      within a window, with classes that fade into each other, on silhouettes of 256 pixels:
-      steady to a tenth over a quarter turn for fourteen known shapes (a test). Sepulcra's
-      recipes lead square (31 of 56), pointed (18) and round (7): no check is asked of it.
-      The form checks and it now have their place in the critique. **The rewrite is not
-      reviewed yet.**
+      not to merge it** (corners counted on a polygon with hard lines between the classes:
+      it flipped under small turns), and it was written again as the net turn of a smoothed
+      outline within a window. **Its second reviewer said not to merge the rewrite**, with
+      three findings that were true: a box rounded by a sixteenth of its size read a fifth
+      round at one angle and nine tenths a degree on (**the shape's size was its bounding
+      box's longer side, which grows as the shape is turned**: it is the greatest width
+      now); a spike read under half pointed (a point counts double now); a disc with one
+      slot cut in it failed "round" (only outward turning counts now). It is measured on
+      512 pixels, and under 110 nothing is read. A test turns 28 known shapes through a
+      quarter turn (steady to a tenth) and sweeps a corner's rounding every three degrees.
+      **What it cannot say steadily is written down**: a corner rounded by a twentieth to
+      a fourteenth of the size, and a part about a fifteenth of the size thick. Sepulcra's
+      recipes lead pointed (30 of 56), square (20) and round (6): no check is asked of it.
+      **These mends are not reviewed yet.**
     - **Where its verification stands** (2026-11-19): the full gate passed on `24bfe7de`
       (the mends of the fourth round of reviews: 3,288 tests), and seven live checks on it
       (window, sight, terrain, GI, studio, procgen, and the new `form_sheet_check`), the
@@ -570,7 +589,20 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       written again after the fourth round (shape language, the rounded field's solve, the
       form checks without faceting). Nothing of part 4 is pushed.
     - **Owed from the form checks:** faceting, from what a recipe says is round (above).
-    - **Then:** the light report; the same in 2D; `form`
+    - **The light report: built** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)):
+      `perf_light` draws a view offscreen as the world has it and with each light feature
+      that is on left out (the sun's shadows, ambient occlusion, bloom, anti-aliasing, fog,
+      the sky, grading, baked GI, the point lights), in alternating rounds, and answers what
+      each costs by the adapter's own timestamps, whether it is told from the noise, whether
+      the view holds a budget and what to give up when it does not; and what the engine's
+      light has and has not, whatever the machine. It changes nothing and writes nothing.
+      **The engine has no quality preset to pick for a machine it has never seen: it
+      measures, and whoever builds the game decides.** On this laptop's
+      integrated GPU Sepulcra's scene takes 2.6 ms at 720p and 5.6 at 1080p, nine tenths of
+      it light and post (bloom, the sky and ambient occlusion the dearest); from a debug
+      build the discrete GPU's times wandered and the report said no cost was told from the
+      noise, which is the answer wanted there. **Not reviewed yet.**
+    - **Then:** the same in 2D; `form`
       on `sight_compare` and the line-up. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.
@@ -1282,7 +1314,9 @@ In practice that means six **foundations** that apply to every change from M1 on
     `security_allow_lead` (the monitor over every way an agent could reach the human's keyboard, window or
     native code: [docs/design/SECURITY.md](docs/design/SECURITY.md)).
   - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
-    `perf.toml`), `perf_capture`, `perf_zones`, `perf_memory`, `time_control` (pause, step, scale), `engine_info`.
+    `perf.toml`), `perf_light` (what each light feature of a view costs on this machine, against a budget:
+    [docs/design/LIGHT.md](docs/design/LIGHT.md)), `perf_capture`, `perf_zones`, `perf_memory`, `time_control`
+    (pause, step, scale), `engine_info`.
   - A project's own game (a `game.json` and modules, no executable of its own: [docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md)):
     `game_state` (the phase, the outcome, the score, the screens, the settings, what is wrong), `game_act`
     (a button's word pressed by an agent: start, pause, a setting, the game's own actions); `memory_note`,

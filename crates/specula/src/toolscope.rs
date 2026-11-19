@@ -219,6 +219,7 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("game_act", "press a button of the game by its word"),
     ("time_control", "pause, resume, step, scale the clock"),
     ("perf_frame", "GPU ms per pass, draws, memory, budgets"),
+    ("perf_light", "what each light feature costs here, against a budget"),
     ("perf_zones", "CPU time per engine phase"),
     ("perf_memory", "heap use by zone"),
     ("perf_capture", "record frames to a trace file"),

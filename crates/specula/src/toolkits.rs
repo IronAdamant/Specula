@@ -181,8 +181,8 @@ pub const KITS: &[Kit] = &[
         name: "find_slow_frame",
         about: "why a frame is slow, on the reference hardware",
         tools: &["perf_frame", "perf_zones", "trace_incidents", "trace_query"],
-        more: &["perf_capture", "perf_memory", "disk_status", "engine_info"],
-        steps: "perf_frame for the passes, draws and budget errors; perf_zones for where the CPU time went; trace_incidents for stalls the engine caught itself; trace_query for the events around one",
+        more: &["perf_light", "perf_capture", "perf_memory", "disk_status", "engine_info"],
+        steps: "perf_frame for the passes, draws and budget errors; perf_zones for where the CPU time went; trace_incidents for stalls the engine caught itself; trace_query for the events around one; perf_light when the GPU's time is the light's (what each feature costs on this machine, and which to give up for the budget)",
         done: "perf_frame reports no budget errors with the game running (the budgets are the reference hardware's)",
     },
     Kit {
