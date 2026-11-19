@@ -484,7 +484,9 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       set against the plain primitives' rate and not against a time. **A seventh reviewer
       said merge**, and found the thin weight's line in the wrong place (the solve's steps
       are the same down to a twentieth as thick as long): it is graded by thinness now.
-      Owed: the rates measured again on a quiet machine. Two
+      The rates it could not settle on a busy machine were measured again on a quiet one
+      (boxes near an eighth as thick as long ran 4% to 9% over a plain cut, not 75%), and
+      the weights were levelled: every case measured runs at or under a plain cut's rate. Two
       limits of the same kind are written down and not mended: inside a rounded shape the
       field is a bound, so a `shell` or a shrinking of one is thinner than asked beside its
       corners; and a column's field is in units of its narrower half size, so `round` and a
@@ -538,10 +540,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       edges, shading seams, smeared creases and relief by size, measured from the mesh alone and in
       every asset's facts; `style.toml`'s `[form]` gives limits (only loose pieces are checked
       unless it does). **The first run found a fault in an approved prop**: one of
-      `pediment_fallen`'s rubble blocks hangs about 5 cm over the ground. It is one of the 33
-      props the owner approved at the window in M4, so the recipe is left as approved and the
-      fault is written into Sepulcra's `style.toml` (`[form.allow]`); **mending it is the
-      owner's to say.** **Its reviewer said not to merge**: the shape's size was taken from
+      `pediment_fallen`'s rubble blocks hung 8 cm over the ground. It is one of the 33 props
+      the owner approved at the window in M4, so the recipe was left as approved and the
+      fault written into Sepulcra's `style.toml`, until the owner's word (2026-11-19: "Fix
+      it please"). **Mended that day**: its three rubble blocks are written out one by one,
+      exactly as the array's jitter had placed them (the jitter turns a copy about the
+      prop's origin, which is what lifted one), with the one that floated and one that
+      hovered 9 mm seated a centimetre into the ground and the third untouched; the
+      exemption is gone, and the check holds the prop (before: 1 of 7 pieces loose; after:
+      none; pictures before and after in `gallery-full/part4/pediment-fallen/`). **Its
+      reviewer said not to merge**: the shape's size was taken from
       every vertex, used or not (one stray vertex hid a loose piece, and one at infinity made
       the check pass on nothing), and a dome on a flat slab read as perfectly smooth; five
       minor findings beside. All mended, each case a test. **A second reviewer said not to

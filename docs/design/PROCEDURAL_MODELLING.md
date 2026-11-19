@@ -160,13 +160,14 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   holds this); a thin board has an eighth of a cube's samples at the same resolution. **A very thin
   rounded shape costs more a sample than a thick one**: down to a twentieth as thick as it is
   long a sample costs what a cube's does, and from there to a two-thousandth the weight rises to
-  about 1.7 times (a foil, a hair: more of their samples take more steps, and up to one in eight
+  about 1.4 times (a foil, a hair: more of their samples take more steps, and up to one in eight
   is left to the sure way). The weights are **set against the plain primitives' own rate, not
   against a time**: a build at the work limit is to take what a plain box cut from a plain box
-  takes there, whatever the machine and its state (2026-11-19, release, one thread: that plain
-  cut ran at 1.01 to 1.07 ns a unit of work, a 2 m box with a rounded cube, plate or needle cut
-  out of it, whose every sample is outside the rounded shape, at 0.7 to 1.2, and with a foil or
-  a hair of a nine-thousandth at 0.65 to 1.04 by the thin weight). It is not the modifier `round`
+  takes there, whatever the machine and its state. Measured on a quiet machine (2026-11-19,
+  release, one thread, four interleaved runs each against the plain cut in the same run): a
+  2 m box with a rounded shape cut out of it, whose every sample is outside the rounded shape,
+  runs at 0.86 to 0.99 of the plain cut's rate for a cube and for boxes a quarter to a ninth as
+  thick as long, and at 0.76 to 0.95 for a thin disc, a foil and a hair. It is not the modifier `round`
   (a swelling by a radius in metres, on any node) nor `corner` (an edge radius in metres, which cannot
   be given with it). A rounded cylinder has one radius. On an outline that is not a `rect` it is
   refused, as `segments` is where it would do nothing.
@@ -214,8 +215,12 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     half to a twentieth as thick as long and rise only far thinner, so a plank a hair under an
     eighth was charged 1.7 times its neighbour. The weight is graded now, by the logarithm of
     the thinness from a twentieth to a two-thousandth. Its timings, taken while two other
-    builds ran, could not settle whether shapes near a seventh are under-priced by a fifth:
-    **to be measured again on a quiet machine.**
+    builds ran, could not settle whether shapes near a seventh were under-priced by a fifth
+    (it saw up to 1.75 times the plain cut's rate). **Measured again on a quiet machine the
+    same evening, with its own probe**: 1.04 to 1.09 times for boxes a quarter to a ninth as
+    thick as long, 0.75 to 0.87 for the foil and the hair. The rest was noise; the weights
+    were moved by what was left (the thick one up a ninth, the thinnest down a tenth), and
+    every case measured now runs at or under the plain cut's rate.
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded

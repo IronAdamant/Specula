@@ -543,14 +543,16 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
 ///
 /// **Set against the plain primitives' own rate, not against a time**: a build at the work
 /// limit is to take what a plain box cut from a plain box takes there, whatever the machine
-/// and its state (2026-11-19, release, resolution 96, one thread: that plain cut ran at 1.01
-/// to 1.07 ns a unit; a rounded cube and a board alone at 0.68 to 0.91; and a 2 m box with a
-/// rounded shape cut out of it, whose every sample is outside the rounded shape, at 0.7 to
-/// 1.2 by the thick weight for a cube, a plate and a needle of a fiftieth, and at 1.1 to 1.76
-/// by it for a foil and a hair of a nine-thousandth, which the thin weight brings to 0.65 to
-/// 1.04). A sixth review found the thin ones: the weights had been set from shapes down to a
-/// fiftieth as thick as long, and against a time measured on a cooler machine.
-const ROUNDED_COST: [u64; 3] = [300, 1300, 2200];
+/// and its state. Measured on a quiet machine (2026-11-19, release, resolution 96, one thread,
+/// four interleaved runs each against the plain cut in the same run, the median): a 2 m box
+/// with a rounded shape cut out of it, whose every sample is outside the rounded shape, runs
+/// at 0.86 to 0.99 of the plain cut's rate for a cube and for boxes a quarter to a ninth as
+/// thick as long, at 0.76 for a thin disc, and at 0.82 and 0.95 for a foil and a hair of a
+/// nine-thousandth. (A sixth review found the thin ones under one weight of 1300, set from
+/// shapes down to a fiftieth and against a time on a cooler machine; a seventh found a line
+/// at an eighth in the wrong place; under 1300 and 2200 the boxes near an eighth ran 4% to 9%
+/// over the plain cut and the foil a quarter under, which these weights level.)
+const ROUNDED_COST: [u64; 3] = [300, 1450, 2000];
 /// How thin a rounded shape is (its least half size over its greatest) where its sample begins
 /// to cost more than a thick one's, and where it costs the most: between them the weight
 /// goes from the one to the other by the logarithm of the thinness. (One line at an eighth
@@ -2446,7 +2448,7 @@ mod tests {
         }
         let graded: Vec<u64> = [20.0f32, 21.0, 50.0, 200.0, 1000.0, 2000.0, 9000.0].iter().map(|k| cost([0.5, 0.5 / k, 0.5], 4.0, false)).collect();
         assert!(graded.windows(2).all(|w| w[0] <= w[1]) && graded[0] == thick && graded[5] == thin && graded[6] == thin, "{graded:?}");
-        assert!(graded[1] - graded[0] < 30 && graded[2] > thick + 100 && graded[3] > graded[2] + 200 && graded[3] < thin - 200, "{graded:?}");
+        assert!(graded[1] - graded[0] < 30 && graded[2] > thick + 80 && graded[3] > graded[2] + 120 && graded[3] < thin - 120, "{graded:?}");
         // (A cylinder: its radius and its half height; the third number is not a size.)
         assert_eq!((cost([0.5, 0.5, 0.0], 4.0, true), cost([0.5, 0.0001, 0.0], 4.0, true), cost([0.0001, 0.5, 0.0], 4.0, true)), (thick, thin, thin));
         assert_eq!(cost([0.9, 1e-4, 0.9], 2.0, false), cost([0.5; 3], 2.0, false), "at a power of 2 nothing is solved for");
