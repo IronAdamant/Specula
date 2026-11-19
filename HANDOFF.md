@@ -226,6 +226,26 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     already a recipe of numbers (a character is the base with other numbers), and what it lacks is
     the rig; so **the rig by construction comes next in part 4's slice 2**, before more work on
     the surface, with every body sharing one skeleton's names so that one motion drives them all.
+  - **A library of shapes, in 2D and 3D, beside the figures** (the owner, 2026-11-19, away from
+    the machine): "it may be worth building a library of shapes in 2D and 3D in this phase and
+    save them as skeleton library alongside the human figures. All in Rust. Must be scalable.
+    This way, it will make things easier for you. Best to start now, so build in all known
+    shapes with a sub agent then report once done." *Claude's reading:* base templates an
+    agent starts from by name and changes by numbers, as a character is the measured figure
+    with other numbers. "All known shapes" has no end, so it is a table that is cheap to add
+    to, filled with the plane figures and solids that have names, and plain about what is
+    not in it. "Scalable" in three senses: the table (a form is one entry; a name can be
+    another form with preset numbers), the geometry (metres over a wide range; a detail from
+    coarse to fine with its error known) and the cost (the size of a build known before it
+    is built). One catalogue lists the shapes and the human figure. Where it stands is under
+    part 4 below.
+  - **Nothing is removed while the owner is away** (the same message): "I'm offsite right
+    now, so I won't be able to grant you permissions for removal of old data FYI. Await for
+    my confirmation for once Im back on site until then everything else is good." So no old
+    data is deleted and no deletion is asked for until the owner says they are back. What
+    waits for them on this machine: the folders `C:\sr-i3` (empty), `C:\sr-j1` and `C:\sr-j2`
+    (reviewers' worktrees) and, when its branch is merged, `C:\sf-formae` (the shape
+    library's builder).
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
@@ -599,14 +619,22 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       now true to the measure, the two faults said in it), **no preset asks for it** (the
       `storybook` preset did), and what it should become is in "Open owner decisions"
       below. Sepulcra's recipes lead pointed (30 of 56), square (20) and round (6).
-    - **Where its verification stands** (2026-11-19, evening): the full gate passed on
-      `466e262b` (the mends of the fifth round of reviews and the light report: 3,296
-      tests, the repeats, the slow-worker run, the speed budgets, clippy for both targets,
-      both builds), and seven live checks on it (window, sight, terrain, GI, studio, procgen,
-      `form_sheet_check`), the window's pictures looked at on both adapters; the same had
-      passed on `24bfe7de` before those mends. **Owed:** a review, by models that did not
-      write them, of the fifth round's mends (shape language, the rounded field's guard and
-      thin weight, the form checks) and of the light report. Nothing of part 4 is pushed.
+    - **Where its verification stands** (2026-11-19, night): the full gate passed on
+      `ea95a90d` (everything of part 4 so far: 3,297 tests, the repeats, the slow-worker
+      run, the speed budgets, clippy for both targets, both builds), and seven live checks
+      on it (window, sight, terrain, GI, studio, procgen, `form_sheet_check`), the window's
+      picture looked at; the same had passed on `a80b3cf4` and `466e262b` before.
+      **Owed, and under way:** reviews, by models that did not write them, of faceting from
+      the recipe, the shape language's safe state, the light report's mends and the levelled
+      weights. Nothing of part 4 is pushed.
+    - **The shape library: being built** (2026-11-19, at the owner's word above; a builder
+      on Opus in a worktree of its own, branch `m6-formae`, in three stages: a crate
+      `specula-formae` of named plane figures and solids as a table, each with its
+      parameters, its measures in closed form held against what is built, and its anchors;
+      then the modeller taking a form as an outline or a solid in a recipe; then two
+      read-only tools and `docs/design/FORMAE.md`). Each stage is reviewed by Claude, who
+      did not write it, pictured in the engine and gated before it is merged. **Nothing of
+      it is merged yet.**
     - **Faceting, from what a recipe names round: built** (2026-11-19, evening; FORM.md,
       "Faceting, from what the recipe names round"). The modeller records, for every shape
       a recipe names round (cylinder, cone, sphere, torus, capsule, lathe, a sculpt), the
@@ -1155,7 +1183,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
 - **Pre-M3 cleanup done (2026-10-17):** an outside review (Grok) listed gaps and the owner approved fixing them
   before M3. All merged, each reviewed:
   - current docs; a CI guard against session links in commit messages; a pinned MCP revision test; a Markdown link
-    check and one owner-decisions list (`crates/specula/tests/docs_links.rs`); Linux clippy in CI.
+    check and one owner-decisions list (now `tools/examen/tests/docs_links.rs`); Linux clippy in CI.
   - with `include_ui`, opaque HUD panels (alpha >= 0.9) hide what's under them in sight packets
     (`id_buffer.ui_occluders`; textured interface quads never hide anything).
   - the sky eases into the horizon (no crisp line).
@@ -1529,7 +1557,7 @@ These held all through M5 and were written down nowhere in the repository until 
 ## Open owner decisions
 
 This is the **one list** of decisions waiting for the owner (other docs link here instead of keeping their own;
-`crates/specula/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
+`tools/examen/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
 answer where it applies. What was decided is recorded by date above (2026-10-22, and 2026-11-12 to 16).
 Not decisions of this kind, and also with the owner: the seven items of
 [docs/M5_CHECKLIST.md](docs/M5_CHECKLIST.md) that keep a part for them (none has failed), the raw
