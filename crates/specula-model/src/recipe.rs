@@ -90,6 +90,8 @@ enum Kind {
     Ranges,
     /// An identifier (a part name, a texture name).
     Name,
+    /// A form's parameters by name (`args` of a `form` shape or outline: `recipe::form`).
+    FormArgs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,6 +126,9 @@ const OUTLINE: &[Field] = &[
     o("jitter", Num),
     o("scale", Vec2),
     o("offset", Vec2),
+    o("form", Name),
+    o("args", FormArgs),
+    o("detail", Int),
 ];
 const JITTER: &[Field] = &[o("offset", Vec3), o("rotate", Vec3), o("scale", Num)];
 
@@ -168,6 +173,7 @@ const SHAPES: &[(&str, &[Field])] = &[
     ("intersection", procgen::CSG_FIELDS),
     ("sdf", procgen::SDF_FIELDS),
     ("figure", procgen::FIGURE_FIELDS),
+    ("form", form::FORM_FIELDS),
 ];
 
 /// Operations (a part's `ops`, the recipe's `finish`).
@@ -575,9 +581,19 @@ impl Parser<'_> {
                 Json::Arr(_) => self.value(path, Rows, v)?,
                 Json::Obj(_) => {
                     let n = self.node(path, v, "outline", OUTLINE, false)?;
-                    let forms = ["points", "rect", "sides", "arch", "star"].iter().filter(|f| n.get(f).is_some()).count();
+                    let forms = ["points", "rect", "sides", "arch", "star", "form"].iter().filter(|f| n.get(f).is_some()).count();
                     if forms != 1 {
-                        return Err(e(path, ErrorCode::WrongType, "an outline needs exactly one of points, rect, sides (+radius), arch, star (+radius, inner)"));
+                        return Err(e(path, ErrorCode::WrongType, "an outline needs exactly one of points, rect, sides (+radius), arch, star (+radius, inner), form (+args, detail)"));
+                    }
+                    if n.get("form").is_some() {
+                        // (A field that would do nothing beside a form is refused, never ignored: its
+                        // own numbers are in `args`.)
+                        if let Some(k) = ["radius", "inner", "segments", "roundness"].iter().find(|k| n.get(k).is_some()) {
+                            return Err(e(&n.at(k), ErrorCode::Geometry, format!("\"{k}\" would do nothing beside a \"form\": the form's own numbers go in \"args\"")));
+                        }
+                        self.check_form(&n, true)?;
+                    } else if let Some(k) = ["args", "detail"].iter().find(|k| n.get(k).is_some()) {
+                        return Err(e(&n.at(k), ErrorCode::Geometry, format!("\"{k}\" is a \"form\" outline's: it would do nothing here")));
                     }
                     if (n.get("sides").is_some() || n.get("star").is_some()) && n.get("radius").is_none() {
                         return Err(e(&n.at("radius"), ErrorCode::MissingField, "sides/star outlines need a radius"));
@@ -587,6 +603,7 @@ impl Parser<'_> {
                 _ => return Err(type_err(path, "an outline: a list of [x, z] points or an object")),
             },
             Jitter => Val::Obj(self.node(path, v, "jitter", JITTER, false)?),
+            FormArgs => self.form_args(path, v)?,
             Operands | Sdf | Sdfs | Obj(_) | Objs(_) | Material | Choice(_) | ShapeOps | Ranges | Name => self.procgen_value(path, kind, v)?,
         })
     }
@@ -620,6 +637,9 @@ impl Parser<'_> {
             if node.get(f.name).is_none() {
                 return Err(e(&format!("{path}.{}", f.name), ErrorCode::MissingField, format!("'{op}' needs '{}'", f.name)));
             }
+        }
+        if op == "form" {
+            self.check_form(&node, false)?;
         }
         Ok(node)
     }
@@ -2229,7 +2249,11 @@ impl Ctx<'_> {
                 if n.get("segments").is_some() && n.get("arch").is_none() && !rounded {
                     return Err(e(&n.at("segments"), ErrorCode::Geometry, "\"segments\" is an \"arch\" outline's, or a \"rect\" outline's with \"roundness\": it would do nothing here"));
                 }
-                let mut p: Vec<V2> = if let Some(pv) = n.get("points") {
+                let mut p: Vec<V2> = if n.get("form").is_some() {
+                    let bevel = if self.ranged(n, "bevel", 0.0, 0.0, 100.0)? > 0.0 { 2 } else { 1 };
+                    let rs = self.int(n, "resample", 1, 1, 64)? as usize;
+                    self.form_outline(n, path, max_points, bevel * rs * later)?
+                } else if let Some(pv) = n.get("points") {
                     self.rows(pv, &n.at("points"), (2, 2), max_points)?.iter().map(|r| [r[0], r[1]]).collect()
                 } else if n.get("rect").is_some() {
                     let s = size2("rect")?;
@@ -2261,7 +2285,7 @@ impl Ctx<'_> {
                     let inner = self.positive(n, "inner", 0.5 * outer as f64)?;
                     poly::star(pts, outer, inner, 90.0 + rot)
                 };
-                if n.get("rotate").is_some() && (n.get("points").is_some() || n.get("rect").is_some() || n.get("arch").is_some()) {
+                if n.get("rotate").is_some() && (n.get("points").is_some() || n.get("rect").is_some() || n.get("arch").is_some() || n.get("form").is_some()) {
                     let (s, c) = dmath::sin_cos_deg(rot);
                     let (s, c) = (s as f32, c as f32);
                     p = p.iter().map(|q| [q[0] * c - q[1] * s, q[0] * s + q[1] * c]).collect();
@@ -2506,6 +2530,7 @@ impl Ctx<'_> {
             }
             "union" | "difference" | "intersection" => return self.csg_shape(n),
             "sdf" | "figure" => return self.sdf_shape(n),
+            "form" => return self.form_shape(n),
             other => return Err(e(&n.path, ErrorCode::UnknownOp, format!("unknown shape '{other}'"))),
         };
         self.tally.grow(&n.path, 0, predicted)?;
@@ -2772,6 +2797,7 @@ fn smooth_path(path: &[V3], scales: &[f32], smooth: u32, closed: bool) -> (Vec<V
     (out, sc)
 }
 
+mod form;
 mod procgen;
 pub use procgen::{generator_names, sdf_names};
 

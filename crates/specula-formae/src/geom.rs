@@ -198,6 +198,46 @@ impl Geom {
         Some(worst)
     }
 
+    /// How coarsely the curved pieces of a plane figure or a curve are cut at `detail`, as the
+    /// modeller's faceting record wants it: the turn between neighbouring sample chords, in
+    /// radians, and a radius, of the piece whose chords stand furthest off it. For an arc, its
+    /// sample angle and its radius, exactly. For a parametric piece, the greatest turn between
+    /// two of its neighbouring chords, measured on its samples, and the radius whose circle has
+    /// the piece's chord error (an estimate, as that error is) at that turn: `e / versin(t/2)`.
+    /// `None` for a figure of straight pieces and for a solid (its mesh says: `Mesh::rounds`).
+    pub fn facets(&self, detail: u32) -> Option<(f64, f64)> {
+        let mut best: Option<(f64, f64, f64)> = None;
+        for s in self.segs() {
+            let (turn, radius) = match s {
+                Seg::Line { .. } => continue,
+                Seg::Arc { r, sweep, .. } => (sweep.abs() / s.k(detail) as f64, *r),
+                Seg::Fn { .. } => {
+                    let mut pts = Vec::new();
+                    let err = s.emit(detail, &mut pts);
+                    pts.push(s.end());
+                    let mut t = 0.0f64;
+                    for w in pts.windows(3) {
+                        let (u, v) = (sub(w[1], w[0]), sub(w[2], w[1]));
+                        let (lu, lv) = (len(u), len(v));
+                        if lu > 0.0 && lv > 0.0 {
+                            let c = ((u[0] * v[0] + u[1] * v[1]) / (lu * lv)).clamp(-1.0, 1.0);
+                            t = t.max(acos(c));
+                        }
+                    }
+                    if t <= 0.0 || err <= 0.0 {
+                        continue;
+                    }
+                    (t, err / versin(0.5 * t))
+                }
+            };
+            let sag = radius * versin(0.5 * turn);
+            if sag.is_finite() && best.is_none_or(|b| sag > b.2) {
+                best = Some((turn, radius, sag));
+            }
+        }
+        best.map(|b| (b.0, b.1))
+    }
+
     /// The exact measures, where every piece is a line or an arc: area (signed sum over the
     /// rings), perimeter, centroid and bounds, by integrals along each piece (Green's theorem).
     /// For a curve: its length and bounds.

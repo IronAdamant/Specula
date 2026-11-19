@@ -277,6 +277,7 @@ version = "0.3.0"
 dependencies = [
  "specula-core",
  "specula-corpus",
+ "specula-formae",
  "specula-gpu",
 ]
 

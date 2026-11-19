@@ -1,0 +1,396 @@
+//! Recipe glue for the shape library (`specula-formae`, docs/design/PROCEDURAL_MODELLING.md,
+//! "Shapes by name"): a plane figure as an outline (`{"form": "heart", "args": {...}}` where an
+//! outline goes), and a solid or a raised plane figure as a shape (`{"op": "form", "form":
+//! "icosahedron", "args": {...}}`).
+//!
+//! **What is said and where.** A form's parameters are its own and are given in `args`, so that
+//! none can be taken for a field of the outline or the shape around it (a figure's `scale` is
+//! not the outline's `scale`). Each is a number or an expression of the recipe's parameters and
+//! lets, like any number in a recipe. At parse time the word is looked up in the library's table
+//! (a plane figure for an outline, a solid for a shape, a plane figure for a shape that is
+//! `raise`d) and every key of `args` is held against that form's parameters: an unknown one is
+//! refused with the list the form takes, and nothing is ignored. Ranges are the library's, held
+//! when the numbers are known, at build.
+//!
+//! **The library builds in `f64` and the modeller holds `f32`** (`docs/design/FORM.md`, the
+//! decisions of stage 2). A form is refused as data where what it is made of would not survive
+//! the step: two of its points nearer than the modeller's floor at its size (the floor is the
+//! greater of twice the weld that [`Shape::finalize`] makes at 10 µm, and 2⁻¹⁸ of the form's
+//! reach, 64 of `f32`'s steps there), or a triangle that turns over or loses its area when its
+//! points are rounded to `f32`. An outline's points are held to the same floor, and then by the
+//! checks every outline meets (simple, enclosing an area).
+//!
+//! **What it records.** A shape made by `form` is a named shape like any other: its outlines
+//! (the convex hulls of its points seen along its three axes; for a raised figure, the figure's
+//! own outer ring and the boxes it is raised to, as `extrude`'s) and every triangle are its
+//! record's ([`crate::made`]); each of its smooth surfaces gives a faceting record
+//! ([`crate::Round`]) of the turn measured between its neighbouring faces and the surface's
+//! radius (`Mesh::rounds`); a curved outline by name gives one of the turn between its
+//! neighbouring chords and its arcs' radius (`Spec::facets`).
+
+use specula_formae::{self as formae, raise, Built, Found, Kind as FKind, Mesh as FMesh};
+
+use super::*;
+
+/// The fields of a `raise`: what each raised form takes is said by [`raise_takes`].
+pub(super) const RAISE: &[Field] = &[
+    r("as", Choice(raise::RAISED)),
+    o("thickness", Num),
+    o("width", Num),
+    o("round", Bool),
+    o("both", Bool),
+    o("rise", Num),
+    o("inset", Num),
+    o("steps", Int),
+    o("run", Num),
+    o("height", Num),
+    o("margin", Num),
+    o("plate", Num),
+];
+
+/// The `form` shape's fields (the form's own parameters are in `args`).
+pub(super) const FORM_FIELDS: &[Field] = &[r("form", Name), o("args", FormArgs), o("detail", Int), o("raise", Obj(RAISE))];
+
+/// What each raised form takes (the first `need` of them are required).
+fn raise_takes(kind: &str) -> (&'static [&'static str], usize) {
+    match kind {
+        "slab" => (&["thickness"], 1),
+        "bevelled" => (&["thickness", "width", "round", "both"], 2),
+        "pillow" => (&["thickness", "rise", "inset"], 3),
+        "stepped" => (&["steps", "rise", "run"], 3),
+        _ => (&["height", "margin", "plate"], 3),
+    }
+}
+
+/// Work units ([`crate::work`]) charged for each point of a form before it is built: the
+/// library's build and its checks (near linear in the points: a box tree where it searches for
+/// crossings), the step to `f32`, the floor's grid and the outlines' hulls. An estimate of what
+/// they cost on the reference machine, not measured to a tight figure.
+pub const FORM_POINT: u64 = 4_000;
+
+/// `f32` keeps a coordinate to 2⁻²⁴ of its size; two points are kept 2⁻¹⁸ of the form's reach
+/// apart (64 of those steps) so that no edge turns by more than about a degree when its ends
+/// are rounded.
+pub const F32_FLOOR: f64 = 1.0 / 262_144.0;
+
+/// [`Shape::finalize`] welds points nearer than this (metres): two points of a form are kept at
+/// least twice as far apart.
+pub const WELD_M: f64 = 1e-5;
+
+/// The floor at a reach: the least distance two points of a form may be apart.
+pub fn floor_at(reach: f64) -> f64 {
+    (2.0 * WELD_M).max(F32_FLOOR * reach)
+}
+
+/// A library refusal as the recipe's error at `path`.
+fn refused(path: &str, er: formae::Error) -> RecipeError {
+    match &er {
+        formae::Error::OutOfRange { value, min, max, .. } => e(path, ErrorCode::OutOfRange, er.to_string()).with_numbers(*value, if value > max { *max } else { *min }),
+        formae::Error::NotInteger { value, .. } => e(path, ErrorCode::OutOfRange, er.to_string()).with_numbers(*value, dmath::round_f64(*value)),
+        formae::Error::TooManyPoints { points, ceiling, .. } => e(path, ErrorCode::Limit, er.to_string()).with_numbers(*points as f64, *ceiling as f64),
+        formae::Error::UnknownParam { .. } | formae::Error::FixedByAlias { .. } | formae::Error::DuplicateParam { .. } => e(path, ErrorCode::UnknownField, er.to_string()),
+        formae::Error::UnknownForm { .. } | formae::Error::Ambiguous { .. } => e(path, ErrorCode::UnknownName, er.to_string()),
+        formae::Error::DetailOutOfRange { .. } => e(path, ErrorCode::OutOfRange, er.to_string()),
+        _ => e(path, ErrorCode::Geometry, er.to_string()),
+    }
+}
+
+/// The word looked up as `want` (a plane figure or a solid), with words that say why not where
+/// it is another kind.
+fn look_up(path: &str, word: &str, want: FKind, shape: bool) -> Result<Found, RecipeError> {
+    if let Ok(f) = formae::find(word, Some(want)) {
+        return Ok(f);
+    }
+    let other = |k: FKind| formae::find(word, Some(k)).is_ok();
+    let msg = match want {
+        FKind::Plane if other(FKind::Solid) => format!("'{word}' is a solid: an outline is a plane figure; build it as a shape, {{\"op\": \"form\", \"form\": \"{word}\"}}"),
+        FKind::Plane if other(FKind::Curve) => format!("'{word}' is an open curve, which has no inside: an outline is a closed plane figure (a curve's band, such as arc_band, is one)"),
+        FKind::Solid if other(FKind::Plane) => {
+            format!("'{word}' is a plane figure: as a shape it is raised, with \"raise\": {{\"as\": one of {}, ...}}; or it is an outline, {{\"form\": \"{word}\"}}, for extrude, loft, lathe's and sweep's makers", raise::RAISED.join(", "))
+        }
+        FKind::Solid if other(FKind::Curve) => format!("'{word}' is an open curve, not a solid"),
+        _ => {
+            let near = formae::nearest(word, Some(want));
+            format!("no {} is called '{word}' (nearest: {})", if want == FKind::Solid { "solid" } else { "plane figure" }, near.join(", "))
+        }
+    };
+    let code = if shape && want == FKind::Solid && other(FKind::Plane) { ErrorCode::MissingField } else { ErrorCode::UnknownName };
+    Err(e(path, code, msg))
+}
+
+impl Parser<'_> {
+    /// A form's `args`: an object of the form's parameter names, each a number or an
+    /// expression (checked against the form by [`Parser::check_form`]).
+    pub(super) fn form_args(&self, path: &str, v: &Json) -> Result<Val, RecipeError> {
+        let o = v.as_object().ok_or_else(|| type_err(path, "an object of the form's parameters: {name: number or expression}"))?;
+        let mut node = Node { path: path.to_string(), op: "args".into(), when: None, fields: Vec::new() };
+        for (k, x) in o {
+            let fp = format!("{path}.{k}");
+            if !is_ident(k) {
+                return Err(type_err(&fp, "a parameter's name"));
+            }
+            node.fields.push((k.clone(), Val::Num(self.expr(&fp, x)?)));
+        }
+        Ok(Val::Obj(node))
+    }
+
+    /// A `form` node (a shape, or an outline when `outline`): the word names a form of the kind
+    /// it needs, its `args` are that form's, and a `raise` is complete.
+    pub(super) fn check_form(&self, n: &Node, outline: bool) -> Result<(), RecipeError> {
+        let Some(Val::Str(word)) = n.get("form") else { return Ok(()) };
+        let raised = n.get("raise").is_some();
+        let found = look_up(&n.at("form"), word, if outline || raised { FKind::Plane } else { FKind::Solid }, !outline)?;
+        if let Some(Val::Obj(args)) = n.get("args") {
+            let takes: Vec<&'static str> = formae::params_of(&found).iter().map(|p| p.name).collect();
+            for (k, _) in &args.fields {
+                if !takes.contains(&k.as_str()) {
+                    let list = if takes.is_empty() { "no parameters".to_string() } else { takes.join(", ") };
+                    return Err(e(&args.at(k), ErrorCode::UnknownField, format!("'{word}' takes: {list}")));
+                }
+            }
+        }
+        if let Some(Val::Obj(r)) = n.get("raise") {
+            let Some(Val::Str(kind)) = r.get("as") else { return Err(e(&r.at("as"), ErrorCode::MissingField, "a raise needs \"as\"")) };
+            let (takes, need) = raise_takes(kind);
+            for (k, _) in &r.fields {
+                if k != "as" && !takes.contains(&k.as_str()) {
+                    return Err(e(&r.at(k), ErrorCode::UnknownField, format!("a raise as {kind} takes: {}", takes.join(", "))));
+                }
+            }
+            for k in &takes[..need] {
+                if r.get(k).is_none() {
+                    return Err(e(&r.at(k), ErrorCode::MissingField, format!("a raise as {kind} needs {}", takes[..need].join(", "))));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The convex hull of points (Andrew's monotone chain), counter-clockwise.
+fn hull(mut p: Vec<[f64; 2]>) -> Vec<V2> {
+    p.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    p.dedup();
+    if p.len() < 3 {
+        return p.iter().map(|q| [q[0] as f32, q[1] as f32]).collect();
+    }
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    let mut h: Vec<[f64; 2]> = Vec::with_capacity(2 * p.len());
+    for pass in 0..2 {
+        let start = h.len();
+        let it: Box<dyn Iterator<Item = &[f64; 2]>> = if pass == 0 { Box::new(p.iter()) } else { Box::new(p.iter().rev()) };
+        for &q in it {
+            while h.len() >= start + 2 && cross(h[h.len() - 2], h[h.len() - 1], q) <= 0.0 {
+                h.pop();
+            }
+            h.push(q);
+        }
+        h.pop();
+    }
+    h.iter().map(|q| [q[0] as f32, q[1] as f32]).collect()
+}
+
+/// The first two points nearer each other than `floor`, by a grid of cells `floor` wide (each
+/// point against the 27 cells about its own): `(i, j, distance)`.
+fn too_near(points: &[[f64; 3]], floor: f64) -> Option<(usize, usize, f64)> {
+    let cell = |p: [f64; 3]| [dmath::floor_f64(p[0] / floor) as i64, dmath::floor_f64(p[1] / floor) as i64, dmath::floor_f64(p[2] / floor) as i64];
+    let mut grid: BTreeMap<[i64; 3], Vec<usize>> = BTreeMap::new();
+    for (i, p) in points.iter().enumerate() {
+        let c = cell(*p);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(list) = grid.get(&[c[0] + dx, c[1] + dy, c[2] + dz]) {
+                        for &j in list {
+                            let q = points[j];
+                            let d = ((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2])).sqrt();
+                            if d < floor {
+                                return Some((j, i, d));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        grid.entry(c).or_default().push(i);
+    }
+    None
+}
+
+/// The greatest size of a coordinate.
+fn reach(points: &[[f64; 3]]) -> f64 {
+    points.iter().flatten().fold(0.0f64, |a, x| a.max(x.abs()))
+}
+
+/// Points nearer than the floor at their reach, refused at `path`.
+fn hold_floor(points: &[[f64; 3]], path: &str, what: &str) -> Result<(), RecipeError> {
+    let r = reach(points);
+    let floor = floor_at(r);
+    if let Some((i, j, d)) = too_near(points, floor) {
+        return Err(e(
+            path,
+            ErrorCode::Geometry,
+            format!("{what}: points {i} and {j} are {d:e} m apart, under the modeller's floor of {floor:e} m at its reach of {r} m (the modeller holds points in f32, to about 2^-24 of their size, and welds those within 10 µm): give it larger parts against its size, or a coarser detail"),
+        )
+        .with_numbers(d, floor));
+    }
+    Ok(())
+}
+
+/// A library mesh as the modeller's shape: its faces cut into triangles, its points in `f32`.
+/// Refused where the step to `f32` would change it ([`hold_floor`], and a triangle that turns
+/// over or loses its area when rounded).
+fn to_shape(m: &FMesh, path: &str) -> Result<Shape, RecipeError> {
+    hold_floor(&m.points, path, "the form")?;
+    let positions: Vec<V3> = m.points.iter().map(|p| crate::shape::canon([p[0] as f32, p[1] as f32, p[2] as f32])).collect();
+    let tris = m.triangles();
+    let normal = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+        let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+        [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+    };
+    let wide = |p: V3| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
+    let mut out = Vec::with_capacity(tris.len());
+    for (k, (_, t)) in tris.iter().enumerate() {
+        let n64 = normal(m.points[t[0] as usize], m.points[t[1] as usize], m.points[t[2] as usize]);
+        let n32 = normal(wide(positions[t[0] as usize]), wide(positions[t[1] as usize]), wide(positions[t[2] as usize]));
+        let d = n64[0] * n32[0] + n64[1] * n32[1] + n64[2] * n32[2];
+        if d.is_nan() || d <= 0.0 {
+            return Err(e(path, ErrorCode::Geometry, format!("the form's triangle {k} turns over or loses its area when its points are held in f32: give it larger parts against its size, or a coarser detail")).with_numbers(d, 0.0));
+        }
+        // (The modeller drops a triangle under its least area when it finalizes: the mesh would open.)
+        let area = 0.5 * crate::math3::length(crate::math3::tri_normal(positions[t[0] as usize], positions[t[1] as usize], positions[t[2] as usize]));
+        if area.is_nan() || area < crate::mesh::MIN_TRIANGLE_AREA {
+            return Err(e(path, ErrorCode::Geometry, format!("the form's triangle {k} has {area:e} m2 in f32, under the {:e} m2 the modeller keeps (it would drop it, and the mesh would open): give it larger parts, or a coarser detail", crate::mesh::MIN_TRIANGLE_AREA)).with_numbers(f64::from(area), f64::from(crate::mesh::MIN_TRIANGLE_AREA)));
+        }
+        out.push(*t);
+    }
+    let n = out.len();
+    Ok(Shape { colors: vec![[1.0; 4]; positions.len()], positions, tris: out, tags: vec![crate::shape::TAG_FACE; n], bevel_tint: None, owners: Vec::new() })
+}
+
+impl Ctx<'_> {
+    /// The form's parameters as given, evaluated: `(name, value)` for each the recipe gives.
+    fn form_values(&self, n: &Node, found: &Found) -> Result<Vec<(&'static str, f64)>, RecipeError> {
+        let Some(Val::Obj(args)) = n.get("args") else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        for p in formae::params_of(found) {
+            if let Some(v) = args.get(p.name) {
+                out.push((p.name, self.val_num(v, &args.at(p.name))?));
+            }
+        }
+        Ok(out)
+    }
+
+    /// The detail asked for (the library's range), halved for the coarse far level as other
+    /// generators halve their segments.
+    fn form_detail(&self, n: &Node) -> Result<u32, RecipeError> {
+        let d = self.int(n, "detail", i64::from(formae::DETAIL_DEFAULT), i64::from(formae::DETAIL_MIN), i64::from(formae::DETAIL_MAX))?;
+        Ok(if self.coarse { (d / 2).max(formae::DETAIL_MIN) } else { d })
+    }
+
+    /// An outline by name: the plane figure's one ring as `[x, z]` points (the figure's `y` is
+    /// `-z`, as the library's own raised forms place it), counted against `max_points` (times
+    /// `later`) before it is built. Its faceting is recorded at `path`.
+    pub(super) fn form_outline(&self, n: &Node, path: &str, max_points: usize, later: usize) -> Result<Vec<V2>, RecipeError> {
+        let Some(Val::Str(word)) = n.get("form") else { return Err(e(path, ErrorCode::MissingField, "no form")) };
+        let found = look_up(&n.at("form"), word, FKind::Plane, false)?;
+        let spec = formae::Spec::of(found, &self.form_values(n, &found)?).map_err(|er| refused(&n.at("args"), er))?;
+        let detail = self.form_detail(n)?;
+        let c = spec.count(detail).map_err(|er| refused(path, er))?;
+        let want = (c.points as usize).saturating_mul(later);
+        if want > max_points {
+            return Err(e(path, ErrorCode::Limit, format!("'{word}' at detail {detail} has {} points (times {later} for what is done to it after); an outline has at most {max_points}: a lower detail", c.points)).with_numbers(want as f64, max_points as f64));
+        }
+        let built = spec.build(detail).map_err(|er| refused(path, er))?;
+        let Built::Outline(o) = built else { return Err(e(path, ErrorCode::Geometry, format!("'{word}' does not build to an outline"))) };
+        if o.rings.len() != 1 {
+            return Err(e(
+                path,
+                ErrorCode::Geometry,
+                format!("'{word}' has {} holes, and an outline is one ring: as a solid with its holes it is a shape, {{\"op\": \"form\", \"form\": \"{word}\", \"raise\": {{\"as\": \"slab\", \"thickness\": ...}}}}", o.rings.len() - 1),
+            )
+            .with_numbers(o.rings.len() as f64 - 1.0, 0.0));
+        }
+        let ring: Vec<[f64; 3]> = o.rings[0].iter().map(|p| [p[0], 0.0, -p[1]]).collect();
+        hold_floor(&ring, path, &format!("the outline '{word}'"))?;
+        if !self.coarse && self.tally.cutting.get() == 0 {
+            if let Ok(Some((turn, radius))) = spec.facets(detail) {
+                self.tally.rounded(Round { path: path.to_string(), what: found.form.name, turn_deg: turn as f32, radius_m: radius as f32 });
+            }
+        }
+        Ok(ring.iter().map(|p| [p[0] as f32, p[2] as f32]).collect())
+    }
+
+    /// The raised form of `spec` that `r` (a `raise` node) asks for.
+    fn raised(&self, spec: &formae::Spec, r: &Node) -> Result<formae::ops::Solid, RecipeError> {
+        let kind = self.str(r, "as", "slab");
+        let num = |k: &str| self.num(r, k, 0.0);
+        let made = match kind {
+            "slab" => raise::slab(spec, num("thickness")?),
+            "bevelled" => raise::bevelled(spec, num("thickness")?, num("width")?, self.bool(r, "round", false), self.bool(r, "both", false)),
+            "pillow" => raise::pillow(spec, num("thickness")?, num("rise")?, num("inset")?),
+            "stepped" => {
+                let steps = self.int(r, "steps", 1, 1, i64::from(raise::MAX_STEPS))?;
+                raise::stepped(spec, steps, num("rise")?, num("run")?)
+            }
+            _ => raise::relief(spec, num("height")?, num("margin")?, num("plate")?),
+        };
+        made.map_err(|er| refused(&r.path, er))
+    }
+
+    /// A shape by name: a solid of the library, or a plane figure raised. Counted (its triangles
+    /// against the part's and the model's limits, its points as work) before it is built; held
+    /// to the modeller's floor in `f32`; recorded as what it is made of, with a faceting record
+    /// for each of its smooth surfaces.
+    pub(super) fn form_shape(&self, n: &Node) -> Result<Shape, RecipeError> {
+        let Some(Val::Str(word)) = n.get("form") else { return Err(e(&n.path, ErrorCode::MissingField, "a form shape needs \"form\"")) };
+        let raise_node = match n.get("raise") {
+            Some(Val::Obj(r)) => Some(r),
+            _ => None,
+        };
+        let found = look_up(&n.at("form"), word, if raise_node.is_some() { FKind::Plane } else { FKind::Solid }, true)?;
+        let spec = formae::Spec::of(found, &self.form_values(n, &found)?).map_err(|er| refused(&n.at("args"), er))?;
+        let detail = self.form_detail(n)?;
+        let solid = raise_node.map(|r| self.raised(&spec, r)).transpose()?;
+        let (points, genus) = match &solid {
+            Some(s) => (s.count(detail).map_err(|er| refused(&n.path, er))?.points, s.genus()),
+            None => (spec.count(detail).map_err(|er| refused(&n.path, er))?.points, spec.genus().unwrap_or(0)),
+        };
+        // (A closed mesh of V points and genus g whose faces are cut into triangles has
+        // 2V − 4 + 4g of them, whatever its faces' sizes.)
+        let predicted = (2 * points as usize + 4 * genus as usize).saturating_sub(4);
+        self.tally.grow(&n.path, 0, predicted)?;
+        charge(self.tally, &n.path, points.saturating_mul(FORM_POINT))?;
+        let mesh = match &solid {
+            Some(s) => s.build(detail).map_err(|er| refused(&n.path, er))?,
+            None => match spec.build(detail).map_err(|er| refused(&n.path, er))? {
+                Built::Mesh(m) => m,
+                _ => return Err(e(&n.path, ErrorCode::Geometry, format!("'{word}' does not build to a solid"))),
+            },
+        };
+        let mut s = to_shape(&mesh, &n.path)?;
+        let what = found.form.name;
+        for r in mesh.rounds() {
+            self.round(n, what, r.turn_deg as f32, r.radius as f32);
+        }
+        // Its outlines: a raised figure's own outer ring and the boxes it is raised to (as an
+        // extruded outline's); a solid's hull seen along each of its axes.
+        let views = match (&solid, spec.build(detail)) {
+            (Some(_), Ok(Built::Outline(o))) => {
+                let ring: Vec<V2> = o.rings[0].iter().map(|p| [p[0] as f32, -p[1] as f32]).collect();
+                let half = made::half_extents(&ring);
+                let h = mesh.bounds().map_or(0.0, |(lo, hi)| (hi[1] - lo[1]) as f32);
+                vec![(ring, 1.0), (made::trapezoid(half[0], half[0], h), 1.0), (made::trapezoid(half[1], half[1], h), 1.0)]
+            }
+            _ => {
+                let along = |a: usize, b: usize| hull(mesh.points.iter().map(|p| [p[a], p[b]]).collect());
+                vec![(along(0, 2), 1.0), (along(0, 1), 1.0), (along(2, 1), 1.0)]
+            }
+        };
+        self.made(what, views);
+        self.tally.made_now(&n.path, &mut s);
+        self.tally.settle(predicted, s.triangle_count());
+        check_extent(&s, &n.path)?;
+        Ok(s)
+    }
+}

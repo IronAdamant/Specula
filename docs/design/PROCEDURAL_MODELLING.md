@@ -63,6 +63,41 @@ Notes:
   - SDF booleans for organic work, where small inexactness is invisible
   - every boolean result validated (watertight, no degenerate triangles) before acceptance
 
+## Shapes by name (`specula-formae`, 2026-11-20)
+
+The shape library's forms (`crates/specula-formae`: plane figures, curves and solids by name,
+each with its parameters) reach recipes two ways, beside the generators of tier 1, which stay as
+they are (no existing recipe changes):
+
+- **An outline by name**, wherever an outline goes (`extrude`, `loft`, a `sweep`'s profile):
+  `{"form": "heart", "args": {"width": 1}, "detail": 64}`, with the outline's own `rotate`,
+  `scale`, `offset`, `bevel`, `resample` and `jitter`. Only a one-ring plane figure: a solid, an
+  open curve (its band is a figure) or a figure with holes is refused with what to do instead;
+  `radius`, `inner`, `segments` and `roundness` beside a form would do nothing and are refused.
+- **A shape by name**: `{"op": "form", "form": "icosahedron", "args": {"edge": 0.5}}`, or a
+  plane figure raised, `{"op": "form", "form": "annulus", "raise": {"as": "slab", "thickness":
+  0.1}}` (`as`: `slab`, `bevelled`, `pillow`, `stepped`, `relief`, each with its own fields).
+  `extrude` already raises a one-ring outline with bevels and tapers; the raise is for holes, the
+  pillow, the terraces and the relief.
+
+A form's own numbers are in `args` (so a figure's `scale` is never the outline's): each a number
+or an expression of the recipe's parameters and lets. The word is looked up at parse time and
+every key of `args` held against that form's parameters (an unknown one is refused with the list
+it takes); ranges are the library's, held at build. `detail` is the library's (8 to 4096; a full
+turn in that many segments), halved on the coarse far level. A form is counted before it is
+built (its triangles, `2V − 4 + 4g` for V points and genus g, against the part's and the model's
+limits; its points as work, `FORM_POINT` units each). **The library builds in `f64` and the
+modeller holds `f32`**: a form two of whose points come nearer than the greater of 20 µm (twice
+the weld `finalize` makes) and 2⁻¹⁸ of its reach, or a triangle that turns over or falls under
+the modeller's least area when rounded to `f32`, is refused as `Geometry` with the numbers.
+Normals are the modeller's (by the part's smooth angle, as every generator's): the library's exact
+normals do not pass through `Shape`, which holds none. UVs and colours are as every generator's.
+What it records: a form shape is a named shape for `crate::made` (its outlines: a raised
+figure's ring and the boxes it is raised to, a solid's convex hull seen along each axis), and a
+faceting record (`Round`) for each smooth surface, of the turn measured between its faces
+(`Mesh::rounds`); an outline by name records the turn between its chords and its arcs' radius
+(`Spec::facets`). `tests/formae_recipes.rs` holds all of it.
+
 ## Tiers 2-4 as built (2026-10-22)
 
 Everything below is recipe data (`model_build` builds it on the model workers, never the engine

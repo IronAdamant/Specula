@@ -451,6 +451,16 @@ impl Spec {
         Ok(self.geom()?.sag(detail))
     }
 
+    /// How coarsely a plane figure's or a curve's curved pieces are cut at `detail`: the turn
+    /// between neighbouring sample chords, degrees, and a radius, of the piece whose chords stand
+    /// furthest off it (exact for arcs; for parametric pieces measured on the samples, the
+    /// radius an estimate from their chord error). `None` for straight figures and for solids
+    /// (a solid's mesh says, by `Mesh::rounds`).
+    pub fn facets(&self, detail: u32) -> Result<Option<(f64, f64)>, Error> {
+        Spec::check_detail(detail)?;
+        Ok(self.geom()?.facets(detail).map(|(t, r)| (t * 180.0 / crate::maths::PI, r)))
+    }
+
     /// The anchors: `origin` for every form, `start` and `end` for an open curve, and the
     /// form's own.
     pub fn anchors(&self) -> Result<Vec<Anchor>, Error> {
