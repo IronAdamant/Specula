@@ -25,7 +25,7 @@ use crate::error::Error;
 use crate::geom::{Geom, Seg};
 use crate::maths::*;
 use crate::mesh::Mesh;
-use crate::solid::{Cone, Extrude, Make, Piece, Rev};
+use crate::solid::{Cone, Extrude, Make, Piece, Rev, Ring};
 use crate::spec::{solid_build, solid_refusal, Spec};
 use crate::table::{Kind, LEN_MAX, LEN_MIN};
 use crate::{Count, Measures, DETAIL_MAX, DETAIL_MIN, MAX_POINTS};
@@ -150,20 +150,10 @@ pub fn revolve_of(figure: &Spec, offset: f64, angle: f64) -> Result<Solid, Error
     if lo[0] + offset <= 0.0 {
         return Err(Error::Constraint { form: figure.form.name, rule: "touches_the_axis", message: "the figure, moved out by the offset, must lie wholly off the axis".into(), values: vec![("least_u", lo[0]), ("offset", offset), ("greatest_u", hi[0])] });
     }
+    // The figure stays in its own coordinates and is moved out as a whole (the turned solid's
+    // measures are then the figure's own, by Pappus's theorem, at any distance from the axis).
     let shift = [offset, -lo[1]];
-    let moved = move |p: Pt| [p[0] + shift[0], p[1] + shift[1]];
-    let pieces = segs
-        .into_iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let seg = match s {
-                Seg::Line { a, b } => Seg::Line { a: moved(a), b: moved(b) },
-                Seg::Arc { c, r, a0, sweep } => Seg::Arc { c: moved(c), r, a0, sweep },
-                Seg::Fn { f, t0, t1, turns } => Seg::Fn { f: Rc::new(move |t| moved(f(t))), t0, t1, turns },
-            };
-            Piece { seg, name: format!("side_{i}").into(), normal: None }
-        })
-        .collect();
+    let pieces = segs.into_iter().enumerate().map(|(i, seg)| Piece { seg, name: format!("side_{i}").into(), normal: None, support: None }).collect();
     let sweep = if angle >= 360.0 { TAU } else { rad(angle) };
-    Ok(Solid { operator: "revolve_of", figure: figure.form.name, make: Rc::new(Rev { pieces, closed: true, sweep, scale: [1.0, 1.0], cut: "cut" }) })
+    Ok(Solid { operator: "revolve_of", figure: figure.form.name, make: Rc::new(Rev { pieces, closed: true, sweep, ring: Ring::Circle, shift, cut: "cut" }) })
 }

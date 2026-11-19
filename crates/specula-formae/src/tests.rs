@@ -42,13 +42,29 @@ fn size_of(b: &Built) -> f64 {
 /// greatest, at the least, the default and the greatest detail, or is refused as data (a
 /// constraint the extremes break, or the point ceiling). What is built has finite points and
 /// exactly the count that was given before building. Defaults always build, at every detail.
+///
+/// The default run builds a solid's extremes at the least and the default detail (its defaults,
+/// and every plane figure and curve, at all three); [`t1_full`] builds the solids' extremes at the
+/// greatest detail too.
 #[test]
 fn t1_every_form_builds_at_its_extremes() {
+    t1(false);
+}
+
+/// Test 1 in full (see [`t1_every_form_builds_at_its_extremes`]).
+#[test]
+#[ignore = "the full run of test 1 (every solid's extremes at the greatest detail too): a minute; run in release at a stage's end"]
+fn t1_full() {
+    t1(true);
+}
+
+fn t1(full: bool) {
     let mut built = 0;
     for w in words() {
         for (label, given) in cases(&w) {
             let s = spec(&w, &given);
-            for d in [DETAIL_MIN, DETAIL_DEFAULT, DETAIL_MAX] {
+            let details: &[u32] = if full || label == "defaults" || w.form.kind != Kind::Solid { &[DETAIL_MIN, DETAIL_DEFAULT, DETAIL_MAX] } else { &[DETAIL_MIN, DETAIL_DEFAULT] };
+            for &d in details {
                 let what = format!("{} {label} detail {d}", w.name());
                 match s.build(d) {
                     Ok(b) => {
@@ -141,6 +157,26 @@ fn sound_refusal(what: &str, s: &Spec, d: u32, e: &Error) {
     let raw = || s.raw(d).unwrap_or_else(|| panic!("{what}: refused {rule} and its geometry is refused too"));
     match *rule {
         "not_well_made" => panic!("{what}: {e}"),
+        "edge_under_floor" if value(values, "gap").is_some() => {
+            // Two edges nearer than the floor: the build as made has that fault, those edges.
+            assert_eq!(v("detail"), d as f64, "{what}");
+            assert!(v("gap") <= v("floor") && v("floor") == crate::EDGE_FLOOR * v("size"), "{what}: {values:?}");
+            let (a, b) = ((v("ring_a") as usize, v("edge_a") as usize), (v("ring_b") as usize, v("edge_b") as usize));
+            match fault(&raw()) {
+                Some(crate::Fault::Gap { a: x, b: y, gap }) => assert_eq!((x, y, gap), (a, b, v("gap")), "{what}"),
+                other => panic!("{what}: refused for a gap, and the build's fault is {other:?}"),
+            }
+            match value(values, "coarser_detail_that_holds") {
+                Some(h) => {
+                    assert!(h < d as f64 && h >= DETAIL_MIN as f64, "{what}: {values:?}");
+                    s.build(h as u32).unwrap_or_else(|e| panic!("{what}: the detail {h} it names does not hold: {e}"));
+                }
+                None => {
+                    let last = v("searched_to") as u32;
+                    assert!(last <= d && fault(&s.raw(last).unwrap()).is_some(), "{what}: names no coarser detail, and {last} holds");
+                }
+            }
+        }
         "edge_under_floor" => {
             assert_eq!(v("detail"), d as f64, "{what}");
             assert!(v("edge") <= v("floor") && v("floor") == crate::EDGE_FLOOR * v("size"), "{what}: {values:?}");
@@ -287,6 +323,37 @@ fn t2b_parameters_moved_together() {
         }
     }
     assert!(built > 10_000 && refused > 0, "{built} built, {refused} refused");
+}
+
+/// The figures the corner drawing of review 1b's mends found (`tests/corners.rs`): every edge
+/// over the floor, and two of them nearer each other than it (a chevron's arms 9e-13 apart in a
+/// figure 1e4 across; a trapezium's corner of 1.6e-7 radians; a sine band's sides 1e-13 apart),
+/// where the crossing test's signs cannot be trusted. Each is refused as `edge_under_floor` with
+/// the two edges and their `gap`, soundly.
+#[test]
+fn edges_nearer_than_the_floor_are_refused() {
+    type Row = (&'static str, &'static [(&'static str, f64)]);
+    let rows: &[Row] = &[
+        ("chevron", &[("width", 0.0001), ("height", 9990.00999000999), ("thickness", 0.0001818923744097851)]),
+        ("trapezoid", &[("bottom", 0.0001001), ("top", 10000.0), ("height", 0.0021223161290852407), ("lean", -3.7299868978068096)]),
+        ("sine_band", &[("length", 0.0001), ("amplitude", 6685.441234336266), ("cycles", 100.0), ("phase", -360.0), ("thickness", 0.0008653913923270919)]),
+        // (A ring a micrometre wide 10 km out: its two rings' edges, never neighbours, that near.)
+        ("ring", &[("radius", 10000.0), ("inner", 9999.999999)]),
+    ];
+    for (word, args) in rows {
+        for d in [8u32, 9] {
+            let what = format!("{word} {args:?} detail {d}");
+            let s = Spec::new(word, Some(Kind::Plane), args).unwrap();
+            match s.build(d) {
+                Err(e @ Error::Constraint { rule: "edge_under_floor", .. }) => {
+                    let Error::Constraint { values, .. } = &e else { unreachable!() };
+                    assert!(value(values, "gap").is_some(), "{what}: refused, and for no gap: {values:?}");
+                    sound_refusal(&what, &s, d, &e);
+                }
+                other => panic!("{what}: {other:?}"),
+            }
+        }
+    }
 }
 
 /// The review of stage 1a's cases, each found by drawing arguments together, with what the

@@ -9,18 +9,20 @@
 //!   pyramid).
 //! - [`Gen`]: anything else, given by its own functions.
 //!
-//! **Revolution.** A point `(r, y)` of the profile at the angle θ is `(sx r cos θ, y, −sz r sin θ)`
-//! (`sx`, `sz` stretch it into an ellipse; 1 for a true solid of revolution). Each step of the
-//! sampled profile between two angles is a quad with two sides parallel (both at one `y`... or
-//! both along one meridian's chord turned), so it is planar whatever the rounding of the sines:
-//! the quad `(r_a, θ_i)`, `(r_a, θ_j)`, `(r_b, θ_j)`, `(r_b, θ_i)` has its first and last pairs
-//! parallel to the same chord of the unit circle. A step that ends on the axis is a fan of
-//! triangles to a point there; a flat step from the axis (a cylinder's lid) is one polygon.
+//! **Revolution.** A point `(r, y)` of the profile at the ring's point `e` is `(r e₀, y, −r e₁)`:
+//! on a circle (`e = (cos θ, sin θ)`) a true solid of revolution; on an ellipse or a superellipse
+//! ([`Ring::Super`]) a solid whose section at every height is that ring scaled by `r` (an
+//! ellipsoid, an elliptic cylinder, a superellipsoid). Each step of the sampled profile between
+//! two of the ring's samples is a quad with two sides parallel (the quad `(r_a, e_i)`,
+//! `(r_a, e_j)`, `(r_b, e_j)`, `(r_b, e_i)` has its first and last sides parallel to the ring's
+//! chord `e_j − e_i`), so it is planar whatever the rounding. A step that ends on the axis is a
+//! fan of triangles to a point there; a flat step from the axis (a cylinder's lid) is one polygon.
 //!
-//! **The error.** A sampled profile turned at sampled angles lies within the profile's sag plus
-//! `r_max (1 − cos(Δθ / 2))` of the true surface (the turned chords lie within the profile's sag
-//! of the true surface, and each facet within the angular sag of the turned chords). It is a
-//! bound, exact in neither term alone.
+//! **The error.** The true surface lies within the profile's greatest sag (scaled by the ring's
+//! reach) of the profile's chords turned on the true ring, and those within the ring's greatest
+//! sag at the greatest radius of the faces: the sum is a bound wherever each step's sag is one
+//! (lines, arcs, and parametric pieces with a normal or a support function: see
+//! `Piece::step_sag`).
 
 use crate::detail::segments;
 use crate::geom::{Geom, Seg};
@@ -106,45 +108,51 @@ pub(crate) fn integrate<const K: usize>(f: impl Fn(f64) -> [f64; K], a: f64, b: 
     s
 }
 
-/// The integrals of a profile of lines and arcs in the `(r, y)` half plane: `[∮ r² dy,
-/// ∮ r² y dy, ∮ r³ dy, ∫ r ds, ∮ r dy]` (the axis, where `r = 0`, adds nothing to any of them).
-/// On a line the integrands are polynomials of degree 3 at most, which the rule integrates
-/// exactly; an arc is cut into pieces of at most π/8, on which the rule's error for its
-/// integrands (trigonometric polynomials of degree 4) is under `1e-20` of the value (the rule's
-/// error term `(b − a)¹⁷ (8!)⁴ / (17 (16!)³) f⁽¹⁶⁾` with `f⁽¹⁶⁾ <= 4¹⁶ R⁴`): exact to rounding.
-/// `None` when a piece is parametric.
-pub(crate) fn profile_integrals(segs: &[&Seg]) -> Option<[f64; 5]> {
-    let mut s = [0.0; 5];
+/// The integrals of a profile of lines and arcs in the `(r, y)` half plane, taken about the
+/// point `at`: with `ρ = r − at₀` and `η = y − at₁`, `[∮ ρ dη, ∮ ρ² dη, ∮ ρ³ dη, ∮ ρ η dη,
+/// ∮ ρ² η dη, ∫ ρ ds, ∫ ds]`. Each piece's own numbers are taken less `at` before anything is
+/// multiplied (a line's ends, an arc's centre), so a thin section far from the axis, integrated
+/// about a point of its own, keeps its digits: nothing as large as its distance is squared and
+/// then cancelled. (About the origin, `∮ r² dy` of a section `1e-4` across at 675 m cancelled to
+/// 9e-4 of its value.) On a line the integrands are polynomials of degree 3 at most, which the
+/// rule integrates exactly; an arc is cut into pieces of at most π/8, on which the rule's error
+/// for its integrands (trigonometric polynomials of degree 4) is under `1e-20` of the value (the
+/// rule's error term `(b − a)¹⁷ (8!)⁴ / (17 (16!)³) f⁽¹⁶⁾` with `f⁽¹⁶⁾ <= 4¹⁶ R⁴`): exact to
+/// rounding. `None` when a piece is parametric.
+pub(crate) fn profile_integrals(segs: &[&Seg], at: Pt) -> Option<[f64; 7]> {
+    let mut s = [0.0; 7];
     for seg in segs {
         let v = match seg {
             Seg::Line { a, b } => {
+                let (a0, a1) = (a[0] - at[0], a[1] - at[1]);
                 let (dr, dy) = (b[0] - a[0], b[1] - a[1]);
                 let l = (dr * dr + dy * dy).sqrt();
                 integrate(
                     |u| {
-                        let (r, y) = (a[0] + u * dr, a[1] + u * dy);
-                        [r * r * dy, r * r * y * dy, r * r * r * dy, r * l, r * dy]
+                        let (r, y) = (a0 + u * dr, a1 + u * dy);
+                        [r * dy, r * r * dy, r * r * r * dy, r * y * dy, r * r * y * dy, r * l, l]
                     },
                     0.0,
                     1.0,
                 )
             }
             Seg::Arc { c, r: big, a0, sweep } => {
+                let (c0, c1) = (c[0] - at[0], c[1] - at[1]);
                 let m = ceil(sweep.abs() / (PI / 8.0)).max(1.0) as usize;
                 let g = if *sweep >= 0.0 { 1.0 } else { -1.0 };
-                let mut t = [0.0; 5];
+                let mut t = [0.0; 7];
                 for i in 0..m {
                     let (t0, t1) = (a0 + sweep * i as f64 / m as f64, a0 + sweep * (i + 1) as f64 / m as f64);
                     let v = integrate(
                         |p| {
                             let (sn, cs) = sin_cos(p);
-                            let (r, y, dy) = (c[0] + big * cs, c[1] + big * sn, big * cs);
-                            [r * r * dy, r * r * y * dy, r * r * r * dy, r * big * g, r * dy]
+                            let (r, y, dy) = (c0 + big * cs, c1 + big * sn, big * cs);
+                            [r * dy, r * r * dy, r * r * r * dy, r * y * dy, r * r * y * dy, r * big * g, big * g]
                         },
                         t0,
                         t1,
                     );
-                    for k in 0..5 {
+                    for k in 0..7 {
                         t[k] += v[k];
                     }
                 }
@@ -152,7 +160,7 @@ pub(crate) fn profile_integrals(segs: &[&Seg]) -> Option<[f64; 5]> {
             }
             Seg::Fn { .. } => return None,
         };
-        for k in 0..5 {
+        for k in 0..7 {
             s[k] += v[k];
         }
     }
@@ -404,23 +412,35 @@ impl Make for Poly {
 /// parameter.
 pub(crate) type NFn = Rc<dyn Fn(f64) -> Pt>;
 
+/// A support function: the greatest `d · p` over the convex curve a parametric piece lies on, for
+/// a unit direction `d`, in the piece's own coordinates.
+pub(crate) type SFn = Rc<dyn Fn(Pt) -> f64>;
+
 /// One piece of a profile: its geometry, the surface it turns into, and for a parametric piece
-/// its outward normal.
+/// its outward normal and, where it lies on a convex curve whose support function is known in
+/// closed form, that function.
+///
+/// **A parametric piece with a normal turns monotonically, and by under a quarter turn from one
+/// sample to the next** (every one in the table does: each is cut where its normal would turn
+/// further). Then the chord of each step has a normal between its ends' normals (the mean value
+/// theorem: the chord's direction is the curve's tangent somewhere between), less than a
+/// quarter turn from each, and the step lies in the triangle of its chord and its end tangents.
 #[derive(Clone)]
 pub(crate) struct Piece {
     pub seg: Seg,
     pub name: std::borrow::Cow<'static, str>,
     pub normal: Option<NFn>,
+    pub support: Option<SFn>,
 }
 
 /// A piece whose normal follows from its geometry (a line or an arc).
 pub(crate) fn piece(seg: Seg, name: &'static str) -> Piece {
-    Piece { seg, name: name.into(), normal: None }
+    Piece { seg, name: name.into(), normal: None, support: None }
 }
 
 /// A parametric piece with its outward normal.
 pub(crate) fn fpiece(seg: Seg, name: &'static str, normal: impl Fn(f64) -> Pt + 'static) -> Piece {
-    Piece { seg, name: name.into(), normal: Some(Rc::new(normal)) }
+    Piece { seg, name: name.into(), normal: Some(Rc::new(normal)), support: None }
 }
 
 impl Piece {
@@ -446,28 +466,146 @@ impl Piece {
             Seg::Fn { t0, t1, .. } => self.normal.as_ref().map(|f| unit(f(t0 + (t1 - t0) * u))),
         }
     }
+    /// The greatest distance between step `i` of `k` (its samples `a` and `b`) and its chord,
+    /// and whether that is a bound (`true`) or only the piece's estimate `est` (`false`): 0 for a
+    /// line; an arc's sag `r (1 − cos(δ / 2))`, exactly; for a parametric piece on a convex curve
+    /// with a support function `h`, `h(ν) − ν · a` for the chord's outward normal `ν`, exactly
+    /// (the curve's farthest point out along `ν` is the one whose normal is `ν`, which lies in
+    /// this step: see [`Piece`]); for one with a normal, `(L / 2) tan(δ / 2)` for the chord's
+    /// length `L` and the normal's turn `δ` across the step, a bound (the step lies in the
+    /// triangle of its chord and its end tangents, whose base angles sum to `δ`, and whose height
+    /// is greatest when they are equal).
+    fn step_sag(&self, i: u64, k: u64, a: Pt, b: Pt, est: f64) -> (f64, bool) {
+        match &self.seg {
+            Seg::Line { .. } => (0.0, true),
+            Seg::Arc { r, sweep, .. } => (r * (1.0 - cos(sweep.abs() / (2 * k) as f64)), true),
+            Seg::Fn { .. } => {
+                let d = sub(b, a);
+                let l = len(d);
+                if let (Some(h), true) = (&self.support, l > 0.0) {
+                    let nu = [d[1] / l, -d[0] / l];
+                    return ((h(nu) - (nu[0] * a[0] + nu[1] * a[1])).max(0.0), true);
+                }
+                if let (Some(na), Some(nb)) = (self.normal_at(i, k), self.normal_at(i + 1, k)) {
+                    let turn = atan2((na[0] * nb[1] - na[1] * nb[0]).abs(), na[0] * nb[0] + na[1] * nb[1]);
+                    if turn < 0.5 * PI {
+                        return (0.5 * l * tan(0.5 * turn), true);
+                    }
+                }
+                (est, false)
+            }
+        }
+    }
 }
 
-/// A solid of revolution (see the module's documentation).
+/// `sgn(v) |v|^e`.
+fn spow(v: f64, e: f64) -> f64 {
+    if v < 0.0 {
+        -powf(-v, e)
+    } else {
+        powf(v, e)
+    }
+}
+
+/// The point and the outward unit normal of the superellipse `|x / a|^n + |y / b|^n = 1` at the
+/// parameter whose cosine and sine are `c` and `s`: `(a sgn(c) |c|^(2/n), b sgn(s) |s|^(2/n))`,
+/// its normal along `(sgn(c) |c|^(2(n−1)/n) / a, sgn(s) |s|^(2(n−1)/n) / b)` (the gradient). At
+/// `n = 2` it is an ellipse, taken without powers.
+pub(crate) fn superellipse(a: f64, b: f64, n: f64, c: f64, s: f64) -> (Pt, Pt) {
+    let (p, g) = if n == 2.0 {
+        ([a * c, b * s], [c / a, s / b])
+    } else {
+        let (e, f) = (2.0 / n, 2.0 * (n - 1.0) / n);
+        ([a * spow(c, e), b * spow(s, e)], [spow(c, f) / a, spow(s, f) / b])
+    };
+    let l = len(g);
+    (p, [g[0] / l, g[1] / l])
+}
+
+/// The support function of the superellipse of semi-axes `a`, `b` and exponent `n` (its
+/// greatest `d · p`) in the unit direction `d`: `(|a d₀|^q + |b d₁|^q)^(1/q)`, `q = n / (n − 1)`
+/// (Hölder's inequality, with equality where the normal is `d`).
+pub(crate) fn superellipse_support(a: f64, b: f64, n: f64, d: Pt) -> f64 {
+    let (x, y) = ((a * d[0]).abs(), (b * d[1]).abs());
+    if n == 2.0 {
+        return (x * x + y * y).sqrt();
+    }
+    let m = x.max(y);
+    if m == 0.0 {
+        return 0.0;
+    }
+    let q = n / (n - 1.0);
+    m * powf(powf(x / m, q) + powf(y / m, q), 1.0 / q)
+}
+
+/// `(cos, sin)` of the quarter turns `t` (from +x, counter-clockwise), with the axis points
+/// exact: the quadrant `⌊t⌋`'s turn of `sin_cos` of what is left over.
+pub(crate) fn quarter_turns(t: f64) -> (f64, f64) {
+    let q = floor(t);
+    let f = t - q;
+    let (s, c) = if f == 0.0 { (0.0, 1.0) } else { sin_cos(0.5 * PI * f) };
+    match (q as i64).rem_euclid(4) {
+        0 => (c, s),
+        1 => (-s, c),
+        2 => (-c, -s),
+        _ => (s, -c),
+    }
+}
+
+/// The ring a profile is turned on: the solid's point for the profile's `(r, y)` at the ring's
+/// point `e` is `(r e₀, y, −r e₁)`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Ring {
+    /// The unit circle, at angles evenly through the sweep (a solid of revolution).
+    Circle,
+    /// The superellipse `|x / a|^n + |z / b|^n = 1` (an ellipse at `n = 2`), a full turn only, each
+    /// quadrant cut evenly in its own parameter into the segments of a quarter turn, so that its
+    /// four points on the axes are samples. The solid's section at every height is the same
+    /// superellipse scaled by `r`.
+    Super { a: f64, b: f64, n: f64 },
+}
+
+/// A ring's samples: each column's point `e`, the outward unit normal `m` there and `h = e · m`;
+/// the normal and `h` at the middle of each step (a pole's normals); the greatest sag of a step's
+/// chord for `r = 1`; and the greatest `|e|` over the whole true ring (how far the ring scales a
+/// distance in `r`).
+struct RingS {
+    e: Vec<Pt>,
+    m: Vec<Pt>,
+    h: Vec<f64>,
+    mid: Vec<(Pt, f64)>,
+    sag: f64,
+    reach: f64,
+}
+
+/// A solid of revolution, or of a profile turned on a superellipse (see the module's
+/// documentation).
 #[derive(Clone)]
 pub(crate) struct Rev {
     /// The profile, counter-clockwise in `(r, y)` (the region on its left): from the axis to
-    /// the axis when open, a ring off the axis when closed.
+    /// the axis when open, a ring off the axis when closed. In its own coordinates: the solid's
+    /// `(r, y)` is the profile's point plus `shift`.
     pub pieces: Vec<Piece>,
     pub closed: bool,
-    /// The angle turned through, radians, up to 2π.
+    /// The angle turned through, radians, up to 2π (a full turn for a superellipse ring).
     pub sweep: f64,
-    /// The stretch of x and of z.
-    pub scale: [f64; 2],
+    /// What it is turned on.
+    pub ring: Ring,
+    /// Where the profile's own origin is in `(r, y)`: a closed profile's measures are taken in
+    /// its own coordinates, so that a thin section far from the axis keeps its digits. An open
+    /// one, which reaches the axis, has none.
+    pub shift: Pt,
     /// The name of the two flat faces where a partial turn is cut.
     pub cut: &'static str,
 }
 
-/// The sampled profile: its points, and for each step its piece and its sample `i` of `k`.
+/// The sampled profile: its points (with the shift), for each step its piece and its sample `i`
+/// of `k`, each step's sag (see [`Piece::step_sag`]), and whether every sag is a bound.
 struct Prof {
     q: Vec<Pt>,
     step: Vec<(usize, u64, u64)>,
-    err: f64,
+    sag: Vec<f64>,
+    sure: bool,
 }
 
 impl Rev {
@@ -475,7 +613,10 @@ impl Rev {
         self.sweep >= TAU
     }
     fn turns(&self, detail: u32) -> u64 {
-        segments(self.sweep.min(TAU) / TAU, detail)
+        match self.ring {
+            Ring::Circle => segments(self.sweep.min(TAU) / TAU, detail),
+            Ring::Super { .. } => 4 * segments(0.25, detail),
+        }
     }
     fn m(&self, detail: u32) -> u64 {
         self.pieces.iter().map(|p| p.seg.k(detail)).sum()
@@ -491,11 +632,17 @@ impl Rev {
     fn sample(&self, detail: u32) -> Prof {
         let mut q = Vec::new();
         let mut step = Vec::new();
-        let mut err = 0.0f64;
+        let mut sag = Vec::new();
+        let mut sure = true;
         for (pi, p) in self.pieces.iter().enumerate() {
             let k = p.seg.k(detail);
-            err = err.max(p.seg.emit(detail, &mut q));
-            step.extend((0..k).map(|i| (pi, i, k)));
+            let est = p.seg.emit(detail, &mut q);
+            for i in 0..k {
+                let (s, b) = p.step_sag(i, k, p.seg.at(i, k), p.seg.at(i + 1, k), est);
+                sag.push(s);
+                sure &= b;
+                step.push((pi, i, k));
+            }
         }
         if !self.closed {
             if let Some(p) = self.pieces.last() {
@@ -513,13 +660,100 @@ impl Rev {
                 }
             }
         }
-        Prof { q, step, err }
+        if self.shift != [0.0, 0.0] {
+            for p in &mut q {
+                *p = [p[0] + self.shift[0], p[1] + self.shift[1]];
+            }
+        }
+        Prof { q, step, sag, sure }
     }
-    fn stretch(&self) -> f64 {
-        self.scale[0].max(self.scale[1])
+    fn ring_samples(&self, detail: u32) -> RingS {
+        let na = self.turns(detail) as usize;
+        match self.ring {
+            Ring::Circle => {
+                let full = self.full();
+                let ang = |i: f64| if full { TAU * i / na as f64 } else { self.sweep * i / na as f64 };
+                let cols = if full { na } else { na + 1 };
+                let e: Vec<Pt> = (0..cols)
+                    .map(|i| {
+                        let (s, c) = sin_cos(ang(i as f64));
+                        [c, s]
+                    })
+                    .collect();
+                let mid = (0..na)
+                    .map(|i| {
+                        let (s, c) = sin_cos(0.5 * (ang(i as f64) + ang(i as f64 + 1.0)));
+                        ([c, s], 1.0)
+                    })
+                    .collect();
+                RingS { m: e.clone(), h: vec![1.0; cols], e, mid, sag: 1.0 - cos(0.5 * self.sweep.min(TAU) / na as f64), reach: 1.0 }
+            }
+            Ring::Super { a, b, n } => {
+                let k = na / 4;
+                let at = |t: f64| {
+                    let (c, s) = quarter_turns(t);
+                    let (p, m) = superellipse(a, b, n, c, s);
+                    (p, m, p[0] * m[0] + p[1] * m[1])
+                };
+                let (mut e, mut m, mut h, mut mid) = (Vec::with_capacity(na), Vec::with_capacity(na), Vec::with_capacity(na), Vec::with_capacity(na));
+                for i in 0..na {
+                    let (q, j) = ((i / k) as f64, (i % k) as f64);
+                    let (p, nn, hh) = at(q + j / k as f64);
+                    e.push(p);
+                    m.push(nn);
+                    h.push(hh);
+                    let (_, nm, hm) = at(q + (j + 0.5) / k as f64);
+                    mid.push((nm, hm));
+                }
+                // Each chord's sag, exactly: the support function at its outward normal, less the
+                // chord's own distance along it.
+                let mut sag = 0.0f64;
+                for i in 0..na {
+                    let (p, r) = (e[i], e[(i + 1) % na]);
+                    let d = sub(r, p);
+                    let l = len(d);
+                    let nu = [d[1] / l, -d[0] / l];
+                    sag = sag.max(superellipse_support(a, b, n, nu) - (nu[0] * p[0] + nu[1] * p[1]));
+                }
+                // The ring lies in its ellipse (n <= 2) or in its box (n > 2).
+                let reach = if n <= 2.0 { a.max(b) } else { (a * a + b * b).sqrt() };
+                RingS { e, m, h, mid, sag, reach }
+            }
+        }
     }
     fn segs(&self) -> Vec<Seg> {
         self.pieces.iter().map(|p| p.seg.clone()).collect()
+    }
+    /// The build's error from its samples: the profile's greatest sag, each step's scaled by the
+    /// ring's reach `a` as a distance in `r` is (`a L / √(a² Δr² + Δy²)` for a step of length `L`:
+    /// the meridian at a point `e` of the ring is the profile with `r` scaled by `|e| <= a`, and a
+    /// chord's sag grows with that scale), plus the ring's greatest sag at the greatest `r`
+    /// sampled. Each term bounds how far one surface lies from the next: the true surface from
+    /// the profile's chords turned on the true ring (the first), and those from the faces, whose
+    /// section at each height is the chord surface's with the ring's chords (the second). It is
+    /// a bound where every step's sag is one ([`Prof::sure`]).
+    fn bound(&self, pr: &Prof, ring: &RingS) -> f64 {
+        let n = pr.q.len();
+        let a = ring.reach;
+        let mut profile = 0.0f64;
+        for (j, &s) in pr.sag.iter().enumerate() {
+            let scaled = if a == 1.0 {
+                s
+            } else {
+                let (p, r) = (pr.q[j], pr.q[(j + 1) % n]);
+                let (dr, dy) = (r[0] - p[0], r[1] - p[1]);
+                let l = (dr * dr + dy * dy).sqrt();
+                let la = (a * a * dr * dr + dy * dy).sqrt();
+                if la > 0.0 {
+                    s * a * l / la
+                } else {
+                    s * a.max(1.0)
+                }
+            };
+            profile = profile.max(scaled);
+        }
+        let rmax = pr.q.iter().map(|p| p[0]).fold(0.0f64, f64::max);
+        profile + rmax * ring.sag
     }
 }
 
@@ -528,6 +762,7 @@ fn section_fault(f: Fault) -> SolidFault {
     match f {
         Fault::ShortEdge { point, length, .. } => SolidFault::SectionShortEdge { point, length },
         Fault::Crossing { a, b } => SolidFault::SectionCrossing { a, b },
+        Fault::Gap { a, b, gap } => SolidFault::SectionGap { a, b, gap },
         _ => SolidFault::TooFew { face: 0 },
     }
 }
@@ -539,6 +774,23 @@ enum Row {
     Ring(u32),
 }
 
+/// **Why no two faces cross, and no normal lies behind its face.** The profile is checked as a
+/// simple ring (counter-clockwise, off the axis but at its ends), and a superellipse ring's
+/// samples turn strictly counter-clockwise about the axis, each quadrant's in its own quadrant
+/// (checked): then the build's section at each height is the profile's chord there scaled on
+/// the sampled ring, a simple polygon, and two faces of one band of heights lie in different
+/// angles. A face between two rows is a trapezoid with its parallel sides on the rows; in the
+/// plane of the step's middle angle its normal is along `(Δy μ, −Δr h_M)` (`μ` the ring chord's
+/// outward normal, `h_M` its middle's distance along it), and a corner's normal along
+/// `(n_r m, n_y h)` (the profile's normal `(n_r, n_y)` and the ring's `m` and `h` there). Their
+/// product is `n_r Δy (m · μ) − n_y Δr h h_M`. On a circle (`m · μ = cos(δ/2)`, `h = h_M`
+/// = 1 up to that cosine) it is `cos(δ/2)` times `n · (Δy, −Δr)`, positive where the profile's
+/// normal at each end of a step is less than a quarter turn from the chord's (an arc's turn
+/// each step is at most an eighth; a parametric piece's under a quarter, see [`Piece`]). On a
+/// superellipse `m · μ > 0` (each step is in one quadrant, where the normal turns under a quarter
+/// turn) and `h, h_M > 0`; a profile whose every step stays in one quadrant of `(r, y)` (the
+/// superellipsoid's and the ellipsoid's are cut at the equator) has `n_r Δy >= 0` and
+/// `−n_y Δr >= 0`, not both zero. [`Mesh::validate`] holds every build to it all the same.
 impl Make for Rev {
     fn count(&self, detail: u32) -> (u64, u64) {
         let (m, na) = (self.m(detail), self.turns(detail));
@@ -557,6 +809,7 @@ impl Make for Rev {
 
     fn build(&self, detail: u32) -> (Mesh, Option<SolidFault>) {
         let pr = self.sample(detail);
+        let ring = self.ring_samples(detail);
         let m = pr.step.len();
         // The profile, closed along the axis when open, must be a simple ring
         // counter-clockwise, off the axis but at its ends.
@@ -564,19 +817,28 @@ impl Make for Rev {
         if !self.closed && fault.is_none() && (pr.q[0][0] != 0.0 || pr.q[m][0] != 0.0 || pr.q[1..m].iter().any(|p| p[0] <= 0.0)) {
             fault = Some(SolidFault::TooFew { face: 0 });
         }
+        // A superellipse ring's samples turn strictly counter-clockwise, each in its quadrant.
+        if let (Ring::Super { .. }, None) = (self.ring, &fault) {
+            let na = ring.e.len();
+            let k = na / 4;
+            let quadrant = [[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]];
+            for i in 0..na {
+                let (p, r) = (ring.e[i], ring.e[(i + 1) % na]);
+                let [sx, sy] = quadrant[i / k];
+                let inside = p[0] * sx >= 0.0 && p[1] * sy >= 0.0;
+                if !(p[0] * r[1] - p[1] * r[0] > 0.0 && inside) {
+                    fault = Some(SolidFault::SectionCrossing { a: (1, i), b: (1, (i + 1) % na) });
+                    break;
+                }
+            }
+        }
         let full = self.full();
         let na = self.turns(detail) as usize;
         let cols = if full { na } else { na + 1 };
-        let [sx, sz] = self.scale;
-        let ang = |i: usize| if full { TAU * i as f64 / na as f64 } else { self.sweep * i as f64 / na as f64 };
-        let cs: Vec<(f64, f64)> = (0..cols).map(|i| sin_cos(ang(i))).collect();
-        let at = |p: Pt, i: usize| [sx * p[0] * cs[i].1, p[1], -sz * p[0] * cs[i].0];
-        let turn_n = |n: Pt, s: f64, c: f64| norm3([n[0] * c / sx, n[1], -n[0] * s / sz]);
-        let nrm = |n: Pt, i: usize| turn_n(n, cs[i % cols].0, cs[i % cols].1);
-        let mid = |n: Pt, i: usize| {
-            let (s, c) = sin_cos(0.5 * (ang(i) + ang(i + 1)));
-            turn_n(n, s, c)
-        };
+        let at = |p: Pt, i: usize| [p[0] * ring.e[i][0], p[1], -(p[0] * ring.e[i][1])];
+        let turn_n = |n: Pt, m: Pt, h: f64| norm3([n[0] * m[0], n[1] * h, -(n[0] * m[1])]);
+        let nrm = |n: Pt, i: usize| turn_n(n, ring.m[i % cols], ring.h[i % cols]);
+        let mid = |n: Pt, i: usize| turn_n(n, ring.mid[i].0, ring.mid[i].1);
         let (d0, d1) = self.discs();
         let nrow = if self.closed { m } else { m + 1 };
         let mut points: Vec<P3> = Vec::new();
@@ -597,7 +859,7 @@ impl Make for Rev {
         let mut surfaces: Vec<Surface> = Vec::new();
         let mut of_piece = Vec::new();
         for (pi, p) in self.pieces.iter().enumerate() {
-            let rmax = pr.step.iter().enumerate().filter(|(_, s)| s.0 == pi).flat_map(|(j, _)| [pr.q[j][0], pr.q[(j + 1) % pr.q.len()][0]]).fold(0.0f64, f64::max) * self.stretch();
+            let rmax = pr.step.iter().enumerate().filter(|(_, s)| s.0 == pi).flat_map(|(j, _)| [pr.q[j][0], pr.q[(j + 1) % pr.q.len()][0]]).fold(0.0f64, f64::max) * ring.reach;
             let arc = if let Seg::Arc { r, .. } = p.seg { r } else { 0.0 };
             let radius = (!p.flat()).then_some(rmax.max(arc));
             match surfaces.iter().position(|s| s.name == p.name) {
@@ -661,40 +923,71 @@ impl Make for Rev {
             last.reverse();
             faces.push(Face { verts: last, surface: cut, normals: None });
         }
-        let rmax = pr.q.iter().map(|p| p[0]).fold(0.0f64, f64::max);
-        let chord = self.stretch().max(1.0) * pr.err + self.stretch() * rmax * (1.0 - cos(0.5 * self.sweep.min(TAU) / na as f64));
+        let chord = self.bound(&pr, &ring);
         (Mesh { points, faces, surfaces, chord_error: chord }, fault)
     }
 
+    /// The exact measures, where the profile is lines and arcs. A closed profile (a ring off the
+    /// axis) is measured in its own coordinates: its volume by Pappus's theorem, `α A (x̄ + s)`,
+    /// from its area `A` and centroid `x̄` as a plane figure's are taken (Green's theorem, the same
+    /// code) and the shift `s`, so that a section far out keeps its digits and a figure turned
+    /// by `revolve_of` has the volume its own measures give; its centroid and area from
+    /// [`profile_integrals`] about its own origin. An open profile is integrated as it lies.
     fn exact(&self) -> Measures {
         let segs = self.segs();
         let refs: Vec<&Seg> = segs.iter().collect();
-        let Some([i1, i2, i3, s, ar]) = profile_integrals(&refs) else { return Measures::default() };
+        let at = if self.closed { [0.0, 0.0] } else { [-self.shift[0], -self.shift[1]] };
+        let Some([j0, j1, j2, j3, j4, j5, j6]) = profile_integrals(&refs, at) else { return Measures::default() };
+        let (r0, y0) = if self.closed { (self.shift[0], self.shift[1]) } else { (0.0, 0.0) };
+        // With r = r0 + ρ and y = y0 + η, and ∮ dη = ∮ η dη = 0 round a closed profile:
+        // ∮ r² dy = 2 r0 ∮ ρ dη + ∮ ρ² dη; ∮ r³ dy = 3 r0² ∮ ρ dη + 3 r0 ∮ ρ² dη + ∮ ρ³ dη;
+        // ∮ r² y dy = y0 ∮ r² dy + 2 r0 ∮ ρ η dη + ∮ ρ² η dη; ∫ r ds = r0 ∫ ds + ∫ ρ ds.
+        let i1 = 2.0 * r0 * j0 + j1;
+        let i3 = 3.0 * r0 * r0 * j0 + 3.0 * r0 * j1 + j2;
+        let iy = 2.0 * r0 * j3 + j4;
+        let s = r0 * j6 + j5;
         let a = self.sweep.min(TAU);
-        let [sx, sz] = self.scale;
         let full = self.full();
-        let volume = 0.5 * a * i1 * sx * sz;
-        let area = (sx == 1.0 && sz == 1.0).then_some(a * s + if full { 0.0 } else { 2.0 * ar });
-        let (cx, cz) = if full {
-            (0.0, 0.0)
-        } else {
-            let h = sin(0.5 * a);
-            (sx * (i3 / 3.0) * sin(a) / (0.5 * a * i1), -sz * (i3 / 3.0) * 2.0 * h * h / (0.5 * a * i1))
-        };
-        let bounds = Geom::Path { segs, closed: self.closed }.exact().bounds.map(|(lo, hi)| {
+        let bounds = Geom::Path { segs: segs.clone(), closed: self.closed }.exact().bounds.map(|(lo, hi)| {
+            let (lo, hi) = ([lo[0] + self.shift[0], lo[1] + self.shift[1]], [hi[0] + self.shift[0], hi[1] + self.shift[1]]);
             let rmin = if self.closed { lo[0] } else { 0.0 };
-            swept_bounds((rmin, hi[0]), (lo[1], hi[1]), a, sx, sz)
+            match self.ring {
+                Ring::Circle => swept_bounds((rmin, hi[0]), (lo[1], hi[1]), a, 1.0, 1.0),
+                Ring::Super { a: ea, b: eb, .. } => ([-ea * hi[0], lo[1], -eb * hi[0]], [ea * hi[0], hi[1], eb * hi[0]]),
+            }
         });
-        Measures { size: Some(volume), boundary: area, centroid: Some([cx, i2 / i1, cz]), bounds, series: None }
+        let centroid_y = y0 + iy / i1;
+        match self.ring {
+            Ring::Super { a: ea, b: eb, n } => {
+                let g1 = gamma(1.0 + 1.0 / n);
+                let area_e = if n == 2.0 { PI * ea * eb } else { 4.0 * ea * eb * g1 * g1 / gamma(1.0 + 2.0 / n) };
+                Measures { size: Some(area_e * i1), boundary: None, centroid: Some([0.0, centroid_y, 0.0]), bounds, series: None }
+            }
+            Ring::Circle => {
+                let volume = if self.closed {
+                    let g = Geom::Rings(vec![segs]).exact();
+                    match (g.size, g.centroid) {
+                        (Some(ar), Some(c)) => a * ar * (c[0] + self.shift[0]),
+                        _ => 0.5 * a * i1,
+                    }
+                } else {
+                    0.5 * a * i1
+                };
+                let area = Some(a * s + if full { 0.0 } else { 2.0 * j0 });
+                let (cx, cz) = if full {
+                    (0.0, 0.0)
+                } else {
+                    let h = sin(0.5 * a);
+                    ((i3 / 3.0) * sin(a) / (0.5 * a * i1), -(i3 / 3.0) * 2.0 * h * h / (0.5 * a * i1))
+                };
+                Measures { size: Some(volume), boundary: area, centroid: Some([cx, centroid_y, cz]), bounds, series: None }
+            }
+        }
     }
 
     fn error(&self, detail: u32) -> Option<f64> {
-        let segs = self.segs();
-        let path = Geom::Path { segs, closed: self.closed };
-        let sag = path.sag(detail)?;
-        let rmax = path.exact().bounds?.1[0];
-        let na = self.turns(detail) as f64;
-        Some(self.stretch().max(1.0) * sag + self.stretch() * rmax * (1.0 - cos(0.5 * self.sweep.min(TAU) / na)))
+        let pr = self.sample(detail);
+        pr.sure.then(|| self.bound(&pr, &self.ring_samples(detail)))
     }
 
     fn genus(&self) -> u32 {
@@ -1031,22 +1324,6 @@ impl<P: Fn([u32; 3]) -> (P3, Option<P3>), C: Fn(usize, u32, u32) -> (bool, u32)>
     }
 }
 
-/// The distance from each face of a smooth surface to the true surface at the point `project`
-/// gives for the face's middle, the greatest of them: an estimate of the build's error, not a
-/// bound (the farthest point of a patch from its face need not be over the face's middle).
-pub(crate) fn middle_error(m: &Mesh, project: impl Fn(P3) -> P3) -> f64 {
-    let mut worst = 0.0f64;
-    for f in &m.faces {
-        if !m.surfaces[f.surface as usize].smooth {
-            continue;
-        }
-        let n = norm3(m.area_vector(f));
-        let c = scale3(f.verts.iter().fold([0.0; 3], |s, &v| add3(s, m.points[v as usize])), 1.0 / f.verts.len() as f64);
-        let p = project(c);
-        worst = worst.max(dot3(n, sub3(p, m.points[f.verts[0] as usize])).abs());
-    }
-    worst
-}
 
 /// The greatest distance between a sphere of centre `c` and radius `r` and the faces inscribed
 /// in it (all their points on it): `r` less each face's plane's distance from the centre,

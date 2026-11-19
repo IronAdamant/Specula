@@ -8,10 +8,16 @@
 //! `detail` segments; a profile's arc is cut as a plane figure's is (`max(2, ceil(detail × its
 //! turn over 2π))`), so a sphere of latitudes and longitudes has `detail` round and `detail / 2`
 //! from pole to pole; an icosphere's edges are cut into `f` (its frequency), the segments its
-//! edge's angle (63.43 degrees) is worth; a cube-sphere's and a superellipsoid's cube faces into
-//! `g × g`, `g` the segments of a quarter turn; a rounded box's rounded edges into the segments of
-//! a quarter turn; a swept wire is `detail` round and the segments of its curve's turns along (a
-//! helix one turn a coil, a (p, q) knot `p + q`).
+//! edge's angle (63.43 degrees) is worth; a cube-sphere's cube faces into `g × g`, `g` the
+//! segments of a quarter turn; a rounded box's rounded edges into the segments of a quarter turn;
+//! a swept wire is `detail` round and the segments of its curve's turns along (a helix one turn a
+//! coil, a (p, q) knot `p + q`). **Cut at their quarters**: the ellipsoid, the superellipsoid and
+//! the elliptic cylinder are turned on an ellipse or a superellipse cut into four quadrants of the
+//! segments of a quarter turn each (`4 × max(2, ceil(detail / 4))` round), and the ellipsoid's and
+//! the superellipsoid's profiles into two halves at the equator; the elliptic torus's ellipse is
+//! four quarters and the hyperboloid's side two halves at the waist. So every point on an axis
+//! is a sample at every detail, and no step's normal turns as far as a quarter turn, which is what
+//! keeps every normal on its face's outer side ([`Rev`]'s `Make` says why).
 
 use crate::anchor::{at3, out3, Anchor, On};
 use crate::detail::segments;
@@ -19,8 +25,8 @@ use crate::error::{refuse, Refusal};
 use crate::forms::round::drop_parts;
 use crate::geom::{arc, func, line, Geom};
 use crate::maths::*;
-use crate::mesh::{Mesh, SolidFault, Surface};
-use crate::solid::{fpiece, gauss, middle_error, piece, sphere_error, tube_check, tube_mesh, Gen, Lattice, Piece, Rev};
+use crate::mesh::{Mesh, Surface};
+use crate::solid::{fpiece, gauss, piece, quarter_turns, sphere_error, superellipse, superellipse_support, tube_check, tube_mesh, Gen, Lattice, Piece, Rev, Ring};
 use crate::spec::Args;
 use crate::table::{count, deg, len, ratio, Alias, Form, Param, Set};
 use crate::Measures;
@@ -28,13 +34,50 @@ use std::rc::Rc;
 
 const O: Pt = [0.0, 0.0];
 
-/// A solid of revolution's geometry: the profile turned through `sweep` radians.
-fn rev(pieces: Vec<Piece>, closed: bool, sweep: f64, scale: [f64; 2]) -> Result<Geom, Refusal> {
-    Ok(Geom::Solid(Rc::new(Rev { pieces, closed, sweep, scale, cut: "cut" })))
+/// A solid of revolution's geometry: the profile turned through `sweep` radians, its own origin
+/// at `shift` in `(r, y)` (a closed profile is measured in its own coordinates).
+fn rev(pieces: Vec<Piece>, closed: bool, sweep: f64, shift: Pt) -> Result<Geom, Refusal> {
+    Ok(Geom::Solid(Rc::new(Rev { pieces, closed, sweep, ring: Ring::Circle, shift, cut: "cut" })))
 }
 /// A full turn of an open profile (from the axis to the axis).
 fn turned(pieces: Vec<Piece>) -> Result<Geom, Refusal> {
-    rev(pieces, false, TAU, [1.0, 1.0])
+    rev(pieces, false, TAU, O)
+}
+/// An open profile turned on the superellipse (or ellipse) `ring`: a full turn.
+fn turned_on(pieces: Vec<Piece>, ring: Ring) -> Result<Geom, Refusal> {
+    Ok(Geom::Solid(Rc::new(Rev { pieces, closed: false, sweep: TAU, ring, shift: O, cut: "cut" })))
+}
+
+/// The superellipsoid `|x/rx|^n + |y/ry|^n + |z/rz|^n = 1` standing on `y = 0` (the ellipsoid at
+/// `n = 2`), as a profile turned on a ring: its section at every height is one superellipse, of
+/// semi-axes `rx / R` and `rz / R` (`R` the greater of `rx` and `rz`), scaled by the profile's
+/// `r`, which runs over the superellipse `(r / R)^n + |(y − ry) / ry|^n = 1` from pole to pole.
+/// (A point `(r e, y)` with `e` on the ring is on the solid:
+/// `(r/R)^n (|e₀ R/rx|^n + |e₁ R/rz|^n) + |(y − ry)/ry|^n = 1`.) The profile is cut at the equator and the ring at its four axis
+/// points, all samples at every detail, so the build reaches the six points of the bounds and
+/// every step of the profile and of the ring stays in one quadrant (what makes its normals sound:
+/// [`Rev`]'s `Make`). The profile's pieces carry their normals and their curve's support
+/// function, so each chord's sag, and the build's error, is exact.
+fn super_solid(rx: f64, ry: f64, rz: f64, n: f64, name: &'static str) -> Result<Geom, Refusal> {
+    let big = rx.max(rz);
+    let half = |t0: f64, t1: f64| {
+        // The quarter-turn parameter t: the profile's point at the angle t π/2 from the equator,
+        // with the poles and the equator exact.
+        let f = move |t: f64| {
+            let (c, s) = quarter_turns(t);
+            let (p, _) = superellipse(big, ry, n, c, s);
+            [p[0].max(0.0), ry + p[1]]
+        };
+        let nf = move |t: f64| {
+            let (c, s) = quarter_turns(t);
+            superellipse(big, ry, n, c, s).1
+        };
+        let mut p = fpiece(crate::geom::func(f, t0, t1, 0.25), name, nf);
+        p.support = Some(Rc::new(move |d: Pt| superellipse_support(big, ry, n, d) + d[1] * ry));
+        p
+    };
+    // (Turning from the south pole: t from −1 to 0 is the lower half, 0 to 1 the upper.)
+    turned_on(vec![half(-1.0, 0.0), half(0.0, 1.0)], Ring::Super { a: rx / big, b: rz / big, n })
 }
 
 fn m(size: Option<f64>, boundary: Option<f64>, cy: f64, lo: P3, hi: P3) -> Measures {
@@ -216,8 +259,7 @@ fn cube_sphere_geom(a: &Args) -> Result<Geom, Refusal> {
 
 const P_ELLIPSOID: &[Param] = &[len("rx", "the semi-axis along x", 0.6), len("ry", "the semi-axis along y", 0.4), len("rz", "the semi-axis along z", 0.5)];
 fn ellipsoid_geom(a: &Args) -> Result<Geom, Refusal> {
-    let (rx, ry, rz) = (a.f("rx"), a.f("ry"), a.f("rz"));
-    rev(sphere_pieces(ry), false, TAU, [rx / ry, rz / ry])
+    super_solid(a.f("rx"), a.f("ry"), a.f("rz"), 2.0, "ellipsoid")
 }
 fn ellipsoid_closed(a: &Args) -> Measures {
     let (rx, ry, rz) = (a.f("rx"), a.f("ry"), a.f("rz"));
@@ -288,11 +330,22 @@ fn zone_geom(a: &Args) -> Result<Geom, Refusal> {
 }
 fn zone_closed(a: &Args) -> Measures {
     let Ok((r, f, t)) = zone_parts(a) else { return Measures::default() };
-    let (y0, y1) = (f * r, t * r);
-    let h = y1 - y0;
-    // V = π ∫ (r² − y²) dy = π h (r² − (y1² + y1 y0 + y0²) / 3), with no difference of cubes;
-    // the lids' areas π r² (1 − f²) as products.
-    let vol = PI * h * (r * r - (y1 * y1 + y1 * y0 + y0 * y0) / 3.0);
+    let h = (t - f) * r;
+    // V = π ∫ (r² − y²) dy = π h (r² − (y1² + y1 y0 + y0²) / 3), y0 = f r and y1 = t r, written
+    // with no difference of near numbers: r² − (…)/3 = r² ((1 − f²) + (1 − t²) + (1 − f t)) / 3,
+    // each a product or a sum of terms of one sign (two cuts near one pole otherwise left only
+    // the digits of their distance from it); the lids' areas π r² (1 − f²) as products.
+    let one_less = |x: f64, y: f64| {
+        // 1 − x y, from whichever side it is small.
+        if x * y <= 0.0 {
+            1.0 - x * y
+        } else if x > 0.0 {
+            (1.0 - x) + x * (1.0 - y)
+        } else {
+            (1.0 + x) - x * (1.0 + y)
+        }
+    };
+    let vol = PI * h * r * r * (one_less(f, f) + one_less(t, t) + one_less(f, t)) / 3.0;
     let area = 2.0 * PI * r * h + PI * r * r * ((1.0 - f) * (1.0 + f) + (1.0 - t) * (1.0 + t));
     let wide = if f <= 0.0 && t >= 0.0 { r } else { r * ((1.0 - f * f).max(1.0 - t * t)).sqrt() };
     Measures { size: Some(vol), boundary: Some(area), bounds: Some(round_bounds(wide, 0.0, h)), ..Measures::default() }
@@ -304,7 +357,7 @@ fn zone_anchors(a: &Args) -> Vec<Anchor> {
 
 const P_WEDGE: &[Param] = &[len("radius", "the sphere's radius", 0.5), deg("angle", "the wedge's angle about Y, from +x", 90.0, 1.0, 359.0)];
 fn swedge_geom(a: &Args) -> Result<Geom, Refusal> {
-    rev(sphere_pieces(a.f("radius")), false, rad(a.f("angle")), [1.0, 1.0])
+    rev(sphere_pieces(a.f("radius")), false, rad(a.f("angle")), O)
 }
 fn swedge_closed(a: &Args) -> Measures {
     let (r, t) = (a.f("radius"), rad(a.f("angle")));
@@ -339,7 +392,7 @@ fn cyl_anchors(a: &Args) -> Vec<Anchor> {
 const P_ECYL: &[Param] = &[len("rx", "the semi-axis along x", 0.6), len("rz", "the semi-axis along z", 0.4), len("height", "the height", 1.0)];
 fn ecyl_geom(a: &Args) -> Result<Geom, Refusal> {
     let (rx, rz) = (a.f("rx"), a.f("rz"));
-    rev(cyl_pieces(rx, a.f("height")), false, TAU, [1.0, rz / rx])
+    turned_on(cyl_pieces(rx, a.f("height")), Ring::Super { a: 1.0, b: rz / rx, n: 2.0 })
 }
 fn ecyl_closed(a: &Args) -> Measures {
     let (rx, rz, h) = (a.f("rx"), a.f("rz"), a.f("height"));
@@ -364,7 +417,7 @@ fn ecyl_anchors(a: &Args) -> Vec<Anchor> {
 
 const P_CSECT: &[Param] = &[len("radius", "the radius", 0.5), len("height", "the height", 1.0), deg("angle", "the sector's angle about Y, from +x", 90.0, 1.0, 359.0)];
 fn csect_geom(a: &Args) -> Result<Geom, Refusal> {
-    rev(cyl_pieces(a.f("radius"), a.f("height")), false, rad(a.f("angle")), [1.0, 1.0])
+    rev(cyl_pieces(a.f("radius"), a.f("height")), false, rad(a.f("angle")), O)
 }
 fn csect_closed(a: &Args) -> Measures {
     let (r, h, t) = (a.f("radius"), a.f("height"), rad(a.f("angle")));
@@ -395,7 +448,9 @@ fn tube_parts(a: &Args) -> Result<(f64, f64, f64), Refusal> {
 }
 fn tube_geom(a: &Args) -> Result<Geom, Refusal> {
     let (r, i, h) = tube_parts(a)?;
-    rev(vec![piece(line([i, 0.0], [r, 0.0]), "bottom"), piece(line([r, 0.0], [r, h]), "outside"), piece(line([r, h], [i, h]), "top"), piece(line([i, h], [i, 0.0]), "inside")], true, TAU, [1.0, 1.0])
+    // The wall's section in its own coordinates, its inner side on r = 0, moved out by the bore.
+    let w = r - i;
+    rev(vec![piece(line(O, [w, 0.0]), "bottom"), piece(line([w, 0.0], [w, h]), "outside"), piece(line([w, h], [0.0, h]), "top"), piece(line([0.0, h], O), "inside")], true, TAU, [i, 0.0])
 }
 fn tube_closed(a: &Args) -> Measures {
     let Ok((r, i, h)) = tube_parts(a) else { return Measures::default() };
@@ -490,12 +545,13 @@ fn torus_parts(a: &Args) -> Result<(f64, f64), Refusal> {
     }
     Ok((big, r))
 }
-fn torus_ring(big: f64, r: f64) -> Vec<Piece> {
-    vec![piece(arc([big, r], r, -0.5 * PI, 1.5 * PI), "torus")]
+/// The tube's circle in its own coordinates (its centre at `(0, r)`, moved out by the radius).
+fn torus_ring(r: f64) -> Vec<Piece> {
+    vec![piece(arc([0.0, r], r, -0.5 * PI, 1.5 * PI), "torus")]
 }
 fn torus_geom(a: &Args) -> Result<Geom, Refusal> {
     let (big, r) = torus_parts(a)?;
-    rev(torus_ring(big, r), true, TAU, [1.0, 1.0])
+    rev(torus_ring(r), true, TAU, [big, 0.0])
 }
 fn torus_closed(a: &Args) -> Measures {
     let Ok((big, r)) = torus_parts(a) else { return Measures::default() };
@@ -515,7 +571,7 @@ fn torus_anchors(a: &Args) -> Vec<Anchor> {
 const P_TSECT: &[Param] = &[len("radius", "from the axis to the tube's middle", 0.5), len("tube", "the tube's radius, under the other", 0.15), deg("angle", "the bend's angle about Y, from +x", 90.0, 1.0, 359.0)];
 fn tsect_geom(a: &Args) -> Result<Geom, Refusal> {
     let (big, r) = torus_parts(a)?;
-    rev(torus_ring(big, r), true, rad(a.f("angle")), [1.0, 1.0])
+    rev(torus_ring(r), true, rad(a.f("angle")), [big, 0.0])
 }
 fn tsect_closed(a: &Args) -> Measures {
     let Ok((big, r)) = torus_parts(a) else { return Measures::default() };
@@ -538,15 +594,20 @@ fn etorus_parts(a: &Args) -> Result<(f64, f64, f64), Refusal> {
 }
 fn etorus_geom(a: &Args) -> Result<Geom, Refusal> {
     let (big, w, h) = etorus_parts(a)?;
+    // The tube's ellipse in its own coordinates (its centre at (0, h), moved out by the radius),
+    // in four quarters (the parameter t in quarter turns), so that its points on its axes are
+    // samples and no step's normal turns as far as a quarter turn (what keeps the normals sound
+    // on a flat ellipse, whose normal turns nearly a half turn round each end).
     let f = move |t: f64| {
-        let (s, c) = sin_cos(t);
-        [big + w * c, h + h * s]
+        let (c, s) = quarter_turns(t);
+        [w * c, h + h * s]
     };
     let n = move |t: f64| {
-        let (s, c) = sin_cos(t);
+        let (c, s) = quarter_turns(t);
         [h * c, w * s]
     };
-    rev(vec![fpiece(func(f, 0.0, TAU, 1.0), "torus", n)], true, TAU, [1.0, 1.0])
+    let quarter = |q: f64| fpiece(func(f, q, q + 1.0, 0.25), "torus", n);
+    rev((0..4).map(|q| quarter(q as f64 - 1.0)).collect(), true, TAU, [big, 0.0])
 }
 fn etorus_closed(a: &Args) -> Measures {
     let Ok((big, w, h)) = etorus_parts(a) else { return Measures::default() };
@@ -711,7 +772,10 @@ fn hyper_geom(a: &Args) -> Result<Geom, Refusal> {
     let f = move |u: f64| [w * (1.0 + u * u / (c * c)).sqrt(), u + 0.5 * h];
     let n = move |u: f64| [1.0, -w * u / (c * c * (1.0 + u * u / (c * c)).sqrt())];
     let slope = w * w * h / (2.0 * c * c * r);
-    turned(vec![piece(line(O, [r, 0.0]), "bottom"), fpiece(func(f, -0.5 * h, 0.5 * h, 2.0 * atan(slope) / TAU), "side", n), piece(line([r, h], [0.0, h]), "top")])
+    // The side in two halves, at the waist: in each the normal turns by under a quarter turn
+    // (from the waist's, straight out, to an end's), so that no step's turns that far.
+    let side = |u0: f64, u1: f64| fpiece(func(f, u0, u1, atan(slope) / TAU), "side", n);
+    turned(vec![piece(line(O, [r, 0.0]), "bottom"), side(-0.5 * h, 0.0), side(0.0, 0.5 * h), piece(line([r, h], [0.0, h]), "top")])
 }
 fn hyper_closed(a: &Args) -> Measures {
     let Ok((r, w, h, _)) = hyper_parts(a) else { return Measures::default() };
@@ -727,47 +791,13 @@ fn hyper_anchors(a: &Args) -> Vec<Anchor> {
 
 const P_SUPERELL: &[Param] = &[len("rx", "the semi-axis along x", 0.5), len("ry", "the semi-axis along y", 0.5), len("rz", "the semi-axis along z", 0.5), ratio("exponent", "|x/rx|^n + |y/ry|^n + |z/rz|^n = 1: 2 a sphere, larger squarer", 4.0, 1.5, 32.0)];
 fn superell_geom(a: &Args) -> Result<Geom, Refusal> {
+    super_solid(a.f("rx"), a.f("ry"), a.f("rz"), a.f("exponent"), "superellipsoid")
+}
+fn superell_closed(a: &Args) -> Measures {
     let (rx, ry, rz, n) = (a.f("rx"), a.f("ry"), a.f("rz"), a.f("exponent"));
-    let rr = [rx, ry, rz];
-    let surf = move |d: P3| -> P3 {
-        let s: f64 = (0..3).map(|i| powf((d[i] / rr[i]).abs(), n)).sum();
-        scale3(d, 1.0 / powf(s, 1.0 / n))
-    };
-    let grad = move |p: P3| -> P3 { norm3([0, 1, 2].map(|i| (if p[i] < 0.0 { -1.0 } else { 1.0 }) * powf((p[i] / rr[i]).abs(), n - 1.0) / rr[i])) };
-    let big = rx.max(ry).max(rz);
-    let lattice = move |d: u32| {
-        let g = segments(0.25, d) as u32;
-        Lattice {
-            n: [g + 1; 3],
-            point: move |q: [u32; 3]| {
-                let c = q.map(|i| tan(-0.25 * PI + 0.5 * PI * i as f64 / g as f64));
-                let p = surf(c);
-                ([p[0], p[1] + ry, p[2]], Some(grad(p)))
-            },
-            cell: |_, _, _| (true, 0u32),
-            surfaces: vec![Surface { name: "superellipsoid".into(), smooth: true, radius: Some(big) }],
-        }
-    };
+    // V = 8 rx ry rz Γ(1 + 1/n)³ / Γ(1 + 3/n) (the volume of the unit ball of the n-norm, scaled).
     let g1 = gamma(1.0 + 1.0 / n);
-    let exact = m(Some(8.0 * rx * ry * rz * g1 * g1 * g1 / gamma(1.0 + 3.0 / n)), None, ry, [-rx, 0.0, -rz], [rx, 2.0 * ry, rz]);
-    Ok(Geom::Solid(Rc::new(Gen {
-        count: Rc::new(move |d| {
-            let l = lattice(d);
-            (l.points(), l.faces())
-        }),
-        build: Rc::new(move |d| {
-            let mut mesh = lattice(d).mesh();
-            mesh.chord_error = middle_error(&mesh, |p| {
-                let q = surf([p[0], p[1] - ry, p[2]]);
-                [q[0], q[1] + ry, q[2]]
-            });
-            (mesh, None)
-        }),
-        exact,
-        error: Rc::new(|_| None),
-        genus: 0,
-        check: Some(Rc::new(|m: &Mesh, _| m.self_crossing().map(|(a, b)| SolidFault::Crossing { a, b }))),
-    })))
+    m(Some(8.0 * rx * ry * rz * g1 * g1 * g1 / gamma(1.0 + 3.0 / n)), None, ry, [-rx, 0.0, -rz], [rx, 2.0 * ry, rz])
 }
 fn superell_anchors(a: &Args) -> Vec<Anchor> {
     let (rx, ry, rz) = (a.f("rx"), a.f("ry"), a.f("rz"));
@@ -883,28 +913,29 @@ fn rbox_anchors(a: &Args) -> Vec<Anchor> {
 // ---------------------------------------------------------------- shells
 
 const P_SHELL: &[Param] = &[len("radius", "the outer radius", 0.5), len("thickness", "the wall's thickness, under the radius", 0.05)];
-fn shell_parts(a: &Args) -> Result<(f64, f64), Refusal> {
+/// The outer radius, the thickness as given and the inner radius.
+fn shell_parts(a: &Args) -> Result<(f64, f64, f64), Refusal> {
     let (r, t) = (a.f("radius"), a.f("thickness"));
     if t >= r {
         return Err(refuse("thickness_under_radius", "the wall must be thinner than the radius (a solid half ball is `hemisphere`)", &[("radius", r), ("thickness", t)]));
     }
-    Ok((r, r - t))
+    Ok((r, t, r - t))
 }
-/// The shell's volume `2π (R³ − r³) / 3` as `2π (R − r)(R² + R r + r²) / 3`, which keeps its
-/// digits for a thin wall; its area; and its centroid's height over the rim,
+/// The shell's volume `2π (R³ − r³) / 3` as `2π t (R² + R r + r²) / 3`, with the thickness `t` as
+/// given (not `R − r` again, which keeps only the digits `R` leaves it), so that a thin wall far
+/// out keeps its digits; its area; and its centroid's height over the rim,
 /// `3 (R⁴ − r⁴) / (8 (R³ − r³)) = 3 (R + r)(R² + r²) / (8 (R² + R r + r²))`.
-fn shell_measures(r: f64, i: f64) -> (f64, f64, f64) {
-    let t = r - i;
+fn shell_measures(r: f64, t: f64, i: f64) -> (f64, f64, f64) {
     let s = r * r + r * i + i * i;
     (TAU * t * s / 3.0, TAU * (r * r + i * i) + PI * t * (r + i), 3.0 * (r + i) * (r * r + i * i) / (8.0 * s))
 }
 fn dome_geom(a: &Args) -> Result<Geom, Refusal> {
-    let (r, i) = shell_parts(a)?;
+    let (r, _, i) = shell_parts(a)?;
     turned(vec![piece(arc(O, i, 0.5 * PI, 0.0), "inside"), piece(line([i, 0.0], [r, 0.0]), "rim"), piece(arc(O, r, 0.0, 0.5 * PI), "outside")])
 }
 fn dome_closed(a: &Args) -> Measures {
-    let Ok((r, i)) = shell_parts(a) else { return Measures::default() };
-    let (v, ar, cy) = shell_measures(r, i);
+    let Ok((r, t, i)) = shell_parts(a) else { return Measures::default() };
+    let (v, ar, cy) = shell_measures(r, t, i);
     let (lo, hi) = round_bounds(r, 0.0, r);
     m(Some(v), Some(ar), cy, lo, hi)
 }
@@ -913,13 +944,13 @@ fn dome_anchors(a: &Args) -> Vec<Anchor> {
     vec![out3("top", [0.0, r, 0.0], [0.0, 1.0, 0.0], On::Vertex), out3("underside", [0.0, r - t, 0.0], [0.0, -1.0, 0.0], On::Vertex), out3("rim", [r - 0.5 * t, 0.0, 0.0], [0.0, -1.0, 0.0], On::Boundary), at3("axis_base", [0.0, 0.0, 0.0], On::Free)]
 }
 fn bowl_geom(a: &Args) -> Result<Geom, Refusal> {
-    let (r, i) = shell_parts(a)?;
+    let (r, _, i) = shell_parts(a)?;
     let c = [0.0, r];
     turned(vec![piece(arc(c, r, -0.5 * PI, 0.0), "outside"), piece(line([r, r], [i, r]), "rim"), piece(arc(c, i, 0.0, -0.5 * PI), "inside")])
 }
 fn bowl_closed(a: &Args) -> Measures {
-    let Ok((r, i)) = shell_parts(a) else { return Measures::default() };
-    let (v, ar, cy) = shell_measures(r, i);
+    let Ok((r, t, i)) = shell_parts(a) else { return Measures::default() };
+    let (v, ar, cy) = shell_measures(r, t, i);
     let (lo, hi) = round_bounds(r, 0.0, r);
     m(Some(v), Some(ar), r - cy, lo, hi)
 }
@@ -1224,7 +1255,7 @@ pub(crate) const FORMS: &[Form] = &[
     solid!("sphere", Sphere, "a sphere of latitudes and longitudes (rings of points at equal angles from pole to pole)", "the south pole, on y = 0", P_SPHERE, curved: true, kin: &["circle"], sphere_geom, sphere_closed, sphere_anchors),
     solid!("icosphere", Sphere, "a geodesic sphere: an icosahedron's faces cut into triangles and pushed out to the sphere (points spread nearly evenly)", "its lowest point, on y = 0", P_SPHERE, curved: true, kin: &["circle"], icosphere_geom, sphere_closed, ball_anchors),
     solid!("cube_sphere", Sphere, "a cube's faces cut at equal angles and pushed out to the sphere (an equiangular cube-sphere)", "its lowest point, on y = 0", P_SPHERE, curved: true, kin: &["circle"], cube_sphere_geom, sphere_closed, ball_anchors),
-    solid!("ellipsoid", Sphere, "an ellipsoid of three semi-axes (a sphere of latitudes and longitudes stretched)", "its lowest point, on y = 0", P_ELLIPSOID, curved: true, kin: &["ellipse"], ellipsoid_geom, ellipsoid_closed, ellipsoid_anchors),
+    solid!("ellipsoid", Sphere, "an ellipsoid of three semi-axes (an elliptic profile turned on an ellipse: latitudes and longitudes, cut at the equator and the axes)", "its lowest point, on y = 0", P_ELLIPSOID, curved: true, kin: &["ellipse"], ellipsoid_geom, ellipsoid_closed, ellipsoid_anchors),
     solid!("hemisphere", Sphere, "half a ball, flat side down", STANDS, P_SPHERE, curved: true, kin: &["semicircle"], hemisphere_geom, hemisphere_closed, hemisphere_anchors),
     solid!("spherical_cap", Sphere, "the part of a ball cut off by a plane, flat side down", STANDS, P_CAP, curved: true, kin: &["circular_segment"], cap_geom, cap_closed, cap_anchors),
     solid!("spherical_segment", Sphere, "a zone: the part of a ball between two parallel planes", STANDS, P_ZONE, curved: true, kin: &["circle"], zone_geom, zone_closed, zone_anchors),
@@ -1248,7 +1279,7 @@ pub(crate) const FORMS: &[Form] = &[
     solid!("teardrop_of_revolution", Revolution, "the plane teardrop turned about its axis: a ball drawn out to a point", "its round end's lowest point, on y = 0", crate::forms::round::P_DROP, curved: true, kin: &["teardrop"], tdrop_geom, super::none, tdrop_anchors),
     solid!("paraboloid", Revolution, "a paraboloid, its bowl filled and capped flat", "the vertex, on y = 0", P_PARAB, curved: true, kin: &["parabola"], parab_geom, parab_closed, parab_anchors),
     solid!("hyperboloid", Revolution, "a hyperboloid of one sheet, capped flat at both ends (a cooling tower)", STANDS, P_HYPER, curved: true, kin: &["circle"], hyper_geom, hyper_closed, hyper_anchors),
-    solid!("superellipsoid", Rounded, "a superellipsoid, |x/a|^n + |y/b|^n + |z/c|^n = 1 (a rounded cube by its exponent): a cube-sphere's directions to its surface", "its lowest point, on y = 0", P_SUPERELL, curved: true, kin: &["superellipse"], superell_geom, super::none, superell_anchors),
+    solid!("superellipsoid", Rounded, "a superellipsoid, |x/a|^n + |y/b|^n + |z/c|^n = 1 (a rounded cube by its exponent): a superellipse profile turned on a superellipse", "its lowest point, on y = 0", P_SUPERELL, curved: true, kin: &["superellipse"], superell_geom, superell_closed, superell_anchors),
     solid!("rounded_box", Rounded, "a box with edges and corners of a true radius (quarter cylinders and eighth balls)", STANDS, P_RBOX, curved: true, kin: &["rounded_rectangle"], rbox_geom, super::none, rbox_anchors),
     solid!("dome", Shell, "a hemispherical shell, rim down", "the middle of the rim's circle, on y = 0", P_SHELL, curved: true, kin: &["annular_sector"], dome_geom, dome_closed, dome_anchors),
     solid!("bowl", Shell, "a hemispherical shell, rim up", "its lowest point, on y = 0", P_SHELL, curved: true, kin: &["annular_sector"], bowl_geom, bowl_closed, bowl_anchors),
@@ -1256,7 +1287,7 @@ pub(crate) const FORMS: &[Form] = &[
     solid!("torus_knot", Sweep, "a round wire along the (p, q) torus knot: p times about the axis, q times through the hole", "the torus's centre, lifted so the wire rests on y = 0", P_KNOT, curved: true, kin: &["annulus"], knot_geom, super::none, knot_anchors),
     solid!("mobius_band", Sweep, "a Möbius band with a thickness: a rectangle swept round a circle turning half a turn", "its axis's foot, on y = 0", P_MOBIUS, curved: true, kin: &["rectangle"], mobius_geom, super::none, mobius_anchors),
     solid!("steinmetz_solid", Compound, "the bicylinder: where two cylinders of one radius, along x and along z, cross", "its lowest point, on y = 0", P_SPHERE, curved: true, kin: &["rectangle"], steinmetz_geom, super::none, steinmetz_anchors),
-    solid!("round_arrow", Compound, "an arrow as one solid of revolution along +Y: a shaft and a conical head", "the tail's middle, on y = 0", P_RARROW, curved: false, kin: &["arrow"], rarrow_geom, super::none, rarrow_anchors),
+    solid!("round_arrow", Compound, "an arrow as one solid of revolution along +Y: a shaft and a conical head", "the tail's middle, on y = 0", P_RARROW, curved: true, kin: &["arrow"], rarrow_geom, super::none, rarrow_anchors),
 ];
 
 pub(crate) const ALIASES: &[Alias] = &[

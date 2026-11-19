@@ -7,7 +7,8 @@
 //! faces may carry an exact outward normal at each corner, where the surface is analytic. A
 //! well-made mesh ([`Mesh::validate`]) is watertight (every edge is used by exactly two faces,
 //! once in each direction), encloses a positive volume, has no edge or face under the floor of
-//! its size, has every face planar, and has the Euler characteristic of its genus.
+//! its size, has every face planar, has the Euler characteristic of its genus, and has every
+//! normal it gives on its face's outer side.
 
 use crate::maths::*;
 use crate::outline::EDGE_FLOOR;
@@ -158,12 +159,32 @@ pub enum SolidFault {
         /// The second edge's ring and point.
         b: (usize, usize),
     },
+    /// The section or outline a solid is made from has two edges nearer each other than the
+    /// floor (see [`crate::Fault::Gap`]).
+    SectionGap {
+        /// The first edge's ring and point.
+        a: (usize, usize),
+        /// The second edge's ring and point.
+        b: (usize, usize),
+        /// How far apart they come.
+        gap: f64,
+    },
     /// The section or outline a solid is made from has an edge under the floor.
     SectionShortEdge {
         /// The edge's first point in the section.
         point: usize,
         /// Its length.
         length: f64,
+    },
+    /// A normal given at a corner of a face lies on the face's inner side (a right angle or more
+    /// from the face's own normal): shaded smooth, the face would show dark.
+    NormalBehind {
+        /// The face.
+        face: usize,
+        /// The corner (its place in the face).
+        corner: usize,
+        /// The cosine of the angle between the corner's normal and the face's.
+        cos: f64,
     },
     /// A pyramid's apex does not see this edge of its base from inside (the edge does not turn
     /// counter-clockwise about the point under the apex), so its faces would fold through each
@@ -272,8 +293,10 @@ impl Mesh {
     /// none twice; every coordinate finite and every point used; no edge and no face under the
     /// floor ([`EDGE_FLOOR`] of the size); every face planar ([`PLANAR_EPS`]); every directed
     /// edge used once and its reverse once (closed, and wound one way); the Euler
-    /// characteristic `2 − 2 genus`; and a positive volume (wound outward). Near linear in the
-    /// mesh's size. It does not look for faces that cross: [`Mesh::self_crossing`] does.
+    /// characteristic `2 − 2 genus`; a positive volume (wound outward); and every normal given at
+    /// a face's corner on the face's outer side (less than a right angle from its own normal),
+    /// one a corner. Near linear in the mesh's size. It does not look for faces that cross:
+    /// [`Mesh::self_crossing`] does.
     pub fn validate(&self, genus: u32) -> Result<(), SolidFault> {
         if self.faces.is_empty() || self.points.is_empty() {
             return Err(SolidFault::TooFew { face: 0 });
@@ -351,6 +374,17 @@ impl Mesh {
         let volume = self.measures().size.unwrap_or(0.0);
         if volume.is_nan() || volume <= 0.0 {
             return Err(SolidFault::Inward { volume });
+        }
+        for (fi, f) in self.faces.iter().enumerate() {
+            if let Some(ns) = &f.normals {
+                let n = norm3(self.area_vector(f));
+                for (corner, v) in ns.iter().enumerate() {
+                    let cos = dot3(*v, n);
+                    if cos.is_nan() || cos <= 0.0 || ns.len() != f.verts.len() {
+                        return Err(SolidFault::NormalBehind { face: fi, corner, cos });
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -472,10 +506,13 @@ impl Mesh {
                 (lo, hi)
             })
             .collect();
-        // A tree of boxes over the triangles, split at the median of the longest side down to
-        // leaves of at most 8; pairs are found by descending two branches at once wherever
-        // their boxes meet, so each pair of triangles is compared at most once, and the work is
-        // near n log n however unlike in size the triangles are.
+        // A tree of boxes over the triangles, split at the median of their middles along the
+        // axis where the middles spread farthest, down to leaves of at most 8; pairs are found by
+        // descending two branches at once wherever their boxes meet, so each pair of triangles is
+        // compared at most once, and the work is near n log n however unlike in size the
+        // triangles are. (Split along the node's longest side instead, a helix 10 km across with
+        // coils 0.15 m apart and faces a kilometre long was never split by height: every leaf
+        // held faces of every coil, and its search compared a billion pairs, 56 s.)
         struct Node {
             lo: P3,
             hi: P3,
@@ -488,10 +525,15 @@ impl Mesh {
         while let Some((s, e, parent, right)) = stack.pop() {
             let mut lo = [f64::INFINITY; 3];
             let mut hi = [f64::NEG_INFINITY; 3];
+            let mut clo = [f64::INFINITY; 3];
+            let mut chi = [f64::NEG_INFINITY; 3];
             for &t in &order[s..e] {
                 for k in 0..3 {
                     lo[k] = lo[k].min(bb[t].0[k]);
                     hi[k] = hi[k].max(bb[t].1[k]);
+                    let c = bb[t].0[k] + bb[t].1[k];
+                    clo[k] = clo[k].min(c);
+                    chi[k] = chi[k].max(c);
                 }
             }
             let id = nodes.len();
@@ -505,7 +547,7 @@ impl Mesh {
                 }
             }
             if e - s > 8 {
-                let ax = (0..3).max_by(|&x, &y| (hi[x] - lo[x]).total_cmp(&(hi[y] - lo[y]))).unwrap_or(0);
+                let ax = (0..3).max_by(|&x, &y| (chi[x] - clo[x]).total_cmp(&(chi[y] - clo[y]))).unwrap_or(0);
                 let mid = (s + e) / 2;
                 let centre = |t: usize| bb[t].0[ax] + bb[t].1[ax];
                 order[s..e].select_nth_unstable_by(mid - s, |&x, &y| centre(x).total_cmp(&centre(y)));

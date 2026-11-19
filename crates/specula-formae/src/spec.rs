@@ -203,7 +203,10 @@ impl Spec {
     ///   details `detail / 2`, `detail / 4`, ... (down to [`DETAIL_MIN`]) builds well made,
     ///   the finest of them as `coarser_detail_that_holds` (short edges that are a curve's
     ///   samples grow at a coarser detail; a straight edge does not, and then none is named);
-    ///   `searched_to` is the last detail tried;
+    ///   `searched_to` is the last detail tried. Two edges that do not cross but come no farther
+    ///   apart than the floor (a corner that sharp, or two parts that near) are refused by the
+    ///   same rule, with the two edges (`ring_a`, `edge_a`, `ring_b`, `edge_b`) and the `gap` in
+    ///   place of the one edge: the crossing test cannot tell them from crossing ones;
     /// - two edges that cross are refused with the rule **`crosses_at_this_detail`**: the
     ///   true figure is simple, and its chords stray from it by the build's chord error,
     ///   which at this detail is more than half the gap between two of its parts (a spiral's
@@ -253,7 +256,13 @@ impl Spec {
     /// plane figure's (`edge_under_floor`, `crosses_at_this_detail`, `not_well_made`), with a
     /// solid's numbers: a short edge's `face` and `edge` (or, in the section the solid is made
     /// from, its `point`), two crossing faces' `face_a` and `face_b` (or the section's
-    /// `ring_a`, `edge_a`, `ring_b`, `edge_b`).
+    /// `ring_a`, `edge_a`, `ring_b`, `edge_b`, or a section's two edges nearer than the floor
+    /// with their `gap`). And one rule of a solid's own, **`normal_behind_face`**: a normal the
+    /// build gives at a face's corner lies on the face's inner side (its `face`, its `corner`,
+    /// the `cos` of the angle to the face's own normal, and the coarsest of `detail × 2`,
+    /// `× 4`, ... that holds as `finer_detail_that_holds`). The table's forms are built so that
+    /// it cannot happen (each form's construction says why); a tube swept along a curve is
+    /// refused by it where a detail is too coarse for its bends.
     fn solid_not_well_made(&self, g: &Geom, detail: u32, b: &Mesh, f: SolidFault) -> Error {
         let Geom::Solid(m) = g else { unreachable!("a solid's geometry") };
         solid_refusal(self.form.name, m.as_ref(), detail, b, f)
@@ -297,6 +306,26 @@ pub(crate) fn solid_refusal(form: &'static str, m: &dyn Make, detail: u32, b: &M
                 v.push(("searched_to", last as f64));
                 constraint("crosses_at_this_detail", "the build's faces (or the section it is made from) cross at this detail: where none holds, the solid's own surface comes too near itself", v)
             }
+            SolidFault::SectionGap { a, b, gap } => {
+                let mut v = vec![("ring_a", a.0 as f64), ("edge_a", a.1 as f64), ("ring_b", b.0 as f64), ("edge_b", b.1 as f64), ("gap", gap), ("size", size), ("floor", EDGE_FLOOR * size), ("detail", d)];
+                let (holds, last) = search(false);
+                if let Some(h) = holds {
+                    v.push(("coarser_detail_that_holds", h as f64));
+                }
+                v.push(("searched_to", last as f64));
+                constraint("edge_under_floor", "two edges of the section the solid is made from come no farther apart than a billionth of the solid's size: its parts are too far apart in size (a coarser detail is named where one holds)", v)
+            }
+            SolidFault::NormalBehind { face, corner, cos } => {
+                // A corner's normal on its face's inner side: the faces turn too far across the
+                // surface's normal at this detail (a finer one turns them less).
+                let mut v = vec![("face", face as f64), ("corner", corner as f64), ("cos", cos), ("detail", d)];
+                let (holds, last) = search(true);
+                if let Some(h) = holds {
+                    v.push(("finer_detail_that_holds", h as f64));
+                }
+                v.push(("searched_to", last as f64));
+                constraint("normal_behind_face", "a normal the build gives at a face's corner lies on the face's inner side (a right angle or more from the face's own): the faces are too coarse for how fast the surface turns there (a finer detail is named where one holds under the ceiling)", v)
+            }
             SolidFault::ApexOutside { edge } => constraint("apex_not_over_the_figure", "the apex must see every edge of the figure from inside it (each edge turning counter-clockwise about the origin under the apex), or the faces fold through each other: move the figure so that its origin is inside it and sees all of it", vec![("edge", edge as f64), ("detail", d)]),
             SolidFault::ZeroArea { face, area } => {
                 // A face thinner than the floor (its area over its longest edge): a needle's, whose
@@ -338,6 +367,15 @@ impl Spec {
                 v.push(("searched_to", last as f64));
                 constraint("edge_under_floor", "an edge of the build is no longer than a billionth of the figure's size: its parts are too far apart in size (a coarser detail is named where one holds)", v)
             }
+            Fault::Gap { a, b: e, gap } => {
+                let (holds, last) = plane_holds_at(g, detail, false);
+                let mut v = vec![("ring_a", a.0 as f64), ("edge_a", a.1 as f64), ("ring_b", e.0 as f64), ("edge_b", e.1 as f64), ("gap", gap), ("size", size), ("floor", EDGE_FLOOR * size), ("detail", d)];
+                if let Some(h) = holds {
+                    v.push(("coarser_detail_that_holds", h as f64));
+                }
+                v.push(("searched_to", last as f64));
+                constraint("edge_under_floor", "two edges of the build come no farther apart than a billionth of the figure's size (a corner that sharp, or two parts that near): its parts are too far apart in size for its build to be told well made (a coarser detail is named where one holds)", v)
+            }
             Fault::Crossing { a, b: e } => {
                 let (holds, last) = plane_holds_at(g, detail, true);
                 let mut v = vec![("ring_a", a.0 as f64), ("edge_a", a.1 as f64), ("ring_b", e.0 as f64), ("edge_b", e.1 as f64), ("detail", d), ("chord_error", b.chord_error())];
@@ -351,12 +389,27 @@ impl Spec {
         }
     }
 
-    /// The closed-form measures: exact from the geometry where every piece is a line or an
-    /// arc; otherwise the form's typed formulas where it has them; `None` where neither.
+    /// The closed-form measures. For a plane figure or a curve: exact from the geometry where
+    /// every piece is a line or an arc; otherwise the form's typed formulas where it has them;
+    /// `None` where neither. For a solid the other way about: the form's typed formulas first,
+    /// each written so that nothing cancels at the ends of its parameters' ranges (a thin
+    /// shell's volume from its thickness, not as a difference of cubes), and the geometry's
+    /// where the form types none. (A thin shell's profile of two arcs cannot be integrated
+    /// without that difference: integrated along it, a dome 1e-4 thick of radius 1e4 keeps 8
+    /// digits.) A test holds the typed formulas against the geometry's wherever both exist.
     pub fn closed(&self) -> Result<Measures, Error> {
         let g = self.geom()?;
         let path = g.exact();
         let typed = (self.form.imp.closed)(&self.args);
+        if let Geom::Solid(_) = g {
+            return Ok(Measures {
+                size: typed.size.or(path.size),
+                boundary: typed.boundary.or(path.boundary),
+                centroid: typed.centroid.or(path.centroid),
+                bounds: typed.bounds.or(path.bounds),
+                series: if typed.boundary.is_some() || path.boundary.is_none() { typed.series } else { None },
+            });
+        }
         Ok(Measures {
             size: path.size.or(typed.size),
             boundary: path.boundary.or(typed.boundary),
@@ -364,6 +417,13 @@ impl Spec {
             bounds: path.bounds.or(typed.bounds),
             series: if path.boundary.is_some() { None } else { typed.series },
         })
+    }
+
+    /// The exact measures of the geometry alone (no typed formula), for comparing with the
+    /// typed ones (for tests).
+    #[cfg(test)]
+    pub(crate) fn geometry(&self) -> Measures {
+        self.geom().map(|g| g.exact()).unwrap_or_default()
     }
 
     /// The form's typed textbook formulas alone (no geometry), for comparing with the exact
@@ -456,7 +516,7 @@ enum Bad {
 
 fn class_of(f: &Option<Fault>) -> Option<Bad> {
     f.as_ref().map(|f| match f {
-        Fault::ShortEdge { .. } => Bad::Short,
+        Fault::ShortEdge { .. } | Fault::Gap { .. } => Bad::Short,
         Fault::Crossing { .. } => Bad::Cross,
         _ => Bad::Other,
     })
@@ -464,8 +524,9 @@ fn class_of(f: &Option<Fault>) -> Option<Bad> {
 
 fn class_of_solid(f: &Option<SolidFault>) -> Option<Bad> {
     f.as_ref().map(|f| match f {
-        SolidFault::ShortEdge { .. } | SolidFault::SectionShortEdge { .. } | SolidFault::ZeroArea { .. } => Bad::Short,
-        SolidFault::Crossing { .. } | SolidFault::SectionCrossing { .. } => Bad::Cross,
+        SolidFault::ShortEdge { .. } | SolidFault::SectionShortEdge { .. } | SolidFault::SectionGap { .. } | SolidFault::ZeroArea { .. } => Bad::Short,
+        // (A crossing and a normal behind its face are both mended by a finer detail.)
+        SolidFault::Crossing { .. } | SolidFault::SectionCrossing { .. } | SolidFault::NormalBehind { .. } => Bad::Cross,
         _ => Bad::Other,
     })
 }

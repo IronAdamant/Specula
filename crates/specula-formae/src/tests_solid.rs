@@ -95,7 +95,7 @@ pub(crate) fn sound_solid_refusal(what: &str, s: &Spec, d: u32, e: &Error) {
         "edge_under_floor" => {
             assert_eq!(v("detail"), d as f64, "{what}");
             // (An edge, or a face's width: its area over its longest edge.)
-            let small = value(values, "edge").or(value(values, "width")).unwrap_or_else(|| panic!("{what}: names no edge and no width: {values:?}"));
+            let small = value(values, "edge").or(value(values, "width")).or(value(values, "gap")).unwrap_or_else(|| panic!("{what}: names no edge, no width and no gap: {values:?}"));
             assert!(small <= v("floor") && v("floor") == EDGE_FLOOR * v("size"), "{what}: {values:?}");
             if let (Some(face), Some(w)) = (value(values, "face"), value(values, "width")) {
                 let m = raw();
@@ -109,6 +109,10 @@ pub(crate) fn sound_solid_refusal(what: &str, s: &Spec, d: u32, e: &Error) {
                 let n = f.verts.len();
                 let (a, b) = (f.verts[corner as usize], f.verts[(corner as usize + 1) % n]);
                 assert_eq!(dist3(m.points[a as usize], m.points[b as usize]), v("edge"), "{what}: the edge it names is not that long");
+            } else if let Some(gap) = value(values, "gap") {
+                // Two edges of the section nearer than the floor: the build's own check finds them.
+                let (a, b) = ((v("ring_a") as usize, v("edge_a") as usize), (v("ring_b") as usize, v("edge_b") as usize));
+                assert_eq!(s.solid_fault(d), Some(crate::SolidFault::SectionGap { a, b, gap }), "{what}: the edges it names are not what its check finds");
             } else {
                 v("point");
             }
@@ -120,6 +124,26 @@ pub(crate) fn sound_solid_refusal(what: &str, s: &Spec, d: u32, e: &Error) {
                 None => {
                     let last = v("searched_to") as u32;
                     assert!(last <= d && (last == DETAIL_MIN || s.build(last).is_err()), "{what}: names no coarser detail, and {last} holds");
+                }
+            }
+        }
+        "normal_behind_face" => {
+            // The corner it names has its normal on its face's inner side in the build as made,
+            // and a finer detail it names builds (or none does to the end of the range).
+            assert_eq!(v("detail"), d as f64, "{what}");
+            let m = raw();
+            let f = &m.faces[v("face") as usize];
+            let n = f.normals.as_ref().unwrap_or_else(|| panic!("{what}: the face it names gives no normals"))[v("corner") as usize];
+            assert!(dot3(n, norm3(m.area_vector(f))) <= 0.0, "{what}: the corner it names has its normal on the outer side");
+            match value(values, "finer_detail_that_holds") {
+                Some(h) => {
+                    assert!(h > d as f64 && h <= DETAIL_MAX as f64, "{what}");
+                    holds(h);
+                }
+                None => {
+                    let last = v("searched_to") as u32;
+                    let ended = last == DETAIL_MAX || s.count((2 * last).min(DETAIL_MAX)).map(|c| c.points > MAX_POINTS).unwrap_or(false);
+                    assert!(last >= d && (ended || s.build(last).is_err()), "{what}: names no finer detail, and {last} holds");
                 }
             }
         }
@@ -188,25 +212,45 @@ fn check_built(what: &str, s: &Spec, d: u32, b: &Built) {
     }
 }
 
-/// Test 3: every solid word, with each parameter at its least and its greatest (at the least,
-/// the default and a fine detail), with its parameters moved together (every pair at its
-/// corners, all least, all greatest and three drawn sets, at the least and the default detail),
-/// and at its defaults at the greatest detail too: built and [`check_built`], or refused
-/// soundly.
+/// Test 3: every solid word, with each parameter at its least and its greatest, with its
+/// parameters moved together (every pair at its corners, all least, all greatest and drawn
+/// sets), and at its defaults: built and [`check_built`], or refused soundly. The default run
+/// builds the defaults at the least, an odd, the default and a fine detail, each parameter's
+/// extremes at the least and the default, and the parameters moved together (one drawn set) at
+/// the least and an odd one; [`t3_full`] builds each of those at more details (the greatest for
+/// the defaults, a fine one for the extremes, the default and odd ones for the parameters moved
+/// together) and three drawn sets. Every build is held to the same checks in both.
 #[test]
 fn t3_every_solid_is_well_made() {
+    t3(false);
+}
+
+/// Test 3 in full (see [`t3_every_solid_is_well_made`]): about six minutes in the gate's build.
+#[test]
+#[ignore = "the full run of test 3 (every solid word at more details and drawn sets): minutes; run in release at a stage's end"]
+fn t3_full() {
+    t3(true);
+}
+
+fn t3(full: bool) {
     let (mut built, mut refused) = (0usize, 0usize);
     let ws = solids();
     assert!(!ws.is_empty());
     for w in ws {
         let mut all = cases(&w);
-        all.extend(cases_together(&w, 3));
+        all.extend(cases_together(&w, if full { 3 } else { 1 }));
         for (label, given) in all {
             let what = format!("{} {label}", w.name());
             let s = Spec::of(w, &given).unwrap_or_else(|e| panic!("{what}: {e}"));
-            // (The parameters moved together at the least and the default detail; one at a time at
-            // a fine one too, and the defaults at the greatest.)
-            let details: &[u32] = if label == "defaults" { &[DETAIL_MIN, DETAIL_DEFAULT, 256, DETAIL_MAX] } else if label.contains('=') && !label.contains(' ') { &[DETAIL_MIN, DETAIL_DEFAULT, 256] } else { &[DETAIL_MIN, DETAIL_DEFAULT] };
+            let single = label.contains('=') && !label.contains(' ');
+            let details: &[u32] = match (full, label == "defaults", single) {
+                (false, true, _) => &[DETAIL_MIN, 9, DETAIL_DEFAULT, 256],
+                (false, false, true) => &[DETAIL_MIN, DETAIL_DEFAULT],
+                (false, false, false) => &[DETAIL_MIN, 9],
+                (true, true, _) => &[DETAIL_MIN, 9, 30, DETAIL_DEFAULT, 101, 256, DETAIL_MAX],
+                (true, false, true) => &[DETAIL_MIN, 9, DETAIL_DEFAULT, 101, 256],
+                (true, false, false) => &[DETAIL_MIN, 9, 30, DETAIL_DEFAULT],
+            };
             for &d in details {
                 let what = format!("{what} detail {d}");
                 match s.build(d) {
@@ -242,8 +286,22 @@ fn t3_every_solid_is_well_made() {
 /// - The centroid: moving at most `2 h A` of volume by at most the solid's size `D` moves it by
 ///   at most `2 (2 h A) D / V`.
 /// - The bounds: what is built lies within `2 h` of the closed bounds and reaches them to `2 h`.
+///
+/// The default run builds the extremes at details 64 and 128 (the defaults at 128 and 256, where
+/// the rate is held); [`t4_full`] builds every case at 128 and 256.
 #[test]
 fn t4_solids_closed_forms_hold_against_the_build() {
+    t4(false);
+}
+
+/// Test 4 for solids in full (see [`t4_solids_closed_forms_hold_against_the_build`]).
+#[test]
+#[ignore = "the full run of test 4 for solids (every extreme at details 128 and 256): a minute; run in release at a stage's end"]
+fn t4_full() {
+    t4(true);
+}
+
+fn t4(full: bool) {
     let mut checked = 0;
     for w in solids() {
         for (label, given) in cases(&w) {
@@ -251,18 +309,22 @@ fn t4_solids_closed_forms_hold_against_the_build() {
             let what = format!("{} {label}", w.name());
             let Ok(closed) = s.closed() else { continue };
             let curved = s.geom_curved();
-            let (d1, d2) = if curved { (128, 256) } else { (DETAIL_DEFAULT, DETAIL_DEFAULT) };
+            let (d1, d2) = match (curved, full || label == "defaults") {
+                (false, _) => (DETAIL_DEFAULT, DETAIL_DEFAULT),
+                (true, true) => (128, 256),
+                (true, false) => (64, 128),
+            };
             let (Ok(b1), Ok(b2)) = (s.build(d1), s.build(d2)) else { continue };
             let (m1, m2) = (mesh_of(&b1), mesh_of(&b2));
             let (g1, g2) = (m1.measures(), m2.measures());
             let r = reach_about_middle(m2);
             let (rv, ra) = rounding(m2);
-            let typed = s.typed();
-            if let (Some(t), Some(c)) = (typed.size, closed.size) {
+            let (typed, geometry) = (s.typed(), s.geometry());
+            if let (Some(t), Some(c)) = (typed.size, geometry.size) {
                 assert!((t - c).abs() <= 1e-9 * r * r * r + rv, "{what}: typed volume {t} against the geometry's {c}");
                 checked += 1;
             }
-            if let (Some(t), Some(c)) = (typed.boundary, closed.boundary) {
+            if let (Some(t), Some(c)) = (typed.boundary, geometry.boundary) {
                 assert!((t - c).abs() <= 1e-9 * r * r + ra, "{what}: typed area {t} against the geometry's {c}");
                 checked += 1;
             }
@@ -444,7 +506,10 @@ fn t8_solids_are_pinned() {
     let h = specula_core::hash::hash_bytes(&bytes);
     assert_eq!(h, PINNED, "the pinned builds moved: hash {h:#018x}");
 }
-const PINNED: u64 = 0xa6f9_09c6_ca30_fb04;
+// (Moved on 2026-11-20, from 0xa6f9_09c6_ca30_fb04: the superellipsoid is built as a profile
+// turned on a superellipse, not a cube's directions sent to its surface (review 1b); each of the
+// other ten builds hashes as before.)
+const PINNED: u64 = 0xcbc0_d9d6_79ba_a7b2;
 
 /// The 8-point Gauss–Legendre rule integrates `x^k` on [−1, 1] exactly for `k` up to 15, and its
 /// weights sum to 2.
@@ -557,17 +622,239 @@ fn operators_raise_and_turn_every_one_ring_figure() {
     assert!(built > 100 && apex > 0, "{built} built, {apex} pyramids refused for their apex");
 }
 
-/// The needle superellipsoid (rx 1e-4, exponent 32, the rest at their defaults) at detail 64, which
-/// test 3 once reported crossing (before the crossing predicate counted orientations within their
-/// rounding as touching: most likely that report was rounding): it is refused as crossing at this
-/// detail, soundly, or built with no two faces crossing, searched in full (test 3's own search
-/// stops at 10,000 faces, under this build's 24,576).
+/// The review of stage 1b's cases, and the stretched forms at their corners together and at odd
+/// details: the ellipsoid, the superellipsoid and the elliptic cylinder are built on their own
+/// ring with its axis points among the samples, so the build reaches its six bounds exactly (to
+/// rounding), stands on `y = 0`, holds the volume within `2 h A` of its closed form, and gives at
+/// every corner the surface's own normal (the gradient of `|x/rx|^n + |y/ry|^n + |z/rz|^n`), on
+/// its face's outer side. (Before, the superellipsoid sent a cube's directions to the surface and
+/// a long one was built 8.5 m long of 20 km, and long ellipsoids gave normals behind their faces.)
 #[test]
-fn the_needle_superellipsoid_is_refused_or_simple() {
-    let s = Spec::new("superellipsoid", Some(Kind::Solid), &[("rx", 1e-4), ("exponent", 32.0)]).unwrap();
-    match s.build(64) {
-        Ok(b) => assert_eq!(mesh_of(&b).self_crossing(), None, "built with two faces crossing"),
-        Err(e @ Error::Constraint { rule: "crosses_at_this_detail", .. }) => sound_solid_refusal("the needle superellipsoid", &s, 64, &e),
-        Err(e) => panic!("{e}"),
+fn stretched_forms_reach_their_bounds_and_keep_their_normals() {
+    let review: &[(&str, &[(&str, f64)])] = &[
+        ("superellipsoid", &[("rx", 1.1371588282277725), ("ry", 4.399442507768615), ("rz", 10000.0), ("exponent", 3.467246616652003)]),
+        ("superellipsoid", &[("rx", 9990.00999000999), ("ry", 0.00035081709165283757), ("rz", 0.049869934383160036), ("exponent", 4.0)]),
+        ("superellipsoid", &[("rx", 0.9503690220996647), ("ry", 2.835845645517228), ("rz", 0.012524097963417519), ("exponent", 4.0)]),
+        ("superellipsoid", &[("rx", 7.417752403704147), ("ry", 205.22400463685764), ("rz", 2129.382121878588), ("exponent", 4.044087714203489)]),
+        ("superellipsoid", &[("rx", 413.32790249992337), ("ry", 9778.493687919841), ("rz", 0.5), ("exponent", 31.9999695)]),
+        ("superellipsoid", &[("rx", 0.013406543549556999), ("ry", 9990.00999000999), ("rz", 10000.0), ("exponent", 1.5)]),
+        ("ellipsoid", &[("rx", 0.0001), ("ry", 10000.0), ("rz", 1.8966804249323033)]),
+        ("ellipsoid", &[("rx", 0.033), ("ry", 10000.0), ("rz", 9990.0)]),
+        ("elliptic_cylinder", &[("rx", 0.0001), ("rz", 48.69957914368398), ("height", 0.00010557210467012696)]),
+        ("elliptic_cylinder", &[("rx", 22.4), ("rz", 4525.0)]),
+        ("elliptic_torus", &[("radius", 8834.817246636827), ("width", 0.0001001), ("height", 1048.3844376613379)]),
+    ];
+    let mut sets: Vec<(&str, Vec<(&'static str, f64)>)> = Vec::new();
+    for (name, given) in review {
+        let f = crate::table::form(name).unwrap();
+        sets.push((name, given.iter().map(|&(n, v)| (f.params.iter().find(|p| p.name == n).unwrap().name, v)).collect()));
+    }
+    for name in ["ellipsoid", "superellipsoid", "elliptic_cylinder", "elliptic_torus"] {
+        let w = Found { form: crate::table::form(name).unwrap(), alias: None };
+        for (_, given) in cases_together(&w, 6) {
+            sets.push((name, given));
+        }
+    }
+    let mut built = 0;
+    for (name, given) in sets {
+        let s = Spec::new(name, Some(Kind::Solid), &given).unwrap();
+        for d in [8u32, 9, 30, 101] {
+            let what = format!("{name} {given:?} at detail {d}");
+            let b = match s.build(d) {
+                Ok(b) => b,
+                // (Refused only for an edge under the floor or the form's own rules: never for a
+                // normal behind its face or a crossing.)
+                Err(e @ Error::Constraint { rule, .. }) if !matches!(rule, "normal_behind_face" | "crosses_at_this_detail" | "not_well_made") => {
+                    sound_solid_refusal(&what, &s, d, &e);
+                    continue;
+                }
+                Err(e) => panic!("{what}: {e}"),
+            };
+            built += 1;
+            let m = mesh_of(&b);
+            check_built(&what, &s, d, &b);
+            let c = s.closed().unwrap();
+            let (lo, hi) = c.bounds.unwrap();
+            let (blo, bhi) = m.bounds().unwrap();
+            let r = m.reach();
+            let h = m.chord_error;
+            // (The elliptic torus is turned on a circle, which reaches its bounds within its error.)
+            let reach = if name == "elliptic_torus" { 2.0 * h + 1e-12 * r } else { 1e-12 * r };
+            for k in 0..3 {
+                assert!(blo[k] >= lo[k] - 1e-12 * r && bhi[k] <= hi[k] + 1e-12 * r && blo[k] - lo[k] <= reach && hi[k] - bhi[k] <= reach, "{what}: built {blo:?}..{bhi:?}, its bounds {lo:?}..{hi:?}");
+            }
+            let (v, a) = (m.measures().size.unwrap(), m.measures().boundary.unwrap());
+            let cv = c.size.unwrap();
+            assert!((cv - v).abs() <= 2.0 * h * a + 64.0 * m.points.len() as f64 * EPS * r * r * r, "{what}: volume closed {cv}, built {v}, error {h}");
+            if name == "elliptic_torus" {
+                continue;
+            }
+            let (rx, ry, rz) = (s.args.f("rx"), if name == "elliptic_cylinder" { 1.0 } else { s.args.f("ry") }, s.args.f("rz"));
+            let n = if name == "superellipsoid" { s.args.f("exponent") } else { 2.0 };
+            // The error is no less than how far the true surface stands out of any face's plane
+            // (the build is convex with its points on the surface, so the surface's farthest point
+            // out along a face's normal is at least that far from the build): the support function
+            // in the face's normal less the plane's own distance.
+            let q = n / (n - 1.0);
+            let support = |d: P3| -> f64 {
+                let pw = |x: f64| if x == 0.0 { 0.0 } else { powf(x.abs(), q) };
+                if name == "elliptic_cylinder" {
+                    ((rx * d[0]) * (rx * d[0]) + (rz * d[2]) * (rz * d[2])).sqrt() + (d[1] * s.args.f("height")).max(0.0)
+                } else {
+                    powf(pw(rx * d[0]) + pw(ry * d[1]) + pw(rz * d[2]), 1.0 / q) + d[1] * ry
+                }
+            };
+            let cap = m.faces.iter().map(|f| {
+                let nn = norm3(m.area_vector(f));
+                support(nn) - dot3(nn, m.points[f.verts[0] as usize])
+            });
+            let cap = cap.fold(0.0f64, f64::max);
+            assert!(h >= cap * (1.0 - 1e-9) - 1e-12 * r, "{what}: its error {h} is under how far the surface stands out of a face's plane, {cap}");
+            for f in &m.faces {
+                let Some(ns) = &f.normals else { continue };
+                for (nn, &v) in ns.iter().zip(&f.verts) {
+                    let p = m.points[v as usize];
+                    let g = |x: f64, r: f64| if x < 0.0 { -powf(-x / r, n - 1.0) / r } else { powf(x / r, n - 1.0) / r };
+                    let grad = if name == "elliptic_cylinder" { [g(p[0], rx), 0.0, g(p[2], rz)] } else { [g(p[0], rx), g(p[1] - ry, ry), g(p[2], rz)] };
+                    if len3(grad) > 0.0 {
+                        assert!(dist3(*nn, norm3(grad)) <= 1e-9, "{what}: a normal {nn:?} at {p:?}, the surface's is {:?}", norm3(grad));
+                    }
+                }
+            }
+        }
+    }
+    assert!(built > 300, "{built} built");
+}
+
+/// The review of stage 1b's second finding: a turned figure's volume, and the table's tubes', tori's
+/// and shells' closed forms, keep their digits when the section is thin and far out. Each against
+/// a form with nothing in it to cancel, to `1e-12`: Pappus's theorem from the figure's own area
+/// and centroid (`revolve_of`); `π h (R − r)(R + r)` (the tube); `2π² R r²` and `θ R π r²` (the
+/// torus and its sector); `2π R w h` times π (the elliptic torus); the dome and the bowl as
+/// `2π t (R² + R r + r²) / 3` with `t` as given; the spherical segment by Gauss–Legendre of
+/// `π r³ (1 − u)(1 + u)` between its cuts. The table's tube, tori and the turned figures are
+/// held so by their geometry's own measures too (the profile's integrals about its own origin:
+/// before, about the axis, a section 1e-4 across at 675 m lost all but three digits).
+#[test]
+fn thin_sections_far_out_keep_their_digits() {
+    let near = |what: &str, got: f64, want: f64| assert!((got - want).abs() <= 1e-12 * want.abs(), "{what}: {got}, and with nothing to cancel {want} (off by {:e} of it)", (got - want).abs() / want.abs());
+    let thin = [1e-4, 3.7e-4, 1e-3];
+    let far = [10.0, 675.065_368_564_906_1, 9_999.0];
+    for &t in &thin {
+        for &big in &far {
+            let tube = Spec::new("tube", Some(Kind::Solid), &[("radius", big), ("inner", big - t), ("height", 3.0)]).unwrap();
+            let (r, i, h) = (tube.args.f("radius"), tube.args.f("inner"), 3.0);
+            for (what, m) in [("tube closed", tube.closed().unwrap()), ("tube geometry", tube.geometry())] {
+                near(what, m.size.unwrap(), PI * h * (r - i) * (r + i));
+            }
+            let torus = Spec::new("torus", Some(Kind::Solid), &[("radius", big), ("tube", t)]).unwrap();
+            for (what, m) in [("torus closed", torus.closed().unwrap()), ("torus geometry", torus.geometry())] {
+                near(what, m.size.unwrap(), 2.0 * PI * PI * big * t * t);
+            }
+            let bend = Spec::new("torus_sector", Some(Kind::Solid), &[("radius", big), ("tube", t), ("angle", 37.0)]).unwrap();
+            for (what, m) in [("torus_sector closed", bend.closed().unwrap()), ("torus_sector geometry", bend.geometry())] {
+                near(what, m.size.unwrap(), rad(37.0) * big * PI * t * t);
+            }
+            let et = Spec::new("elliptic_torus", Some(Kind::Solid), &[("radius", big), ("width", t), ("height", 2.0 * t)]).unwrap();
+            near("elliptic_torus closed", et.closed().unwrap().size.unwrap(), TAU * big * PI * t * 2.0 * t);
+            for name in ["dome", "bowl"] {
+                let s = Spec::new(name, Some(Kind::Solid), &[("radius", big), ("thickness", t)]).unwrap();
+                let i = big - t;
+                near(&format!("{name} closed"), s.closed().unwrap().size.unwrap(), TAU * t * (big * big + big * i + i * i) / 3.0);
+            }
+            // A zone between two cuts near the north pole, t apart (over the radius).
+            let (f, u) = (0.998, (0.998 + t).min(0.999));
+            let zone = Spec::new("spherical_segment", Some(Kind::Solid), &[("radius", big), ("from", f), ("to", u)]).unwrap();
+            let (hh, mm) = (0.5 * (u - f), 0.5 * (u + f));
+            // (Each node as f + hh (1 + x), and 1 less it as (1 − f) − hh (1 + x): exact to rounding.)
+            let want: f64 = gauss().iter().map(|&(x, w)| w * hh * PI * big * big * big * ((1.0 - f) - hh * (1.0 + x)) * (1.0 + mm + hh * x)).sum();
+            // (Held to 1e-14: the ranges stop the cuts at 0.999, where the textbook form
+            // r² − (y1² + y1 y0 + y0²)/3 cancels by a factor of about 500, about 5e-14 lost.)
+            let got = zone.closed().unwrap().size.unwrap();
+            assert!((got - want).abs() <= 1e-14 * want, "spherical_segment closed {got}, by quadrature {want} (off by {:e})", (got - want).abs() / want);
+            // Thin figures turned far out: Pappus from the figure's own closed measures.
+            for (name, given) in [("rectangle", vec![("width", t), ("height", 342.66)]), ("chevron", vec![("width", t), ("height", 342.655_950_984_820_04), ("thickness", t)]), ("circle", vec![("radius", t)]), ("rhombus", vec![("width", t), ("height", 9990.0)]), ("annular_sector", vec![("radius", 1.0), ("inner", 1.0 - t), ("angle", 40.0)])] {
+                let fig = Spec::new(name, Some(Kind::Plane), &given).unwrap();
+                let pm = fig.closed().unwrap();
+                let (a, g) = (pm.size.unwrap(), pm.centroid.unwrap());
+                let lo = pm.bounds.unwrap().0;
+                for angle in [360.0, 155.714_723_463_240_46] {
+                    let offset = -lo[0] + big;
+                    let solid = crate::ops::revolve_of(&fig, offset, angle).unwrap();
+                    near(&format!("revolve_of {name} {given:?} at {offset}, {angle} degrees"), solid.closed().size.unwrap(), a * (g[0] + offset) * rad(angle));
+                }
+            }
+        }
+    }
+}
+
+/// The solids turned from parametric pieces have an error that is a bound, known before
+/// building and equal to the build's: every step of their profiles turns by under a quarter turn
+/// (the hyperboloid's side is cut at its waist, the elliptic torus's ellipse into quarters, the
+/// ellipsoid's and superellipsoid's profiles at the equator), so each chord's sag is bounded by its
+/// triangle or given exactly by its curve's support function. A steep hyperboloid (1e-3 tall
+/// with ends of 0.5) at an odd detail is one: cut whole, its middle step straddled the waist
+/// and turned past a quarter turn, and its error was only an estimate.
+#[test]
+fn turned_parametric_pieces_have_bounds() {
+    let rows: &[(&str, &[(&str, f64)])] = &[
+        ("paraboloid", &[]),
+        ("paraboloid", &[("radius", 1e-4), ("height", 1e4)]),
+        ("hyperboloid", &[]),
+        ("hyperboloid", &[("waist", 1e-4)]),
+        ("hyperboloid", &[("height", 1e-3)]),
+        ("elliptic_torus", &[]),
+        ("elliptic_torus", &[("width", 1e-4), ("height", 100.0)]),
+        ("ellipsoid", &[("rx", 1e-3), ("ry", 1e3)]),
+        ("superellipsoid", &[("exponent", 32.0)]),
+        ("superellipsoid", &[("exponent", 1.5), ("rz", 1e3)]),
+        ("elliptic_cylinder", &[("rx", 1e-3)]),
+    ];
+    for (name, given) in rows {
+        let s = Spec::new(name, Some(Kind::Solid), given).unwrap();
+        for d in [8u32, 9, 30, 101] {
+            let what = format!("{name} {given:?} at detail {d}");
+            let Ok(b) = s.build(d) else { continue };
+            assert_eq!(s.error(d).unwrap(), Some(mesh_of(&b).chord_error), "{what}: its error is not a bound known before building");
+        }
+    }
+}
+
+/// The mesh's own check refuses a normal on its face's inner side: a sphere's build with one
+/// corner's normal turned past a right angle from its face is not well made, and names that face
+/// and corner.
+#[test]
+fn validate_refuses_a_normal_behind_its_face() {
+    let b = Spec::new("sphere", Some(Kind::Solid), &[]).unwrap().build(16).unwrap();
+    let mut m = mesh_of(&b).clone();
+    assert_eq!(m.validate(0), Ok(()));
+    let fi = m.faces.iter().position(|f| f.normals.is_some()).unwrap();
+    let n = norm3(m.area_vector(&m.faces[fi]));
+    if let Some(ns) = m.faces[fi].normals.as_mut() {
+        ns[1] = scale3(n, -1.0);
+    }
+    match m.validate(0) {
+        Err(crate::SolidFault::NormalBehind { face, corner, cos }) => assert!(face == fi && corner == 1 && cos < 0.0, "{face} {corner} {cos}"),
+        other => panic!("a normal turned in passed the check: {other:?}"),
+    }
+}
+
+/// A form says it is curved exactly when it is: its build has a curved part (a smooth surface,
+/// for a solid; an arc or a parametric piece, for a figure) and an error above nothing, at the
+/// defaults and at its parameters' extremes. (`round_arrow`, a cylinder and a cone, said it was
+/// not.)
+#[test]
+fn curved_says_what_a_build_has() {
+    for w in words().into_iter().filter(|w| w.alias.is_none()) {
+        for (label, given) in cases(&w) {
+            let s = Spec::of(w, &given).unwrap();
+            let Ok(b) = s.build(DETAIL_DEFAULT) else { continue };
+            let what = format!("{} {label}", w.name());
+            assert_eq!(w.form.curved, s.geom_curved(), "{what}: the table says curved {}, its geometry the other", w.form.curved);
+            assert_eq!(w.form.curved, b.chord_error() > 0.0, "{what}: the table says curved {}, and the build's error is {}", w.form.curved, b.chord_error());
+            if let Built::Mesh(m) = &b {
+                assert_eq!(w.form.curved, m.surfaces.iter().any(|x| x.smooth), "{what}: the table says curved {}, and its surfaces {:?}", w.form.curved, m.surfaces);
+            }
+        }
     }
 }

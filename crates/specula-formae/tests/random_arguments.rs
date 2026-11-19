@@ -60,12 +60,25 @@ fn words() -> Vec<Found> {
     v
 }
 
+/// The default run: 60 argument sets a plane figure's or a curve's word and 8 a solid's, each
+/// held to every demand below; [`every_word_full`] draws 300 and 40 (as the reviewer's probe
+/// first did). That no word refuses every set drawn from its own ranges is held by the full run
+/// alone: in 60 sets a word whose sides must agree (`triangle_sss`) may draw none that do.
 #[test]
 fn every_word_with_arguments_drawn_together() {
-    const SETS: usize = 300;
-    // A solid's build is ten to a hundred times a plane figure's: 40 sets a solid word by default
-    // (the same demands of each), and `FORMAE_PROBE_SOLID_SETS` to draw more, as a check.
+    run(60, 8, 4_000, false);
+}
+
+/// The full run: 300 sets a plane figure's or a curve's word and 40 a solid's
+/// (`FORMAE_PROBE_SOLID_SETS` draws more of a solid's, as a check).
+#[test]
+#[ignore = "the full run of the drawn arguments (300 sets a figure, 40 a solid): minutes; run in release at a stage's end"]
+fn every_word_full() {
     let solid_sets: usize = std::env::var("FORMAE_PROBE_SOLID_SETS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+    run(300, solid_sets, 20_000, true);
+}
+
+fn run(sets: usize, solid_sets: usize, least_builds: usize, every_word_builds: bool) {
     let mut never: Vec<&str> = Vec::new();
     let (mut built, mut refused) = (0usize, 0usize);
     // (Every fault is gathered, a few of each word, and they are said together.)
@@ -80,7 +93,7 @@ fn every_word_with_arguments_drawn_together() {
         let mut seq = Seq(seed(w.name()));
         let mut ok = 0usize;
         let solid = w.form.kind == Kind::Solid;
-        for set in 0..if solid { solid_sets } else { SETS } {
+        for set in 0..if solid { solid_sets } else { sets } {
             let given: Vec<(&str, f64)> = params
                 .iter()
                 .map(|p| {
@@ -219,6 +232,6 @@ fn every_word_with_arguments_drawn_together() {
     assert!(faults.is_empty(), "{} faults:
 {}", faults.len(), faults.join("
 "));
-    assert!(never.is_empty(), "these words never built from {SETS} argument sets inside their own ranges: {never:?}");
-    assert!(built > 20_000, "only {built} builds ({refused} refused)");
+    assert!(!every_word_builds || never.is_empty(), "these words never built from {sets} argument sets inside their own ranges: {never:?}");
+    assert!(built > least_builds, "only {built} builds ({refused} refused)");
 }

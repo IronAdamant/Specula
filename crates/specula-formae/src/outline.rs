@@ -67,6 +67,18 @@ pub enum Fault {
         /// The second edge's ring and point.
         b: (usize, usize),
     },
+    /// Two edges that do not cross come no farther apart than [`EDGE_FLOOR`] of the figure's
+    /// size (two edges that are not neighbours, or a neighbour's far end and the other edge: a
+    /// corner sharper than the floor allows): parts of the figure too far apart in size for
+    /// the crossing test's signs to be trusted there.
+    Gap {
+        /// The first edge's ring and point.
+        a: (usize, usize),
+        /// The second edge's ring and point.
+        b: (usize, usize),
+        /// How far apart they come.
+        gap: f64,
+    },
     /// A hole lies outside the outer ring, or inside another hole.
     HoleOutside {
         /// The hole.
@@ -172,9 +184,14 @@ impl Outline {
     /// Checks that the outline is well made: at least one ring of three or more points, every
     /// coordinate finite, no edge shorter than a billionth of the figure's size, the outer ring
     /// counter-clockwise and holes clockwise, no two edges crossing or touching (edges next to
-    /// each other share only their common point), and every hole inside the outer ring and in
-    /// no other hole. Edges are bucketed on a grid, so the cost is near linear for figures whose
-    /// edges are of like length.
+    /// each other share only their common point), no two edges nearer each other than that
+    /// billionth (nor a neighbour's far end to an edge: a corner that sharp), and every hole
+    /// inside the outer ring and in no other hole. Edges are bucketed on a grid, so the cost is
+    /// near linear for figures whose edges are of like length.
+    ///
+    /// (The gap: the crossing test's signs are only trusted where parts are farther apart than
+    /// rounding; with every edge over the floor but two edges of a chevron 1e4 long 9e-13 apart,
+    /// they were not, and it passed a figure it could not tell from a crossing one.)
     pub fn validate(&self) -> Result<(), Fault> {
         if self.rings.is_empty() {
             return Err(Fault::TooFew { ring: 0 });
@@ -219,10 +236,12 @@ impl Outline {
             (cx.min(side - 1), cy.min(side - 1))
         };
         let mut grid: Vec<Vec<usize>> = vec![Vec::new(); side * side];
+        // (Each edge's box grown by the floor, so that two edges nearer than it share a cell.)
+        let floor = size * EDGE_FLOOR;
         for (ei, &e) in edges.iter().enumerate() {
             let (a, b) = seg(e);
-            let (x0, y0) = cell(a[0].min(b[0]), a[1].min(b[1]));
-            let (x1, y1) = cell(a[0].max(b[0]), a[1].max(b[1]));
+            let (x0, y0) = cell(a[0].min(b[0]) - floor, a[1].min(b[1]) - floor);
+            let (x1, y1) = cell(a[0].max(b[0]) + floor, a[1].max(b[1]) + floor);
             for gx in x0..=x1 {
                 for gy in y0..=y1 {
                     grid[gy * side + gx].push(ei);
@@ -243,15 +262,26 @@ impl Outline {
                     let (a0, a1) = seg(ea);
                     let (b0, b1) = seg(eb);
                     if adjacent(ea, eb) {
-                        // Neighbours share one point; they must not fold back over each other.
+                        // Neighbours share one point; they must not fold back over each other, nor
+                        // the far end of either come within the floor of the other.
                         let n = self.rings[ea.0].len();
                         if n > 3 && collinear_overlap(a0, a1, b0, b1) {
                             return Err(Fault::Crossing { a: ea, b: eb });
+                        }
+                        // (`a` then `b` round the ring, or `b` then `a`: the far ends are the others.)
+                        let (fa, fb) = if a1 == b0 { (a0, b1) } else { (a1, b0) };
+                        let gap = dist_to_segment(fa, b0, b1).min(dist_to_segment(fb, a0, a1));
+                        if gap <= floor {
+                            return Err(Fault::Gap { a: ea, b: eb, gap });
                         }
                         continue;
                     }
                     if segments_meet(a0, a1, b0, b1) {
                         return Err(Fault::Crossing { a: ea, b: eb });
+                    }
+                    let gap = dist_to_segment(a0, b0, b1).min(dist_to_segment(a1, b0, b1)).min(dist_to_segment(b0, a0, a1)).min(dist_to_segment(b1, a0, a1));
+                    if gap <= floor {
+                        return Err(Fault::Gap { a: ea, b: eb, gap });
                     }
                 }
             }
