@@ -189,10 +189,15 @@ and could only be linked).
   files), and its shape numbers come out of a solver written here from its mean breadths, depths and
   girths: 2.83 and 2.73 at the waist against its 2.83 and 2.71, 3.59 and 3.39 at the hip against its
   3.64 and 3.40. The rows by build and everything in the other seven files are **not** re-opened here.
-- **What it says that the figure needs:** a waist is squarer than an ellipse (a shape number near 2.7
-  to 2.8, where an ellipse is 2) and a hip squarer still (3.3 to 3.7). The figure's trunk reads short
-  round the tape because its sections are too round. **The chest's numbers are not to be used as an
-  outline**: the tape there bridges hollows that the breadth and the depth are measured across.
+- **What it says of the figure:** a waist is squarer than an ellipse (a shape number near 2.7 to 2.8,
+  where an ellipse is 2) and a hip squarer still (3.3 to 3.7). The figure's trunk already has one
+  squareness for all its sections, 3, found by fitting the tape before this file came
+  ([FIGURE.md](../../design/FIGURE.md)): the survey's numbers lie either side of it, which confirms it,
+  and says the next step is a squareness for each section. **The chest's numbers are not to be used
+  as an outline**: the tape there bridges hollows that the breadth and the depth are measured across
+  (for one man in seven the chest's girth is as long as the rectangle round its breadth and depth, or
+  longer), which is what the figure's own measuring had found: no section as broad and as deep as
+  the survey's chest can be as far round as its chest girth.
 - **Almost everything pictured is one man** (Richer's model, and the men of three atlases). A woman's
   trunk as a surface, builds, and the levels between the shoulder and the hip in cross-section were
   not found under an open licence.

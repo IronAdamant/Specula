@@ -133,6 +133,14 @@ loosely, each for a reason that is the figure's:
   within 2% and the chest halfway. What is left at the chest is what is not there: the muscles that go
   from the chest and the back to the arms, over which a tape passes. No section as broad and as deep
   as the survey's chest can be as far round as its chest girth.
+  **The survey says the same, computed from all its people** (2026-11-19,
+  [A13](../research/library/A13-trunk-sections.md), held against the engine's own table the day it
+  came): the superellipse with a person's breadth and depth and their girth for its outline has an
+  exponent of 2.7 to 2.8 at the waist and 3.3 to 3.7 at the hips at the median, by sex and build, so
+  the one squareness of 3 fitted here lies between them; and at the chest no exponent fits most men
+  at all (the girth is 0.97 of the rectangle's round their breadth and depth, and for one man in
+  seven as long or longer). **Next from it:** a squareness for each section and not one for the
+  column (waist near 2.8, hips near 3.5, by sex and build as the file gives them).
 - **The legs part 2.5 to 5 cm below the measured crotch**: the two thighs' surfaces melt into each
   other at the top.
 

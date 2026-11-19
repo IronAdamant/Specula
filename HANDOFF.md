@@ -211,7 +211,8 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     as A9 to A16 ([docs/research/library/README.md](docs/research/library/README.md), "Round
     five"). What they give the figure: **a waist and a hip are squarer than an ellipse** (a
     superellipse of exponent about 2.7 to 2.8 at the waist, 3.3 to 3.7 at the hip, by sex
-    and build), which is the squareness the trunk's sections lack; 86 dimensions of the
+    and build): the one squareness of 3 that the trunk was fitted with lies between them,
+    so the next step is a squareness for each section; 86 dimensions of the
     hand and 33 of the foot; joint ranges, and where joint centres lie under the skin's
     landmarks, for the rig. The trunk file's means were held against the engine's own
     table of the same survey and its shape numbers against a solver written here: they
@@ -432,10 +433,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       (`the_figure_measures_what_its_body_does`; `figure_measures` prints the table). It found
       in an hour what eight looks had not, and a change that looked better and measured worse.
       **Measure before looking, and look before saying.** Every breadth and depth is within 3%
-      and most girths within 5%; a tape round the waist reads 6% short and round the chest a
-      tenth to a fifth short, because the trunk's sections are too round (next: a squareness
-      for a column's sections, and the muscles that go from the chest and the back to the
-      arms). **It has a skeleton and has walked** (the same evening): a recipe's rig can be the
+      and most girths within 5%; with ellipses for sections a tape round the waist read 6%
+      short, and the trunk's sections have had a squareness since (3, where an ellipse is
+      2), which brought the waist and the hips to within 2%; the chest still reads a
+      twentieth to a sixth short (next: the muscles that go from the chest and the back to
+      the arms, over which a tape passes). **It has a skeleton and has walked** (the same evening): a recipe's rig can be the
       measured body (`"rig": {"figure": {...}}`, eighteen bones under the names the motion
       tools look for), and a generated gait moves it. The first walk showed that the pelvis
       tears, because a vertex binds to the nearest bone; the body needs weights that know how
