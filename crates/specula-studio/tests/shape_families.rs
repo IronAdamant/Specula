@@ -968,6 +968,75 @@ fn corpus() -> Vec<(&'static str, &'static str, F)> {
     v
 }
 
+fn disc(x: f32, y: f32, cx: f32, cy: f32, r: f32) -> bool {
+    (x - cx).hypot(y - cy) < r
+}
+
+/// **Forty more common assets, the seventh version's own**, each with the lead a person would
+/// give it, written and committed before the measure was changed and before any reading of
+/// them was looked at; read once, at the end of that version's work (FORM.md, "Its seventh
+/// version", gives the rate: it is the one said beside the measure).
+fn fresh() -> Vec<(&'static str, &'static str, F)> {
+    let mut v: Vec<(&'static str, &'static str, F)> = Vec::new();
+    let mut p = |n: &'static str, lead: &'static str, f: F| v.push((n, lead, f));
+    // Round.
+    p("apple", "R", Box::new(|x, y| (disc(x, y, 0.0, 0.04, 0.36) && !disc(x, y, 0.0, -0.36, 0.06)) || (x.abs() < 0.012 && (-0.42..-0.28).contains(&y)) || ell(x, y, 0.075, -0.36, 0.07, 0.03)));
+    p("pocket watch", "R", Box::new(|x, y| disc(x, y, 0.0, 0.05, 0.36) || rounded(x, y + 0.33, 0.035, 0.03, 0.01) || (0.025..0.05).contains(&x.hypot(y + 0.40))));
+    p("cookie with a bite", "R", Box::new(|x, y| disc(x, y, 0.0, 0.0, 0.4) && !disc(x, y, 0.36, -0.22, 0.12) && !disc(x, y, 0.42, -0.08, 0.1)));
+    p("ladybug", "R", Box::new(|x, y| ell(x, y, 0.0, 0.05, 0.3, 0.34) || disc(x, y, 0.0, -0.3, 0.12) || [-0.12f32, 0.02, 0.16].iter().any(|ly| capsule(x, y, [0.25, *ly], [0.38, *ly + 0.06], 0.012) || capsule(x, y, [-0.25, *ly], [-0.38, *ly + 0.06], 0.012)) || capsule(x, y, [-0.05, -0.38], [-0.12, -0.43], 0.008) || capsule(x, y, [0.05, -0.38], [0.12, -0.43], 0.008)));
+    p("chick", "R", Box::new(|x, y| disc(x, y, 0.0, 0.1, 0.28) || disc(x, y, -0.05, -0.2, 0.16) || within(&[[-0.2, -0.24], [-0.32, -0.2], [-0.2, -0.16]], x, y) || capsule(x, y, [-0.08, 0.36], [-0.08, 0.42], 0.015) || capsule(x, y, [0.08, 0.36], [0.08, 0.42], 0.015)));
+    p("hamburger", "R", Box::new(|x, y| (ell(x, y, 0.0, -0.06, 0.4, 0.3) && y < -0.06) || rounded(x, y, 0.42, 0.06, 0.04) || rounded(x, y - 0.13, 0.4, 0.07, 0.06)));
+    p("teapot", "R", Box::new(|x, y| ell(x, y, 0.0, 0.08, 0.28, 0.24) || disc(x, y, 0.0, -0.2, 0.05) || rounded(x, y + 0.15, 0.12, 0.03, 0.02) || cone(x, y, [0.22, 0.12], [0.40, -0.08], 0.06, 0.025) || (0.05..0.1).contains(&(x + 0.27).hypot(y - 0.06))));
+    p("light bulb", "R", Box::new(|x, y| disc(x, y, 0.0, -0.1, 0.3) || cone(x, y, [0.0, 0.1], [0.0, 0.26], 0.16, 0.1) || rounded(x, y - 0.33, 0.1, 0.08, 0.02)));
+    p("acorn", "R", Box::new(|x, y| ell(x, y, 0.0, 0.1, 0.24, 0.3) || (ell(x, y, 0.0, -0.08, 0.3, 0.18) && y < -0.02) || capsule(x, y, [0.0, -0.26], [0.04, -0.38], 0.025)));
+    p("peanut", "R", Box::new(|x, y| ell(x, y, 0.0, -0.2, 0.2, 0.22) || ell(x, y, 0.0, 0.2, 0.22, 0.24) || ell(x, y, 0.0, 0.0, 0.16, 0.2)));
+    p("boxing glove", "R", Box::new(|x, y| ell(x, y, 0.0, -0.08, 0.3, 0.3) || ell(x, y, -0.22, 0.0, 0.12, 0.16) || rounded(x, y - 0.3, 0.2, 0.1, 0.04)));
+    p("frog sitting", "R", Box::new(|x, y| ell(x, y, 0.0, 0.04, 0.32, 0.24) || disc(x, y, -0.15, -0.2, 0.09) || disc(x, y, 0.15, -0.2, 0.09) || ell(x, y, -0.22, 0.28, 0.1, 0.05) || ell(x, y, 0.22, 0.28, 0.1, 0.05)));
+    p("snowman with a top hat", "R", Box::new(|x, y| disc(x, y, 0.0, 0.22, 0.2) || disc(x, y, 0.0, -0.06, 0.14) || (x.abs() < 0.14 && (-0.22..-0.19).contains(&y)) || (x.abs() < 0.09 && (-0.38..-0.2).contains(&y)) || capsule(x, y, [0.12, 0.12], [0.36, 0.0], 0.008) || capsule(x, y, [-0.12, 0.12], [-0.36, 0.0], 0.008)));
+    p("computer mouse", "R", Box::new(|x, y| ell(x, y, 0.0, 0.04, 0.24, 0.36) || capsule(x, y, [0.0, -0.32], [0.06, -0.44], 0.008)));
+    // Square.
+    p("die", "S", Box::new(|x, y| rounded(x, y, 0.3, 0.3, 0.04)));
+    p("television", "S", Box::new(|x, y| rounded(x, y - 0.02, 0.34, 0.22, 0.02) || capsule(x, y, [-0.04, -0.2], [-0.16, -0.4], 0.01) || capsule(x, y, [0.04, -0.2], [0.16, -0.4], 0.01) || (x.abs() < 0.12 && (0.24..0.32).contains(&y)) || (x.abs() < 0.2 && (0.32..0.36).contains(&y))));
+    p("refrigerator", "S", Box::new(|x, y| rounded(x, y, 0.18, 0.42, 0.02)));
+    p("bookshelf with a cornice", "S", Box::new(|x, y| (x.abs() < 0.22 && (-0.32..0.40).contains(&y)) || (x.abs() < 0.27 && (-0.40..-0.32).contains(&y))));
+    p("desk", "S", Box::new(|x, y| (x.abs() < 0.42 && (-0.16..-0.1).contains(&y)) || ((0.14..0.38).contains(&x) && (-0.1..0.3).contains(&y)) || ((-0.38..-0.33).contains(&x) && (-0.1..0.3).contains(&y))));
+    p("brick", "S", Box::new(|x, y| x.abs() < 0.4 && y.abs() < 0.18));
+    p("door", "S", Box::new(|x, y| (x.abs() < 0.2 && y.abs() < 0.42) || ((0.2..0.23).contains(&x) && (0.0..0.05).contains(&y))));
+    p("monitor on a stand", "S", Box::new(|x, y| rounded(x, y + 0.08, 0.36, 0.2, 0.015) || (x.abs() < 0.04 && (0.12..0.3).contains(&y)) || (x.abs() < 0.18 && (0.3..0.35).contains(&y))));
+    p("toolbox", "S", Box::new(|x, y| (x.abs() < 0.38 && (-0.06..0.3).contains(&y)) || (x.abs() < 0.18 && (-0.24..-0.06).contains(&y) && !(x.abs() < 0.13 && (-0.19..-0.06).contains(&y)))));
+    p("suitcase", "S", Box::new(|x, y| rounded(x, y - 0.06, 0.36, 0.26, 0.03) || (x.abs() < 0.12 && (-0.3..-0.18).contains(&y) && !(x.abs() < 0.08 && y > -0.26))));
+    p("stool", "S", Box::new(|x, y| (x.abs() < 0.26 && (-0.3..-0.22).contains(&y)) || ((x.abs() - 0.21).abs() < 0.03 && (-0.22..0.42).contains(&y)) || (x.abs() < 0.21 && (0.12..0.15).contains(&y))));
+    p("bench", "S", Box::new(|x, y| (x.abs() < 0.38 && (0.0..0.06).contains(&y)) || (x.abs() < 0.38 && (-0.3..-0.12).contains(&y)) || ((x.abs() - 0.32).abs() < 0.025 && (-0.3..0.34).contains(&y))));
+    p("stone column", "S", Box::new(|x, y| (x.abs() < 0.1 && (-0.32..0.32).contains(&y)) || (x.abs() < 0.18 && (-0.42..-0.32).contains(&y)) || (x.abs() < 0.2 && (0.32..0.42).contains(&y))));
+    p("bin with a lid", "S", Box::new(|x, y| within(&[[-0.24, -0.22], [0.24, -0.22], [0.2, 0.42], [-0.2, 0.42]], x, y) || (x.abs() < 0.28 && (-0.28..-0.22).contains(&y)) || (x.abs() < 0.06 && (-0.34..-0.28).contains(&y))));
+    // Pointed.
+    p("arrowhead", "P", Box::new(|x, y| within(&[[0.0, -0.44], [0.24, 0.2], [0.1, 0.14], [0.06, 0.36], [-0.06, 0.36], [-0.1, 0.14], [-0.24, 0.2]], x, y)));
+    p("witch hat", "P", Box::new(|x, y| within(&[[0.04, -0.44], [0.2, 0.2], [-0.2, 0.2]], x, y) || ell(x, y, 0.0, 0.24, 0.42, 0.07)));
+    p("icicles", "P", Box::new(|x, y| (x.abs() < 0.3 && (-0.36..-0.28).contains(&y)) || [(-0.24f32, 0.5f32), (-0.12, 0.62), (0.0, 0.68), (0.12, 0.45), (0.24, 0.55)].iter().any(|(cx, len)| within(&[[cx - 0.06, -0.29], [cx + 0.06, -0.29], [*cx, -0.29 + len]], x, y))));
+    p("shark fin", "P", Box::new(|x, y| within(&[[-0.32, 0.3], [0.1, -0.42], [0.06, -0.1], [0.32, 0.3]], x, y)));
+    p("horn", "P", Box::new(|x, y| {
+        (0..15).any(|k| {
+            let at = |k: usize| { let t = k as f32 / 15.0; let a = PI * (1.0 + 0.7 * t); ([0.05 + 0.3 * a.cos(), 0.15 + 0.3 * a.sin()], 0.12 * (1.0 - t) + 0.004) };
+            let ((a, ra), (b, rb)) = (at(k), at(k + 1));
+            cone(x, y, a, b, ra, rb)
+        })
+    }));
+    p("paper plane", "P", Box::new(|x, y| within(&[[0.44, 0.0], [-0.34, -0.22], [-0.16, 0.0], [-0.34, 0.2]], x, y)));
+    p("mountain range", "P", Box::new(|x, y| within(&[[-0.38, 0.28], [-0.24, -0.12], [-0.12, 0.02], [0.06, -0.36], [0.22, -0.06], [0.3, -0.16], [0.38, 0.28]], x, y)));
+    p("cursor arrow", "P", Box::new(|x, y| within(&[[-0.2, -0.42], [0.22, 0.04], [0.04, 0.06], [0.14, 0.34], [0.06, 0.38], [-0.04, 0.1], [-0.2, 0.24]], x, y)));
+    p("fang", "P", Box::new(|x, y| within(&[[-0.16, -0.36], [0.16, -0.36], [0.12, 0.0], [0.0, 0.42], [-0.06, 0.1]], x, y)));
+    p("chevron", "P", Box::new(|x, y| within(&[[-0.4, -0.1], [0.0, -0.4], [0.4, -0.1], [0.4, 0.14], [0.0, -0.16], [-0.4, 0.14]], x, y)));
+    p("kunai", "P", Box::new(|x, y| within(&[[0.0, -0.44], [0.08, -0.16], [0.03, -0.08], [-0.03, -0.08], [-0.08, -0.16]], x, y) || (x.abs() < 0.022 && (-0.08..0.32).contains(&y)) || (0.03..0.06).contains(&x.hypot(y - 0.36))));
+    p("holly leaf", "P", Box::new(|x, y| {
+        let half = [[0.0f32, -0.44], [0.08, -0.3], [0.2, -0.3], [0.14, -0.16], [0.26, -0.08], [0.14, 0.02], [0.24, 0.14], [0.1, 0.18], [0.12, 0.3], [0.0, 0.36]];
+        let mut leaf: Vec<[f32; 2]> = half.to_vec();
+        leaf.extend(half[1..half.len() - 1].iter().rev().map(|p| [-p[0], p[1]]));
+        within(&leaf, x, y) || (x.abs() < 0.012 && (0.3..0.44).contains(&y))
+    }));
+    drop(p);
+    v
+}
+
 /// The corpus swept every `step` degrees: each shape's name, the leads a person would give,
 /// and its sweep.
 fn corpus_swept(step: u32) -> Vec<(&'static str, &'static str, Sweep)> {
@@ -1026,11 +1095,50 @@ fn corpus_table() {
     std::fs::write(&path, out).unwrap();
 }
 
-/// No corpus shape reaches the picture's edge at any angle (a shape that did would be cut).
+/// (The seventh version's own forty, read: written to `specula-shape-fresh.txt` in the
+/// temporary folder, or `OUT`, every `STEP` degrees, 1 unless given. Run once, at the end.)
+#[test]
+#[ignore = "reads the forty held back until the end"]
+fn fresh_table() {
+    let step: u32 = std::env::var("STEP").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let all = fresh();
+    let out = std::sync::Mutex::new(Vec::new());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(12);
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Some((name, lead, f)) = all.get(i) else { break };
+                let r = sweep(&**f, step);
+                out.lock().unwrap().push((i, *name, *lead, r));
+            });
+        }
+    });
+    let mut rows = out.into_inner().unwrap();
+    rows.sort_by_key(|r| r.0);
+    let (mut right, mut mostly, mut text) = (0, 0, String::new());
+    for (_, name, lead, s) in &rows {
+        let (r, m) = (reads_as(s, lead), mostly_reads_as(s, lead));
+        right += usize::from(r);
+        mostly += usize::from(m);
+        text += &format!(
+            "{name:30} {lead:2} {} lead R/S/P {:3?} none {:3} mean r{:.2} s{:.2} p{:.2} | r {:.2}-{:.2} s {:.2}-{:.2} p {:.2}-{:.2}\n",
+            if r { "ok  " } else if m { "most" } else { "NO  " },
+            s.lead, s.none, s.mean[0], s.mean[1], s.mean[2], s.lo[0], s.hi[0], s.lo[1], s.hi[1], s.lo[2], s.hi[2]
+        );
+    }
+    text += &format!("{right} of {} lead as a person would in every mask; {mostly} in most\n", rows.len());
+    let path = std::env::var("OUT").map_or_else(|_| std::env::temp_dir().join("specula-shape-fresh.txt"), std::path::PathBuf::from);
+    std::fs::write(&path, text).unwrap();
+}
+
+/// No corpus shape reaches the picture's edge at any angle (a shape that did would be cut),
+/// and no two have one name.
 #[test]
 fn the_corpus_fits_its_pictures() {
     let mut bad = Vec::new();
-    for (name, _, f) in corpus() {
+    for (name, _, f) in corpus().into_iter().chain(fresh()) {
         for deg in [0.0f32, 30.0, 45.0, 60.0] {
             let m = render(512, &*f, deg, false, (0.37, 0.71));
             let edge = (0..512usize).any(|i| m.on[i] || m.on[511 * 512 + i] || m.on[i * 512] || m.on[i * 512 + 511]);
@@ -1040,6 +1148,39 @@ fn the_corpus_fits_its_pictures() {
         }
     }
     assert!(bad.is_empty(), "reach the edge: {bad:?}");
+    let mut names: Vec<&str> = corpus().iter().chain(fresh().iter()).map(|c| c.0).collect();
+    let all = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), all, "a name used twice");
+    // (The forty are drawn as one piece each: the measure reads the largest piece only.)
+    for (name, _, f) in fresh() {
+        let m = render(512, &*f, 0.0, false, (0.37, 0.71));
+        let mut seen = vec![false; m.on.len()];
+        let mut pieces = 0;
+        for start in 0..m.on.len() {
+            if !m.on[start] || seen[start] {
+                continue;
+            }
+            pieces += 1;
+            let mut stack = vec![start];
+            seen[start] = true;
+            while let Some(at) = stack.pop() {
+                let (x, y) = ((at % 512) as i32, (at / 512) as i32);
+                for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if (0..512).contains(&nx) && (0..512).contains(&ny) {
+                        let n = (ny * 512 + nx) as usize;
+                        if m.on[n] && !seen[n] {
+                            seen[n] = true;
+                            stack.push(n);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(pieces, 1, "{name} is drawn in {pieces} pieces");
+    }
 }
 
 /// The masks whose cost its reviews found worst, and the worst made since: coils of wire,
