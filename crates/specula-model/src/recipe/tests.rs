@@ -652,9 +652,10 @@ fn what_a_recipe_is_built_of_is_recorded_with_its_surface() {
     let s = of("parts[3].shape");
     assert_eq!((s.what, s.views.len(), s.views[1].0.len(), s.views[1].1), ("cone", 2, 3, 2.0));
     // A box with a hole cut through it: the box is recorded, the cylinder that cut it is not,
-    // and the record's surface is what is left of both (the box's faces less the two discs,
-    // and the hole's wall), all of it the box's.
-    assert_eq!(of("parts[4].shape.of[0]").what, "box");
+    // and the record's surface is what is left of the box (its faces less the two discs). The
+    // hole's wall is the cylinder's surface, and no record speaks for it.
+    let h = of("parts[4].shape.of[0]");
+    assert!(h.what == "box" && near(h.area_m2, 24.0 - 2.0 * std::f32::consts::PI * 0.16, 0.02), "{h:?}");
     assert!(!made.iter().any(|m| m.path == "parts[4].shape.of[1]"), "what a difference takes away is not what the thing is made of");
     // A sculpt: its ball's three circles; the box it is cut by adds nothing.
     let d = of("parts[5].shape");
@@ -663,11 +664,13 @@ fn what_a_recipe_is_built_of_is_recorded_with_its_surface() {
     // A lathe: its section (ten sides) and its profile mirrored.
     let u = of("parts[6].shape");
     assert_eq!((u.what, u.views[0].0.len(), u.views[1].0.len()), ("lathe", 10, 6));
-    // Seven shapes in all, the largest first, and nearly all the model's surface spoken for.
+    // Seven shapes in all, the largest first, and all the model's surface spoken for but the
+    // walls the two cuts made (the hole's, 2.5 m2 a side of 0.4 m by 2 m; the bead's slot).
     assert_eq!(made.len(), 7, "{:?}", made.iter().map(|m| m.path.as_str()).collect::<Vec<_>>());
     assert!(made.windows(2).all(|w| w[0].area_m2 >= w[1].area_m2));
     let spoken: f32 = made.iter().map(|m| m.area_m2).sum();
-    assert!(model.extras.made_rest_m2 <= 0.02 * spoken, "of {spoken} m2, {} is spoken for by nothing", model.extras.made_rest_m2);
+    let wall = 2.0 * std::f32::consts::PI * 0.4 * 2.0;
+    assert!(model.extras.made_rest_m2 >= 0.97 * wall && model.extras.made_rest_m2 <= wall + 0.6, "of {spoken} m2, {} is spoken for by nothing", model.extras.made_rest_m2);
     // The same recipe says the same.
     assert_eq!(build_with(&text, &[]).unwrap().extras.made, *made);
 }

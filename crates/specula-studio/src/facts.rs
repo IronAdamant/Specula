@@ -179,7 +179,8 @@ pub struct AssetFacts {
     /// What its recipe is built of: each shape it names with its own outlines and its surface
     /// ([`specula_model::Made`]), and the surface nothing of that speaks for. Read as shape
     /// language by [`crate::built::built_of`] when a check or an answer wants it (some
-    /// milliseconds an outline: not at every staging).
+    /// milliseconds an outline, at most [`crate::built::MAX_READS`] of them: not at every
+    /// staging). Bounded by the model (a quarter of a megabyte at the most).
     pub made: Vec<specula_model::Made>,
     pub made_rest_m2: f32,
 }

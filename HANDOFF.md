@@ -671,8 +671,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       boolean operand's own operations, for includes (paths collide and a terrain's surface
       is credited to a box), for scatters and for intersections; an outline too thin to
       read is dropped without a word (a pole reads 100% round); a measured human figure
-      reads 98% square (FORM.md, "Its first review"). None of it is mended yet; an agent
-      that did not write it is on it.
+      reads 98% square (FORM.md, "Its first review"). **An agent that did not write it has
+      mended all of it** (2026-11-20; FORM.md, "What was mended"): a record's surface is
+      now that shape's own surface in the finished model, and what no record speaks for is
+      the rest. A boolean says exactly which operand each face of its result came from; a
+      sculpt's primitives are weighed by the triangles their field made; an include's
+      records carry its path; a scatter records what it placed; an outline is read at six
+      to one at most, so a pole and a coin read as a can does; a column's outline has its
+      caps, and the measured figure reads round. By its own account nineteen faults seeded
+      back were each caught, Sepulcra's counts did not move, and reading costs 9 to 243 ms
+      an asset. **These mends are not reviewed yet.**
     - **Where its verification stands** (2026-11-19, night): the full gate passed on
       `bec48409` (everything of part 4 up to the form views in a before and after and in
       the line-up: 3,298 tests, the repeats, the slow-worker run, the speed budgets, clippy

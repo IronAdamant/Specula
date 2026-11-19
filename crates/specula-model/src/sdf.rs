@@ -1200,6 +1200,115 @@ pub fn eval_cost(n: &SdfNode) -> u64 {
     }
 }
 
+/// Most triangles of a sculpt's mesh asked which primitive they are the surface of
+/// ([`surface_by_primitive`]); a mesh of more is asked by every so many of its triangles.
+pub const MAX_OWNER_SAMPLES: usize = 4096;
+/// The work ([`eval_cost`]'s units, charged to the build's) asking a sculpt's triangles who made
+/// them may spend: under a third of a percent of a build's (a measured figure: about 600 of its
+/// 8,000 triangles asked, in about half a millisecond). A tree too dear for [`MAX_OWNER_SAMPLES`] is asked fewer
+/// times, never fewer than 64.
+pub const MAX_OWNER_WORK: u64 = 4_000_000;
+
+/// How much of a sculpt's surface each of its primitives makes, in the order they are met
+/// depth first (every primitive counted, a half space and what a difference takes away among
+/// them), square metres of `shape` (the tree's mesh, in the tree's frame, before any of its
+/// part's operations). **The surface is what was meshed**, so every copy a mirror or a repeat
+/// makes, an elongation's length and what an intersection or a difference leaves of each
+/// primitive are counted as they are: each triangle belongs to the primitive whose field is the
+/// tree's at its middle (in a union the nearest; in an intersection the furthest; in a
+/// difference the first child where it stands and a later one where it cut, which is that
+/// later one's). In a smooth blend the nearest takes the blend. `seed` is the mesh's. Also
+/// the work spent.
+pub fn surface_by_primitive(tree: &SdfNode, seed: u64, shape: &crate::shape::Shape) -> (Vec<f32>, u64) {
+    let prepared = prepare(tree, seed, &mut 0);
+    let counts = Counted::of(&prepared);
+    let mut out = vec![0.0f64; counts.prims];
+    if shape.tris.is_empty() || counts.prims == 0 {
+        return (out.into_iter().map(|a| a as f32).collect(), 0);
+    }
+    fn depth(n: &SdfNode) -> u64 {
+        1 + match &n.kind {
+            Kind::Prim(_) => 0,
+            Kind::Group { kids, .. } => kids.iter().map(depth).max().unwrap_or(0),
+        }
+    }
+    let per = eval_cost(tree).max(1).saturating_mul(depth(tree) + 1);
+    let samples = ((MAX_OWNER_WORK / per) as usize).clamp(64, MAX_OWNER_SAMPLES);
+    let stride = shape.tris.len().div_ceil(samples).max(1);
+    let p = |i: u32| shape.positions.get(i as usize).copied().unwrap_or([0.0; 3]);
+    let (mut asked, mut whole) = (0.0f64, 0.0f64);
+    let mut spent = 0u64;
+    for (i, t) in shape.tris.iter().enumerate() {
+        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+        let area = 0.5 * f64::from(math3::length(math3::cross(math3::sub(b, a), math3::sub(c, a))));
+        if !area.is_finite() {
+            continue;
+        }
+        whole += area;
+        if i % stride != 0 {
+            continue;
+        }
+        let mid = math3::scale(math3::add(math3::add(a, b), c), 1.0 / 3.0);
+        out[counts.owner(mid, 0)] += area;
+        asked += area;
+        spent += per;
+    }
+    // (Every so many triangles stand for all of them.)
+    let scale = if asked > 0.0 { whole / asked } else { 0.0 };
+    (out.into_iter().map(|a| (a * scale) as f32).collect(), spent)
+}
+
+/// A prepared tree with how many primitives each node holds.
+struct Counted<'a> {
+    n: &'a Prepared,
+    prims: usize,
+    kids: Vec<Counted<'a>>,
+}
+
+impl<'a> Counted<'a> {
+    fn of(n: &'a Prepared) -> Counted<'a> {
+        match &n.kind {
+            PKind::Prim(_) => Counted { n, prims: 1, kids: Vec::new() },
+            PKind::Group { kids, .. } => {
+                let kids: Vec<Counted> = kids.iter().map(Counted::of).collect();
+                Counted { n, prims: kids.iter().map(|k| k.prims).sum(), kids }
+            }
+        }
+    }
+
+    /// The primitive (numbered from `base`) whose field is this node's at `p` (in the node's
+    /// parent's frame).
+    fn owner(&self, p: V3, base: usize) -> usize {
+        let PKind::Group { op, .. } = &self.n.kind else { return base };
+        if self.kids.is_empty() {
+            return base;
+        }
+        let q = local(self.n, p);
+        let mut best = (0usize, 0.0f32);
+        for (i, k) in self.kids.iter().enumerate() {
+            let d = eval(k.n, q);
+            // (What decides: the least in a union, the most in an intersection; in a
+            // difference the most of the first and the others turned inside out.)
+            let v = match op {
+                Combine::Union | Combine::Near => -d,
+                Combine::Intersection => d,
+                Combine::Difference => {
+                    if i == 0 {
+                        d
+                    } else {
+                        -d
+                    }
+                }
+            };
+            if i == 0 || v > best.1 {
+                best = (i, v);
+            }
+        }
+        let before: usize = self.kids[..best.0].iter().map(|k| k.prims).sum();
+        self.kids[best.0].owner(q, base + before)
+    }
+}
+
 /// [`eval_cost`] of a prepared tree (a pruned one costs what is left of it).
 /// A tree's field at a point (negative inside), for tests that ask where a surface is.
 #[cfg(test)]

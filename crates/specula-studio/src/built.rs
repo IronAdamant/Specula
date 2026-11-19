@@ -13,9 +13,11 @@
 //! boxes is boxes here and a ball in silhouette; a crate under a round lid is half of each
 //! here and by the angle there.
 //!
-//! What it cannot say: anything of an imported mesh or a generated part (no recipe speaks for
-//! them: [`BuiltOf::read`] is the share of the surface that was read); what a part's
-//! operations did to its form (a taper, a bend); how the parts meet.
+//! What it cannot say: anything of an imported mesh, a terrain or a building, or of the wall a
+//! cut makes (no record speaks for them: [`BuiltOf::read`] is the share of the surface that was
+//! read, and an outline the measure cannot read, or past [`MAX_READS`], counts as not read);
+//! what a part's operations did to its form (a taper, a bend); how the parts meet. A thin
+//! outline is read at [`MAX_ASPECT`] to one at the most ([`at_most_long`]).
 
 use crate::image::Mask;
 use crate::shape::{Kind, ShapeLanguage};
@@ -55,8 +57,9 @@ pub struct BuiltOf {
     pub round: f32,
     pub square: f32,
     pub pointed: f32,
-    /// The share of the asset's surface these speak for (the rest: generated parts, shapes
-    /// whose outlines could not be read, shapes past the ones the model kept).
+    /// The share of the asset's surface these speak for (the rest: what no record speaks for,
+    /// outlines that could not be read or were past [`MAX_READS`], each with its share of its
+    /// shape's surface, and shapes past the ones the model kept).
     pub read: f32,
     /// How many shapes were read.
     pub shapes: usize,
@@ -159,47 +162,127 @@ pub fn drawn(points: &[[f32; 2]], side: u32) -> Option<Mask> {
     (m.area() > 0).then_some(m)
 }
 
-/// The shape language of one outline, drawn and read.
+/// How much longer than wide an outline is read at, at the most ([`at_most_long`]).
+pub const MAX_ASPECT: f32 = 6.0;
+/// Outlines read for one asset, at the most (identical ones are read once): what is past them
+/// counts as not read. The largest record a model keeps, every outline different, read in
+/// 0.27 s on the reference laptop while other builds ran (an outline 8 ms there).
+pub const MAX_READS: usize = 32;
+
+/// An outline longer than [`MAX_ASPECT`] times its width, shortened to that. Drawn at its own
+/// length a thin one is too thin for the measure to read (under [`crate::shape::MIN_THICK`]
+/// pixels: about forty to one at [`PIXELS`]) or is read wrongly near that, and differently at
+/// another size. A recorded outline is one part's:
+/// - **straight along its middle** (no corner of it between its two ends, each as long as the
+///   outline is wide: a rod's rectangle, a capsule's stadium, a spike's triangle, a round
+///   cone's side), the length is taken out of the middle and its ends kept as they are, so a
+///   rod is read as a rectangle and a capsule as a stadium however long they are;
+/// - **curved along it** (an oval's, a profile's), it is pressed evenly from end to end, so an
+///   oval of a thousand to one is read as one of six: pointed, as the measure reads ovals of
+///   over about four to one.
+pub fn at_most_long(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+    for p in points {
+        for k in 0..2 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let w = [hi[0] - lo[0], hi[1] - lo[1]];
+    let (long, short) = if w[0] >= w[1] { (0, 1) } else { (1, 0) };
+    if !(w[short] > 0.0 && w[long].is_finite()) || w[long] <= MAX_ASPECT * w[short] {
+        return points.to_vec();
+    }
+    let end = w[short];
+    let middle = w[long] - 2.0 * end;
+    // (An outline with corners along its middle, an oval's or a profile's, is curved there:
+    // it is pressed evenly from end to end, and an oval of a thousand to one is read as one of
+    // six.)
+    if points.iter().any(|p| p[long] - lo[long] > end && p[long] - lo[long] < w[long] - end) {
+        let k = MAX_ASPECT * w[short] / w[long];
+        return points
+            .iter()
+            .map(|p| {
+                let mut q = *p;
+                q[long] = lo[long] + (p[long] - lo[long]) * k;
+                q
+            })
+            .collect();
+    }
+    let k = (MAX_ASPECT - 2.0) * w[short] / middle;
+    points
+        .iter()
+        .map(|p| {
+            let u = p[long] - lo[long];
+            let u = if u <= end {
+                u
+            } else if u >= w[long] - end {
+                u - middle * (1.0 - k)
+            } else {
+                end + (u - end) * k
+            };
+            let mut q = *p;
+            q[long] = lo[long] + u;
+            q
+        })
+        .collect()
+}
+
+/// The shape language of one outline, drawn and read (at most [`MAX_ASPECT`] times as long as
+/// wide: [`at_most_long`]).
 pub fn of_outline(points: &[[f32; 2]]) -> Option<ShapeLanguage> {
-    crate::shape::of_mask(&drawn(points, PIXELS)?)
+    crate::shape::of_mask(&drawn(&at_most_long(points), PIXELS)?)
 }
 
 /// What the shapes a recipe recorded come to: each shape's outlines read and weighed as the
 /// recipe weighed them, the shapes weighed by their surface. `rest_m2` is the surface the
-/// model said nothing speaks for. `None` when nothing could be read.
+/// model said nothing speaks for. **What is not read counts as not read** ([`BuiltOf::read`]):
+/// an outline the measure cannot read takes its share of its shape's surface with it, and so
+/// do the outlines past [`MAX_READS`] (the largest shapes are read first). `None` when nothing
+/// could be read.
 pub fn built_of(made: &[Made], rest_m2: f32) -> Option<BuiltOf> {
     // (One reading for outlines that are the same: a recipe of twenty boxes has few.)
-    fn outline_read<'a>(seen: &mut Vec<(&'a [[f32; 2]], Option<ShapeLanguage>)>, points: &'a [[f32; 2]]) -> Option<ShapeLanguage> {
-        if let Some((_, s)) = seen.iter().find(|(p, _)| *p == points) {
-            return *s;
-        }
-        let s = of_outline(points);
-        seen.push((points, s));
-        s
-    }
-    let mut seen = Vec::new();
+    let mut seen: Vec<(&[[f32; 2]], Option<ShapeLanguage>)> = Vec::new();
     let mut parts: Vec<BuiltPart> = Vec::new();
     let (mut total, mut read) = (rest_m2.max(0.0), 0.0f32);
     let mut sum = [0.0f32; 3];
-    for m in made {
-        if !(m.area_m2.is_finite() && m.area_m2 > 0.0) {
-            continue;
-        }
+    // (The largest first, so that a budget cuts the smallest.)
+    let mut order: Vec<&Made> = made.iter().filter(|m| m.area_m2.is_finite() && m.area_m2 > 0.0).collect();
+    order.sort_by(|a, b| b.area_m2.total_cmp(&a.area_m2).then_with(|| a.path.cmp(&b.path)));
+    for m in order {
         total += m.area_m2;
-        let (mut shares, mut weight) = ([0.0f32; 3], 0.0f32);
+        let (mut shares, mut weight, mut all) = ([0.0f32; 3], 0.0f32, 0.0f32);
         for (points, w) in &m.views {
-            if let Some(s) = outline_read(&mut seen, points) {
+            if !(w.is_finite() && *w > 0.0) {
+                continue;
+            }
+            all += w;
+            let known = seen.iter().find(|(p, _)| *p == points.as_slice()).map(|(_, s)| *s);
+            let s = match known {
+                Some(s) => s,
+                // (An outline of no points: one the model did not keep. Not read.)
+                None if points.len() < 3 => None,
+                None if seen.len() < MAX_READS => {
+                    let s = of_outline(points);
+                    seen.push((points.as_slice(), s));
+                    s
+                }
+                None => None,
+            };
+            if let Some(s) = s {
                 shares = [shares[0] + s.round * w, shares[1] + s.square * w, shares[2] + s.pointed * w];
                 weight += w;
             }
         }
-        if weight <= 0.0 {
+        if weight <= 0.0 || all <= 0.0 {
             continue;
         }
         let shares = shares.map(|x| x / weight);
-        read += m.area_m2;
-        sum = [sum[0] + shares[0] * m.area_m2, sum[1] + shares[1] * m.area_m2, sum[2] + shares[2] * m.area_m2];
-        parts.push(BuiltPart { path: m.path.clone(), what: m.what, share: m.area_m2, round: shares[0], square: shares[1], pointed: shares[2] });
+        // (The share of its surface its read outlines speak for.)
+        let spoken = m.area_m2 * weight / all;
+        read += spoken;
+        sum = [sum[0] + shares[0] * spoken, sum[1] + shares[1] * spoken, sum[2] + shares[2] * spoken];
+        parts.push(BuiltPart { path: m.path.clone(), what: m.what, share: spoken, round: shares[0], square: shares[1], pointed: shares[2] });
     }
     if read <= 0.0 {
         return None;
@@ -290,5 +373,102 @@ mod tests {
         let many: Vec<Made> = (0..20).map(|i| made(&format!("parts[{i}].shape"), "box", 1.0, vec![(rect(1.0, 1.0, 0.0), 1.0)])).collect();
         let b = built_of(&many, 0.0).unwrap();
         assert!(b.square > 0.95 && b.shapes == 20 && b.parts.len() == MAX_PARTS, "{b:?}");
+    }
+
+    /// The reading of an outline at a side of `side` pixels, as [`of_outline`] reads it at its own.
+    fn read_at(points: &[[f32; 2]], side: u32) -> Option<ShapeLanguage> {
+        crate::shape::of_mask(&drawn(&at_most_long(points), side)?)
+    }
+
+    /// A thin outline is read as what it is, however thin: a rod's side is a rectangle and a
+    /// capsule's a stadium at fifty, a hundred and a thousand times as long as wide, as at six,
+    /// and at 512 pixels as at 384 (drawn at its own length, past about forty to one it was not
+    /// read, and near that it was read as pointed). So a cylinder is a third round and two thirds
+    /// square whether it is a coin, a can or a pole.
+    #[test]
+    fn a_thin_outline_is_read_as_what_it_is() {
+        type Outline = Box<dyn Fn(f32) -> Vec<[f32; 2]>>;
+        let kinds: Vec<(&str, Outline, Kind)> = vec![
+            ("rectangle", Box::new(|a| rect(a, 1.0, 0.0)), Kind::Square),
+            ("stadium", Box::new(|a| stadium(a, 0.5)), Kind::Round),
+            ("rounded by four tenths", Box::new(|a| rounded(a, 1.0, 0.4)), Kind::Round),
+            ("frustum", Box::new(|a| trapezoid(0.5, 0.3, a)), Kind::Square),
+            ("spike", Box::new(|a| trapezoid(0.5, 0.0, a)), Kind::Pointed),
+            ("oval", Box::new(|a| specula_model::made::ellipse(a, 1.0)), Kind::Pointed),
+        ];
+        for (name, outline, kind) in &kinds {
+            for aspect in [6.0f32, 12.0, 50.0, 100.0, 1000.0] {
+                for side in [PIXELS, 512] {
+                    let s = read_at(&outline(aspect), side).unwrap_or_else(|| panic!("a {name} {aspect} to 1 is not read at {side}"));
+                    assert!(s.share(*kind) > 0.6 && leading(s.round, s.square, s.pointed) == *kind, "a {name} {aspect} to 1 at {side}: {s:?}");
+                }
+            }
+        }
+        // Not long: unchanged.
+        let short = rect(5.0, 1.0, 0.0);
+        assert_eq!(at_most_long(&short), short);
+        let long = at_most_long(&stadium(300.0, 0.5));
+        let e = specula_model::made::half_extents(&long);
+        assert!((e[0] / e[1] - MAX_ASPECT).abs() < 1e-3, "{e:?}");
+        // A cylinder of any proportions.
+        for (r, h) in [(1.0f32, 0.02f32), (1.0, 0.1), (0.5, 1.0), (0.03, 3.0)] {
+            let b = built_of(&[made("parts[0].shape", "cylinder", 1.0, vec![(ngon(48, r), 1.0), (trapezoid(r, r, h), 2.0)])], 0.0).unwrap();
+            assert!((b.round - 1.0 / 3.0).abs() < 0.05 && (b.square - 2.0 / 3.0).abs() < 0.05 && b.read == 1.0, "a cylinder of {r} by {h}: {b:?}");
+        }
+    }
+
+    /// What is not read counts as not read: an outline the measure cannot read takes its share
+    /// of its shape's surface out of what was read, and so do the outlines past [`MAX_READS`],
+    /// the smallest shapes' first.
+    #[test]
+    fn what_is_not_read_counts_as_not_read() {
+        let line = vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]];
+        let half = built_of(&[made("parts[0].shape", "box", 2.0, vec![(rect(1.0, 1.0, 0.0), 1.0), (line, 1.0)])], 0.0).unwrap();
+        assert!((half.read - 0.5).abs() < 1e-4 && half.square > 0.95, "{half:?}");
+        // An outline the model did not keep (no points, its weight kept) is not read either.
+        let cut = built_of(&[made("parts[0].shape", "sdf", 2.0, vec![(rect(1.0, 1.0, 0.0), 1.0), (Vec::new(), 3.0)])], 0.0).unwrap();
+        assert!((cut.read - 0.25).abs() < 1e-4, "{cut:?}");
+        // More outlines than are read: the largest shapes are read, the rest is not.
+        let many: Vec<Made> = (0..MAX_READS + 12).map(|i| made(&format!("parts[{i}].shape"), "box", 100.0 - i as f32, vec![(rect(1.0 + 0.01 * i as f32, 1.0, 0.0), 1.0)])).collect();
+        let b = built_of(&many, 0.0).unwrap();
+        let read: f32 = (0..MAX_READS).map(|i| 100.0 - i as f32).sum::<f32>();
+        let all: f32 = (0..MAX_READS + 12).map(|i| 100.0 - i as f32).sum::<f32>();
+        assert!(b.shapes == MAX_READS && (b.read - read / all).abs() < 1e-4, "{} shapes, {} read", b.shapes, b.read);
+        // An outline twenty shapes share is read once.
+        let same: Vec<Made> = (0..MAX_READS + 12).map(|i| made(&format!("parts[{i}].shape"), "box", 1.0, vec![(rect(2.0, 1.0, 0.0), 1.0)])).collect();
+        assert_eq!(built_of(&same, 0.0).unwrap().read, 1.0);
+    }
+
+    /// The cost has a ceiling: the largest record a model keeps (its most outlines, each of the
+    /// most points, every one different) is read in tens of milliseconds to a few hundred, and
+    /// what is past the budget is said as not read.
+    #[test]
+    fn reading_the_largest_record_is_bounded() {
+        let views_each = specula_model::made::MAX_RECORD_VIEWS / specula_model::MAX_MADE;
+        let record: Vec<Made> = (0..specula_model::MAX_MADE)
+            .map(|i| {
+                let views = (0..views_each)
+                    .map(|j| {
+                        let k = (i * views_each + j) as f32;
+                        let ring: Vec<[f32; 2]> = (0..specula_model::made::MAX_VIEW_POINTS)
+                            .map(|t| {
+                                let (s, c) = specula_model::dmath::sin_cos_deg(360.0 * t as f64 / specula_model::made::MAX_VIEW_POINTS as f64);
+                                let r = 1.0 + 0.2 * specula_model::dmath::sin_cos_deg(t as f64 * 17.0 * (1.0 + f64::from(k) * 0.001)).0 as f32;
+                                [r * c as f32, (1.0 + k * 0.0001) * r * s as f32]
+                            })
+                            .collect();
+                        (ring, 1.0)
+                    })
+                    .collect();
+                made(&format!("parts[{i}].shape"), "sdf", 1.0, views)
+            })
+            .collect();
+        let points: usize = record.iter().map(|m| m.views.iter().map(|v| v.0.len()).sum::<usize>()).sum();
+        assert!(points * 8 <= 300_000, "the record is {} bytes of points", points * 8);
+        let t = std::time::Instant::now();
+        let b = built_of(&record, 0.0).unwrap();
+        let took = t.elapsed();
+        assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(400)), "{took:?}");
+        assert!(b.read < 0.2, "only what the budget read is read: {}", b.read);
     }
 }

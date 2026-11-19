@@ -708,7 +708,8 @@ and **checked only when a style asks** for one.
     scatter, a building: `read_share` says how much was read); what a part's operations did
     to its form (a taper does not make a box's outline a wedge's); how the parts are put
     together. **A straight-sided cylinder is a third round and two thirds square** by it, as
-    it is in silhouette from the side: a can is not a ball.
+    it is in silhouette from the side: a can is not a ball. (Since the mends below this holds
+    at any proportions: a coin of a hundred to one and a pole of fifty to one too.)
   - **The two readings differ, and both are true.** Sepulcra's 56 recipes: by silhouette 29
     lead pointed, 14 round and 13 square; **by the recipe 42 lead square, 11 round and 1
     pointed** (two are generated and unread), and the two agree on 20. The props are built
@@ -767,3 +768,85 @@ and **checked only when a style asks** for one.
     cutters, and that a box, a crate and a table read square and a ball, a torus and a
     sculpted character round. The mends are the next work, by an agent that did not write
     it, and reviewed again.
+  - **What was mended** (2026-11-20, by a model that did not write it; each finding seen first
+    with the reviewer's own probe, each mend held by a test that fails without it:
+    `specula-model`'s `tests/made_record.rs` and `specula-studio`'s `built` tests). The rule
+    everywhere now: **a record's surface is that shape's own surface in the finished model,
+    and what no record speaks for is `made_rest_m2`.** Not reviewed yet.
+    1. **Operands after their own ops, and what is left of each.** A boolean operand's record
+       is scaled by what its own `ops` did to it (the ball scaled by 20 has 12.5 m², as it
+       does as a part; the twelve cones count twelve times, less what the slab hides). And
+       the boolean now says which operand each triangle of its result came from (every face
+       of the result is a piece of one operand's face, so this is exact): each operand is
+       recorded with what is left of its surface, in a union, a difference and an
+       intersection alike. A cutter has no record, and **the wall a cut makes is the
+       cutter's surface: no record's** (the rest; this page said it was the cut thing's). A
+       bevel's strips are its tubes': the rest too. (The reviewer's own probe, a ball of 3 m
+       and a 1 m box, is not "exactly the box": a ball stands on the ground as a box does, so
+       its bottom is the box's floor, and the record says so: the box 82%, the bowl 18%.)
+    2. **Sculpts weigh each primitive by the surface it makes in the mesh**: every triangle of
+       the mesh goes to the primitive whose field is the tree's at its middle (in a union the
+       nearest, in an intersection the furthest, in a difference the first child or the cutter
+       whose wall it is), at most 4,096 triangles asked, within a work limit charged to the
+       build's (a measured figure: about 600 of its 8,000 triangles, in about half a
+       millisecond). So a mirror's and a repeat's copies count, an elongation counts and
+       widens the outlines it is along, and an intersection's primitive counts by what is left
+       of it (a box with a row of nine balls: 58% round; a box inside a ball: the box). In a
+       smooth blend the nearest primitive takes the blend: a stated rule, not a measure.
+    3. **Includes** record under the including part's path, as their errors are written
+       (`parts[1].include(kid).parts[0].shape`), and **one record a path** everywhere.
+    4. **Part ops and a finish scale a record by what they did** to the part's pieces (area
+       before against after), never to a total that holds surface no record speaks for: the
+       0.2 m box beside an included terrain is 0.24 m², and the terrain is the rest (read
+       share 0.11).
+    5. **A scatter records each item by what was placed of it** (the probe: balls 88%, boxes
+       12%), under its path in the items; a variant never placed has no record, and an item's
+       variants are one record.
+    6. **A thin outline is read at six to one at the most**: one straight along its middle (a
+       rod's rectangle, a capsule's stadium, a spike's triangle) has length taken out of its
+       middle and its ends kept; one curved along it (an oval, a profile) is pressed evenly,
+       so an oval of a thousand to one is read as one of six (pointed). Rectangles, stadia,
+       boxes rounded by four tenths, frustums, spikes and ovals from six to a thousand to one
+       hold their lead at 384 and at 512 pixels (a test). And **what is not read counts as not
+       read**: an outline the measure cannot read takes its share of its shape's surface out
+       of `read_share`. Coin, disc, can and pole are all a third round and two thirds square.
+    7. **A column's outline from the side closes in the caps its field has** (half an ellipse
+       past each end, as high as the end's section is narrow), where it had flat ends. With
+       the weights of (2) (the boxes the figure cuts its hands and feet with, recorded whole
+       by an intersection before, are what is left of them: nearly nothing), **a measured
+       figure reads 97% to 98% round** (it read 98% square). A person reads round by this measure:
+       it is made of limbs, a trunk and a head, each a column, a ball or a round cone.
+    8. A group's stretch and elongation are put on each outline along its own axes.
+    9. **The cost has a ceiling.** The record keeps at most 256 outlines of 128 points in all
+       (a quarter of a megabyte; a shape whose outlines do not all fit keeps its heaviest that
+       do, and the weight of the rest as an outline of no points, read as not read); the
+       studio reads at most 32 distinct outlines for an asset, identical ones once, the
+       largest shapes first, and what is past them is not read. Measured in release while
+       other builds ran on the laptop (one outline 8 ms there): **the largest record a recipe
+       can make** (64 sculpts of 32 primitives each, every outline different: 112 KB) reads
+       in 0.27 s, and its read share says 1%; Sepulcra's assets read in 9 to 243 ms each;
+       asking a measured figure's triangles which primitive made them takes about half a
+       millisecond.
+    10. Tests now hold the records of an extrude that tapers, a loft that leans, open and
+        closed sweeps, a torus, a capsule (end to end), a plane, a frustum, a sculpted
+        cylinder's corner, the finish's scaling, an include, a scatter, an intersection, the
+        record's bounds, a group's stretch, and the check's three names out of four. The two
+        guards the reviewer found redundant are gone (the far level's tally is its own and
+        nobody reads it; nothing recovers from a failed shape on the same tally).
+    11. **Read now**: a loft's lean (each side by its stations' shifts), a closed sweep's
+        loop as smoothed (its plan, beside its profile: a ring of round tube is round, and a
+        square frame of it would be half each), a sculpted cylinder's `corner` (its side's corners rounded by it; a frustum's
+        are not). **Said here now**: when the style does not ask for the recipe and the
+        silhouettes cannot be read, the recipe's reading answers, with "its silhouettes could
+        not be read" in the message.
+    **Still limits**: a node's turn (`rotate`), twist, bend, rounding and shell do not change
+    its outlines; a smooth blend's surface goes to its nearest primitive; a generated
+    building, a terrain and an imported mesh record nothing; a part's taper does not make a
+    box a wedge. **For the next review of the silhouette measure**, not worked round here: a
+    frustum (a bucket) reads half pointed and a mushroom's cap half pointed, which is that
+    measure's reading of a trapezoid and of a dome on a rim, and not what a person would say.
+    By the record after the mends, and read by the silhouette measure's fifth version,
+    **Sepulcra is as it was: 42 lead square, 11 round, 1 pointed, 2 unread** (the crypt and
+    the graveyard's ground, generated); its includes now carry their own paths, and
+    `graveyard_plot` is read at 11% of its surface (its ground is the rest), where its terrain
+    was credited to its headstones.

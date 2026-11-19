@@ -360,7 +360,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       and its surface (`ModelExtras.made`); the studio reads them (`built_of` in
       `studio_check`), and a style may have it answer the check (`[taste] shape_by =
       "recipe"`). The silhouettes answer unless it does; the fix names the shapes to change.
-      Its first review (2026-11-20) said not to merge it (FORM.md, "Its first review").
+      Its first review (2026-11-20) said not to merge it (FORM.md, "Its first review"), and
+      an agent that did not write it mended what it found: booleans say which operand each
+      face came from (`csg::evaluate_bevelled_leaves`), a sculpt's primitives are weighed by
+      their triangles (`sdf::surface_by_primitive`), includes and scatters record truly, thin
+      outlines are read, a column's outline has its caps. Those mends are not reviewed.
     - **Shape language, a fifth version** (2026-11-20, by an agent that did not write the
       fourth, on its review's findings): sides from the smoothed outline, a part's thickness
       where it levels off, joints where the outline turns inward, each part smoothed at its
