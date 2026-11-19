@@ -19,6 +19,63 @@ fn at(rules: &StyleRules, rule: &str) -> String {
     format!("{} {rule}", rules.source)
 }
 
+/// What is said of the coarsest round shape that shows: what turns, by how much, and how far
+/// its facets stand in (in the finished model).
+fn facet_said(r: &specula_model::Round) -> String {
+    let turns = match (r.what, r.count) {
+        ("cone", _) => format!("its base turns {:.1}° from one side to the next", r.turn_deg),
+        ("capsule", "rings") => format!("its ends turn {:.1}° from one ring to the next", r.turn_deg),
+        ("torus", "sides") => format!("its tube turns {:.1}° from one side to the next", r.turn_deg),
+        _ => format!("turns {:.1}° between neighbouring faces", r.turn_deg),
+    };
+    let moved = if r.displaced_m > 0.0 { format!(" (under a displacement of up to {:.1} mm, which moves the facets with the curve)", r.displaced_m * 1000.0) } else { String::new() };
+    format!("its {} at {} {turns} at a radius of {:.3} m: its facets stand {:.1} mm in from the curve{moved}", r.what, r.path, r.radius_m, r.sag_m() * 1000.0)
+}
+
+/// How to bring a round shape's turn within `max` degrees: the number that made the turn, and
+/// how much of it holds the limit.
+fn facet_fix(r: &specula_model::Round, max: f32) -> String {
+    let allow = "; or exempt the asset in [form.allow] if the facets are its look";
+    let flat = "; a shape meant to have flat sides is an extruded outline of that many sides, which nothing calls round";
+    let have = r.count_value.max(1) as f32;
+    match r.count {
+        "subdivisions" => {
+            // (Each subdivision halves the turn: 41.8° at none; five at the most.)
+            let at = |s: u32| r.turn_deg / (1u32 << s.saturating_sub(r.count_value)) as f32;
+            match (r.count_value..=5).find(|&s| at(s) <= max) {
+                Some(s) => format!("give the sphere {s} \"subdivisions\" (it has {}; each halves the turn){allow}", r.count_value),
+                None => format!("at its most \"subdivisions\" (5) a sphere still turns {:.1}° a face: give it more radius, or build it as a sculpt (\"sdf\") fine enough{allow}", at(5)),
+            }
+        }
+        "resolution" => {
+            // (A cell turns the surface by twice the arc sine of the cell over twice the radius,
+            // and the cell is the sculpt's size over its resolution.)
+            let need = (have * (0.5 * r.turn_deg.to_radians()).sin() / (0.5 * max.to_radians()).sin()).ceil();
+            format!("raise the sculpt's \"resolution\" to at least {need:.0} (it is {}: its cells are too large for this primitive's radius of {:.3} m), or give the primitive more radius; a shape meant to have flat sides is an extruded outline, not a sculpt of balls", r.count_value, r.radius_m)
+        }
+        count => {
+            // (The turn goes as one over the count: the count that holds it.)
+            let need = (have * r.turn_deg / max).ceil().max(3.0);
+            let most = match (r.what, count) {
+                (_, "rings") => 32.0,
+                ("torus", "sides") => 64.0,
+                ("torus", _) => 512.0,
+                _ => 256.0,
+            };
+            let part = match (r.what, count) {
+                ("capsule", "rings") => "its ends: ",
+                ("torus", "sides") => "its tube: ",
+                _ => "",
+            };
+            if need > most {
+                format!("{part}the {}'s \"{count}\" cannot hold the limit: it needs {need:.0} and takes at most {most:.0}{allow}", r.what)
+            } else {
+                format!("{part}give the {} at least {need:.0} \"{count}\" (it has {}){flat}{allow}", r.what, r.count_value)
+            }
+        }
+    }
+}
+
 /// Every rule of `rules` that applies to `facts`.
 pub fn check(facts: &AssetFacts, rules: &StyleRules, palette: &Palette) -> Report {
     check_with(facts, rules, palette, &|| false)
@@ -48,22 +105,34 @@ fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
         // An asset with nothing named round, or none whose facets show, has nothing to fail.
         // (Checked whether or not the mesh's own form was measured: it is the recipe's to say.)
         let (turn, said, fix) = match f.faceting() {
-            Some(r) => {
-                let sides = (360.0 / max).ceil().max(3.0);
-                let fix = match r.what {
-                    "sdf" => format!("raise the sculpt's \"resolution\" (its cells are too large for a radius of {:.3} m), or give its thinnest round part more radius; a shape meant to have flat sides is an extruded outline, not a sculpt of balls", r.radius_m),
-                    "sphere" => "give the sphere one more \"subdivisions\" (each halves the turn); or exempt the asset in [form.allow] if the facets are its look".to_string(),
-                    what => format!("give the {what} at least {sides:.0} round it (\"sides\" or \"segments\"); a shape meant to have flat sides is an extruded outline of that many sides, which nothing calls round; or exempt the asset in [form.allow] if the facets are its look"),
-                };
-                (r.turn_deg, format!("its {} at {} turns {:.1}° between neighbouring faces at a radius of {:.3} m: its facets stand {:.1} mm in from the curve", r.what, r.path, r.turn_deg, r.radius_m, r.sag_m() * 1000.0), fix)
-            }
-            None => (0.0, if f.round.is_empty() { "its recipe names no shape round".to_string() } else { format!("none of its {} round shapes has facets that show at its size", f.round.len()) }, String::new()),
+            Some(r) => (r.turn_deg, facet_said(r), facet_fix(r, max)),
+            None => (0.0, if f.round_total == 0 { "its recipe names no shape round".to_string() } else { format!("none of its {} measured round shapes has facets that show at its size", f.round_total - f.faceting_unmeasured().count().min(f.round_total)) }, String::new()),
         };
         let mut finding = Finding::measure("faceting", s, f64::from(turn), f64::from(max), Bound::Max, "deg", at(rules, "form.max_facet_deg"), said, fix);
         if !finding.passed && limits.allows(s, "faceting") {
             finding.exempt = true;
         }
+        let failed = !finding.passed;
         r.findings.push(finding);
+        // A round shape whose facets could not be measured is said, and fails: it is never
+        // passed on what was not looked at.
+        if !failed {
+            if let Some(u) = f.faceting_unmeasured().next() {
+                let n = f.faceting_unmeasured().count();
+                let mut finding = Finding::flag(
+                    "faceting",
+                    s,
+                    true,
+                    at(rules, "form.max_facet_deg"),
+                    format!("its facets were not measured: its {} at {} was {}{}", u.what, u.path, u.unmeasured.unwrap_or("not measured"), if n > 1 { format!(" (and {} more round shapes)", n - 1) } else { String::new() }),
+                    format!("as built it turns {:.1}° a face, which what was done to it changes by an amount the model does not know; if its look is right, exempt the asset in [form.allow]", u.turn_deg),
+                );
+                if limits.allows(s, "faceting") {
+                    finding.exempt = true;
+                }
+                r.findings.push(finding);
+            }
+        }
     }
     if let (Some(why), Some(_)) = (m.skipped, limits.max_loose_pieces) {
         // Not measured at all (too many triangles): the loose check fails saying so. It never
@@ -623,40 +692,7 @@ categories = ["stone", "enemy"]
         let found = of_form(&check(&f, &StyleRules::defaults(), &palette(&r)));
         assert!(found.len() == 1 && found[0].check == "loose_pieces" && found[0].is_error() && found[0].message.contains("none of its 2 triangles has an area"), "{found:?}");
 
-        // Faceting: from what the recipe names round, where it shows at the asset's size.
-        // The asset is 2.4 m tall: a facet shows from 4.7 mm (a 512th of it).
-        let round = |path: &str, what: &'static str, turn_deg: f32, radius_m: f32| specula_model::Round { path: path.into(), what, turn_deg, radius_m };
-        let mut faceted = r.clone();
-        faceted.form = crate::rules::FormRules { max_facet_deg: Some(20.0), allow: vec![("lantern_*".into(), vec!["faceting".into()])], ..crate::rules::FormRules::default() };
-        let only = |rep: &Report| rep.findings.iter().find(|x| x.check == "faceting").cloned().expect("faceting was checked");
-        // (Nothing named round: nothing to fail, and it says so.)
-        f.form = FormFacts { triangles: 12, loose_count: Some(0), ..FormFacts::default() };
-        let none = only(&check(&f, &faceted, &palette(&r)));
-        assert!(none.passed && none.value == 0.0 && none.message.contains("names no shape round"), "{none:?}");
-        // A column of six sides at half a metre stands 67 mm in from its curve: seen, and 60
-        // degrees a side where the style allows 20. A candle of six sides at 2 cm stands in
-        // 2.7 mm: not seen at this size, and not counted.
-        f.round = vec![round("parts[0].shape", "cylinder", 60.0, 0.5), round("parts[3].shape", "cylinder", 60.0, 0.02), round("parts[1].shape", "sphere", 10.45, 0.4)];
-        let bad = only(&check(&f, &faceted, &palette(&r)));
-        assert!(bad.is_error() && (bad.value - 60.0).abs() < 1e-3 && bad.limit == 20.0, "{bad:?}");
-        assert!(bad.message.contains("cylinder at parts[0].shape turns 60.0°") && bad.message.contains("67.0 mm") && bad.fix.contains("at least 18 round it") && bad.fix.contains("extruded outline") && bad.rule.ends_with("form.max_facet_deg"), "{bad:?}");
-        f.round.remove(0);
-        let fine = only(&check(&f, &faceted, &palette(&r)));
-        // (The ball's faces turn 10.45 degrees and stand 1.7 mm in: under what is seen. So
-        // does the candle. Nothing shows.)
-        assert!(fine.passed && fine.value == 0.0 && fine.message.contains("none of its 2 round shapes"), "{fine:?}");
-        f.round.push(round("parts[2].shape", "sdf", 35.0, 0.3));
-        let sculpt = only(&check(&f, &faceted, &palette(&r)));
-        assert!(sculpt.is_error() && sculpt.fix.contains("resolution"), "{sculpt:?}");
-        // The facts say it, and a style may allow it by name.
-        let j = f.to_json(4);
-        assert_eq!(j.get("faceting").and_then(|x| x.get("turn_deg")).and_then(Json::as_f64), Some(35.0));
-        assert_eq!(j.get("faceting").and_then(|x| x.get("worst")).and_then(|w| w.get("shape")).and_then(Json::as_str), Some("sdf"));
-        let mut lantern = f.clone();
-        lantern.subject = "lantern_a".into();
-        let allowed = only(&check(&lantern, &faceted, &palette(&r)));
-        assert!(!allowed.passed && allowed.exempt && !allowed.is_error(), "{allowed:?}");
-        f.round.clear();
+        // (Faceting has a test of its own: `faceting_says_what_shows_and_what_holds_it`.)
 
         // A mesh too large to measure: nothing but the loose check, which fails saying so.
         f.form = FormFacts { triangles: 9_000_000, skipped: Some("more triangles than the form measures take"), ..FormFacts::default() };
@@ -667,6 +703,83 @@ categories = ["stone", "enemy"]
         f.form = FormFacts { triangles: 30_000, pieces: 10_000, clear_of_ground: 9_000, loose_count: None, ..FormFacts::default() };
         let found = of_form(&check(&f, &StyleRules::defaults(), &palette(&r)));
         assert!(found.len() == 1 && found[0].is_error() && found[0].message.contains("9000 of its 10000 pieces"), "{found:?}");
+    }
+
+    /// A round shape as the model gives it, measured, from its count's value (a ring's turn is
+    /// 360° over it).
+    fn round(path: &str, what: &'static str, count: &'static str, value: u32, turn_deg: f32, radius_m: f32) -> specula_model::Round {
+        specula_model::Round { path: path.into(), what, count, count_value: value, turn_deg, radius_m, sag: specula_model::facet::sag_of(f64::from(radius_m), f64::from(turn_deg)) as f32, displaced_m: 0.0, unmeasured: None }
+    }
+
+    /// Faceting: from what the recipe names round, measured in the finished model, where it
+    /// shows at the asset's greatest width (2.6 m here: a facet shows from 5.1 mm). The answer
+    /// is the largest turn among what shows (not the furthest standing in); the fix names the
+    /// number that made the turn and how much of it holds the limit; what was not measured
+    /// fails saying so; nothing named round passes saying so; a style may allow it by name.
+    #[test]
+    fn faceting_says_what_shows_and_what_holds_it() {
+        let r = rules();
+        let mut f = stone(&[("#8c96a3", 9.0)]);
+        f.form = crate::form::FormFacts { triangles: 12, loose_count: Some(0), ..crate::form::FormFacts::default() };
+        f.width_m = 2.6;
+        let mut faceted = r.clone();
+        faceted.form = crate::rules::FormRules { max_facet_deg: Some(20.0), allow: vec![("lantern_*".into(), vec!["faceting".into()])], ..crate::rules::FormRules::default() };
+        let all = |f: &AssetFacts| check(f, &faceted, &palette(&r)).findings.into_iter().filter(|x| x.check == "faceting").collect::<Vec<_>>();
+        let only = |f: &AssetFacts| {
+            let a = all(f);
+            assert_eq!(a.len(), 1, "{a:?}");
+            a[0].clone()
+        };
+        let none = only(&f);
+        assert!(none.passed && none.value == 0.0 && none.message.contains("names no shape round"), "{none:?}");
+        // A column of six sides at half a metre stands 67 mm in: seen, 60° a side where the
+        // style allows 20, and 18 sides hold it. A spike of three sides at 4 cm stands 20 mm in
+        // (seen) and turns 120°: it is the answer, though the column stands in further. A
+        // candle of six sides at 2 cm (2.7 mm in) is not seen.
+        f.round = vec![round("parts[0].shape", "cylinder", "sides", 6, 60.0, 0.5), round("parts[4].shape", "cone", "sides", 3, 120.0, 0.04), round("parts[3].shape", "cylinder", "sides", 6, 60.0, 0.02)];
+        f.round_total = 3;
+        let bad = only(&f);
+        assert!(bad.is_error() && (bad.value - 120.0).abs() < 1e-3 && bad.message.contains("cone at parts[4].shape its base turns 120.0° from one side to the next") && bad.fix.contains("at least 18 \"sides\" (it has 3)"), "{bad:?}");
+        f.round.remove(1);
+        let bad = only(&f);
+        assert!(bad.is_error() && (bad.value - 60.0).abs() < 1e-3 && bad.limit == 20.0, "{bad:?}");
+        assert!(bad.message.contains("cylinder at parts[0].shape turns 60.0°") && bad.message.contains("67.0 mm") && bad.fix.contains("at least 18 \"sides\" (it has 6)") && bad.fix.contains("extruded outline") && bad.rule.ends_with("form.max_facet_deg"), "{bad:?}");
+        // The number that made the turn is named: a capsule's rings (90° over one ring: five
+        // rings hold 20°), not its segments; a torus's tube; a sphere's subdivisions (two from
+        // none hold 20°; past five, said), a sculpt's resolution.
+        let fix = |x: specula_model::Round| facet_fix(&x, 20.0);
+        assert!(fix(round("p", "capsule", "rings", 1, 90.0, 0.2)).contains("its ends: give the capsule at least 5 \"rings\" (it has 1)"));
+        assert!(fix(round("p", "capsule", "segments", 6, 60.0, 0.2)).contains("at least 18 \"segments\""));
+        assert!(fix(round("p", "torus", "sides", 3, 120.0, 0.05)).contains("its tube: give the torus at least 18 \"sides\""));
+        assert!(fix(round("p", "sphere", "subdivisions", 0, 41.81, 0.4)).contains("give the sphere 2 \"subdivisions\" (it has 0"));
+        assert!(fix(round("p", "sphere", "subdivisions", 1, 20.905, 0.4)).contains("give the sphere 2 \"subdivisions\" (it has 1"));
+        assert!(facet_fix(&round("p", "sphere", "subdivisions", 0, 41.81, 0.4), 1.0).contains("at its most \"subdivisions\" (5) a sphere still turns 1.3°"));
+        assert!(facet_fix(&round("p", "capsule", "rings", 1, 90.0, 0.2), 2.0).contains("cannot hold the limit: it needs 45 and takes at most 32"));
+        // (A cell of the sculpt turns 35° at 0.3 m at resolution 24: sin 17.5° / sin 10° = 1.73.)
+        assert!(fix(round("p", "sdf", "resolution", 24, 35.0, 0.3)).contains("\"resolution\" to at least 42 (it is 24"), "{}", fix(round("p", "sdf", "resolution", 24, 35.0, 0.3)));
+        // Nothing shows: passes, saying so.
+        f.round = vec![round("parts[3].shape", "cylinder", "sides", 6, 60.0, 0.02), round("parts[1].shape", "sphere", "subdivisions", 2, 10.45, 0.4)];
+        f.round_total = 2;
+        let fine = only(&f);
+        assert!(fine.passed && fine.value == 0.0 && fine.message.contains("none of its 2 measured round shapes"), "{fine:?}");
+        // One not measured: a failure that says so (never a pass on what was not looked at).
+        let mut tapered = round("parts[5].shape", "cylinder", "sides", 12, 30.0, 0.3);
+        tapered.unmeasured = Some("tapered (not affine)");
+        f.round.insert(0, tapered);
+        f.round_total = 3;
+        let unknown = all(&f);
+        assert!(unknown.len() == 2 && unknown[0].passed && unknown[1].is_error() && unknown[1].message.contains("not measured: its cylinder at parts[5].shape was tapered"), "{unknown:?}");
+        // The facts say it, and a style may allow it by name.
+        f.round.push(round("parts[2].shape.tree#3", "sdf", "resolution", 24, 35.0, 0.3));
+        let j = f.to_json(4);
+        let fj = j.get("faceting").unwrap();
+        assert_eq!(fj.get("turn_deg").and_then(Json::as_f64), Some(35.0));
+        assert_eq!(fj.get("worst").and_then(|w| w.get("path")).and_then(Json::as_str), Some("parts[2].shape.tree#3"));
+        assert_eq!((fj.get("round_shapes").and_then(Json::as_f64), fj.get("round_kept").and_then(Json::as_f64), fj.get("not_measured").and_then(Json::as_f64)), (Some(3.0), Some(4.0), Some(1.0)));
+        let mut lantern = f.clone();
+        lantern.subject = "lantern_a".into();
+        let allowed = all(&lantern);
+        assert!(allowed.iter().all(|a| a.passed || (a.exempt && !a.is_error())), "{allowed:?}");
     }
 
     #[test]

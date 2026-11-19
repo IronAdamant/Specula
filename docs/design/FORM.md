@@ -322,13 +322,14 @@ so the modeller records, for every shape a recipe names round, how coarsely it w
 | `cylinder`, `cone` | 360° over `sides` (12 unless given: 30°) | its larger radius |
 | `sphere` | 41.8° halved for each of its `subdivisions` (one unless given: 20.9°) | its radius |
 | `torus` | twice: 360° over `segments` at the ring's outer radius, and over `sides` at the tube's | each its own |
-| `capsule` | the greater of 360° over `segments` and 90° over `rings` | its radius |
+| `capsule` | twice: 360° over `segments`, and 90° over `rings` (its ends) | its radius |
 | `lathe` | 360° over `segments` (16 unless given: 22.5°) | its profile's widest |
-| `sdf` (a sculpt) | what a cell of its grid turns the surface by round its tightest ball, limb, tube or section: twice the arc sine of the cell over twice that radius | that radius |
+| `sdf` (a sculpt) | for each primitive: what a cell of its grid turns the surface by round that primitive's tightest curve, twice the arc sine of the cell over twice that radius | that radius |
 
 Not counted: boxes, extruded and swept outlines (their corners are their maker's), a rounded
 box's or cylinder's own roundness, and the coarse far level of a model, which halves every count
-on purpose. The radius is the recipe's own, before the part is scaled.
+on purpose. (This is what each shape notes as it is built; what the facts say is measured in
+the finished model: "What was mended", below.)
 
 - **In every asset's facts** (`faceting`, beside `form`): `turn_deg`, the coarsest turn among the
   round shapes **whose facets are seen at the asset's size**; that shape (`worst`: where in the
@@ -350,10 +351,10 @@ on purpose. The radius is the recipe's own, before the part is scaled.
   (`statue_angel`: 116° at a radius of 5 cm). That is its look, low and faceted, approved at the
   window in M4: Sepulcra's `style.toml` gives no limit and nothing fails. A style that wants
   round things round sets one (20° is a cylinder of 18 sides).
-- **Limits.** The radius is not scaled by the part's own transform, so a shape scaled up in
-  place is judged at its written size. An arch outline's `segments` and a rounded outline's are
-  not counted. A sculpt's figure is its tightest radius against its cells, so one thin limb
-  speaks for the whole sculpt.
+- **Limits** (as first built; the first and second were mended: "What was mended", below). The radius was not scaled by the part's own transform, so a shape scaled up in
+  place was judged at its written size. An arch outline's `segments` and a rounded outline's are
+  not counted. A sculpt's figure was its tightest radius against its cells, so one thin limb
+  spoke for the whole sculpt.
 
 #### Its first review
 
@@ -405,6 +406,119 @@ costs at most 64 steps a round shape; the limit is bounded and can be allowed by
 asset that names nothing round says so. **Not checked:** bends, twists, mirrors and
 displacements on the record; scatters; the measured figure's own record; Sepulcra's recipes
 again; the levels of detail between the finest and the far one.
+
+#### What was mended
+
+(2026-11-20, by a model that wrote none of it; each finding seen first with the reviewer's
+probes, each mend held by a test, and each fault below seeded back once and seen to fail its
+test. Not reviewed yet.) The table above still says what each shape records as it is built;
+**what the facts say is now measured in the finished model** (`specula_model::facet`).
+
+1. **How far a facet stands in is a fact of the finished model.** Every round shape is given a
+   slot of the build's record as it is built (`Shape::owners`, as the record of what a recipe
+   is built of has; a cutter's and a sculpt's taken-away primitive's slots speak for nothing
+   in that record). Every operation that moves its triangles afterwards carries the linear map
+   it applied, copies each their own (`Ctx::apply`; an array's and a radial's copies, a
+   mirror that keeps both halves, a scatter's places; an include's ops and a finish are ops
+   like any other). At the end, a shape under similarities (moves, turns, mirrors, uniform
+   scales, copies) turns as built, and its radius and how far its facets stand in scale by
+   the largest factor. Under a scale that is not the same every way, or a lean, **a ring** (a
+   cylinder's, a cone's, a lathe's, a torus's round its axis, a capsule's round its axis) is
+   mapped corner by corner, and its largest turn and the furthest any side stands in from the
+   mapped curve are measured on the ellipse: exact, since an affine map keeps the point where
+   an arc's tangent runs along its chord (held against the built mesh's own top ring and the
+   true ellipse searched along each side: within 0.05° and a thousandth). **A sphere** is
+   measured face by face on its own icosphere, mapped: a face's furthest point of the curve
+   is the mapped sphere's point along the face's own normal (exact, for the same reason). That
+   found that a sphere's faces stand in **three to four times further than its edge turn
+   said** (the twenty faces of none by a fifth of the radius; the table's turn is right, the
+   old sag was not), and that a subdivided icosphere's largest turn is up to a tenth above the
+   nominal one (22.5° at one subdivision, not 20.9°). **Not measured, and said:** a taper, a
+   twist and a bend (not affine); a torus's tube, a capsule's ends and a sculpt stretched
+   unevenly; past 4,096 round shapes in a build. A displacement moves the facets and the
+   curve they stand for together: the facets are measured as they were and how far it moved
+   them is said (`displaced_m`). The same mesh now gets the same answer however its recipe
+   wrote it (a cylinder of radius 1, one of 0.1 scaled by ten as a part's op, an include's or
+   the finish; one of 100 scaled by a thousandth reads 0.1 m and 3.4 mm in).
+2. **A sculpt speaks for each primitive that has surface of its own**, each with its own
+   radius against the cell (`sdf::round_radii`: a ball's, a capsule's, a cylinder's, a
+   torus's tube, a round cone's thin end, a column's narrowest section, an ellipsoid's
+   tightest curve, its least radius squared over its greatest; a swelling, a scale and a
+   stretch above it each bear on it), at `parts[0].shape.tree#3`, the primitive's number
+   depth first. A bead of 2 mm no longer hides the coarse ball of 1 m (it shows nothing at
+   that size, and the ball's 14.4° does); a ball cut three metres from the sculpt says
+   nothing, and a dimple that does cut speaks for its walls. The measured figure reports by
+   its limbs and trunk the same way.
+3. **The records kept are the ones the answer needs, in one order**: the ones not measured
+   first (up to eight), then every shape that is the answer at some size of the asset (the
+   shapes no other both stands in further and turns more than), the furthest standing first,
+   then the rest by how far they stand in; at most 64. The facts say how many there were
+   (`round_shapes`) and were kept (`round_kept`). With 64 fine columns and a three-sided
+   spike, the spike is kept and is the answer (120°).
+4. **The fix names the number that made the turn**, and how much of it holds the limit: a
+   capsule's `rings` or `segments` (each recorded apart), a torus's `sides` (its tube) or
+   `segments`, a cylinder's, a cone's or a lathe's; a sphere's `subdivisions` to the number
+   that holds it (or, past five, that none does); a sculpt's `resolution` to the number that
+   holds it. A cone's message says what turns: its base, from one side to the next.
+5. **A shape nobody sees says nothing**: one with no triangle of its own in the finished
+   model (a cutter that cuts nothing, a shape cut wholly away, a part switched off), exact,
+   from the tie. A cutter that cuts speaks for the walls it left (`parts[0].shape.of[1]`).
+   **A shape whole and wholly inside another part is still said**: no sound test of it is
+   cheap. Its points all inside another closed part proves it hidden only when that part is
+   convex (a concave one can let an edge out between two points inside it), and a part's
+   finished mesh is many pieces merged, whose closure and convexity would each have to be
+   found first. The fix says to allow such an asset by name.
+6. **The verdict does not move as the asset is turned**: the size a facet is seen against is
+   the asset's greatest width (`width_m`: from its first point to the one furthest from it,
+   and on, four times; it depends on distances only, is never more than the true greatest
+   width and never less than half of it, and is it for a bar, a box, a ball and a disc), not
+   its box's longest side. The ten-metre bar beside a twelve-sided column holds its verdict
+   at every turn from nothing to a quarter in steps of 7.5°.
+7. **Every rule has a test that fails when it is broken** (`facet_record.rs`, `facet.rs`,
+   `sdf::tests::each_primitive_has_its_own_radius`,
+   `check::tests::faceting_says_what_shows_and_what_holds_it`,
+   `facts::tests::faceting_does_not_move_as_the_asset_is_turned`): the pick by turn among
+   what shows (a spike that turns more than a column that stands in further is the answer);
+   the cap and the order; every branch of a sculpt's radius alone; each term of a capsule's
+   turn alone (3 and 32, 256 and 1, 5 and 9, 101 and 23); a cone's and a flared cylinder's
+   radius; copies, jitter, scatters, leans, eggs; the taper, twist and bend said; the
+   displacement said. Seeded, each caught by the tests named: the front not kept first and
+   the cap at 63 (the records kept); a linear map not carried, or a copy's maps dropped (the
+   same mesh, the ellipse, what cannot be measured); a ring's stand-in taken as built (the
+   ellipse, both); an unseen shape kept (nobody sees, the sculpt); the ellipsoid's least
+   radius for its curve, a stretch, a scale or a swelling ignored, a column's count ignored, a
+   round cone's point taken (each primitive's radius); a capsule's rings dropped (every
+   count); a cone's and a cylinder's bottom radius only (every count); the pick by stand-in,
+   the unmeasured left unsaid, the count asked from 360° over the limit (the check's test);
+   the size from the box (the turn test). One seed that did not compile is not counted.
+8. An included recipe's round shapes carry their include's path (they hang on its record of
+   what the recipe is built of, whose path is rewritten).
+9. (The shape check) a style that asks for a shape language where neither the silhouettes
+   nor the recipe could be read gets a finding that fails saying it was not measured; a
+   style may allow it by name.
+
+**Which level the facts speak for:** the finest. The far level is coarse on purpose and
+records nothing; the levels between are the finest's triangles thinned by the LOD builder
+and no record speaks for them (their facets are coarser than the finest's: what is said is
+the finest level's).
+
+**What it cannot know:** the facets of a shape tapered, twisted or bent after it was built;
+of a torus's tube, a capsule's ends or a sculpt stretched unevenly; a sculpt's facets beyond
+its cell against its tightest curve (a node's twist, bend, displacement and repetition are not
+counted, and a primitive whose triangles were not asked within the record's limit is not
+seen); whether a shape is hidden inside another part; and a sculpt primitive past the 16,384
+triangles asked whose every asked triangle went to its neighbours.
+
+**Sepulcra again** (its 56 recipes, as before): 41 name something round, and in **39** (was 36)
+a round shape whose facets show turns more than 20° a face; the median is still 90°; none is
+not measured. Newly seen: `brazier_fire`, `chest_tomb`, `rune_obelisk` and `skeleton_runner`,
+whose coarsest showing shape is now a sphere stretched unevenly (an egg, a skull): measured face
+by face, its faces stand in three to four times further than the old figure from the edge turn
+said, and over a 512th of the asset. Which recipe of the first 36 no longer shows was not
+found (the size each is judged against is now its greatest width, and a sculpt speaks by each
+primitive). Their coarsest showing shapes: a torus's tube in 14, a cone in 9, a sphere in 6,
+a sculpt in 4, a capsule's ends in 3, a lathe in 2, a cylinder in 1. Its style still gives no
+limit, so nothing fails.
 
 **Not built:** pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so

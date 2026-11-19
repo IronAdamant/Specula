@@ -23,13 +23,45 @@ pub struct RecipeInfo {
 }
 
 impl AssetFacts {
-    /// The coarsest of its round shapes whose facets are seen at its size (they stand in from
-    /// the true curve by [`crate::form::FACET_SEEN`] of the asset's size or more): the one
-    /// that turns the most between neighbouring faces. `None` when no facet shows.
+    /// The coarsest of its measured round shapes whose facets are seen at its size (they stand
+    /// in from the true curve by [`crate::form::FACET_SEEN`] of its greatest width or more):
+    /// the one that turns the most between neighbouring faces. `None` when no facet shows.
     pub fn faceting(&self) -> Option<&specula_model::Round> {
-        let size = self.size_m[0].max(self.size_m[1]).max(self.size_m[2]);
-        self.round.iter().filter(|r| r.sag_m() >= size * crate::form::FACET_SEEN).max_by(|a, b| a.turn_deg.total_cmp(&b.turn_deg).then(a.sag_m().total_cmp(&b.sag_m())))
+        self.round.iter().filter(|r| r.measured() && r.sag_m() >= self.width_m * crate::form::FACET_SEEN).max_by(|a, b| a.turn_deg.total_cmp(&b.turn_deg).then(a.sag_m().total_cmp(&b.sag_m())))
     }
+
+    /// Its round shapes whose facets were not measured (a taper, a twist or a bend after them;
+    /// a shape other than a ring stretched unevenly).
+    pub fn faceting_unmeasured(&self) -> impl Iterator<Item = &specula_model::Round> {
+        self.round.iter().filter(|r| !r.measured())
+    }
+}
+
+/// The greatest width of a set of points, metres, as far as it is found: from the first
+/// point to the one furthest from it, from that to the one furthest from it, and so on four
+/// times, the longest of these. It depends on distances only, so it is the same however the
+/// points are turned; it is never more than the true greatest width and never less than half
+/// of it (and is it, for a bar, a box, a ball or a disc).
+pub fn greatest_width(points: &[[f32; 3]]) -> f32 {
+    let d = |a: [f32; 3], b: [f32; 3]| {
+        let v = [f64::from(a[0]) - f64::from(b[0]), f64::from(a[1]) - f64::from(b[1]), f64::from(a[2]) - f64::from(b[2])];
+        v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
+    };
+    let Some(&first) = points.iter().find(|p| p.iter().all(|x| x.is_finite())) else { return 0.0 };
+    let (mut from, mut best) = (first, 0.0f64);
+    for _ in 0..4 {
+        let (far, dist) = points.iter().filter(|p| p.iter().all(|x| x.is_finite())).fold((from, 0.0f64), |m, &p| {
+            let x = d(from, p);
+            if x > m.1 {
+                (p, x)
+            } else {
+                m
+            }
+        });
+        best = best.max(dist);
+        from = far;
+    }
+    best.sqrt() as f32
 }
 
 /// Colour names in a recipe's JSON (any depth; bounded by the recipe's own size).
@@ -172,10 +204,17 @@ pub struct AssetFacts {
     pub named_colours: Vec<String>,
     /// Its form, measured on its finest level ([`crate::form`]).
     pub form: crate::form::FormFacts,
-    /// The shapes its recipe names round, and how coarsely each was built: what a mesh alone
-    /// cannot say ([`specula_model::Round`]; the ones that sag the most first, bounded). Empty
+    /// Its greatest width, metres, on its finest level ([`greatest_width`]): its size whichever
+    /// way it is turned.
+    pub width_m: f32,
+    /// The shapes its recipe names round, and how coarsely each was built, measured in the
+    /// finished model: what a mesh alone cannot say ([`specula_model::Round`]; at most
+    /// [`specula_model::MAX_ROUND`], in the order [`AssetFacts::faceting`] reads them). Empty
     /// for an imported mesh, which has no recipe to say what was meant to be round.
     pub round: Vec<specula_model::Round>,
+    /// How many round shapes have a triangle of their own in it (`round` keeps the ones the
+    /// answer needs first).
+    pub round_total: usize,
     /// What its recipe is built of: each shape it names with its own outlines and its surface
     /// ([`specula_model::Made`]), and the surface nothing of that speaks for. Read as shape
     /// language by [`crate::built::built_of`] when a check or an answer wants it (some
@@ -262,7 +301,9 @@ impl AssetFacts {
             rigged: model.rig.is_some(),
             named_colours: info.map(|i| i.colours.clone()).unwrap_or_default(),
             form: model.lods.first().map(|m| crate::form::measure_with(m, stop)).unwrap_or_default(),
+            width_m: model.lods.first().map_or(0.0, |m| greatest_width(&m.positions)),
             round: model.extras.round.clone(),
+            round_total: model.extras.round_total,
             made: model.extras.made.clone(),
             made_rest_m2: model.extras.made_rest_m2,
         }
@@ -289,20 +330,28 @@ impl AssetFacts {
             ("materials", Json::arr(self.materials.iter().map(|m| Json::from(m.name.as_str())))),
         ]);
         j.set("form", self.form.to_json());
-        if let Some(worst) = self.faceting() {
-            // What is seen of it: the coarsest of the round shapes whose facets show at the
-            // asset's size, and the few that sag the most.
-            j.set(
-                "faceting",
-                Json::obj([
-                    ("turn_deg", Json::from((f64::from(worst.turn_deg) * 100.0).round() / 100.0)),
-                    ("worst", worst.to_json()),
-                    ("round", Json::arr(self.round.iter().take(8).map(|r| r.to_json()))),
-                    ("round_shapes", Json::from(self.round.len())),
-                ]),
-            );
-        } else if !self.round.is_empty() {
-            j.set("faceting", Json::obj([("turn_deg", Json::from(0.0)), ("round_shapes", Json::from(self.round.len())), ("note", Json::from("no round shape's facets show at the asset's size"))]));
+        if !self.round.is_empty() {
+            // What is seen of it: the coarsest of the measured round shapes whose facets show at
+            // the asset's size; the first few in the order that is read (those not measured,
+            // then those that are the answer at some size); and how many there are and were kept.
+            let mut f = Json::obj([
+                ("turn_deg", Json::from(self.faceting().map_or(0.0, |w| (f64::from(w.turn_deg) * 100.0).round() / 100.0))),
+                ("width_m", r(self.width_m)),
+                ("round", Json::arr(self.round.iter().take(8).map(|r| r.to_json()))),
+                ("round_shapes", Json::from(self.round_total)),
+                ("round_kept", Json::from(self.round.len())),
+                ("not_measured", Json::from(self.faceting_unmeasured().count())),
+                ("level", Json::from("the finest")),
+            ]);
+            match self.faceting() {
+                Some(worst) => {
+                    f.set("worst", worst.to_json());
+                }
+                None => {
+                    f.set("note", Json::from("no measured round shape's facets show at the asset's size"));
+                }
+            }
+            j.set("faceting", f);
         }
         if colours > 0 && self.total_area > 0.0 {
             j.set(
@@ -339,5 +388,36 @@ mod tests {
         assert!(RecipeInfo::parse("[1, 2]").is_none() && RecipeInfo::parse("glTF").is_none());
         assert_eq!(subject_name("warding_stone", &[("tier".into(), 3.0)]), "warding_stone tier=3");
         assert_eq!(subject_name("tombstone", &[("tilt".into(), 0.5)]), "tombstone tilt=0.5");
+    }
+
+    /// **The verdict does not move as the asset is turned**: its size is its greatest width
+    /// (the same whichever way it lies), not its box's longest side. A ten-metre bar beside a
+    /// twelve-sided column, the column's facets 17 mm in: whether they show is the same at
+    /// every turn from nothing to a quarter, in steps of 7.5 degrees, and the width is the
+    /// bar's length throughout. The width is held against truths: a bar's length, a ball's and
+    /// a cube's diagonal.
+    #[test]
+    fn faceting_does_not_move_as_the_asset_is_turned() {
+        let style = specula_model::Style::parse(r##"{ "style": "t", "palette": { "pale": "#b8fff6" }, "materials": { "stone": { "color": "#8c96a3", "roughness": 0.8 } } }"##).unwrap();
+        let facts = |deg: f64| {
+            let text = format!(r#"{{ "name": "t", "parts": [ {{ "name": "bar", "material": "stone", "shape": {{"op":"box","size":[10,0.5,0.5]}}, "ops":[{{"op":"rotate","deg":[0,{deg},0]}}] }}, {{ "name": "c", "material": "stone", "shape": {{"op":"cylinder","radius":0.5,"height":0.5,"sides":12}} }} ] }}"#);
+            let m = specula_model::build(&text, &specula_model::BuildParams::new(&style)).unwrap();
+            AssetFacts::from_model(&m, RecipeInfo::parse(&text).as_ref(), Some("t"), &[], 0)
+        };
+        let straight = facts(0.0);
+        let shows = straight.faceting().is_some();
+        for k in 0..=12 {
+            let f = facts(7.5 * f64::from(k));
+            let bar = (100.0f32 + 0.25 + 0.25).sqrt();
+            assert!((f.width_m - bar).abs() < 1e-3 * bar, "turned {}: width {}", 7.5 * f64::from(k), f.width_m);
+            assert_eq!(f.faceting().is_some(), shows, "turned {} degrees", 7.5 * f64::from(k));
+        }
+        // (The 17 mm the column stands in, against a 512th of 10 m: 19.5 mm. Not seen.)
+        assert!(!shows);
+        let cube = specula_model::Shape::cuboid([1.0, 2.0, 3.0], 0.0).unwrap();
+        assert!((greatest_width(&cube.positions) - 14.0f32.sqrt()).abs() < 1e-5);
+        let ball = specula_model::Shape::sphere(0.5, 3);
+        assert!((greatest_width(&ball.positions) - 1.0).abs() < 1e-3);
+        assert_eq!(greatest_width(&[]), 0.0);
     }
 }

@@ -222,33 +222,44 @@ pub struct SdfStats {
     pub trees_kept: usize,
 }
 
-/// The least radius anything round in the tree turns at, in the tree's own metres (each node's
-/// `scale` and `round` taken with it): a ball's, a capsule's, the thin end of a round cone, a
-/// torus's tube, an ellipsoid's least, a cylinder's, the narrowest section of a column.
-/// `None` for a tree with nothing round in it (boxes and half spaces). A box swollen by
-/// `round` turns at that radius; a rounded box or cylinder (`roundness`) is not counted: how
-/// tightly it turns is its maker's number.
-pub fn least_radius(n: &SdfNode) -> Option<f32> {
-    let least = |a: Option<f32>, b: Option<f32>| match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
-    let own = match &n.kind {
-        Kind::Prim(p) => match *p {
+/// The least radius each primitive of the tree turns at, in the tree's own metres, one entry
+/// a primitive in the order they are met depth first (every primitive, a half space and what
+/// a difference takes away among them: [`primitive_of_triangles`]'s numbers): a ball's, a
+/// capsule's, a cylinder's, a torus's tube, the thin end of a round cone (its thick end when
+/// the thin one is a point), the narrowest section of a column, and an ellipsoid's tightest
+/// curve (its least radius squared over its greatest). Every node above it bears on it: a
+/// `round` swells it by that much (a box swollen by 2 cm turns at 2 cm), a `scale` scales it,
+/// and a `stretch` tightens it as it does an ellipsoid's (by the least stretch squared over
+/// the greatest). `None` for one with nothing round (a box, a half space); a rounded box or
+/// cylinder (`roundness`) is not counted: how tightly it turns is its maker's number. A
+/// node's twist, bend, displacement and repetition are not counted.
+pub fn round_radii(n: &SdfNode) -> Vec<Option<f32>> {
+    let mine: Vec<Option<f32>> = match &n.kind {
+        Kind::Prim(p) => vec![match *p {
             Prim::Sphere { radius } | Prim::Capsule { radius, .. } => Some(radius),
             Prim::Cylinder { radius, radius_top, .. } => Some(radius.max(radius_top)),
             Prim::Torus { tube, .. } => Some(tube),
-            Prim::Ellipsoid { radii } => Some(radii[0].min(radii[1]).min(radii[2])),
+            Prim::Ellipsoid { radii } => {
+                let (lo, hi) = (radii[0].min(radii[1]).min(radii[2]), radii[0].max(radii[1]).max(radii[2]));
+                (hi > 0.0).then(|| lo * lo / hi)
+            }
             // (Its thin end, unless that is a point: a point is not round.)
             Prim::RoundCone { ra, rb, .. } => Some(if ra.min(rb) > 0.0 { ra.min(rb) } else { ra.max(rb) }),
-            Prim::Column { sections, count, .. } => sections[..(count as usize).clamp(1, MAX_SECTIONS)].iter().map(|s| s[1].min(s[2])).fold(None, |a, r| least(a, Some(r))),
+            Prim::Column { sections, count, .. } => sections[..(count as usize).clamp(1, MAX_SECTIONS)].iter().map(|s| s[1].min(s[2])).reduce(f32::min),
             Prim::Box { .. } | Prim::Rounded { .. } | Prim::HalfSpace { .. } => None,
-        },
-        Kind::Group { kids, .. } => kids.iter().map(least_radius).fold(None, least),
+        }],
+        Kind::Group { kids, .. } => kids.iter().flat_map(round_radii).collect(),
     };
-    // (A swelling rounds what it swells: a box swollen by 2 cm turns at 2 cm.)
-    let swollen = if n.m.round > 0.0 { Some(own.map_or(n.m.round, |r| r + n.m.round)) } else { own };
-    swollen.map(|r| r * n.m.scale.abs()).filter(|r| r.is_finite() && *r > 0.0)
+    let s = n.m.stretch.map(f32::abs);
+    let (lo, hi) = (s[0].min(s[1]).min(s[2]), s[0].max(s[1]).max(s[2]));
+    let tighten = if hi > 0.0 && lo > 0.0 { lo * lo / hi } else { 1.0 };
+    mine.into_iter()
+        .map(|own| {
+            // (A swelling rounds what it swells.)
+            let swollen = if n.m.round > 0.0 { Some(own.map_or(n.m.round, |r| r + n.m.round)) } else { own };
+            swollen.map(|r| r * tighten * n.m.scale.abs()).filter(|r| r.is_finite() && *r > 0.0)
+        })
+        .collect()
 }
 
 fn count_nodes(n: &SdfNode) -> usize {
@@ -3227,5 +3238,44 @@ mod tests {
         let (all, half) = (shares(n), shares(n.div_ceil(2)));
         let worst = (0..all.len().max(half.len())).map(|i| (all.get(i).copied().unwrap_or(0.0) - half.get(i).copied().unwrap_or(0.0)).abs()).fold(0.0, f64::max);
         assert!(n > 4000 && worst < 0.002 && worst > 0.0, "{n} triangles; a share moved by {worst}");
+    }
+
+    /// Each primitive's tightest radius, one entry a primitive in depth-first order (what a
+    /// difference takes away and a half space among them): every branch, each alone deciding.
+    #[test]
+    fn each_primitive_has_its_own_radius() {
+        let near = |a: Option<f32>, b: f32| a.is_some_and(|a| (a - b).abs() < 1e-6);
+        let one = |p: Prim| round_radii(&prim(p));
+        assert!(near(one(Prim::Sphere { radius: 0.3 })[0], 0.3));
+        assert!(near(one(Prim::Cylinder { radius: 0.2, radius_top: 0.5, half_height: 1.0, round: 0.0 })[0], 0.5));
+        assert!(near(one(Prim::Torus { radius: 1.0, tube: 0.1 })[0], 0.1));
+        // (An ellipsoid's tightest curve: its least radius squared over its greatest.)
+        assert!(near(one(Prim::Ellipsoid { radii: [0.5, 2.0, 1.0] })[0], 0.125));
+        // (A round cone's thin end; its thick one when the thin one is a point.)
+        assert!(near(one(Prim::RoundCone { a: [0.0; 3], b: [0.0, 1.0, 0.0], ra: 0.3, rb: 0.1 })[0], 0.1));
+        assert!(near(one(Prim::RoundCone { a: [0.0; 3], b: [0.0, 1.0, 0.0], ra: 0.0, rb: 0.2 })[0], 0.2));
+        let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+        sections[..3].copy_from_slice(&[[0.0, 0.3, 0.4], [0.5, 0.25, 0.08], [1.0, 0.3, 0.3]]);
+        assert!(near(one(Prim::Column { a: [0.0; 3], b: [0.0, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 3, square: 2.0 })[0], 0.08));
+        assert!(near(one(Prim::Column { a: [0.0; 3], b: [0.0, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 1, square: 2.0 })[0], 0.3), "only its first `count` sections");
+        assert_eq!(one(Prim::Box { half: [1.0; 3], round: 0.0 }), vec![None]);
+        // A swelling, a scale and a stretch above it bear on it, each alone.
+        let mut b = prim(Prim::Box { half: [1.0; 3], round: 0.0 });
+        b.m.round = 0.02;
+        assert!(near(round_radii(&b)[0], 0.02), "a box swollen by 2 cm turns at 2 cm");
+        let mut s = prim(Prim::Sphere { radius: 0.3 });
+        s.m.round = 0.1;
+        assert!(near(round_radii(&s)[0], 0.4));
+        s.m.round = 0.0;
+        s.m.scale = 2.0;
+        assert!(near(round_radii(&s)[0], 0.6));
+        s.m.scale = 1.0;
+        s.m.stretch = [2.0, 1.0, 1.0];
+        assert!(near(round_radii(&s)[0], 0.15), "stretched by two one way: its ends turn at a radius of the least stretch squared over the greatest");
+        // A group: one entry each, in order, its own modifiers on all of them.
+        let mut g = SdfNode { kind: Kind::Group { op: Combine::Difference, kids: vec![prim(Prim::Sphere { radius: 1.0 }), prim(Prim::HalfSpace { normal: [0.0, 1.0, 0.0], offset: 0.0 }), prim(Prim::Sphere { radius: 0.1 })], smooth: 0.0 }, m: Modifiers::default() };
+        g.m.scale = 3.0;
+        let r = round_radii(&g);
+        assert!(r.len() == 3 && near(r[0], 3.0) && r[1].is_none() && near(r[2], 0.3), "{r:?}");
     }
 }
