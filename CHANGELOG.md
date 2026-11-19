@@ -360,12 +360,18 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       and its surface (`ModelExtras.made`); the studio reads them (`built_of` in
       `studio_check`), and a style may have it answer the check (`[taste] shape_by =
       "recipe"`). The silhouettes answer unless it does; the fix names the shapes to change.
+      Its first review (2026-11-20) said not to merge it (FORM.md, "Its first review").
+    - **Shape language, a fifth version** (2026-11-20, by an agent that did not write the
+      fourth, on its review's findings): sides from the smoothed outline, a part's thickness
+      where it levels off, joints where the outline turns inward, each part smoothed at its
+      own thickness, the advice tried by a test, about 150 shapes held as they turn
+      (`tests/shape_families.rs`). Its limits are in FORM.md. Not reviewed.
     - **Shape language, a fourth version** (2026-11-19, at the owner's word): each part of a
       silhouette is judged at its own thickness and counts by it (a distance transform, the
       discs that fill the shape, the outline followed to the body a corner is of and not
       across a joint). A corner cut off flat is a corner, a string on a balloon counts for a
-      string, a bar however thin is square, an oval is never square. Not reviewed; no preset
-      asks for it.
+      string, a bar however thin is square, an oval is never square. Its review said not to
+      merge it (five major findings: FORM.md, "Its fourth review"); no preset asks for it.
     - **The form views in a before and after, and in the line-up** (2026-11-19): `sight_compare`'s
       mark takes `form`, and its diff is drawn in the mark's view (a mark in clay shows a change
       of shape and not a change of colour); `studio_lineup` takes `form` and keeps its

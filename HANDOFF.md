@@ -647,9 +647,20 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       the joint rule flickers on limbs and necks (a character, a bottle, an axe swing by a
       third to a half as they turn); the bands swing by a half on a plank; the advice for a
       round style leads into a failure; long thin comb teeth read as points (FORM.md, "Its
-      fourth review"). None of it is mended yet. No preset asks for it, and the check
-      exists only for a style that asks by name. Sepulcra's recipes by it: 29 lead pointed,
-      14 round, 13 square. **The measure from the recipe is built too** (the modeller records
+      fourth review"). **A fifth version mends them** (2026-11-20, by an agent that did not
+      write the fourth; FORM.md, "Its fifth version"): a side is a stretch of the smoothed
+      outline that runs straight; a part is as thick as the thickness about a point once
+      it has levelled off, and joints are where the outline turns inward; each part is
+      smoothed at its own thickness; the advice texts are tried by a test; about 150 shapes
+      are held every nine degrees, and every degree in an ignored run. By its own account:
+      a wobbling box is 95% to 100% square at every angle, the character leads round in
+      every mask, the bottles lead square. **Its limits, as its author states them:** a
+      part under six pixels thick still reads as a point; a thin plank in the rounding band
+      swings by a third to two thirds; a dagger, a tombstone and a 4 to 1 oval sit on a
+      line and flip; the median step is held by no test; the worst case costs twelve times
+      a disc. **Not reviewed yet**, and Sepulcra is not counted again by it. No preset asks
+      for it, and the check exists only for a style that asks by name. Sepulcra's recipes
+      by the fourth version: 29 lead pointed, 14 round, 13 square. **The measure from the recipe is built too** (the modeller records
       each named shape's own outlines and its surface; the studio reads them by the same
       measure, weighed by surface: `built_of` in `studio_check`, with the shapes named). By
       it Sepulcra is 42 square, 11 round, 1 pointed, and the two readings agree on 20 props
