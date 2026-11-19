@@ -1,0 +1,15 @@
+[package]
+name = "specula-formae"
+description = "Specula Formae: a table of named shapes (plane figures, curves and, from stage 1b, solids) that an agent starts from by name and changes by numbers, each with its parameters, closed-form measures, anchors and a known point count"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+
+[lints]
+workspace = true

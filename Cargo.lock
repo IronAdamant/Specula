@@ -176,6 +176,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-formae"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+]
+
+[[package]]
 name = "specula-gltf"
 version = "0.3.0"
 dependencies = [

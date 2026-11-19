@@ -1,0 +1,322 @@
+//! What plane figures and curves build to, and their measures as built.
+
+use crate::maths::*;
+use crate::Measures;
+
+/// A built plane figure: rings of points in metres (x right, y up). The first ring is the outer
+/// boundary, counter-clockwise; any further rings are holes, clockwise. No ring repeats its
+/// first point at its end.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Outline {
+    /// The rings.
+    pub rings: Vec<Vec<Pt>>,
+    /// The build's error at its detail: for an arc, exactly its sag (the greatest distance
+    /// between a chord and its arc); for a parametric piece, the greatest distance from a chord
+    /// to the true curve at a quarter, a half and three quarters of each sample's parameter,
+    /// which is an estimate and not a bound (a curve whose curvature changes sharply inside one
+    /// sample can stray farther). 0 for straight-sided figures.
+    pub chord_error: f64,
+}
+
+/// A built curve: points in metres, in order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Curve {
+    /// The points. A closed curve does not repeat its first point.
+    pub points: Vec<Pt>,
+    /// Whether the curve closes back to its first point.
+    pub closed: bool,
+    /// As [`Outline::chord_error`].
+    pub chord_error: f64,
+}
+
+/// Why an outline is not well made (from [`Outline::validate`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Fault {
+    /// No rings, or a ring of fewer than three points.
+    TooFew {
+        /// The ring.
+        ring: usize,
+    },
+    /// A coordinate is not finite.
+    NotFinite {
+        /// The ring.
+        ring: usize,
+        /// The point.
+        point: usize,
+    },
+    /// An edge is shorter than a billionth of the figure's size.
+    ShortEdge {
+        /// The ring.
+        ring: usize,
+        /// The edge's first point.
+        point: usize,
+        /// Its length.
+        length: f64,
+    },
+    /// The outer ring is not counter-clockwise, or a hole not clockwise.
+    Winding {
+        /// The ring.
+        ring: usize,
+        /// Its signed area.
+        signed_area: f64,
+    },
+    /// Two edges cross or touch.
+    Crossing {
+        /// The first edge's ring and point.
+        a: (usize, usize),
+        /// The second edge's ring and point.
+        b: (usize, usize),
+    },
+    /// A hole lies outside the outer ring, or inside another hole.
+    HoleOutside {
+        /// The hole.
+        ring: usize,
+    },
+}
+
+/// The signed area of a ring (positive counter-clockwise), by the shoelace formula.
+pub fn signed_area(ring: &[Pt]) -> f64 {
+    let n = ring.len();
+    let mut s = 0.0;
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        s += a[0] * b[1] - b[0] * a[1];
+    }
+    0.5 * s
+}
+
+fn bounds_of<'a>(pts: impl Iterator<Item = &'a Pt>) -> Option<([f64; 3], [f64; 3])> {
+    let mut lo = [f64::INFINITY; 2];
+    let mut hi = [f64::NEG_INFINITY; 2];
+    let mut any = false;
+    for p in pts {
+        any = true;
+        for i in 0..2 {
+            lo[i] = lo[i].min(p[i]);
+            hi[i] = hi[i].max(p[i]);
+        }
+    }
+    any.then_some(([lo[0], lo[1], 0.0], [hi[0], hi[1], 0.0]))
+}
+
+impl Outline {
+    /// Every point of every ring.
+    pub fn points(&self) -> impl Iterator<Item = &Pt> {
+        self.rings.iter().flatten()
+    }
+
+    /// The measures of what was built: the shoelace area (holes subtracted), the length of
+    /// every ring, the polygon centroid and the bounds.
+    pub fn measures(&self) -> Measures {
+        let (mut a, mut cx, mut cy, mut per) = (0.0, 0.0, 0.0, 0.0);
+        for r in &self.rings {
+            let n = r.len();
+            for i in 0..n {
+                let (p, q) = (r[i], r[(i + 1) % n]);
+                let cr = p[0] * q[1] - q[0] * p[1];
+                a += 0.5 * cr;
+                cx += (p[0] + q[0]) * cr / 6.0;
+                cy += (p[1] + q[1]) * cr / 6.0;
+                per += dist(p, q);
+            }
+        }
+        Measures { size: Some(a), boundary: Some(per), centroid: Some([cx / a, cy / a, 0.0]), bounds: bounds_of(self.points()), series: None }
+    }
+
+    /// The figure's size: the diagonal of its bounds.
+    pub fn size(&self) -> f64 {
+        bounds_of(self.points()).map(|(lo, hi)| len([hi[0] - lo[0], hi[1] - lo[1]])).unwrap_or(0.0)
+    }
+
+    /// Whether `p` is inside the figure (inside the outer ring and in no hole), by crossings.
+    pub fn contains(&self, p: Pt) -> bool {
+        let mut inside = false;
+        for r in &self.rings {
+            let n = r.len();
+            for i in 0..n {
+                let (a, b) = (r[i], r[(i + 1) % n]);
+                if (a[1] > p[1]) != (b[1] > p[1]) {
+                    let x = a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+                    if x > p[0] {
+                        inside = !inside;
+                    }
+                }
+            }
+        }
+        inside
+    }
+
+    /// The distance from `p` to the nearest edge of any ring.
+    pub fn distance_to_boundary(&self, p: Pt) -> f64 {
+        let mut d = f64::INFINITY;
+        for r in &self.rings {
+            let n = r.len();
+            for i in 0..n {
+                d = d.min(dist_to_segment(p, r[i], r[(i + 1) % n]));
+            }
+        }
+        d
+    }
+
+    /// Checks that the outline is well made: at least one ring of three or more points, every
+    /// coordinate finite, no edge shorter than a billionth of the figure's size, the outer ring
+    /// counter-clockwise and holes clockwise, no two edges crossing or touching (edges next to
+    /// each other share only their common point), and every hole inside the outer ring and in
+    /// no other hole. Edges are bucketed on a grid, so the cost is near linear for figures whose
+    /// edges are of like length.
+    pub fn validate(&self) -> Result<(), Fault> {
+        if self.rings.is_empty() {
+            return Err(Fault::TooFew { ring: 0 });
+        }
+        for (ri, r) in self.rings.iter().enumerate() {
+            if r.len() < 3 {
+                return Err(Fault::TooFew { ring: ri });
+            }
+            for (pi, p) in r.iter().enumerate() {
+                if !(p[0].is_finite() && p[1].is_finite()) {
+                    return Err(Fault::NotFinite { ring: ri, point: pi });
+                }
+            }
+        }
+        let size = self.size();
+        for (ri, r) in self.rings.iter().enumerate() {
+            let n = r.len();
+            for i in 0..n {
+                let l = dist(r[i], r[(i + 1) % n]);
+                if l <= size * 1e-9 {
+                    return Err(Fault::ShortEdge { ring: ri, point: i, length: l });
+                }
+            }
+            let s = signed_area(r);
+            if (ri == 0) != (s > 0.0) {
+                return Err(Fault::Winding { ring: ri, signed_area: s });
+            }
+        }
+        // Edges: (ring, index). Bucket them on a grid of about one cell per edge.
+        let edges: Vec<(usize, usize)> = self.rings.iter().enumerate().flat_map(|(ri, r)| (0..r.len()).map(move |i| (ri, i))).collect();
+        let seg = |e: (usize, usize)| {
+            let r = &self.rings[e.0];
+            (r[e.1], r[(e.1 + 1) % r.len()])
+        };
+        let (lo, hi) = bounds_of(self.points()).expect("rings are not empty");
+        let total = edges.len();
+        let side = ((total as f64).sqrt() as usize).clamp(1, 2048);
+        let (w, h) = ((hi[0] - lo[0]).max(size * 1e-12), (hi[1] - lo[1]).max(size * 1e-12));
+        let cell = |x: f64, y: f64| -> (usize, usize) {
+            let cx = (((x - lo[0]) / w) * side as f64) as usize;
+            let cy = (((y - lo[1]) / h) * side as f64) as usize;
+            (cx.min(side - 1), cy.min(side - 1))
+        };
+        let mut grid: Vec<Vec<usize>> = vec![Vec::new(); side * side];
+        for (ei, &e) in edges.iter().enumerate() {
+            let (a, b) = seg(e);
+            let (x0, y0) = cell(a[0].min(b[0]), a[1].min(b[1]));
+            let (x1, y1) = cell(a[0].max(b[0]), a[1].max(b[1]));
+            for gx in x0..=x1 {
+                for gy in y0..=y1 {
+                    grid[gy * side + gx].push(ei);
+                }
+            }
+        }
+        let adjacent = |a: (usize, usize), b: (usize, usize)| {
+            if a.0 != b.0 {
+                return false;
+            }
+            let n = self.rings[a.0].len();
+            a.1 == b.1 || (a.1 + 1) % n == b.1 || (b.1 + 1) % n == a.1
+        };
+        for bucket in &grid {
+            for (x, &i) in bucket.iter().enumerate() {
+                for &j in &bucket[x + 1..] {
+                    let (ea, eb) = (edges[i], edges[j]);
+                    let (a0, a1) = seg(ea);
+                    let (b0, b1) = seg(eb);
+                    if adjacent(ea, eb) {
+                        // Neighbours share one point; they must not fold back over each other.
+                        let n = self.rings[ea.0].len();
+                        if n > 3 && collinear_overlap(a0, a1, b0, b1) {
+                            return Err(Fault::Crossing { a: ea, b: eb });
+                        }
+                        continue;
+                    }
+                    if segments_meet(a0, a1, b0, b1) {
+                        return Err(Fault::Crossing { a: ea, b: eb });
+                    }
+                }
+            }
+        }
+        // No crossings, so one point of a hole tells where the whole hole is.
+        let outer = Outline { rings: vec![self.rings[0].clone()], chord_error: 0.0 };
+        for hi in 1..self.rings.len() {
+            let p = self.rings[hi][0];
+            if !outer.contains(p) {
+                return Err(Fault::HoleOutside { ring: hi });
+            }
+            for (hj, other) in self.rings.iter().enumerate().skip(1) {
+                if hj != hi && (Outline { rings: vec![other.clone()], chord_error: 0.0 }).contains(p) {
+                    return Err(Fault::HoleOutside { ring: hi });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn orient(a: Pt, b: Pt, c: Pt) -> f64 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+fn on_segment(a: Pt, b: Pt, p: Pt) -> bool {
+    p[0] >= a[0].min(b[0]) && p[0] <= a[0].max(b[0]) && p[1] >= a[1].min(b[1]) && p[1] <= a[1].max(b[1])
+}
+
+/// Whether the closed segments `a`-`b` and `c`-`d` share any point.
+fn segments_meet(a: Pt, b: Pt, c: Pt, d: Pt) -> bool {
+    let (o1, o2, o3, o4) = (orient(a, b, c), orient(a, b, d), orient(c, d, a), orient(c, d, b));
+    if ((o1 > 0.0 && o2 < 0.0) || (o1 < 0.0 && o2 > 0.0)) && ((o3 > 0.0 && o4 < 0.0) || (o3 < 0.0 && o4 > 0.0)) {
+        return true;
+    }
+    (o1 == 0.0 && on_segment(a, b, c)) || (o2 == 0.0 && on_segment(a, b, d)) || (o3 == 0.0 && on_segment(c, d, a)) || (o4 == 0.0 && on_segment(c, d, b))
+}
+
+/// For two edges that share an end: whether they lie along one line and overlap (a fold back).
+fn collinear_overlap(a0: Pt, a1: Pt, b0: Pt, b1: Pt) -> bool {
+    let shared = if a1 == b0 { Some((a0, a1, b1)) } else if b1 == a0 { Some((b0, a0, a1)) } else { None };
+    match shared {
+        Some((p, q, r)) => {
+            let u = sub(p, q);
+            let v = sub(r, q);
+            orient(p, q, r) == 0.0 && u[0] * v[0] + u[1] * v[1] > 0.0
+        }
+        None => false,
+    }
+}
+
+impl Curve {
+    /// The measures of what was built: its length (`boundary`) and bounds.
+    pub fn measures(&self) -> Measures {
+        let n = self.points.len();
+        let mut l = 0.0;
+        for i in 1..n {
+            l += dist(self.points[i - 1], self.points[i]);
+        }
+        if self.closed && n > 1 {
+            l += dist(self.points[n - 1], self.points[0]);
+        }
+        Measures { size: None, boundary: Some(l), centroid: None, bounds: bounds_of(self.points.iter()), series: None }
+    }
+
+    /// The distance from `p` to the curve.
+    pub fn distance(&self, p: Pt) -> f64 {
+        let n = self.points.len();
+        let mut d = f64::INFINITY;
+        let last = if self.closed { n } else { n.saturating_sub(1) };
+        for i in 0..last {
+            d = d.min(dist_to_segment(p, self.points[i], self.points[(i + 1) % n]));
+        }
+        if n == 1 {
+            d = dist(p, self.points[0]);
+        }
+        d
+    }
+}

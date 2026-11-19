@@ -107,6 +107,7 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-balance` | balance lab: targets as data, deterministic sweeps and tuning over Lex parameters |
 | `specula-ludus` | the game file as data: phases, win and loss conditions, score, settings, a button's words, and the run's state machine the project shell follows |
 | `specula-corpus` | the human body as numbers: 114 dimensions by sex (93 measured on 6,068 people, their age, 20 links) and how each follows stature, weight and fourteen named traits; a frame of joints; what each part weighs; the checks of proportion and balance ([docs/design/CORPUS.md](docs/design/CORPUS.md)) |
+| `specula-formae` | the shape library: a table of named shapes an agent starts from by name and changes by numbers (plane figures and curves so far; solids next), each with parameters, units and ranges, aliases, closed-form measures, anchors and an exact point count before building |
 | `specula-memoria` | what a project remembers: notes with a kind and paths, superseding, finding, the brief an agent is given at its first call |
 | `specula-physics` | collision queries, triggers, character controller, rigid bodies (stages P1–P3) |
 | `specula-via` | navigation: tiled navmeshes, paths, off-mesh links, crowds |
