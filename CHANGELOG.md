@@ -355,6 +355,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       into each other, on silhouettes of 256 pixels, and is steady to a tenth over a quarter
       turn for fourteen known shapes. Sepulcra's 56 recipes lead square (31), pointed (18)
       and round (7). The form checks and it have their place in the critique.
+    - **Shape language from what a recipe is built of** (2026-11-19, the second measure the
+      owner asked for): the modeller records each shape a recipe names with its own outlines
+      and its surface (`ModelExtras.made`); the studio reads them (`built_of` in
+      `studio_check`), and a style may have it answer the check (`[taste] shape_by =
+      "recipe"`). The silhouettes answer unless it does; the fix names the shapes to change.
     - **Shape language, a fourth version** (2026-11-19, at the owner's word): each part of a
       silhouette is judged at its own thickness and counts by it (a distance transform, the
       discs that fill the shape, the outline followed to the body a corner is of and not

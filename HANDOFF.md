@@ -641,9 +641,22 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       and its like 92% to 100% round), bars however thin are square, and an oval is never
       square; a convention moved with it (a box rounded by a tenth of its side is square,
       and round only from about a quarter). What it cannot say steadily is written down (an
-      oval four to six times as long as wide; a body with more than a dozen hairs). **It is
-      not reviewed, and no preset asks for it.** Sepulcra's recipes by it: 29 lead pointed,
-      14 round, 13 square. **The measure from the recipe is designed and not built.**
+      oval four to six times as long as wide; a body with more than a dozen hairs). **Its
+      reviewer said not to merge it** (the fourth review of this measure, the fourth "do
+      not merge"): a box whose edges wobble by half a pixel reads 0% square at some angles;
+      the joint rule flickers on limbs and necks (a character, a bottle, an axe swing by a
+      third to a half as they turn); the bands swing by a half on a plank; the advice for a
+      round style leads into a failure; long thin comb teeth read as points (FORM.md, "Its
+      fourth review"). None of it is mended yet. No preset asks for it, and the check
+      exists only for a style that asks by name. Sepulcra's recipes by it: 29 lead pointed,
+      14 round, 13 square. **The measure from the recipe is built too** (the modeller records
+      each named shape's own outlines and its surface; the studio reads them by the same
+      measure, weighed by surface: `built_of` in `studio_check`, with the shapes named). By
+      it Sepulcra is 42 square, 11 round, 1 pointed, and the two readings agree on 20 props
+      of 56: they are built of boxes and topped with points. **So the silhouettes answer
+      the check unless a style says `shape_by = "recipe"`**, the other reading is said
+      beside the answer, and the fix names the recipe's largest shapes to change. Not
+      reviewed.
     - **Where its verification stands** (2026-11-19, night): the full gate passed on
       `bec48409` (everything of part 4 up to the form views in a before and after and in
       the line-up: 3,298 tests, the repeats, the slow-worker run, the speed budgets, clippy

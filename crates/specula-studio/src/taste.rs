@@ -75,6 +75,9 @@ pub struct Measured {
     pub worst: Option<ShotMeasure>,
     /// The subject under the game light (close framing), for flat lighting.
     pub lit: Option<Lightness>,
+    /// What its recipe is built of, read as shape language ([`crate::built`]): `None` for a
+    /// subject with no recipe, or where it was not asked for.
+    pub built: Option<crate::built::BuiltOf>,
 }
 
 impl Measured {
@@ -121,25 +124,43 @@ pub fn check_subject(m: &Measured, rules: &StyleRules) -> Vec<Finding> {
         let v = thumb.solidity();
         out.push(finding(rules, "thumb_solidity", s, v, t.thumb_min_solidity, Bound::Min, "share", "thumb_min_solidity", format!("only {:.0}% of the {}-px silhouette is thicker than a few pixels: thin parts vanish at thumbnail size", v * 100.0, t.thumb_px), "thicken the thin parts or drop them; read it as a silhouette at 64 px first"));
     }
-    if let (Some(kind), Some(shape)) = (t.shape_language, m.shape()) {
+    // Shape language, when the style asks for one. Two readings: the asset's silhouettes (what
+    // the eye sees of it: the answer unless the style says otherwise) and what its recipe is
+    // built of (each shape it names, by its own outline and its surface: the answer where the
+    // style says `shape_by = "recipe"` and a recipe speaks for most of the asset). Whichever
+    // answers, the other is said beside it, and the recipe's largest shapes that are not of
+    // the kind asked for are named in the fix: that is what to change.
+    if let Some(kind) = t.shape_language {
         let pc = |x: f32| (x * 100.0).round();
-        let fix = match kind {
+        let outline = m.shape();
+        let built = m.built.as_ref().filter(|b| b.read >= 0.5);
+        let general = match kind {
             crate::shape::Kind::Round => "round each part's corners with a radius of a quarter of that part's thickness or more (a roundness, a larger corner or round), and build it from balls, capsules and chains rather than boxes; a thin stalk, string or stick on a round body changes nothing, and an oval over about four times as long as wide comes to points",
             crate::shape::Kind::Square => "square it off: flat sides meeting at right angles, with rounded corners kept under a tenth of the part's thickness and corners cut off flat under a seventh of it (wider, the part goes round by degrees), fewer curves and spikes in the outline",
             crate::shape::Kind::Pointed => "give the outline points: tapers that end in a tip, wedges, spikes and blades whose tips are under 65 degrees and whose foot is thick (a spike counts by the thickness of its foot, a hair by its own: nothing), in place of rounded and squared ends; a notch cut into it adds nothing, only what sticks out is read",
         };
-        out.push(finding(
-            rules,
-            "shape_language",
-            s,
-            shape.share(kind),
-            t.shape_min_share,
-            Bound::Min,
-            "share",
-            "shape_min_share",
-            format!("{:.0}% of its outline reads as {} (round {:.0}%, square {:.0}%, pointed {:.0}%, by how it turns outward; a point counts double), where the style asks for a {} shape", pc(shape.share(kind)), kind.name(), pc(shape.round), pc(shape.square), pc(shape.pointed), kind.name()),
-            fix,
-        ));
+        // The parts with the most surface that are not of the kind asked for.
+        let others: Vec<String> = built.map_or(Vec::new(), |b| b.parts.iter().filter(|p| p.leading() != kind).take(3).map(|p| format!("{} (a {}, {:.0}% of the surface, {})", p.path, p.what, pc(p.share), p.leading().name())).collect());
+        let fix = if others.is_empty() { general.to_string() } else { format!("its largest shapes that are not {}: {}; {general}", kind.name(), others.join("; ")) };
+        let by_recipe = |b: &crate::built::BuiltOf| format!("{:.0}% of its surface is built of {} shapes (round {:.0}%, square {:.0}%, pointed {:.0}%: each shape its recipe names, by its own outline and its surface; {:.0}% of the surface read)", pc(b.share(kind)), kind.name(), pc(b.round), pc(b.square), pc(b.pointed), pc(b.read));
+        let by_outline = |o: &crate::shape::ShapeLanguage| format!("{:.0}% of its outline reads as {} (round {:.0}%, square {:.0}%, pointed {:.0}%, by how it turns outward; a point counts double)", pc(o.share(kind)), kind.name(), pc(o.round), pc(o.square), pc(o.pointed));
+        let said = match (t.shape_by_recipe, built, outline.as_ref()) {
+            (true, Some(b), o) => Some((b.share(kind), format!("{}{}", by_recipe(b), o.map_or(String::new(), |o| format!("; {}", by_outline(o)))))),
+            (_, b, Some(o)) => Some((
+                o.share(kind),
+                format!(
+                    "{}{}{}",
+                    by_outline(o),
+                    b.map_or(String::new(), |b| format!("; {}", by_recipe(b))),
+                    if t.shape_by_recipe { "; the style asks for the recipe's reading, and no recipe speaks for most of this asset" } else { "" }
+                ),
+            )),
+            (false, Some(b), None) => Some((b.share(kind), format!("{} (its silhouettes could not be read)", by_recipe(b)))),
+            (_, None, None) => None,
+        };
+        if let Some((value, message)) = said {
+            out.push(finding(rules, "shape_language", s, value, t.shape_min_share, Bound::Min, "share", "shape_min_share", format!("{message}, where the style asks for a {} shape", kind.name()), &fix));
+        }
     }
     if let Some(g) = &m.gameplay {
         out.push(finding(rules, "px_gameplay", s, g.px_height, t.min_px_gameplay, Bound::Min, "px", "min_px_gameplay", format!("{:.0} px tall from the game camera", g.px_height), "scale it up (gameplay pieces are oversized on purpose) or give it a taller silhouette"));
@@ -224,6 +245,7 @@ mod tests {
             phone: Some(ShotMeasure { px_height: 4.0, subject: flat, ring, edge }),
             worst: Some(ShotMeasure { px_height: 30.0, subject: flat, ring, edge }),
             lit: Some(flat),
+            built: None,
         };
         let f = check_subject(&m, &rules());
         let failed: Vec<&str> = f.iter().filter(|x| x.is_error()).map(|x| x.check).collect();
@@ -288,5 +310,49 @@ mod tests {
         for check in CHECKS.iter().chain(&crate::form::CHECKS) {
             assert!(crate::critique::PASSES.iter().any(|(_, owned)| owned.contains(check)), "{check} is in no pass of the critique");
         }
+    }
+
+    /// A style that asks for a shape language is answered by the asset's silhouettes, unless
+    /// it says `shape_by = "recipe"`: then by what the recipe is built of, where a recipe
+    /// speaks for most of the asset. Either way the other reading is said beside the answer,
+    /// and the recipe's largest shapes that are not of the kind asked for are named in the fix.
+    #[test]
+    fn two_readings_answer_for_shape_language_and_the_style_says_which() {
+        use crate::built::{BuiltOf, BuiltPart};
+        let side = crate::shape::PIXELS;
+        let mut disc = Mask::empty(side, side);
+        for y in 0..side {
+            for x in 0..side {
+                let (dx, dy) = (x as f32 - 255.5, y as f32 - 255.5);
+                disc.on[(y * side + x) as usize] = dx * dx + dy * dy < 220.0 * 220.0;
+            }
+        }
+        let part = |path: &str, what: &'static str, share: f32, shares: [f32; 3]| BuiltPart { path: path.into(), what, share, round: shares[0], square: shares[1], pointed: shares[2] };
+        let boxes = BuiltOf { round: 0.1, square: 0.85, pointed: 0.05, read: 0.9, shapes: 3, parts: vec![part("parts[0].shape", "box", 0.6, [0.0, 1.0, 0.0]), part("parts[2].shape", "box", 0.3, [0.0, 1.0, 0.0]), part("parts[1].shape", "sphere", 0.1, [1.0, 0.0, 0.0])] };
+        // Built of boxes, and round in silhouette (a ball of boxes).
+        let ball_of_boxes = Measured { subject: "ball_of_boxes".into(), outlines: vec![disc.clone()], built: Some(boxes.clone()), ..Measured::default() };
+        let of = |toml: &str, m: &Measured| check_subject(m, &StyleRules::parse(toml, "style.toml", &|_| None).unwrap()).into_iter().find(|f| f.check == "shape_language");
+        // By its silhouettes (the default) it is round, and the recipe's reading is said beside.
+        let f = of("[taste]\nshape_language = \"round\"\n", &ball_of_boxes).unwrap();
+        assert!(!f.is_error() && f.value > 0.95, "{f:?}");
+        assert!(f.message.contains("of its outline reads as round") && f.message.contains("10% of its surface is built of round shapes") && f.message.contains("90% of the surface read"), "{}", f.message);
+        // By its recipe it is not, and the fix names the boxes, the largest first, and not the ball.
+        let f = of("[taste]\nshape_language = \"round\"\nshape_by = \"recipe\"\n", &ball_of_boxes).unwrap();
+        assert!(f.is_error() && (f.value - 0.1).abs() < 1e-6, "{f:?}");
+        assert!(f.message.starts_with("10% of its surface is built of round shapes") && f.message.contains("square 85%") && f.message.contains("100% of its outline reads as round"), "{}", f.message);
+        assert!(f.fix.starts_with("its largest shapes that are not round: parts[0].shape (a box, 60% of the surface, square); parts[2].shape") && !f.fix.contains("parts[1].shape") && f.fix.contains("round each part's corners"), "{}", f.fix);
+        let f = of("[taste]\nshape_language = \"square\"\nshape_by = \"recipe\"\nshape_min_share = 0.8\n", &ball_of_boxes).unwrap();
+        assert!(!f.is_error() && (f.value - 0.85).abs() < 1e-6, "{f:?}");
+        // A recipe that speaks for under half of the surface does not answer, even when asked:
+        // the silhouettes do, and the message says why.
+        let little = Measured { built: Some(BuiltOf { read: 0.4, ..boxes.clone() }), ..ball_of_boxes.clone() };
+        let f = of("[taste]\nshape_language = \"round\"\nshape_by = \"recipe\"\n", &little).unwrap();
+        assert!(!f.is_error() && f.value > 0.95 && f.message.contains("no recipe speaks for most of this asset") && !f.message.contains("built of"), "{f:?}");
+        // With no silhouettes read the recipe answers; with neither, nothing is asked.
+        let unseen = Measured { outlines: Vec::new(), ..ball_of_boxes.clone() };
+        assert!(of("[taste]\nshape_language = \"round\"\n", &unseen).is_some_and(|f| f.is_error() && f.message.contains("its silhouettes could not be read")));
+        assert!(of("[taste]\nshape_language = \"round\"\n", &Measured { subject: "x".into(), ..Measured::default() }).is_none());
+        // Not asked: no finding.
+        assert!(check_subject(&ball_of_boxes, &StyleRules::defaults()).iter().all(|f| f.check != "shape_language"));
     }
 }

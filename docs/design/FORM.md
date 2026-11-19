@@ -443,10 +443,11 @@ and **checked only when a style asks** for one.
   out of the bands a square, a disc, a triangle and a star read the same from 512 down to 140. A silhouette of 512
   takes 10 to 16 ms to read (release, measured on this laptop: the distance transform 4 ms of
   it), on the caller's own thread, and is read anew at each call.
-- **The rule.** `style.toml`: `[taste] shape_language = "round"` (or `"square"`, `"pointed"`) and
-  `shape_min_share` (0.5 unless given): the check `shape_language` fails an asset whose share of
-  that kind is under it, with the three shares in its message and what to do in its fix;
-  `[taste.allow]` exempts as for the other taste checks.
+- **The rule.** `style.toml`: `[taste] shape_language = "round"` (or `"square"`, `"pointed"`),
+  `shape_min_share` (0.5 unless given) and `shape_by` (`"outline"` unless given, or `"recipe"`:
+  below, "From what the recipe is built of"): the check `shape_language` fails an asset whose
+  share of that kind is under it, with both readings in its message and what to change in its
+  fix; `[taste.allow]` exempts as for the other taste checks.
 - **In the presets.** A base style may carry the ask (`Preset::shape`), and the style configurator
   writes it with the rest. **No shipped preset asks for one now**: `storybook` asked for round
   until the measure's third review (a ball on a string would have failed it), and a moonlit
@@ -526,8 +527,80 @@ and **checked only when a style asks** for one.
   - **a convention moved**: a corner is judged at the scale of its part, so a box rounded by
     a tenth of its shorter side is square (it was round from a sixteenth of the whole size),
     and round only from about a quarter. A crate with softened edges is a crate.
-  **It has not been reviewed.** The check stays as it was made safe: for a style that asks by
-  name, and no preset asks, until a model that did not write it has tried to break it.
-- **From what the recipe is built of**: the second measure the owner asked for. **Not built
-  yet** (designed: each named shape's own outlines, weighed by its surface, read by the same
-  classes; it tells an agent which part to change, and cannot speak for an imported mesh).
+  The check stays as it was made safe: for a style that asks by name, and no preset asks.
+- **Its fourth review** (another model, 2026-11-19, of `6e9c490b`) **said not to merge the
+  fourth version**: five major findings, each from a run at 512 pixels, and none mended yet.
+  **What is written above this point is the author's account, and these are what it gets
+  wrong:**
+  1. **A plain box whose edges wobble by half a pixel reads 0% square at some angles** (at 36
+     degrees: round 34%, pointed 66%; at 0, 9, 18, 45 and 72 it is 100% square). The
+     straightening cuts its slanted sides into runs too short to be "sides", so its right
+     angles take the rule for corners between curves, half curve and half point. What is a
+     side must come from how the smoothed outline turns, and a missing side must never make
+     a right angle a point.
+  2. **The joint rule flickers on limbs and necks**, and where it misses, the limb is judged
+     at the body's scale. A character (a ball head, a box body, capsule limbs) is 22% to 67%
+     round as it turns and leads pointed in 102 masks of 360; a bottle with a curved shoulder
+     leads round in 282, square in 76; an axe is 25% to 65% square. "Sixty kinds of shape
+     hold their lead" does not cover a humanoid, a bottle or a tool. A part should be taken
+     from the branches of the spine, not from the thickness along the outline.
+  3. **The bands' stated swing of a fifth is false for a plank**: a bar of 0.8 by 0.2 with
+     its corners rounded by 0.03 to 0.04 moves by a half as it turns, and its lead flips.
+     Only the 0.8 by 0.6 box was tested.
+  4. **The advice for a round style leads into a failure**: "a quarter of that part's
+     thickness" (the thickness being the largest disc's radius) is an eighth of its width,
+     where the measure asks for about a quarter of the width. A box rounded so fails "round"
+     in every mask. (The third review's first finding, again.)
+  5. **Thin parts on a thick body read as points**: a comb whose teeth are 6 to 16 pixels
+     wide and a quarter of the picture long is 50% to 91% pointed. "A comb's teeth are
+     square" holds for the test's short teeth of 20 pixels and not for these.
+  Smaller: a short stalk (a tenth of its body's radius long) takes up to a quarter of a disc
+  as "pointed", so "a thin stalk changes nothing" holds only for long ones; a sword and a
+  dagger lead square, a mushroom and a dome on a flat base square, a ghost with a wavy hem
+  pointed, and a tombstone and a heater shield sit at exactly half and half; two floors the
+  tests assert hold only at the angles they sample; one step of the measure (the median of
+  five) is held by no test; the worst case costs eight times a disc (a comb of one-pixel
+  teeth: 137 ms), which this page did not say. It found sound: the distance transform
+  (against a search on 3,000 masks), every edge case, the index arithmetic, the determinism,
+  that nine single breaks of the code each fail a test, and about thirty game shapes that
+  read as a person would. **Four reviews, four "do not merge".** The mends are the next
+  work, by an agent that did not write the fourth version, and reviewed again.
+- **From what the recipe is built of: the second measure, built** (2026-11-19;
+  `specula-model` `made`, `specula-studio` `built`). The modeller records, for every shape a
+  recipe names, **that shape's own outlines along its own axes and the surface it has in the
+  model**: a box's three rectangles, a ball's circle, a cylinder's section and its side (a
+  rectangle; a cone's, a triangle), an extruded outline and the box it is raised to, a lathe's
+  section and its profile mirrored, a sweep's profile and its path laid out straight (a horn
+  that narrows to nothing comes to a point), each primitive of a sculpt. What a boolean or a
+  sculpt takes away is not recorded; a part's operations change the surface (three copies
+  count three times; a box with a hole cut through it has the hole's wall too) and not the
+  outlines. The studio reads each outline with the measure above (drawn on 384 pixels), weighs
+  a shape's outlines as the recipe weighed them and **the shapes by their surface**, and
+  answers `built_of` in `studio_check` (`measures.thumbnails.built_of`): the three shares,
+  the share of the surface that was read, and the eight shapes with the most surface, each
+  with its path in the recipe, what it was made as, its share and what it reads as.
+  - **What it says that a silhouette cannot**: which part is what, so a failed check names
+    what to change; and it is not moved by the angle the asset is seen from.
+  - **What it cannot say**: anything of an imported mesh or a generated part (terrain, a
+    scatter, a building: `read_share` says how much was read); what a part's operations did
+    to its form (a taper does not make a box's outline a wedge's); how the parts are put
+    together. **A straight-sided cylinder is a third round and two thirds square** by it, as
+    it is in silhouette from the side: a can is not a ball.
+  - **The two readings differ, and both are true.** Sepulcra's 56 recipes: by silhouette 29
+    lead pointed, 14 round and 13 square; **by the recipe 42 lead square, 11 round and 1
+    pointed** (two are generated and unread), and the two agree on 20. The props are built
+    of boxes and few-sided cylinders, which is what the recipe says; they are topped with
+    crosses, finials and gables, which make points in an outline and little surface, which
+    is what the silhouette says. A chest tomb is 69% square by what it is built of and 86%
+    pointed in outline; a domed mausoleum 62% square and 85% round.
+  - **So the silhouettes answer the check, unless the style says otherwise**: shape
+    language is a convention about what the eye sees. `[taste] shape_by = "recipe"` makes the
+    recipe answer where one speaks for half of the surface or more. Either way the other
+    reading is said beside the answer, and **the fix names the recipe's largest shapes that
+    are not of the kind asked for**: `parts[0].shape (a box, 60% of the surface, square)`.
+  - Tests: the record (surface after copies and scaling, a boolean's cutter left out, a
+    sculpt's primitives, the same recipe saying the same); the outlines read as what they
+    are (a box square, a ball and a capsule round, a can a third and two thirds, a cone
+    pointed); the weighing and the naming; the check's two readings. Four seeded faults
+    were each caught by one of them (a cutter recorded; surfaces left as generated; shapes
+    not weighed by surface; the recipe answering unasked). **Not reviewed.**

@@ -185,6 +185,10 @@ pub struct TasteRules {
     /// The shape language the style asks of an outline ([`crate::shape`]): round, square or
     /// pointed. `None`: measured and reported, not checked.
     pub shape_language: Option<crate::shape::Kind>,
+    /// Which reading answers for `shape_language`: the asset's silhouettes (`"outline"`, the
+    /// default: what the eye sees of it) or what its recipe is built of (`"recipe"`: each shape
+    /// it names, by its surface). The other is said beside the answer either way.
+    pub shape_by_recipe: bool,
     /// The share of an outline's turning that must be of that kind.
     pub shape_min_share: f32,
     /// Deliberate style: subject glob → checks it is exempt from (with the reason in comments).
@@ -204,6 +208,7 @@ impl Default for TasteRules {
             ring_px: 3,
             flat_min_range: 0.06,
             shape_language: None,
+            shape_by_recipe: false,
             shape_min_share: 0.5,
             allow: Vec::new(),
         }
@@ -580,7 +585,7 @@ impl StyleRules {
                     }
                 }
                 "taste" => {
-                    keys(v, "taste", &["thumb_px", "silhouette_max_iou", "thumb_min_solidity", "min_px_gameplay", "min_px_phone", "value_contrast_min", "value_contrast_worst_min", "ring_px", "flat_min_range", "shape_language", "shape_min_share", "allow"])?;
+                    keys(v, "taste", &["thumb_px", "silhouette_max_iou", "thumb_min_solidity", "min_px_gameplay", "min_px_phone", "value_contrast_min", "value_contrast_worst_min", "ring_px", "flat_min_range", "shape_language", "shape_by", "shape_min_share", "allow"])?;
                     let t = &mut r.taste;
                     if let Some(x) = v.get("thumb_px") {
                         t.thumb_px = int(x, "taste.thumb_px", 32, 256)?;
@@ -601,6 +606,13 @@ impl StyleRules {
                     }
                     if let Some(x) = v.get("ring_px") {
                         t.ring_px = int(x, "taste.ring_px", 1, 32)?;
+                    }
+                    if let Some(x) = v.get("shape_by") {
+                        t.shape_by_recipe = match x.as_str() {
+                            Some("outline") => false,
+                            Some("recipe") => true,
+                            _ => return Err(err("taste.shape_by", "unknown_value", "one of \"outline\", \"recipe\"")),
+                        };
                     }
                     if let Some(x) = v.get("shape_language") {
                         let kind = x.as_str().and_then(crate::shape::Kind::parse);
@@ -812,6 +824,7 @@ impl StyleRules {
                     ("value_contrast_worst_min", Json::from(t.value_contrast_worst_min)),
                     ("flat_min_range", Json::from(t.flat_min_range)),
                     ("shape_language", t.shape_language.map_or(Json::Null, |k| Json::from(k.name()))),
+                    ("shape_by", Json::from(if t.shape_by_recipe { "recipe" } else { "outline" })),
                     ("shape_min_share", Json::from(t.shape_min_share)),
                 ]),
             ),
@@ -906,6 +919,10 @@ max_triangles = 3000
         let e = StyleRules::parse("[taste]\nshape_language = 3\n", "s", &pal).unwrap_err();
         assert_eq!(e.path, "taste.shape_language");
         assert!(StyleRules::parse("[taste]\nshape_min_share = 1.5\n", "s", &pal).is_err());
+        assert!(!StyleRules::defaults().taste.shape_by_recipe);
+        assert!(StyleRules::parse("[taste]\nshape_by = \"recipe\"\n", "s", &pal).unwrap().taste.shape_by_recipe);
+        assert!(!StyleRules::parse("[taste]\nshape_by = \"outline\"\n", "s", &pal).unwrap().taste.shape_by_recipe);
+        assert_eq!(StyleRules::parse("[taste]\nshape_by = \"mesh\"\n", "s", &pal).unwrap_err().path, "taste.shape_by");
     }
 
     #[test]

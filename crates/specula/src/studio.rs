@@ -1704,7 +1704,10 @@ impl Ctx<'_> {
             let (rgba, _) = self.studio_angle(s, az, el, &neutral_rig(), px, false, true, None)?;
             outlines.push(Mask::from_silhouette(&rgba, px, px));
         }
-        let m = Measured { subject: s.name.clone(), silhouettes, outlines, gameplay: get("gameplay"), phone: get("phone"), worst: get("worst_light"), lit: Some(lit.measure.subject) };
+        // And what its recipe is built of, read as shape language (each shape's own outline,
+        // some milliseconds each, on this caller's thread as the silhouettes are).
+        let built = specula_studio::built::built_of(&s.facts.made, s.facts.made_rest_m2);
+        let m = Measured { subject: s.name.clone(), silhouettes, outlines, gameplay: get("gameplay"), phone: get("phone"), worst: get("worst_light"), lit: Some(lit.measure.subject), built };
         shots.push(("game_light".into(), lit));
         Ok((m, shots))
     }
@@ -2318,6 +2321,9 @@ impl Ctx<'_> {
                 // reported for every subject, checked when the style asks for one.
                 ("shape", measured.shape().map_or(Json::Null, |s| s.to_json())),
                 ("shape_px", Json::from(specula_studio::shape::PIXELS)),
+                // And what its recipe is built of, read the same way: each shape it names by
+                // its own outline and its surface, the largest named.
+                ("built_of", measured.built.as_ref().map_or(Json::Null, |b| b.to_json())),
             ]),
         );
         let mut packet = Json::obj([

@@ -15,6 +15,7 @@ use crate::dmath;
 use crate::error::{ErrorCode, RecipeError};
 use crate::expr::Expr;
 use crate::lod::{self, LodInput};
+use crate::made;
 use crate::math3::{self, Affine, V2, V3};
 use crate::mesh::{Bounds, MeshData};
 use crate::poly;
@@ -1157,6 +1158,13 @@ pub struct ModelExtras {
     /// The shapes the recipe names round, and how coarsely each was built ([`Round`]): the
     /// ones whose facets stand furthest off the true curve first, at most [`MAX_ROUND`].
     pub round: Vec<Round>,
+    /// What the recipe is built of ([`crate::Made`]): each shape it names with its own outlines
+    /// and its surface in the model, the ones with the most surface first, at most
+    /// [`crate::MAX_MADE`].
+    pub made: Vec<crate::Made>,
+    /// The surface nothing in `made` speaks for, square metres: generated parts (terrain, a
+    /// scatter, a building), and the shapes past the ones kept.
+    pub made_rest_m2: f32,
 }
 
 /// A shape a recipe names round (a cylinder, a cone, a sphere, a torus, a capsule, a lathe, a
@@ -1450,6 +1458,14 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let stats = tally.stats.borrow().clone();
     let mut used: Vec<(String, f64)> = recipe.params.iter().map(|p| (p.name.clone(), vars[&p.name])).collect();
     used.sort_by(|a, b| a.0.cmp(&b.0));
+    // What it is built of, against the finest level's whole surface.
+    let surface: f64 = (0..lods[0].triangle_count())
+        .map(|t| {
+            let [a, b, c] = lods[0].triangle(t);
+            f64::from(math3::length(math3::cross(math3::sub(b, a), math3::sub(c, a)))) * 0.5
+        })
+        .sum();
+    let (made, made_rest_m2) = tally.made_of(surface as f32);
     Ok(Model {
         name: recipe.name.clone(),
         bounds: lods[0].bounds(),
@@ -1463,7 +1479,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         budget: (min_t, max_t),
         notes,
         rig: rig.map(|(r, _)| r),
-        extras: ModelExtras { textures, terrain, terrain_transform, stats, round: tally.round.take() },
+        extras: ModelExtras { textures, terrain, terrain_transform, stats, round: tally.round.take(), made, made_rest_m2 },
         wind,
     })
 }
@@ -1583,9 +1599,45 @@ struct Tally {
     work: std::cell::Cell<u64>,
     /// The shapes named round so far ([`Round`]), the [`MAX_ROUND`] that sag the most.
     round: std::cell::RefCell<Vec<Round>>,
+    /// What the fine level is built of so far ([`crate::Made`]), in the order built.
+    made: std::cell::RefCell<Vec<crate::Made>>,
+    /// The outlines of the shape being built, until it is built and its surface known.
+    making: std::cell::RefCell<Option<(&'static str, made::Views)>>,
+    /// How deep the build is in what a boolean takes away: nothing there is recorded.
+    cutting: std::cell::Cell<u32>,
 }
 
 impl Tally {
+    /// The shape at `path` is built, with this surface: what was noted of it is kept.
+    fn made_now(&self, path: &str, area_m2: f32) {
+        let Some((what, views)) = self.making.take() else { return };
+        let views = crate::made::views(views);
+        let mut list = self.made.borrow_mut();
+        if !views.is_empty() && area_m2 > 0.0 && list.len() < crate::made::MAX_KEPT {
+            list.push(crate::Made { path: path.to_string(), what, area_m2, views });
+        }
+    }
+
+    /// The shapes built since `mark` (a part's, an include's) had their surface changed by
+    /// operations from `before` to `after` in all: each by the same share.
+    fn made_scaled(&self, mark: usize, before: f32, after: f32) {
+        if before > 0.0 && after.is_finite() && after >= 0.0 {
+            for m in self.made.borrow_mut().iter_mut().skip(mark) {
+                m.area_m2 *= after / before;
+            }
+        }
+    }
+
+    /// What the model is built of: the [`crate::MAX_MADE`] shapes with the most surface, and
+    /// how much of the model's `surface` none of them speaks for.
+    fn made_of(&self, surface: f32) -> (Vec<crate::Made>, f32) {
+        let mut list = self.made.take();
+        list.sort_by(|a, b| b.area_m2.total_cmp(&a.area_m2).then_with(|| a.path.cmp(&b.path)));
+        list.truncate(crate::MAX_MADE);
+        let spoken: f32 = list.iter().map(|m| m.area_m2).sum();
+        (list, (surface - spoken).max(0.0))
+    }
+
     /// A shape named round was built this coarsely. Kept if it is among the [`MAX_ROUND`]
     /// whose facets stand furthest off their curve.
     fn rounded(&self, round: Round) {
@@ -1776,6 +1828,8 @@ fn build_parts(
         None => 30.0,
     };
     let mut out: Vec<BuiltPart> = Vec::new();
+    // (What this recipe's own parts, and its includes', record from here on.)
+    let made_first = tally.made.borrow().len();
     let mut terrains: Vec<(String, std::sync::Arc<crate::terrain::Terrain>, bool)> = Vec::new();
     let mut scattered: Vec<(String, Vec<crate::math3::V2>)> = Vec::new();
     // The model's terrain is the first one made, here or in an include; its transform gathers
@@ -1788,6 +1842,7 @@ fn build_parts(
             }
         }
         let had = tally.terrain.borrow().is_some();
+        let made_mark = tally.made.borrow().len();
         let pseed = stream_seed(seed, &part.name);
         let mut pieces: Vec<BuiltPart> = match &part.source {
             Source::Shape(node) => {
@@ -1899,6 +1954,13 @@ fn build_parts(
                 ctx.apply(&mut piece.shape, op, stream_seed(pseed, &format!("op{i}")))?;
             }
         }
+        // What the part's shapes are recorded with is the surface the part has in the end:
+        // after its operations (three copies count three times) and after a boolean (a box
+        // with a hole through it has the hole's wall too, and it is the box's).
+        if !coarse && tally.made.borrow().len() > made_mark {
+            let recorded: f32 = tally.made.borrow().iter().skip(made_mark).map(|m| m.area_m2).sum();
+            tally.made_scaled(made_mark, recorded, pieces.iter().map(|p| made::area(&p.shape)).sum::<f32>());
+        }
         if !had {
             match &part.source {
                 // This part's own terrain, as generated.
@@ -1922,10 +1984,14 @@ fn build_parts(
         }
         out.extend(pieces);
     }
+    let finish_from = if coarse || recipe.finish.is_empty() { 0.0 } else { out.iter().map(|p| made::area(&p.shape)).sum::<f32>() };
     for (i, op) in recipe.finish.iter().enumerate() {
         for (k, piece) in out.iter_mut().enumerate() {
             ctx.apply(&mut piece.shape, op, stream_seed(seed, &format!("finish{i}/{k}")))?;
         }
+    }
+    if finish_from > 0.0 {
+        tally.made_scaled(made_first, finish_from, out.iter().map(|p| made::area(&p.shape)).sum::<f32>());
     }
     if !had_before && tally.terrain.borrow().is_some() {
         tally.terrain_transform.set(ctx.terrain_transform(&recipe.finish, tally.terrain_transform.get()));
@@ -1993,6 +2059,17 @@ impl Ctx<'_> {
     /// never below `lo`), resamples nothing and subdivides nothing.
     /// The shape at `n` is one the recipe names round, built with `turn_deg` between its faces
     /// at `radius_m` (not for the coarse far level, which is coarse on purpose).
+    /// The shape being built is a `what` with these outlines along its own axes and their
+    /// weights ([`crate::Made`]): kept once it is built (not for what a boolean takes away;
+    /// and not noted at all for the coarse far level, whose tally is its own and is read by
+    /// nobody).
+    fn made(&self, what: &'static str, views: Vec<(Vec<V2>, f32)>) {
+        if self.coarse || self.tally.cutting.get() > 0 {
+            return;
+        }
+        self.tally.making.replace(Some((what, views)));
+    }
+
     fn round(&self, n: &Node, what: &'static str, turn_deg: f32, radius_m: f32) {
         if !self.coarse {
             self.tally.rounded(Round { path: n.path.clone(), what, turn_deg, radius_m });
@@ -2202,6 +2279,7 @@ impl Ctx<'_> {
     /// Builds a shape: its triangle count is predicted (an upper bound) and checked against the
     /// part and model limits before any geometry is generated.
     fn shape(&self, n: &Node) -> Result<Shape, RecipeError> {
+        self.tally.making.replace(None);
         let geom = |r: Result<Shape, crate::shape::GeomError>| r.map_err(|g| e(&n.path, ErrorCode::Geometry, g.0));
         let (predicted, build): (usize, Box<dyn FnOnce() -> Result<Shape, RecipeError> + '_>) = match n.op.as_str() {
             "box" => {
@@ -2210,6 +2288,7 @@ impl Ctx<'_> {
                     return Err(e(&n.at("size"), ErrorCode::OutOfRange, format!("box sizes must be in (0, {MAX_EXTENT_M}] m")));
                 }
                 let bevel = self.ranged(n, "bevel", 0.0, 0.0, 100.0)?;
+                self.made("box", vec![(made::rect(size[0], size[1], bevel), 1.0), (made::rect(size[0], size[2], bevel), 1.0), (made::rect(size[2], size[1], bevel), 1.0)]);
                 (60, Box::new(move || geom(Shape::cuboid(size, bevel))))
             }
             "cylinder" | "cone" => {
@@ -2218,6 +2297,8 @@ impl Ctx<'_> {
                 let height = self.positive(n, "height", 1.0)?;
                 let sides = self.int(n, "sides", 12, 3, 256)?;
                 self.round(n, if n.op == "cone" { "cone" } else { "cylinder" }, 360.0 / sides as f32, radius.max(top));
+                // (Its own section, and what it is from the side, which two of its three views are.)
+                self.made(if n.op == "cone" { "cone" } else { "cylinder" }, vec![(made::ngon(sides, radius.max(top)), 1.0), (made::trapezoid(radius, top, height), 2.0)]);
                 let bevel = if n.op == "cone" { 0.0 } else { self.ranged(n, "bevel", 0.0, 0.0, 100.0)? };
                 (8 * sides as usize, Box::new(move || geom(Shape::cylinder(radius, top, height, sides, bevel))))
             }
@@ -2226,6 +2307,7 @@ impl Ctx<'_> {
                 // (A twenty-sided ball's faces turn 41.8 degrees from one to the next, and each
                 // subdivision halves that.)
                 self.round(n, "sphere", 41.81 / (1u32 << sub) as f32, r);
+                self.made("sphere", vec![(made::circle(r), 1.0)]);
                 (20 * 4usize.pow(sub), Box::new(move || Ok(Shape::sphere(r, sub))))
             }
             "torus" => {
@@ -2238,6 +2320,7 @@ impl Ctx<'_> {
                 // (Round the ring, and round the tube: two rounds, each with its own radius.)
                 self.round(n, "torus", 360.0 / segs as f32, radius + tube);
                 self.round(n, "torus", 360.0 / sides as f32, tube);
+                self.made("torus", vec![(made::circle(radius + tube), 1.0), (made::stadium(2.0 * (radius + tube), tube), 2.0)]);
                 (2 * segs as usize * sides as usize, Box::new(move || Ok(Shape::torus(radius, tube, segs, sides))))
             }
             "capsule" => {
@@ -2245,6 +2328,7 @@ impl Ctx<'_> {
                 let (segs, rings) = (self.int(n, "segments", 12, 3, 256)?, self.int(n, "rings", 3, 1, 32)?);
                 // (Round its axis, and over each end: a quarter turn in `rings` bands.)
                 self.round(n, "capsule", (360.0 / segs as f32).max(90.0 / rings as f32), r);
+                self.made("capsule", vec![(made::circle(r), 1.0), (made::stadium(h.max(2.0 * r), r), 2.0)]);
                 (2 * segs as usize * (2 * rings as usize + 1), Box::new(move || Ok(Shape::capsule(r, h, segs, rings))))
             }
             "plane" => {
@@ -2257,6 +2341,7 @@ impl Ctx<'_> {
                     return Err(e(&n.at("divisions"), ErrorCode::OutOfRange, "divisions must be 1..256"));
                 }
                 let div = [d[0] as u32, d[1] as u32];
+                self.made("plane", vec![(made::rect(size[0], size[1], 0.0), 1.0)]);
                 (2 * div[0] as usize * div[1] as usize, Box::new(move || Ok(Shape::plane(size, div))))
             }
             "extrude" => {
@@ -2277,6 +2362,9 @@ impl Ctx<'_> {
                 let bevel = self.ranged(n, "bevel", 0.0, 0.0, 100.0)?;
                 let segments = self.int(n, "segments", 1, 1, 256)?;
                 let m = outline.len() * if corner > 0.0 { 2 } else { 1 };
+                // (Its outline, and from either side the box it is raised to, narrowing as it tapers.)
+                let half = made::half_extents(&outline);
+                self.made("extrude", vec![(outline.clone(), 1.0), (made::trapezoid(half[0], half[0] * taper, height), 1.0), (made::trapezoid(half[1], half[1] * taper, height), 1.0)]);
                 let rings = segments as usize + 1 + if bevel > 0.0 { 2 } else { 0 } + if cap.is_some() { 2 } else { 0 };
                 (2 * m * rings, Box::new(move || geom(Shape::extrude(&outline, height, taper, bevel, corner, segments, cap))))
             }
@@ -2298,6 +2386,10 @@ impl Ctx<'_> {
                     st.push([r[0], r[1], r.get(2).copied().unwrap_or(0.0), r.get(3).copied().unwrap_or(0.0)]);
                 }
                 let m = outline.len() * if corner > 0.0 { 2 } else { 1 };
+                // (Its outline, and from the side its stations' widths, mirrored.)
+                let half = made::half_extents(&outline);
+                let side: Vec<V2> = st.iter().map(|r| [r[0] * half[0].max(half[1]), r[1]]).collect();
+                self.made("loft", vec![(outline.clone(), 1.0), (made::mirrored(&side), 2.0)]);
                 (2 * m * (st.len() + 1), Box::new(move || geom(Shape::loft(&outline, &st, corner))))
             }
             "lathe" => {
@@ -2312,6 +2404,7 @@ impl Ctx<'_> {
                 let segs = self.int(n, "segments", 16, 3, 256)?;
                 // (Round its axis, at its widest; its profile's own corners are its maker's.)
                 self.round(n, "lathe", 360.0 / segs as f32, prof.iter().map(|p| p[0]).fold(0.0f32, f32::max));
+                self.made("lathe", vec![(made::ngon(segs, prof.iter().map(|p| p[0]).fold(0.0f32, f32::max)), 1.0), (made::mirrored(&prof), 2.0)]);
                 let caps = self.bool(n, "caps", true);
                 (2 * segs as usize * (prof.len() + 1), Box::new(move || Ok(Shape::lathe(&prof, segs, caps))))
             }
@@ -2349,6 +2442,25 @@ impl Ctx<'_> {
                 let twist = self.ranged(n, "twist", 0.0, -36_000.0, 36_000.0)?;
                 let caps = self.bool(n, "caps", true);
                 let m = profile.len();
+                // (Its profile, and from the side its path laid out straight, as wide along it
+                // as the profile is scaled: a horn that narrows to nothing comes to a point.)
+                if !closed {
+                    let half = made::half_extents(&profile);
+                    let wide = half[0].max(half[1]);
+                    let mut along = 0.0f32;
+                    let mut side: Vec<V2> = Vec::new();
+                    for (i, q) in path.iter().enumerate() {
+                        if i > 0 {
+                            along += math3::length(math3::sub(*q, path[i - 1]));
+                        }
+                        let t = if path.len() > 1 { i as f32 / (path.len() - 1) as f32 } else { 0.0 };
+                        let scale = if scales.len() == path.len() { scales[i] } else { scales[0] + (scales[1] - scales[0]) * t };
+                        side.push([scale * wide, along]);
+                    }
+                    self.made("sweep", vec![(profile.clone(), 1.0), (made::mirrored(&side), 2.0)]);
+                } else {
+                    self.made("sweep", vec![(profile.clone(), 1.0)]);
+                }
                 (
                     2 * m * (rings + 1),
                     Box::new(move || {
@@ -2363,6 +2475,7 @@ impl Ctx<'_> {
         };
         self.tally.grow(&n.path, 0, predicted)?;
         let s = build()?;
+        self.tally.made_now(&n.path, made::area(&s));
         self.tally.settle(predicted, s.triangle_count());
         check_extent(&s, &n.path)?;
         Ok(s)

@@ -387,15 +387,26 @@ impl Ctx<'_> {
                 continue;
             }
             let plain = matches!(k.get("ops"), Some(Val::List(l)) if l.is_empty()) && k.get("bevel").is_none();
-            if Self::csg_kind(&k.op).is_some() && plain {
-                let (t, n2) = self.csg_tree(k, depth + 1)?;
-                kids.push(t);
-                tris += n2;
-            } else {
-                let s = self.shape_and_ops(k, stream_seed(self.seed, &k.path))?;
-                tris += s.triangle_count();
-                kids.push(CsgTree::Leaf(s));
+            // (What a difference takes away is not what the thing is made of: nothing built
+            // for its second operand and after is recorded as that.)
+            let cutter = op == CsgOp::Difference && i > 0;
+            if cutter {
+                self.tally.cutting.set(self.tally.cutting.get() + 1);
             }
+            let built = if Self::csg_kind(&k.op).is_some() && plain {
+                self.csg_tree(k, depth + 1)
+            } else {
+                self.shape_and_ops(k, stream_seed(self.seed, &k.path)).map(|s| {
+                    let n2 = s.triangle_count();
+                    (CsgTree::Leaf(s), n2)
+                })
+            };
+            if cutter {
+                self.tally.cutting.set(self.tally.cutting.get() - 1);
+            }
+            let (t, n2) = built?;
+            kids.push(t);
+            tris += n2;
         }
         if kids.is_empty() {
             return Err(e(&n.at("of"), ErrorCode::Geometry, "every operand is switched off"));
@@ -757,6 +768,12 @@ impl Ctx<'_> {
         })?;
         self.spend(st.work);
         self.tally.grow(&n.path, 0, shape.triangle_count())?;
+        // What it is built of: its primitives' own outlines (a figure's are a body's limbs and
+        // trunk, read the same way).
+        let mut views = Vec::new();
+        crate::made::of_sculpt(&tree, &mut views);
+        self.made(if figure { "figure" } else { "sdf" }, views);
+        self.tally.made_now(&n.path, crate::made::area(&shape));
         // A sculpt is round where its tree is: its surface is cut into cells, and round its
         // tightest ball, limb or section a cell turns the surface by the cell over the radius.
         if let Some(radius) = sdf::least_radius(&tree) {

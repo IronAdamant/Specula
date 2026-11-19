@@ -18,6 +18,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod built;
 pub mod check;
 pub mod colour;
 pub mod critique;

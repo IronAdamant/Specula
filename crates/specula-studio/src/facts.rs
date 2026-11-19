@@ -176,6 +176,12 @@ pub struct AssetFacts {
     /// cannot say ([`specula_model::Round`]; the ones that sag the most first, bounded). Empty
     /// for an imported mesh, which has no recipe to say what was meant to be round.
     pub round: Vec<specula_model::Round>,
+    /// What its recipe is built of: each shape it names with its own outlines and its surface
+    /// ([`specula_model::Made`]), and the surface nothing of that speaks for. Read as shape
+    /// language by [`crate::built::built_of`] when a check or an answer wants it (some
+    /// milliseconds an outline: not at every staging).
+    pub made: Vec<specula_model::Made>,
+    pub made_rest_m2: f32,
 }
 
 /// `name k=v k=v` (parameters sorted, whole numbers without a fraction).
@@ -256,6 +262,8 @@ impl AssetFacts {
             named_colours: info.map(|i| i.colours.clone()).unwrap_or_default(),
             form: model.lods.first().map(|m| crate::form::measure_with(m, stop)).unwrap_or_default(),
             round: model.extras.round.clone(),
+            made: model.extras.made.clone(),
+            made_rest_m2: model.extras.made_rest_m2,
         }
     }
 
