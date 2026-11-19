@@ -1,8 +1,9 @@
-//! What a recipe is built of (docs/design/FORM.md, "Shape language"): for every shape a recipe
-//! names, **its own outlines, seen along its own axes, and how much of the model's surface is
-//! its**. A box's are three rectangles; a ball's, one circle; a cylinder's, a circle and a
-//! rectangle; a cone's, a circle and a triangle; an extruded outline's, the outline and the
-//! box it is raised to; a lathe's, a circle and its profile mirrored.
+//! What a recipe is built of (docs/design/FORM.md, "From what the recipe is built of"): for
+//! every shape a recipe names, **its own outlines, seen along its own axes, and its own surface
+//! in the finished model**. A box's are three rectangles; a ball's, one circle; a cylinder's, a
+//! circle and a rectangle; a cone's, a circle and a triangle; an extruded outline's, the outline
+//! and the box it is raised to; a lathe's, a circle and its profile mirrored; a column's, its
+//! section and its sides closed by their caps.
 //!
 //! This is what a silhouette of the whole asset cannot say: which part is what. A silhouette
 //! reads a ball built of forty small boxes as a ball, and a crate under a round lid as half of
@@ -10,16 +11,23 @@
 //! reads each outline with the measure it reads silhouettes with, and weighs it by the shape's
 //! surface (`specula-studio`, `built`).
 //!
-//! **What is recorded and what is not:**
-//! - Each shape generator of a part, and each primitive of a sculpt (`sdf`) that adds to it;
-//!   what a boolean or a sculpt takes away (the second operand of a `difference` and after) is
-//!   not what the thing is made of, and is left out.
-//! - The outlines are the shape's as it is generated. A part's `ops` then move, turn, scale,
-//!   copy, bend and tint it: the outlines are not changed by them, the surface is (three
-//!   copies count three times; a taper does not make a box's outline a wedge's: said in the
-//!   document as a limit).
-//! - A generated part (terrain, a scatter, a building) records nothing, and neither does an
-//!   imported mesh: [`crate::ModelExtras::made_rest_m2`] is the surface nothing speaks for.
+//! **A record's surface is that shape's own surface in the finished model, and what no record
+//! speaks for is [`crate::ModelExtras::made_rest_m2`]:**
+//! - Each shape generator of a part, each operand of a boolean and each primitive of a sculpt
+//!   (`sdf`) that adds to it is recorded; what a boolean or a sculpt takes away (the second
+//!   operand of a `difference` and after) is not what the thing is made of, and is left out.
+//!   **The wall a cut makes is its cutter's surface**, and so no record's.
+//! - A boolean operand is recorded with what is left of its surface in the result (the
+//!   boolean says which operand each triangle came from); a sculpt's primitives with the
+//!   surface each makes in its mesh ([`crate::sdf::surface_by_primitive`]).
+//! - The outlines are the shape's as it is generated. Its own `ops`, its part's and the
+//!   recipe's `finish` then move, turn, scale, copy, bend and tint it: the outlines are not
+//!   changed by them, the surface is, by what they did to its pieces (three copies count three
+//!   times; a taper does not make a box's outline a wedge's: said in the document as a limit).
+//! - An include's records carry the including part's path, as its errors do
+//!   (`parts[1].include(gem).parts[0].shape`); a scatter's items are recorded by what was
+//!   placed of each. One record a path.
+//! - A terrain, a building and an imported mesh record nothing.
 
 use crate::dmath;
 use crate::math3::{V2, V3};
@@ -32,7 +40,8 @@ pub struct Made {
     pub path: String,
     /// The shape's name in the recipe (`box`, `cylinder`, `sdf`, ...).
     pub what: &'static str,
-    /// Its surface in the model, square metres (after its part's operations).
+    /// Its own surface in the finished model, square metres (after every operation, and what
+    /// a boolean or a scatter left of it).
     pub area_m2: f32,
     /// Its outlines along its own axes (closed, in any units: only their shape is read), each
     /// with its weight among them. At most [`MAX_VIEW_POINTS`] points each.

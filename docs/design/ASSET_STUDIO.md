@@ -135,7 +135,12 @@ Each is a measured number against a `[taste]` threshold. Failures are errors in 
   The mean contrast is still reported (`mean_contrast`).
 - **Shape language:** how round, square or pointed the thumbnail silhouettes' outline is
   ([FORM.md](FORM.md), "Shape language"): reported for every subject (`measures.thumbnails.shape`), and checked
-  (`shape_language`) only when the style gives `[taste] shape_language`.
+  (`shape_language`) only when the style gives `[taste] shape_language`. Beside it, what the recipe is **built
+  of** (`measures.thumbnails.built_of`): each shape the recipe names read by its own outlines and weighed by its own
+  surface in the model, with the share of the surface that was read (`read_share`: what no record speaks for, an
+  outline the measure cannot read and what is past the reading budget all count as not read) and the eight largest
+  shapes by path ([FORM.md](FORM.md), "From what the recipe is built of"); a style answers the check by it with
+  `shape_by = "recipe"`.
 - **Palette distance and neutral saturation:** from the asset's surface colours, as above.
 - **Scale against reference figures:** the build's extents (lowest to highest point) against `[[scale]]`, reported
   also as a ratio to the 1.8 m figure. How far the lowest point floats above the ground is checked on its own

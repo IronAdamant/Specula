@@ -393,6 +393,36 @@ Recipes with booleans, sculpts or generators take **the coarse rebuild as LOD 1*
 the SDF resolution, a coarser terrain grid) when it saves at least 10%: clustering would fold their
 cuts and recesses. Later LODs cluster as before.
 
+### What a recipe is built of (`crate::made`, `Model.extras.made`)
+
+Every build records, for each shape the recipe names, its own outlines along its own axes and
+**its own surface in the finished model**; what no record speaks for is `made_rest_m2` (the
+studio reads it as shape language: [FORM.md](FORM.md), "From what the recipe is built of").
+How each piece of the modeller keeps that true (mended 2026-11-20 after the record's first
+review):
+
+- A shape's own `ops` (a boolean operand's), its part's `ops` and the recipe's `finish` scale
+  its record by what they did to its pieces, area before against after, never to a total
+  holding surface no record speaks for.
+- **Booleans**: `csg::evaluate_bevelled_leaves` says which operand each of the result's
+  triangles came from (every face of the result is a piece of one operand's face, so this is
+  exact), and each operand is recorded with what is left of its surface, in a union, a
+  difference and an intersection alike. A cutter is not recorded, and the wall it cuts is its
+  surface: the rest. A bevel's strips are its tubes': the rest.
+- **Sculpts**: `sdf::surface_by_primitive` gives each triangle of the mesh to the primitive
+  whose field is the tree's at its middle (in a union the nearest, in an intersection the
+  furthest, in a difference the first child or the cutter that made the wall), at most 4,096
+  triangles asked and about 20 ms of work (`MAX_OWNER_WORK`, charged to the build's work), so
+  a mirror's and a repeat's copies, an elongation and what an intersection leaves are counted
+  as meshed. In a smooth blend the nearest takes the blend.
+- **Includes**: records carry the including part's path as its errors do
+  (`parts[1].include(gem).parts[0].shape`). **Scatters**: each item is recorded by the surface
+  of what was placed of it, under its path in the items; a variant never placed has no record,
+  and an item's variants are one record (one record a path, everywhere).
+- **Bounds**: the 64 shapes with the most surface, at most 256 outlines of 128 points in all
+  (a quarter of a megabyte); a shape whose outlines do not fit keeps none and is read as not
+  read.
+
 ### Agent tools
 
 | Tool | Does |

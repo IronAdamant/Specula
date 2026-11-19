@@ -13,9 +13,11 @@
 //! boxes is boxes here and a ball in silhouette; a crate under a round lid is half of each
 //! here and by the angle there.
 //!
-//! What it cannot say: anything of an imported mesh or a generated part (no recipe speaks for
-//! them: [`BuiltOf::read`] is the share of the surface that was read); what a part's
-//! operations did to its form (a taper, a bend); how the parts meet.
+//! What it cannot say: anything of an imported mesh, a terrain or a building, or of the wall a
+//! cut makes (no record speaks for them: [`BuiltOf::read`] is the share of the surface that was
+//! read, and an outline the measure cannot read, or past [`MAX_READS`], counts as not read);
+//! what a part's operations did to its form (a taper, a bend); how the parts meet. A thin
+//! outline is read at [`MAX_ASPECT`] to one at the most ([`at_most_long`]).
 
 use crate::image::Mask;
 use crate::shape::{Kind, ShapeLanguage};
@@ -55,8 +57,9 @@ pub struct BuiltOf {
     pub round: f32,
     pub square: f32,
     pub pointed: f32,
-    /// The share of the asset's surface these speak for (the rest: generated parts, shapes
-    /// whose outlines could not be read, shapes past the ones the model kept).
+    /// The share of the asset's surface these speak for (the rest: what no record speaks for,
+    /// outlines that could not be read or were past [`MAX_READS`], each with its share of its
+    /// shape's surface, and shapes past the ones the model kept).
     pub read: f32,
     /// How many shapes were read.
     pub shapes: usize,
