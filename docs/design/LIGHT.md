@@ -39,7 +39,8 @@ argument optional; the view is `sight_frame`'s, by the same parser, `include_ui`
 It changes nothing in the world and writes nothing: a feature is left out of the measuring render
 alone (`light_tools::strip`), never out of the world's settings. It is a step job: a render is
 submitted in one step and landed in a later one, between frames, so the GPU's work never holds
-the engine thread ([WORKERS.md](WORKERS.md)); a view carries its own timings from the moment it
+the engine thread ([WORKERS.md](WORKERS.md)); a step that finds its render still on the GPU
+answers `Step::Wait` and is looked at again a pass later, never spinning on the fence; a view carries its own timings from the moment it
 settles (`Rendered::gpu`), because another offscreen render would have replaced the GPU's last
 record before the job asked for it. **A measuring render lands its timings alone**: its image is
 not copied back, either into a buffer the host can read (the GPU's copy is left out of its
@@ -80,7 +81,7 @@ is the answer.)
 | `partial` | only when the call's time ran short: `rounds_counted`, `rounds_asked`, `why` |
 | `settings` | what the features are set to (shadow resolution and cascades, ssao samples, bloom levels, the GI's tier, the lights in view) |
 | `engine_light` | what the engine's light `has` and `has_not`, whatever the machine |
-| `measured`, `renders`, `took_ms`, `warnings` | how it was measured, how many renders it took and how long, and anything to know (lights left out of the frame, GI that failed to bind, things still loading, rounds cut short) |
+| `measured`, `renders`, `took_ms`, `warnings` | how it was measured, how many renders it took and how long, and anything to know: what `sight_frame` would have warned of in the view as it is (a picture that failed to load, models not drawn, lights left out of the frame, the camera's), GI that failed to bind, things still loading, rounds cut short |
 
 **What is and is not said:**
 
@@ -92,9 +93,11 @@ is the answer.)
   the same (every pair of five, all but one to eleven, all but three from twelve). A cost
   smaller than that has `told_from_noise: false`, and is never named in `give_up`. Load that
   comes and goes (another program compiling) moves both frames of a pair alike far more often
-  than it moves two separate medians alike, and drawing every second round backwards takes a
-  slow drift out of the pairs. What that holds to, by simulation, is the table under "What was
-  mended, second round". (The least frame to the most was tried first: one frame of nine
+  than it moves two separate medians alike, drawing every second round backwards takes a
+  slow drift out of the pairs, and an order that changes from pair to pair keeps a load in
+  step with the rounds from falling on the same variants. What that holds to, by simulation,
+  is in the tables under "What was mended, third round" (the false rates there are for one
+  feature; a whole report's are beside them). (The least frame to the most was tried first: one frame of nine
   0.3 ms late hid every cost under 0.3 ms. Then two separate medians, each with its own scatter:
   it called a costless feature a cost up to one time in ten on a machine busy by turns.)
 - **Frames too uneven are said, not advised on.** When a fifth or more of all the frames are
@@ -147,7 +150,7 @@ screen-space traces: [research/FORM_AND_LIGHT.md](../research/FORM_AND_LIGHT.md)
 Sepulcra's own scene (map 1 as a game begins: shadows, ambient occlusion, bloom, FXAA, fog, the
 sky and grading on; no baked GI drawn and no point light in view), headless, nine frames a variant
 (90 renders, under a second in all), with the noise rule of the first round (two separate medians;
-the rule now is in "What was mended, second round"). These are this laptop's numbers and nobody else's.
+the rule now is in "What was mended, second round", its order of rounds in "third round"). These are this laptop's numbers and nobody else's.
 
 | | Integrated (Intel Raptor Lake), 1280x720 | the same, 1920x1080 |
 |---|---|---|
@@ -445,3 +448,175 @@ waits; models still building during a report. Seen and older than this round: wh
 render is still on the graphics card the job asks to be stepped again within its step's
 credit, up to 12 ms a pump, where it could wait. **None of this is mended yet.** (As found;
 mended since: the next section.)
+
+## What was mended, third round
+
+A builder that wrote none of it (2026-11-20) took the third review's findings and the two
+things it did not check. Every mend has a test that fails without it (the faults seeded back
+are at the end). On a busy machine; nothing here rests on a time.
+
+1. **The wait gives way to the call's time** (`waited: call_time`): *test*, in the sprite test,
+   by the job's state: a picture nobody has loaded, the job's deadline five seconds away at its
+   first step (under a whole wait, past the three-second margin): that step decides
+   `call_time`, and with its deadline then moved far the job measures five rounds and says
+   `call_time`. With the cut taken out the first step only waits, and the test fails.
+2. **The line for a late frame**: a hand case in
+   `a_cost_is_read_from_pairs_of_the_same_round`: two frames of ten 6% over the quick third are
+   late and make the machine not steady, two 4% over are not. A line at 3% or 7% fails it.
+3. **A load that keeps step with the rounds.** The lead's decision was to shuffle the variants
+   between the view as it is and the last one, pair by pair, if the simulation said it helped
+   and cost nothing elsewhere. **It did not help**: with the view as it is always at an end
+   of a round, its place is half of every pair, and a load in step with the rounds still falls
+   on it the same way every round (34% of costless features told at five frames went to 21%,
+   and at sixteen frames rose from 30% to 46%). **What was taken instead**: from the second
+   pair of rounds on, every place is shuffled, the view as it is too; within a pair the second
+   round is still the first backwards; the first round draws the view as it is first, since
+   its first render says which variants there are (`light_noise::variant_at`; a fixed
+   splitmix64 sequence of the pair's number, the same on every machine and every run; two
+   pairs' orders are pinned in a test).
+
+   The table (`the_orders_table_in_light_md`; the rule now; ten variants; 3,000 reports a cell,
+   the main table's seeds at 5, 9 and 16 frames, so its cells come again here). Each cell as the
+   main table's, then `r`: of the reports found steady, the share in which some costless
+   feature is told a cost more than nothing, % (`-`: none was steady). "serpentine" is the
+   second round's order, "middle shuffled" the lead's, "all shuffled" the one taken.
+
+   | Noise | Order | 5 frames | 9 frames | 16 frames |
+   |---|---|---|---|---|
+   | even, 1% | serpentine | 0.9 (0.0) 5.1/20.5/70.1/98.4 r 3.1 | 0.4 (0.0) 5.3/27.4/94.4/100.0 r 1.3 | 0.0 (0.0) 3.8/39.6/99.9/100.0 r 0.2 |
+   | even, 1% | middle shuffled | 0.8 (0.0) 4.6/19.3/71.2/98.6 r 2.9 | 0.4 (0.0) 5.6/27.9/94.9/100.0 r 1.5 | 0.0 (0.0) 4.1/38.9/99.9/100.0 r 0.1 |
+   | even, 1% | all shuffled | 0.9 (0.0) 4.8/18.8/69.6/98.3 r 3.4 | 0.4 (0.0) 5.2/27.6/94.9/100.0 r 1.5 | 0.1 (0.0) 3.7/38.4/99.9/100.0 r 0.3 |
+   | skewed | serpentine | 0.6 (0.0) 3.6/12.2/52.1/89.9 r 1.9 | 0.2 (0.0) 3.2/18.9/81.9/99.5 r 0.5 | 0.0 (0.0) 2.0/24.2/97.3/100.0 r 0.1 |
+   | skewed | middle shuffled | 0.6 (0.0) 3.5/12.0/52.5/89.4 r 2.1 | 0.1 (0.0) 3.1/18.5/82.1/99.7 r 0.7 | 0.0 (0.0) 1.9/25.0/97.4/100.0 r 0.0 |
+   | skewed | all shuffled | 0.7 (0.0) 3.0/12.2/53.6/91.0 r 2.6 | 0.2 (0.0) 2.9/18.2/81.2/99.7 r 0.7 | 0.0 (0.0) 1.9/25.3/97.0/100.0 r 0.0 |
+   | a third late by a fifth | serpentine | 0.5 (98.9) 5.9/12.6/18.2/20.1 r 0.0 | 0.1 (99.8) 8.1/16.0/18.7/24.7 r 0.0 | 0.0 (100.0) 9.1/17.1/20.3/28.7 r - |
+   | a third late by a fifth | middle shuffled | 0.5 (98.9) 5.8/11.8/16.8/19.6 r 0.0 | 0.2 (99.8) 7.3/16.7/18.9/22.2 r 0.0 | 0.0 (100.0) 9.3/17.1/21.8/29.4 r - |
+   | a third late by a fifth | all shuffled | 0.5 (98.9) 6.0/11.6/16.9/18.9 r 0.0 | 0.2 (99.8) 7.7/17.2/20.0/22.8 r 0.0 | 0.0 (100.0) 10.2/18.1/23.2/28.8 r - |
+   | half late by a fifth | serpentine | 1.0 (100.0) 2.3/3.8/5.8/8.8 r - | 0.3 (100.0) 1.3/2.2/4.6/7.6 r - | 0.0 (100.0) 0.5/0.8/2.7/6.4 r - |
+   | half late by a fifth | middle shuffled | 1.0 (100.0) 1.9/3.8/6.7/9.1 r - | 0.3 (100.0) 1.0/2.7/3.9/8.7 r - | 0.0 (100.0) 0.4/0.8/2.7/6.4 r - |
+   | half late by a fifth | all shuffled | 0.7 (100.0) 2.1/3.2/5.3/8.6 r - | 0.3 (100.0) 1.3/2.2/4.5/8.6 r - | 0.0 (100.0) 0.3/0.9/2.6/7.2 r - |
+   | bursts, a third of the time, ~8 renders | serpentine | 0.5 (73.5) 16.2/27.7/35.5/37.4 r 0.5 | 0.1 (81.6) 25.7/39.2/41.9/44.6 r 0.2 | 0.0 (88.1) 39.8/52.9/53.5/55.3 r 0.0 |
+   | bursts, a third of the time, ~8 renders | middle shuffled | 0.4 (73.5) 23.6/38.1/44.9/46.1 r 0.5 | 0.0 (81.6) 38.2/53.7/56.9/60.0 r 0.2 | 0.0 (88.1) 70.4/81.1/81.3/81.7 r 0.0 |
+   | bursts, a third of the time, ~8 renders | all shuffled | 0.1 (73.6) 39.5/59.2/61.6/63.1 r 0.0 | 0.0 (81.6) 61.4/77.8/78.2/79.9 r 0.0 | 0.0 (88.1) 90.1/94.7/95.2/94.7 r 0.0 |
+   | bursts, half the time, ~8 renders | serpentine | 1.0 (95.6) 8.3/13.6/20.7/23.5 r 1.5 | 0.3 (98.9) 9.0/17.8/20.8/24.6 r 0.0 | 0.0 (99.9) 10.2/18.2/21.4/27.7 r 0.0 |
+   | bursts, half the time, ~8 renders | middle shuffled | 0.8 (95.8) 11.8/20.8/29.6/32.4 r 0.0 | 0.1 (98.9) 18.2/31.3/35.4/39.0 r 0.0 | 0.0 (99.9) 40.7/53.9/56.5/62.1 r 0.0 |
+   | bursts, half the time, ~8 renders | all shuffled | 0.3 (95.8) 26.7/42.3/50.1/49.5 r 0.0 | 0.0 (98.9) 43.8/62.5/62.6/65.6 r 0.0 | 0.0 (99.9) 75.4/85.4/85.0/86.7 r 0.0 |
+   | bursts, half the time, ~40 renders | serpentine | 0.1 (56.7) 37.4/57.7/65.6/65.3 r 0.1 | 0.0 (75.1) 66.2/80.7/81.5/81.0 r 0.0 | 0.0 (87.9) 90.8/94.4/94.8/95.0 r 0.0 |
+   | bursts, half the time, ~40 renders | middle shuffled | 0.0 (56.7) 44.1/66.6/73.2/72.3 r 0.1 | 0.0 (75.1) 77.1/88.2/88.9/88.3 r 0.0 | 0.0 (87.9) 96.9/98.6/99.0/98.8 r 0.0 |
+   | bursts, half the time, ~40 renders | all shuffled | 0.0 (56.8) 56.6/81.7/85.5/85.1 r 0.1 | 0.0 (75.1) 86.2/95.9/96.4/96.2 r 0.0 | 0.0 (87.9) 99.4/99.8/99.9/99.8 r 0.0 |
+   | a slow drift of a tenth | serpentine | 0.0 (70.3) 0.7/21.1/76.8/99.9 r 0.1 | 0.0 (100.0) 3.5/33.4/100.0/100.0 r - | 0.0 (100.0) 30.7/99.0/100.0/100.0 r - |
+   | a slow drift of a tenth | middle shuffled | 0.0 (56.8) 0.3/5.7/56.7/100.0 r 0.2 | 0.0 (100.0) 9.0/64.6/100.0/100.0 r - | 0.0 (100.0) 67.8/100.0/100.0/100.0 r - |
+   | a slow drift of a tenth | all shuffled | 0.1 (75.4) 14.7/53.3/99.3/100.0 r 0.8 | 0.0 (100.0) 41.7/94.6/100.0/100.0 r - | 0.0 (100.0) 83.7/100.0/100.0/100.0 r - |
+   | +4% over half of each round | serpentine | 34.0 (0.0) 40.1/52.8/82.8/99.9 r 40.7 | 35.5 (0.0) 48.0/58.5/82.0/100.0 r 38.2 | 30.1 (0.0) 41.4/38.8/60.0/90.8 r 38.8 |
+   | +4% over half of each round | middle shuffled | 21.3 (0.0) 15.2/24.2/70.4/79.3 r 38.6 | 35.1 (0.0) 40.2/40.9/49.3/80.7 r 37.6 | 46.1 (0.0) 40.4/39.9/59.3/100.0 r 38.7 |
+   | +4% over half of each round | all shuffled | 3.2 (0.0) 11.0/18.2/40.7/39.3 r 11.0 | 4.2 (0.0) 15.2/21.1/39.2/42.1 r 16.9 | 2.5 (0.0) 28.9/30.1/47.2/97.8 r 9.4 |
+   | +2% over half of each round | serpentine | 31.2 (0.0) 37.1/54.7/94.9/100.0 r 40.7 | 32.0 (0.0) 45.9/62.0/99.1/100.0 r 38.2 | 30.1 (0.0) 42.0/59.9/91.5/100.0 r 38.8 |
+   | +2% over half of each round | middle shuffled | 14.9 (0.0) 12.0/25.7/76.9/94.9 r 36.0 | 29.8 (0.0) 32.7/39.9/81.9/100.0 r 37.0 | 39.2 (0.0) 39.3/40.6/100.0/100.0 r 38.7 |
+   | +2% over half of each round | all shuffled | 2.5 (0.0) 11.0/26.2/41.1/89.5 r 9.4 | 3.8 (0.0) 15.2/35.8/51.0/100.0 r 15.7 | 1.1 (0.0) 28.9/39.2/97.6/100.0 r 4.4 |
+   | +4%, a period of 0.95 rounds | serpentine | 21.2 (0.0) 20.0/33.2/77.3/79.4 r 31.4 | 14.4 (0.0) 34.0/54.2/100.0/100.0 r 24.4 | 0.0 (0.0) 71.3/86.7/100.0/100.0 r 0.0 |
+   | +4%, a period of 0.95 rounds | middle shuffled | 14.7 (0.0) 16.0/26.7/87.9/100.0 r 29.9 | 11.0 (0.0) 18.8/20.1/29.1/45.8 r 22.4 | 0.0 (0.0) 0.0/0.0/22.3/99.8 r 0.0 |
+   | +4%, a period of 0.95 rounds | all shuffled | 4.3 (0.0) 5.4/11.1/41.5/42.2 r 13.9 | 3.5 (0.0) 7.4/19.1/48.5/48.1 r 11.0 | 0.9 (0.0) 10.8/15.8/46.2/99.8 r 3.7 |
+   | +4%, a period of 1.05 rounds | serpentine | 21.2 (0.0) 11.6/19.9/57.7/63.0 r 29.3 | 16.1 (0.0) 6.9/17.8/57.2/58.0 r 23.5 | 0.0 (0.0) 15.6/28.4/57.2/99.9 r 0.0 |
+   | +4%, a period of 1.05 rounds | middle shuffled | 17.2 (0.0) 5.1/12.2/53.9/62.7 r 30.0 | 12.2 (0.0) 13.3/18.3/47.5/67.9 r 21.9 | 0.0 (0.0) 0.0/0.0/10.4/99.6 r 0.0 |
+   | +4%, a period of 1.05 rounds | all shuffled | 1.8 (0.0) 10.6/19.4/70.4/81.5 r 6.7 | 1.5 (0.0) 10.2/22.4/60.7/63.6 r 5.6 | 0.0 (0.0) 12.6/21.8/60.8/100.0 r 0.0 |
+   | +4%, a period of 1.2 rounds | serpentine | 0.0 (0.0) 0.0/0.0/0.0/0.0 r 0.0 | 0.0 (0.0) 0.0/0.0/0.0/1.0 r 0.0 | 0.0 (0.0) 0.0/0.0/0.0/96.5 r 0.0 |
+   | +4%, a period of 1.2 rounds | middle shuffled | 0.9 (0.0) 0.0/0.0/42.9/49.3 r 2.2 | 0.8 (0.0) 0.0/0.0/0.0/1.4 r 3.2 | 0.7 (0.0) 3.4/8.5/16.6/96.5 r 2.7 |
+   | +4%, a period of 1.2 rounds | all shuffled | 3.2 (0.0) 16.8/23.6/59.5/66.7 r 9.3 | 2.9 (0.0) 13.3/17.2/59.9/68.7 r 7.0 | 0.1 (0.0) 37.0/49.8/67.8/100.0 r 0.6 |
+   | +4%, a period of 2 rounds | serpentine | 25.3 (0.0) 82.6/85.7/84.7/100.0 r 39.6 | 27.6 (0.0) 84.7/89.6/93.4/100.0 r 38.1 | 20.2 (0.0) 81.8/78.1/89.4/100.0 r 34.2 |
+   | +4%, a period of 2 rounds | middle shuffled | 13.9 (0.0) 39.5/46.2/83.1/100.0 r 30.1 | 19.0 (0.0) 42.0/49.8/89.3/100.0 r 33.7 | 16.6 (0.0) 31.4/34.3/67.5/100.0 r 30.2 |
+   | +4%, a period of 2 rounds | all shuffled | 2.9 (0.0) 50.8/68.1/88.8/100.0 r 6.9 | 0.0 (0.0) 50.8/58.9/71.4/69.9 r 0.0 | 0.0 (0.0) 65.6/70.7/82.7/100.0 r 0.0 |
+   | even, 2% | serpentine | 0.9 (0.3) 2.1/5.0/28.7/71.1 r 3.3 | 0.4 (0.2) 1.4/4.8/41.6/94.2 r 1.3 | 0.0 (0.0) 0.3/3.7/63.3/100.0 r 0.2 |
+   | even, 2% | middle shuffled | 0.9 (0.2) 1.5/4.9/27.7/72.1 r 3.2 | 0.4 (0.0) 1.0/4.8/43.5/95.2 r 1.5 | 0.0 (0.0) 0.5/4.4/62.7/100.0 r 0.1 |
+   | even, 2% | all shuffled | 0.9 (0.1) 1.9/5.4/27.7/70.0 r 3.6 | 0.4 (0.1) 1.1/5.2/45.0/95.5 r 1.5 | 0.1 (0.0) 0.4/4.5/63.3/100.0 r 0.3 |
+   | even, 3% | serpentine | 0.9 (58.0) 1.6/2.7/13.7/44.8 r 4.2 | 0.4 (91.6) 0.8/1.9/16.4/68.1 r 1.6 | 0.0 (99.0) 0.2/1.0/23.4/91.9 r 0.0 |
+   | even, 3% | middle shuffled | 0.9 (58.9) 1.1/2.3/12.4/45.2 r 4.4 | 0.4 (91.7) 0.7/2.4/17.3/69.3 r 2.4 | 0.0 (98.7) 0.1/1.4/23.2/91.0 r 0.0 |
+   | even, 3% | all shuffled | 0.9 (57.7) 1.2/2.8/12.6/43.8 r 4.8 | 0.4 (91.7) 0.5/2.2/18.1/69.4 r 2.4 | 0.1 (98.6) 0.2/1.6/23.0/90.0 r 2.4 |
+
+   **Read row by row.** On a load in step with the rounds the order taken tells costless
+   features as costs in 1.1% to 4.2% of cases where the second round's order told 30% to 36%,
+   and steady reports that tell one went from about 40% to 4% to 17%; with the period a
+   twentieth off a round's length, from 14% to 21% at five and nine frames to 1.5% to 4.3%; with a
+   period of two rounds, from 20% to 28% to 0% to 3%. **It is worse at a period of 1.2
+   rounds**, where the second round's order told nothing (0%) and the order taken tells 3.2%
+   and 2.9% at five and nine frames (0.1% at sixteen); there, though, the second round's order
+   hid a real 10% cost entirely at five and nine frames, and the order taken tells it two
+   times in three. On the rows of the main table: for noise that does not depend on time
+   (even, skewed, frames late each on its own) the order changes nothing in law, and the
+   differences (up to 0.3 points a feature, 0.7 a report) are what another draw gives; under
+   bursts the false rate is the same or lower and real costs are told far more often (a 5%
+   cost with half the frames late in short bursts: 21% of the time at nine frames before, 63%
+   now); **a slow drift is the one row that moves the wrong way, by 0.1 point at five and seven
+   frames** (0.0% to 0.1% a feature; at five frames 0.8% of steady reports, from 0.1%), while a
+   drifting machine's costs are told far more often. The order was taken on those numbers.
+
+   *A whole report* (the fifth finding): on even noise of 1% a steady report tells some
+   costless feature a cost in 3.4% of reports at five frames, 1.5% at nine and 0.3% at sixteen
+   (the second round's order: 3.1%, 1.3%, 0.2%: the same, by another draw). The rates per
+   feature in the tables are for one feature of eight.
+
+   The main table (`the_noise_table_in_light_md`), the rule now in the order taken, at 5, 7, 9
+   and 16 frames as before:
+
+   | Noise | 5 frames | 7 frames | 9 frames | 16 frames |
+   |---|---|---|---|---|
+   | even, 1% | 0.9 (0.0) 4.8/18.8/69.6/98.3 | 0.8 (0.0) 5.8/22.8/83.7/99.9 | 0.4 (0.0) 5.2/27.6/94.9/100.0 | 0.1 (0.0) 3.7/38.4/99.9/100.0 |
+   | skewed | 0.7 (0.0) 3.0/12.2/53.6/91.0 | 0.5 (0.0) 4.2/15.5/67.1/97.3 | 0.2 (0.0) 2.9/18.2/81.2/99.7 | 0.0 (0.0) 1.9/25.3/97.0/100.0 |
+   | a third late by a fifth | 0.5 (98.9) 6.0/11.6/16.9/18.9 | 0.4 (99.7) 9.6/21.6/27.0/30.9 | 0.2 (99.8) 7.7/17.2/20.0/22.8 | 0.0 (100.0) 10.2/18.1/23.2/28.8 |
+   | half late by a fifth | 0.7 (100.0) 2.1/3.2/5.3/8.6 | 0.7 (100.0) 2.1/5.3/7.5/13.3 | 0.3 (100.0) 1.3/2.2/4.5/8.6 | 0.0 (100.0) 0.3/0.9/2.6/7.2 |
+   | bursts, a third of the time, ~8 renders | 0.1 (73.6) 39.5/59.2/61.6/63.1 | 0.1 (80.1) 49.8/74.8/80.8/81.1 | 0.0 (81.6) 61.4/77.8/78.2/79.9 | 0.0 (88.1) 90.1/94.7/95.2/94.7 |
+   | bursts, half the time, ~8 renders | 0.3 (95.8) 26.7/42.3/50.1/49.5 | 0.1 (98.0) 33.6/57.5/64.3/67.2 | 0.0 (98.9) 43.8/62.5/62.6/65.6 | 0.0 (99.9) 75.4/85.4/85.0/86.7 |
+   | bursts, half the time, ~40 renders | 0.0 (56.8) 56.6/81.7/85.5/85.1 | 0.0 (68.9) 71.3/96.2/97.0/96.5 | 0.0 (75.1) 86.2/95.9/96.4/96.2 | 0.0 (87.9) 99.4/99.8/99.9/99.8 |
+   | a slow drift of a tenth | 0.1 (75.4) 14.7/53.3/99.3/100.0 | 0.1 (100.0) 17.9/65.2/100.0/100.0 | 0.0 (100.0) 41.7/94.6/100.0/100.0 | 0.0 (100.0) 83.7/100.0/100.0/100.0 |
+
+4. **Uneven frames are no longer said to be another program.** `load.what` and the note for no
+   advice now say the frames were uneven by so much, which may be another program on the GPU, a
+   clock that moved, or the machine's own unevenness, and that the frames alone do not say
+   which; still no advice there. The brief's "a longer run may tell" is not said, because by
+   the table it is not true: even noise of 3% is called not steady in 58% of reports at five
+   frames, 92% at nine and 99% at sixteen (the share of late frames is the machine's, and more
+   frames only measure it better). Telling bursts from even unevenness by the frames' own
+   scatter was not tried: the one measure the job has, the share of late frames, is the same
+   kind of number under both, and a rule written for it would be a guess.
+5. **Sentences**: "What it does" 3 now says how a round is ordered; the sentence about
+   `sight_frame`'s old wait in "What was mended, second round" says what it did (streaming,
+   then the models, and nothing more while a model was building); the whole report's false
+   rate is under 3 above.
+6. **A picture that failed to load** is now warned of: the job's first render (the view as it
+   is) takes `sight_frame`'s own warnings of the view as it was drawn
+   (`Engine::drawn_view_warnings`, which is `capture_warnings` with this view: 2D problems,
+   models not drawn or failed, terrain stand-ins, lights left out, the camera's warning). The
+   job's own words for lights left out and the camera's warning are gone in favour of those.
+   *Test*: two missing pictures in the sprite test; once their loads have failed the job's wait
+   ends and both are in `warnings` as "texture sprites/...: ..." (not "still loading").
+7. **A render still on the GPU: it spun, and now waits.** By reading: `run_steps` goes round its
+   queue while there is credit; a job alone that answers `Step::More` is taken again at once;
+   `land` looks at the fence without waiting; so a job whose render was not done looked at
+   the fence again and again until the step credit was spent (up to 12 ms a pass; with a
+   window, about a quarter of every frame). By running: with `More` put back, the step
+   that `step_once` takes right after a submit found the render still on the GPU, and the tests
+   that step a whole report failed (the seeded fault below). Now it answers `Step::Wait`: it goes to the back, the jobs behind
+   it get their slices, and the pass ends once every queued job waits; it looks again a pass
+   later. Headless, passes go back to back while step jobs are queued, so a report is not
+   slower; with a window, at most one render lands a pass where spinning could land two in
+   the same credit. `timeline_preview`'s job (`timeline_tools.rs`) has the same pattern and is
+   not changed here.
+8. **Not checked by the review, checked now.** *A session that closes while the job waits for
+   a view still loading*: the job is queued, waiting, and is dropped with `session_closed`
+   when its session is seen gone (`Engine::drop_closed_steps`, the part of `pump_steps` that
+   did it, now a function so that a test can call it; behaviour unchanged). *A model still
+   building when the report is asked for*: the job waits for it as `sight_frame` does, its
+   wait ends `ready`, and the view is measured with it built and no warning
+   (`a_view_whose_model_is_building_waits_for_it`, over Sepulcra's tombstone).
+
+*Faults seeded back, each once, and what caught it*: the call's-time cut taken out (the sprite
+test); the late line at 7% and at 3% (the hand case; at 3% the simulation test too); the order
+of the second round put back (the order's test, and the locked load in the simulation test);
+the view's warnings dropped (the sprite test); `More` for a render still in flight (`step_once`
+in the GPU test and the model test); closed sessions never dropped (the sprite test). Every one
+was caught.
+
+**What remains.** A load in step with the rounds still tells a costless feature a cost 1% to
+4% of the time per feature, and 4% to 17% of steady reports name one; at a period of 1.2
+rounds it is now about 3% where it was none. A slow drift is told one time in a thousand at
+five and seven frames. A machine that is merely uneven is still not advised on. Not run: an
+engine with a window, and a release build.
