@@ -629,7 +629,8 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       the crease checks as not measured; triangles with no area fail the loose check).
     - **Shape language: built** (2026-11-19; FORM.md, "Shape language"): how round, square
       or pointed an asset's outline is, in every asset's taste measures; a style may ask for
-      one (`[taste] shape_language`), and the `storybook` preset asks for round. With it the
+      one (`[taste] shape_language`), and the `storybook` preset asked for round then (no
+      preset does now). With it the
       five items of "form within an agent's reach" are all built. **Its first reviewer said
       not to merge it** (corners counted on a polygon with hard lines between the classes:
       it flipped under small turns), and it was written again as the net turn of a smoothed
@@ -775,7 +776,23 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       show at the asset's size, and a style may limit it (`[form] max_facet_deg`: the check
       `faceting`). With it **every form check the owner asked for is built**. Sepulcra's
       props are faceted on purpose (the median 90 degrees a face, rings of three sides):
-      its style gives no limit. **Not reviewed yet.**
+      its style gives no limit. **Its reviewer said not to merge it** (2026-11-20; FORM.md,
+      "Its first review"): what each shape records is right, and what is done with it is
+      not. The radius is the recipe's and the size the built model's, so the same mesh
+      passes or fails by how its recipe wrote it (a scale, an include, a taper); a sculpt
+      speaks by its tightest radius alone, so a bead of 2 mm hides a coarse ball; a shape
+      nobody sees fails; the verdict moves as the asset is turned; the capsule's advice
+      names the wrong number; five rules are held by no test. **Not mended yet: give no
+      style a `max_facet_deg` until it is.** Its mend waits for the recipe measure's third
+      round to be merged, which ties each piece of geometry to its record: the same tie
+      gives a round shape its radius in the built model and whether any of it is seen. The
+      reviewer was refused the permission to seed faults in its worktree (the brief both
+      forbade changing tracked files and asked for seeded faults: the lead's mistake), so
+      its "no test holds it" findings are by reading; the mender seeds them on its branch.
+      **The shape check's safe state, reviewed with it, holds**: no preset asks for a
+      shape, nothing else writes the setting, and a style that does not name the check is
+      never failed by it. One small finding: a style that asks, where neither the outline
+      nor the recipe could be read, gets no finding at all and not a "not measured".
     - **The light report: built** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)):
       `perf_light` draws a view offscreen as the world has it and with each light feature
       that is on left out (the sun's shadows, ambient occlusion, bloom, anti-aliasing, fog,

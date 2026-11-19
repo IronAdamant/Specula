@@ -353,7 +353,58 @@ on purpose. The radius is the recipe's own, before the part is scaled.
 - **Limits.** The radius is not scaled by the part's own transform, so a shape scaled up in
   place is judged at its written size. An arch outline's `segments` and a rounded outline's are
   not counted. A sculpt's figure is its tightest radius against its cells, so one thin limb
-  speaks for the whole sculpt. **Not reviewed yet.**
+  speaks for the whole sculpt.
+
+#### Its first review
+
+**A model that did not write it said not to merge it** (2026-11-20, of the code as it stood
+at `f173b170`). What each kind of shape records was found right: the recorded turn matched
+the largest turn measured on the built mesh to about a degree, for the cylinder, the cone,
+the sphere, the torus at both its radii, the capsule, the lathe and a sculpt at three
+resolutions. What is done with the record was not. Each finding was shown by a recipe the
+reviewer built; **none is mended yet, so the check is not to be given a limit until it is.**
+
+1. **The radius is the recipe's, and the asset's size is the built model's.** A part's
+   `scale`, an include's scale, the finish and a taper change how far a facet stands in and
+   leave the record as written. With a limit of 20°: a six-sided cylinder of radius 1 m
+   fails; a six-sided cylinder of radius 0.1 m scaled by ten, which is the same mesh,
+   passes; and a twelve-sided cylinder of radius 100 m scaled by a thousandth (a column a
+   tenth of a metre across, its facets 3.4 mm in and not seen) fails, with a message that
+   its facets stand 3.4 m in. The limit written above ("the radius is not scaled") said
+   this as a limit; a recipe that scales its parts is ordinary, so it is a fault.
+2. **A sculpt speaks by its tightest radius alone**, and the tightest radius is the largest
+   turn but not the facet that shows. A coarse ball of radius 1 m fails a limit of 10°; the
+   same ball with a bead of 2 mm joined to it, or with a ball of 2 mm cut from it three
+   metres away where it cuts nothing, passes with nothing said to show.
+3. **The 64 records kept are those that stand in the most; the answer is the largest turn.**
+   With 64 twelve-sided columns and one three-sided spike the spike is dropped, and the
+   check answers 30° where the truth is 120°. The facts give the count kept as if it were
+   the count there is.
+4. **The advice for a capsule names the wrong number.** A capsule of 256 segments and one
+   ring fails at 90° and is told to have at least twelve round it; the mend is `rings`,
+   which the advice never names.
+5. **A shape nobody sees fails the check.** A three-sided cylinder wholly inside a box
+   fails at 120°, and so does a three-sided cutter nine metres from the box it is cut
+   from. (A cutter that does cut leaves faceted walls, and those are rightly counted.)
+6. **The verdict moves as the asset is turned.** The asset's size is the longest side of
+   its box along the axes: a ten-metre bar beside a twelve-sided column passes straight and
+   fails turned by 45°, where the box is 7.4 m.
+7. **Rules that no test holds**, by reading the tests (the reviewer was refused the
+   permission to seed faults, so none of these was shown by a failing run): that the answer
+   is picked by turn; the cap of 64; every branch of a sculpt's tightest radius but a plain
+   ball's; the greater of a capsule's two terms; a cone's radius.
+
+Smaller: an included recipe's round shapes keep their own paths, so two records can carry
+one path and the message can name the wrong part; the sphere's advice says one more
+subdivision where two or three are needed; a cone's "turn between neighbouring faces" is
+its base's.
+
+Found sound beside the recording: a part switched off records nothing, nor does the coarse
+far level; values that are not finite are dropped; the record is the same every time and
+costs at most 64 steps a round shape; the limit is bounded and can be allowed by name; an
+asset that names nothing round says so. **Not checked:** bends, twists, mirrors and
+displacements on the record; scatters; the measured figure's own record; Sepulcra's recipes
+again; the levels of detail between the finest and the far one.
 
 **Not built:** pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so

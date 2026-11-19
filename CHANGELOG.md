@@ -403,7 +403,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       three tries could not make from a mesh. The modeller records how coarsely each shape
       a recipe names round was built (the turn between its faces, its radius); the facts
       give the coarsest whose facets show at the asset's size, and `[form] max_facet_deg`
-      limits it. A prism is an extruded outline and says nothing.
+      limits it. A prism is an extruded outline and says nothing. Its first review
+      (2026-11-20) said not to merge it: the radius is the recipe's and not the built
+      model's, so the same mesh passes or fails by how its recipe wrote it; a sculpt speaks
+      by its tightest radius alone; a shape nobody sees fails; the verdict moves as the
+      asset is turned (FORM.md, "Its first review"). Not mended yet.
     - **The light report** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)): `perf_light`
       measures what each light feature of a view costs on the machine the engine runs on, at
       the size asked, by the GPU's own timestamps: the view as the world has it, each feature
