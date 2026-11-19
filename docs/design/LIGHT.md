@@ -379,3 +379,43 @@ looked at only from the third round (the GPU test's `measured_nothing`). Every o
 (`session_closed`) and at its call's deadline (`timed_out`); there is no owner's cancel for a
 step job. A job dropped with a render in flight leaves that render to be landed and thrown
 away before the next offscreen render (`land_capture_flight`), as before.
+
+## Its third review
+
+A third model (2026-11-20, of the second round's mends, with the engine running on both
+adapters on a busy machine) said **not to merge, for one test that is missing**, and that
+with it and the smaller ones below it would say merge. In every run the tool behaved as
+this page says: it told every real cost and gave the same advice run after run; beside a
+second engine drawing large reports on the same adapter, four reports of eight said the
+machine was not steady and gave no advice, the other four advised rightly, and no report
+advised from a busy run; drawing every second round backwards changed a frame's time by
+under a hundredth of the frame; `sight_frame` before and after six reports gave the same
+bytes on both adapters, with no validation message. Its own simulation, written from this
+page and not from the code, reproduces the table above on even noise and on bursts.
+
+1. **A stated rule no test holds: the wait gives way when the call's time would not hold a
+   whole wait.** With that cut taken out every test passes; a call with under thirteen
+   seconds left and a view still loading would then answer `measured_nothing` where it
+   should measure.
+2. *Minor:* the line for a late frame (a twentieth over its variant's quickest third) is
+   held only by the table's ignored test.
+3. *Minor, and not in the table above:* **load that keeps step with the rounds and stays
+   under the line for a late frame breaks the rule while the machine is called steady.**
+   Simulated: with 2% to 4% more over half of each round, 30% to 36% of features that cost
+   nothing are told as costs; with the load's period a twentieth off a round's length, 14%
+   to 17%. No real source of such a load was found, and none showed on this machine.
+4. *Minor:* **a machine that is merely uneven is called busy**: with even noise of 3% of
+   the frame, most reports give no advice though the rule is sound there, and the words
+   name another program or a clock that moved, which is not what happened.
+5. *Minor:* the false rate above is for one feature; for a whole report on even noise of 1%
+   at five frames, 3.9% of steady reports tell some costless feature a cost.
+6. *Minor:* "the view as it is first" is not true of a round drawn backwards; one sentence
+   about `sight_frame`'s old wait is slightly off.
+7. *Minor, and older than this round:* a 2D picture that failed to load is warned of by
+   `sight_frame` and not by `perf_light`.
+
+Not settled: whether any real load keeps step with the rounds; a release build (every run
+was a debug build). Not checked: an engine with a window; a session closing while the job
+waits; models still building during a report. Seen and older than this round: while a
+render is still on the graphics card the job asks to be stepped again within its step's
+credit, up to 12 ms a pump, where it could wait. **None of this is mended yet.**

@@ -888,7 +888,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       simulation a costless feature is called a cost under 1% of the time where it was up
       to 12%; **what it gave up for that: on a machine busy in short bursts a real cost of
       a twentieth of the frame is told only a fifth to a third of the time**, and then the
-      answer says the machine was not steady and advises nothing. **Not reviewed yet.**
+      answer says the machine was not steady and advises nothing. **Its reviewer said not
+      to merge, for one missing test** (2026-11-20; LIGHT.md, "Its third review"), and
+      that with it it would say merge: in every run, on both adapters, quiet and beside a
+      second engine, the tool told every real cost, never advised from a busy run, and
+      left `sight_frame` byte for byte as it was. What it found: the wait's giving way to
+      the call's time is held by no test; a load that keeps step with the rounds under
+      the line for a late frame would make a third of costless features look like costs
+      (simulated; no real source of one found); a merely uneven machine is called busy
+      and told another program was running; a few sentences. **A fresh agent is mending
+      those; Claude reads that narrow change itself.**
     - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
       PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
       builds: a large thin rounded cutter set a metre past the corner of what it cuts

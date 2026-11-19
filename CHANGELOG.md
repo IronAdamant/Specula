@@ -417,7 +417,9 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       advises nothing from too few rounds; no copy on the graphics card either; and each
       cost is read from the difference of two frames of the same round, every second round
       drawn backwards, with the answer saying when the machine was too busy to advise
-      (`light_noise.rs`; LIGHT.md, "What was mended, second round"). Not reviewed yet.
+      (`light_noise.rs`; LIGHT.md, "What was mended, second round"). Its review said not to
+      merge for one missing test, and found the tool sound in every run on both adapters
+      (LIGHT.md, "Its third review").
     - **The rounded shape's levelled weights, reviewed** (2026-11-20): not to merge. A large
       thin rounded cutter set past the corner of what it cuts costs four times its charge
       by count, so the work limit does not bound such a build's time; other roundnesses
