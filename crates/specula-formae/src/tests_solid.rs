@@ -7,7 +7,7 @@ use crate::maths::*;
 use crate::mesh::Mesh;
 use crate::solid::gauss;
 use crate::table::{Found, Kind};
-use crate::tests::{cases, cases_together, value, words};
+use crate::tests::{cases, cases_together, part, value, words, PARTS};
 use crate::{Built, Error, Spec, DETAIL_DEFAULT, DETAIL_MAX, DETAIL_MIN, EDGE_FLOOR, MAX_POINTS};
 
 const EPS: f64 = f64::EPSILON;
@@ -222,19 +222,19 @@ fn check_built(what: &str, s: &Spec, d: u32, b: &Built) {
 /// together) and three drawn sets. Every build is held to the same checks in both.
 #[test]
 fn t3_every_solid_is_well_made() {
-    t3(false);
+    t3(false, (0, PARTS));
 }
 
 /// Test 3 in full (see [`t3_every_solid_is_well_made`]): about six minutes in the gate's build.
 #[test]
 #[ignore = "the full run of test 3 (every solid word at more details and drawn sets): minutes; run in release at a stage's end"]
 fn t3_full() {
-    t3(true);
+    t3(true, (0, 1));
 }
 
-fn t3(full: bool) {
+fn t3(full: bool, parts: (usize, usize)) {
     let (mut built, mut refused) = (0usize, 0usize);
-    let ws = solids();
+    let ws = part(solids(), parts);
     assert!(!ws.is_empty());
     for w in ws {
         let mut all = cases(&w);
@@ -271,7 +271,7 @@ fn t3(full: bool) {
             }
         }
     }
-    assert!(built > 500, "{built} built, {refused} refused");
+    assert!(built > 500 / parts.1, "{built} built, {refused} refused");
 }
 
 /// Test 4 for solids: every closed form against the shape as built, one parameter at a time at
@@ -291,19 +291,19 @@ fn t3(full: bool) {
 /// the rate is held); [`t4_full`] builds every case at 128 and 256.
 #[test]
 fn t4_solids_closed_forms_hold_against_the_build() {
-    t4(false);
+    t4(false, (0, PARTS));
 }
 
 /// Test 4 for solids in full (see [`t4_solids_closed_forms_hold_against_the_build`]).
 #[test]
 #[ignore = "the full run of test 4 for solids (every extreme at details 128 and 256): a minute; run in release at a stage's end"]
 fn t4_full() {
-    t4(true);
+    t4(true, (0, 1));
 }
 
-fn t4(full: bool) {
+fn t4(full: bool, parts: (usize, usize)) {
     let mut checked = 0;
-    for w in solids() {
+    for w in part(solids(), parts) {
         for (label, given) in cases(&w) {
             let s = Spec::of(w, &given).unwrap();
             let what = format!("{} {label}", w.name());
@@ -360,7 +360,7 @@ fn t4(full: bool) {
             }
         }
     }
-    assert!(checked > 100, "only {checked} checks");
+    assert!(checked > 100 / parts.1, "only {checked} checks");
 }
 
 /// Test 5: the regular families by what defines them. Each Platonic and Archimedean solid has
@@ -859,4 +859,41 @@ fn curved_says_what_a_build_has() {
             }
         }
     }
+}
+
+/// Test 3's default run, its second part (see [`t3_every_solid_is_well_made`]).
+#[test]
+fn t3_every_solid_is_well_made_2() {
+    t3(false, (1, PARTS));
+}
+
+/// Test 3's default run, its third part.
+#[test]
+fn t3_every_solid_is_well_made_3() {
+    t3(false, (2, PARTS));
+}
+
+/// Test 3's default run, its fourth part.
+#[test]
+fn t3_every_solid_is_well_made_4() {
+    t3(false, (3, PARTS));
+}
+
+/// Test 4's default run for solids, its second part (see
+/// [`t4_solids_closed_forms_hold_against_the_build`]).
+#[test]
+fn t4_solids_closed_forms_hold_against_the_build_2() {
+    t4(false, (1, PARTS));
+}
+
+/// Test 4's default run for solids, its third part.
+#[test]
+fn t4_solids_closed_forms_hold_against_the_build_3() {
+    t4(false, (2, PARTS));
+}
+
+/// Test 4's default run for solids, its fourth part.
+#[test]
+fn t4_solids_closed_forms_hold_against_the_build_4() {
+    t4(false, (3, PARTS));
 }

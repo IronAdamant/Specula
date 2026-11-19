@@ -86,10 +86,23 @@ every key of `args` held against that form's parameters (an unknown one is refus
 it takes); ranges are the library's, held at build. `detail` is the library's (8 to 4096; a full
 turn in that many segments), halved on the coarse far level. A form is counted before it is
 built (its triangles, `2V − 4 + 4g` for V points and genus g, against the part's and the model's
-limits; its points as work, `FORM_POINT` units each). **The library builds in `f64` and the
+limits; its points as work, `FORM_POINT` units each: 10,000, from the library's builds measured
+at 2,800 to 6,400 ns a point on a busy reference machine; the Möbius band, which searches its
+twisted strips for crossings, 150,000, measured at 99,000). A raised form refused for an inset
+too deep builds itself again, up to 41 times, to name an inset that holds: it makes no more of
+those builds than the model's budget has room for, and with no room names none and says so. **The library builds in `f64` and the
 modeller holds `f32`**: a form two of whose points come nearer than the greater of 20 µm (twice
 the weld `finalize` makes) and 2⁻¹⁸ of its reach, or a triangle that turns over or falls under
 the modeller's least area when rounded to `f32`, is refused as `Geometry` with the numbers.
+**A shape made of an outline by name is built closed or refused**: an extrusion, a loft or a
+capped or closed sweep whose edges are open as made, or open when the modeller finishes the
+model (it welds points within 10 µm and drops a triangle under 10⁻¹⁰ m²: a cap's thin ears, a
+wall too low), is refused as `Geometry` at its `outline` with its least triangle against that
+area. A semicircle of radius 0.1 mm at detail 24 extruded by a millimetre is the smallest case
+the review found (its cap's ears have 8.8 × 10⁻¹¹ m²). **The modeller's own outlines (`sides`,
+`rect`, `arch`, `star`, `points`) are older than this rule and are not held to it**, so that no
+existing recipe's outcome changes: `{"sides": 24, "radius": 1e-4}` extruded by a millimetre
+still builds a model with 12 open edges, and is accepted.
 Normals are the modeller's (by the part's smooth angle, as every generator's): the library's exact
 normals do not pass through `Shape`, which holds none. UVs and colours are as every generator's.
 What it records: a form shape is a named shape for `crate::made` (its outlines: a raised

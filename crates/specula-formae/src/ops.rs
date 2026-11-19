@@ -93,6 +93,27 @@ impl Solid {
     pub fn genus(&self) -> u32 {
         self.make.genus()
     }
+    /// The most builds of its own size that a refused build may make on top of its own, to name
+    /// what would hold (a raised form's deepest inset: [`crate::raise::SEARCH_BUILDS`]); 0 where
+    /// a refusal searches for nothing. A caller that charges for work before it is done charges
+    /// for these too, or limits them with [`Solid::with_search`].
+    pub fn search_builds(&self) -> u32 {
+        if self.make.limited(0).is_some() {
+            crate::raise::SEARCH_BUILDS
+        } else {
+            0
+        }
+    }
+    /// The same solid with a refusal's search limited to `builds` builds (at most
+    /// [`crate::raise::SEARCH_BUILDS`]): what a refusal names still held when it was built, and
+    /// may be shallower than the deepest that holds; with none, a refusal names nothing and says
+    /// that it did not search.
+    pub fn with_search(&self, builds: u32) -> Solid {
+        match self.make.limited(builds) {
+            Some(make) => Solid { operator: self.operator, figure: self.figure, make },
+            None => self.clone(),
+        }
+    }
 }
 
 /// The one ring of a plane figure's geometry, or why there is not one.

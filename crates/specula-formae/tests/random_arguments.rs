@@ -66,7 +66,7 @@ fn words() -> Vec<Found> {
 /// alone: in 60 sets a word whose sides must agree (`triangle_sss`) may draw none that do.
 #[test]
 fn every_word_with_arguments_drawn_together() {
-    run(60, 8, 4_000, false);
+    run(60, 8, 4_000, false, (0, PARTS));
 }
 
 /// The full run: 300 sets a plane figure's or a curve's word and 40 a solid's
@@ -75,10 +75,10 @@ fn every_word_with_arguments_drawn_together() {
 #[ignore = "the full run of the drawn arguments (300 sets a figure, 40 a solid): minutes; run in release at a stage's end"]
 fn every_word_full() {
     let solid_sets: usize = std::env::var("FORMAE_PROBE_SOLID_SETS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
-    run(300, solid_sets, 20_000, true);
+    run(300, solid_sets, 20_000, true, (0, 1));
 }
 
-fn run(sets: usize, solid_sets: usize, least_builds: usize, every_word_builds: bool) {
+fn run(sets: usize, solid_sets: usize, least_builds: usize, every_word_builds: bool, (part, parts): (usize, usize)) {
     let mut never: Vec<&str> = Vec::new();
     let (mut built, mut refused) = (0usize, 0usize);
     // (Every fault is gathered, a few of each word, and they are said together.)
@@ -88,7 +88,7 @@ fn run(sets: usize, solid_sets: usize, least_builds: usize, every_word_builds: b
             faults.push(said);
         }
     };
-    for w in words() {
+    for w in words().into_iter().enumerate().filter(|(k, _)| k % parts == part).map(|(_, w)| w) {
         let params = params_of(&w);
         let mut seq = Seq(seed(w.name()));
         let mut ok = 0usize;
@@ -233,5 +233,27 @@ fn run(sets: usize, solid_sets: usize, least_builds: usize, every_word_builds: b
 {}", faults.len(), faults.join("
 "));
     assert!(!every_word_builds || never.is_empty(), "these words never built from {sets} argument sets inside their own ranges: {never:?}");
-    assert!(built > least_builds, "only {built} builds ({refused} refused)");
+    assert!(built > least_builds / parts, "only {built} builds ({refused} refused)");
+}
+
+/// The default run is cut into this many parts, each a test of its own, so that they run side
+/// by side on the test threads; every word is in one of them, held to the same demands.
+const PARTS: usize = 4;
+
+/// The default run's second part (see [`every_word_with_arguments_drawn_together`]).
+#[test]
+fn every_word_with_arguments_drawn_together_2() {
+    run(60, 8, 4_000, false, (1, PARTS));
+}
+
+/// The default run's third part.
+#[test]
+fn every_word_with_arguments_drawn_together_3() {
+    run(60, 8, 4_000, false, (2, PARTS));
+}
+
+/// The default run's fourth part.
+#[test]
+fn every_word_with_arguments_drawn_together_4() {
+    run(60, 8, 4_000, false, (3, PARTS));
 }

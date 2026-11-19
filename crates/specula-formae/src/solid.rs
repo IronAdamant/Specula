@@ -54,6 +54,11 @@ pub(crate) trait Make {
     fn check(&self, _mesh: &Mesh, _detail: u32) -> Option<SolidFault> {
         None
     }
+    /// The same construction with a refusal's search limited to `builds` builds of its own size,
+    /// where a refusal searches (a raised form's deepest inset); `None` where none does.
+    fn limited(&self, _builds: u32) -> Option<std::rc::Rc<dyn Make>> {
+        None
+    }
     /// Whether it has curved surfaces.
     #[cfg_attr(not(test), allow(dead_code, reason = "read by the tests only"))]
     fn curved(&self) -> bool;

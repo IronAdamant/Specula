@@ -67,6 +67,12 @@ pub const RAISED: &[&str] = &["slab", "bevelled", "pillow", "stepped", "relief"]
 /// The most terraces [`stepped`] makes.
 pub const MAX_STEPS: u32 = 64;
 
+/// The most builds a refusal for an inset too deep makes to find the deepest that holds (one at
+/// the least length and forty halvings): a refused build of a bevelled, pillowed or stepped form
+/// costs up to this many builds of its own size, unless it is limited
+/// ([`crate::ops::Solid::with_search`]).
+pub const SEARCH_BUILDS: u32 = 41;
+
 /// One step of a profile in `(s, y)`: the inset `s` from the figure's outline and the height `y`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Step {
@@ -127,6 +133,9 @@ pub(crate) struct Terrace {
     /// The raised form and its numbers, so that a refusal can build the same form at another
     /// inset before it names one.
     pub depth: Depth,
+    /// The most builds a refusal's search for the deepest inset that holds may make
+    /// ([`SEARCH_BUILDS`] unless limited): with none, a refusal names nothing.
+    pub search: u32,
 }
 
 /// Which raised form a terrace is, with the numbers it was asked for: what sets its deepest inset
@@ -432,6 +441,11 @@ impl Make for Terrace {
         (n * l, n * (l - 1) + 2 * self.cap_faces(n))
     }
 
+    fn limited(&self, builds: u32) -> Option<Rc<dyn Make>> {
+        self.depth.param()?;
+        Some(Rc::new(Terrace { rings: self.rings.clone(), start: self.start, steps: self.steps.clone(), plane: self.plane, polygon: self.polygon, slab: self.slab, depth: self.depth, search: builds.min(SEARCH_BUILDS) }))
+    }
+
     fn build(&self, detail: u32) -> (Mesh, Option<SolidFault>) {
         let sm = sample(&self.rings, detail);
         let outline = Outline { rings: sm.ranges.iter().map(|r| sm.q[r.clone()].to_vec()).collect(), chord_error: sm.err };
@@ -445,8 +459,8 @@ impl Make for Terrace {
         let fault = match (figure, &m, trouble) {
             (Some(f), _, _) => Some(f),
             // No inset of an outline that turns straight back on itself is defined.
-            (None, None, _) => Some(SolidFault::InsetTooDeep { inset: s_max, param: self.depth.param().map_or("inset", |p| p.0), holds: None }),
-            (None, Some(m), Some(Trouble::Deep)) => Some(SolidFault::InsetTooDeep { inset: s_max, param: self.depth.param().map_or("inset", |p| p.0), holds: self.deepest(&sm, m, detail) }),
+            (None, None, _) => Some(SolidFault::InsetTooDeep { inset: s_max, param: self.depth.param().map_or("inset", |p| p.0), holds: None, searched: true }),
+            (None, Some(m), Some(Trouble::Deep)) => Some(SolidFault::InsetTooDeep { inset: s_max, param: self.depth.param().map_or("inset", |p| p.0), holds: self.deepest(&sm, m, detail), searched: self.search > 0 }),
             (None, Some(_), Some(Trouble::CapNotCut)) => Some(SolidFault::CapNotCut),
             (None, Some(_), None) => None,
         };
@@ -484,7 +498,7 @@ impl Terrace {
     fn with(&self, p: f64) -> Terrace {
         let depth = self.depth.with(p);
         let (start, steps) = depth.profile();
-        Terrace { rings: self.rings.clone(), start, steps, plane: self.plane, polygon: self.polygon, slab: self.slab, depth }
+        Terrace { rings: self.rings.clone(), start, steps, plane: self.plane, polygon: self.polygon, slab: self.slab, depth, search: self.search }
     }
 
     /// The deepest inset that holds at `detail`, and the parameter's value that gives it: the
@@ -493,17 +507,21 @@ impl Terrace {
     /// a narrower predicate than the build's named an inset whose bands folded). The halving
     /// keeps a value only after building at it, so what is named was built and held, whether or
     /// not holding is monotone in the inset. `None` where the least length does not hold
-    /// (finding 3: an inset under it cannot be asked for). At most 41 builds of the same size as
-    /// this one.
+    /// (finding 3: an inset under it cannot be asked for). At most `self.search` builds of the
+    /// same size as this one ([`SEARCH_BUILDS`], or fewer where a caller's budget limits it: then
+    /// what is named still held, and may be shallower than the deepest; with none, `None`).
     fn deepest(&self, sm: &Sampled, m: &[Pt], detail: u32) -> Option<(f64, f64)> {
         let (_, asked) = self.depth.param()?;
+        if self.search == 0 {
+            return None;
+        }
         let holds = |p: f64| self.with(p).raise(sm, m, detail).1.is_none();
         let mut lo = LEN_MIN;
         if !(lo < asked && holds(lo)) {
             return None;
         }
         let mut hi = asked;
-        for _ in 0..40 {
+        for _ in 1..self.search {
             let mid = 0.5 * (lo + hi);
             if mid <= lo || mid >= hi {
                 break;
@@ -920,7 +938,7 @@ fn terrace(figure: &Spec, operator: &'static str, rings: Vec<Vec<Seg>>, plane: M
     let polygon = polygon(&rings);
     let (start, steps) = depth.profile();
     let slab = matches!(depth, Depth::Slab { .. });
-    Solid::new(operator, figure.form.name, Rc::new(Terrace { rings, start, steps, plane, polygon, slab, depth }))
+    Solid::new(operator, figure.form.name, Rc::new(Terrace { rings, start, steps, plane, polygon, slab, depth, search: SEARCH_BUILDS }))
 }
 
 /// The figure with straight sides `thickness` metres tall (holes go through it: a slab of an

@@ -10,6 +10,23 @@ use crate::{params_of, Built, Error, Measures, Spec, DETAIL_DEFAULT, DETAIL_MAX,
 
 const EPS: f64 = f64::EPSILON;
 
+/// The default runs of the heaviest tests are cut into this many parts, each a test of its own, so
+/// that they run side by side on the test threads (every word is still in one of them).
+pub(crate) const PARTS: usize = 4;
+
+/// The `i`-th of `n` parts of `v` (every `n`-th item from the `i`-th): the parts together are `v`.
+pub(crate) fn part<T>(v: Vec<T>, (i, n): (usize, usize)) -> Vec<T> {
+    v.into_iter().enumerate().filter(|(k, _)| k % n == i).map(|(_, x)| x).collect()
+}
+
+#[test]
+fn the_parts_together_are_the_whole() {
+    let v: Vec<usize> = (0..103).collect();
+    let mut all: Vec<usize> = (0..PARTS).flat_map(|i| part(v.clone(), (i, PARTS))).collect();
+    all.sort_unstable();
+    assert_eq!(all, v);
+}
+
 /// Every word: each form by its name, and each alias.
 pub(crate) fn words() -> Vec<Found> {
     let mut v: Vec<Found> = forms().iter().map(|f| Found { form: f, alias: None }).collect();
@@ -48,19 +65,37 @@ fn size_of(b: &Built) -> f64 {
 /// greatest detail too.
 #[test]
 fn t1_every_form_builds_at_its_extremes() {
-    t1(false);
+    t1(false, (0, PARTS));
+}
+
+/// Test 1's default run, its second part (see [`t1_every_form_builds_at_its_extremes`]).
+#[test]
+fn t1_every_form_builds_at_its_extremes_2() {
+    t1(false, (1, PARTS));
+}
+
+/// Test 1's default run, its third part.
+#[test]
+fn t1_every_form_builds_at_its_extremes_3() {
+    t1(false, (2, PARTS));
+}
+
+/// Test 1's default run, its fourth part.
+#[test]
+fn t1_every_form_builds_at_its_extremes_4() {
+    t1(false, (3, PARTS));
 }
 
 /// Test 1 in full (see [`t1_every_form_builds_at_its_extremes`]).
 #[test]
 #[ignore = "the full run of test 1 (every solid's extremes at the greatest detail too): a minute; run in release at a stage's end"]
 fn t1_full() {
-    t1(true);
+    t1(true, (0, 1));
 }
 
-fn t1(full: bool) {
+fn t1(full: bool, parts: (usize, usize)) {
     let mut built = 0;
-    for w in words() {
+    for w in part(words(), parts) {
         for (label, given) in cases(&w) {
             let s = spec(&w, &given);
             let details: &[u32] = if full || label == "defaults" || w.form.kind != Kind::Solid { &[DETAIL_MIN, DETAIL_DEFAULT, DETAIL_MAX] } else { &[DETAIL_MIN, DETAIL_DEFAULT] };
@@ -88,7 +123,7 @@ fn t1(full: bool) {
             }
         }
     }
-    assert!(built > 1000, "only {built} builds");
+    assert!(built > 1000 / parts.1, "only {built} builds");
 }
 
 /// Test 2: every plane figure's outline is well made (rings simple, the outer one
@@ -1008,4 +1043,41 @@ fn series_are_named() {
     let m: Measures = Spec::new("ellipse", None, &[]).unwrap().closed().unwrap();
     assert!(m.series.is_some() && m.boundary.is_some());
     assert!(Spec::new("superformula", None, &[]).unwrap().closed().unwrap().size.is_none());
+}
+
+/// The tree of boxes that `Outline::validate` looks for crossings and gaps with finds every pair
+/// of boxes that meet, each once, against all pairs looked at one by one: boxes of sizes eight
+/// orders apart, some touching at an edge, some at a corner, some the same.
+#[test]
+fn box_pairs_finds_every_pair_that_meets() {
+    let mut s = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = || {
+        s ^= s >> 12;
+        s ^= s << 25;
+        s ^= s >> 27;
+        (s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for n in [1usize, 2, 9, 17, 300] {
+        let mut boxes: Vec<(Pt, Pt)> = (0..n)
+            .map(|_| {
+                let (x, y) = (next() * 100.0, next() * 100.0);
+                let size = 1e-6 * powf(1e8, next());
+                ([x, y], [x + size * next(), y + size * next()])
+            })
+            .collect();
+        if n > 2 {
+            boxes[1] = (boxes[0].1, [boxes[0].1[0] + 1.0, boxes[0].1[1] + 1.0]);
+            boxes[2] = boxes[0];
+        }
+        let mut found: Vec<(usize, usize)> = Vec::new();
+        let none: Option<()> = crate::outline::box_pairs(&boxes, |i, j| {
+            found.push((i.min(j), i.max(j)));
+            None
+        });
+        assert!(none.is_none());
+        found.sort_unstable();
+        let meet = |a: (Pt, Pt), b: (Pt, Pt)| (0..2).all(|k| a.0[k] <= b.1[k] && b.0[k] <= a.1[k]);
+        let all: Vec<(usize, usize)> = (0..n).flat_map(|i| (i + 1..n).map(move |j| (i, j))).filter(|&(i, j)| meet(boxes[i], boxes[j])).collect();
+        assert_eq!(found, all, "{n} boxes");
+    }
 }

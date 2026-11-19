@@ -299,3 +299,28 @@ fn the_views_draw_their_axes_as_the_rules_say() {
     assert_eq!(axis("side", z), [-1.0, 0.0]);
 }
 
+
+/// A refusal's search for the deepest inset is bounded by what its caller allows: with no builds
+/// it names nothing and says it did not search (never that no inset holds); with a few, what it
+/// names was built and holds, and is no deeper than what the whole search names; a slab and a
+/// relief search for nothing.
+#[test]
+fn a_refusals_search_is_limited_by_its_caller() {
+    let f = Spec::new("circle", Some(Kind::Plane), &[("radius", 1.0)]).unwrap();
+    let s = pillow(&f, 0.1, 0.1, 1.5).unwrap();
+    assert_eq!(s.search_builds(), crate::raise::SEARCH_BUILDS);
+    assert_eq!(slab(&f, 0.1).unwrap().search_builds(), 0);
+    assert_eq!(relief(&f, 0.1, 0.1, 0.1).unwrap().search_builds(), 0);
+    let named = |e: Error| match e {
+        Error::Constraint { rule: "inset_too_deep", values, message, .. } => (values.iter().find(|v| v.0 == "deepest_inset_that_holds").map(|v| v.1), values.iter().find(|v| v.0 == "inset_that_holds").map(|v| v.1), message),
+        other => panic!("{other:?}"),
+    };
+    let (full, full_p, _) = named(s.build(30).map(|_| ()).unwrap_err());
+    let (full, full_p) = (full.unwrap(), full_p.unwrap());
+    let (none, _, said) = named(s.with_search(0).build(30).map(|_| ()).unwrap_err());
+    assert!(none.is_none() && said.contains("not searched"), "{said}");
+    let (some, some_p, _) = named(s.with_search(4).build(30).map(|_| ()).unwrap_err());
+    let (some, some_p) = (some.unwrap(), some_p.unwrap());
+    assert!(some <= full && some_p <= full_p, "{some} against {full}");
+    assert!(pillow(&f, 0.1, 0.1, some_p).unwrap().build(30).is_ok(), "the named inset {some_p} does not build");
+}

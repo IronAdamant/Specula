@@ -63,10 +63,33 @@ fn raise_takes(kind: &str) -> (&'static [&'static str], usize) {
 }
 
 /// Work units ([`crate::work`]) charged for each point of a form before it is built: the
-/// library's build and its checks (near linear in the points: a box tree where it searches for
-/// crossings), the step to `f32`, the floor's grid and the outlines' hulls. An estimate of what
-/// they cost on the reference machine, not measured to a tight figure.
-pub const FORM_POINT: u64 = 4_000;
+/// library's build and its checks, the step to `f32`, the floor's grid and the outlines' hulls.
+/// What every generator's mesh costs after that (finishing, levels of detail, the collider) is
+/// charged where it is done, as for any generator.
+///
+/// **Measured** (2026-11-20, a release build on the reference laptop while other builds ran on
+/// it: busy-machine times, so read the figures as an upper side, not a tight one). The library's
+/// build of every curved solid at the detail nearest 32,000 points, with its checks and its cut
+/// into triangles, took 2,800 to 6,300 ns a point (the icosphere the most; the torus knot 6,400,
+/// the helix 4,700); every raised form of eleven figures at details 64 to 1,024 that built, 2,000
+/// to 4,500. Through a whole recipe, a form shape cost 7,700 to 35,000 ns a point more than the
+/// modeller's own sphere and lathe at the same number of triangles (7,000 to 11,600 ns a
+/// triangle on that machine, measured twice: the noise of a busy machine is that wide), the
+/// most for the cones (a fan of 4,096 thin triangles round one corner, which the modeller's
+/// smooth normals visit for each). 10,000 covers every one of the library's builds with room for
+/// the modeller's steps; the Möbius band is weighed apart ([`HEAVY`]).
+pub const FORM_POINT: u64 = 10_000;
+
+/// Forms that cost far more a point than [`FORM_POINT`], with their own weight: the Möbius band
+/// searches its twisted strips for faces that cross (its wedge check does not prove them apart),
+/// measured at 99,000 ns a point at 16,384 points on the same busy machine (the helix and the
+/// torus knot, which also sweep, 4,700 and 6,400).
+pub const HEAVY: &[(&str, u64)] = &[("mobius_band", 150_000)];
+
+/// The work weight of a point of the form named `form` (its table name).
+pub fn point_weight(form: &str) -> u64 {
+    HEAVY.iter().find(|(n, _)| *n == form).map_or(FORM_POINT, |h| h.1)
+}
 
 /// `f32` keeps a coordinate to 2⁻²⁴ of its size; two points are kept 2⁻¹⁸ of the form's reach
 /// apart (64 of those steps) so that no edge turns by more than about a degree when its ends
@@ -268,7 +291,84 @@ fn to_shape(m: &FMesh, path: &str) -> Result<Shape, RecipeError> {
     Ok(Shape { colors: vec![[1.0; 4]; positions.len()], positions, tris: out, tags: vec![crate::shape::TAG_FACE; n], bevel_tint: None, owners: Vec::new() })
 }
 
+/// Open edges of a shape as it was made: points told apart by their exact bits, every triangle
+/// counted (none dropped for its area, as [`Shape::open_edge_count`] does), each directed edge
+/// matched by one reverse.
+fn open_edges_as_made(s: &Shape) -> usize {
+    let mut ids: BTreeMap<[u32; 3], u32> = BTreeMap::new();
+    let id: Vec<u32> = s
+        .positions
+        .iter()
+        .map(|p| {
+            let c = crate::shape::canon(*p);
+            let k = [c[0].to_bits(), c[1].to_bits(), c[2].to_bits()];
+            let next = ids.len() as u32;
+            *ids.entry(k).or_insert(next)
+        })
+        .collect();
+    let mut edges: BTreeMap<(u32, u32), i32> = BTreeMap::new();
+    for t in &s.tris {
+        for k in 0..3 {
+            *edges.entry((id[t[k] as usize], id[t[(k + 1) % 3] as usize])).or_insert(0) += 1;
+        }
+    }
+    edges.iter().filter(|(&(a, b), &c)| a == b || c != 1 || edges.get(&(b, a)).copied().unwrap_or(0) != 1).count()
+}
+
+/// The field of `n` that is an outline by name (`outline` for extrude and loft, `profile` for
+/// sweep), if one is.
+pub(super) fn form_outline_field(n: &Node) -> Option<&'static str> {
+    ["outline", "profile"].into_iter().find(|k| matches!(n.get(k), Some(Val::Obj(o)) if o.get("form").is_some()))
+}
+
 impl Ctx<'_> {
+    /// A shape made from an outline by name is built closed or refused as data: what the
+    /// modeller does to every shape when it finishes a model (it welds points within 10 µm and
+    /// drops a triangle under [`crate::mesh::MIN_TRIANGLE_AREA`]) must open none of its edges.
+    /// Held at the size the generator made it, as the `form` shape's floor is. The outline's own
+    /// points are kept apart by [`hold_floor`]; what this adds is the shape the outline was made
+    /// into (a cap's thin ears, a wall shorter than the floor), which the outline alone cannot
+    /// say. The modeller's own outlines (`sides`, `rect`, `points` ...) are not held to it: no
+    /// existing recipe's outcome changes (docs/design/PROCEDURAL_MODELLING.md, "Shapes by name").
+    pub(super) fn hold_closed(&self, n: &Node, s: &Shape) -> Result<(), RecipeError> {
+        let Some(field) = form_outline_field(n) else { return Ok(()) };
+        let before = open_edges_as_made(s);
+        let mut w = s.clone();
+        w.weld(WELD_M as f32);
+        let after = w.open_edge_count();
+        // (An extrusion, a loft and a capped or closed sweep are closed solids by design: none of
+        // their edges may be open, as made or when finished. An open sweep keeps the edges it
+        // was made with, and must open no more.)
+        let closed_by_design = !(n.op == "sweep" && !self.bool(n, "caps", true) && !self.bool(n, "closed", false));
+        if after <= before && !(closed_by_design && after > 0) {
+            return Ok(());
+        }
+        let least = s
+            .tris
+            .iter()
+            .map(|t| 0.5 * crate::math3::length(crate::math3::tri_normal(s.positions[t[0] as usize], s.positions[t[1] as usize], s.positions[t[2] as usize])))
+            .fold(f32::INFINITY, f32::min);
+        let merged = s.positions.len() - w.positions.len().min(s.positions.len());
+        let word = match n.get(field) {
+            Some(Val::Obj(o)) => match o.get("form") {
+                Some(Val::Str(w)) => w.clone(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
+        Err(e(
+            &n.at(field),
+            ErrorCode::Geometry,
+            format!(
+                "the {} made of the outline '{word}' is not closed: {before} of its edges are open as made (in f32), and {after} when the modeller finishes it, which welds points within 10 µm ({merged} merged here) and drops triangles under {:e} m2 (its least has {least:e} m2): give the outline larger parts against its size and detail (a coarser detail, a larger size, parts nearer in size), or the {} more height",
+                n.op,
+                crate::mesh::MIN_TRIANGLE_AREA,
+                n.op
+            ),
+        )
+        .with_numbers(f64::from(least), f64::from(crate::mesh::MIN_TRIANGLE_AREA)))
+    }
+
     /// The form's parameters as given, evaluated: `(name, value)` for each the recipe gives.
     fn form_values(&self, n: &Node, found: &Found) -> Result<Vec<(&'static str, f64)>, RecipeError> {
         let Some(Val::Obj(args)) = n.get("args") else { return Ok(Vec::new()) };
@@ -360,9 +460,17 @@ impl Ctx<'_> {
         // 2V − 4 + 4g of them, whatever its faces' sizes.)
         let predicted = (2 * points as usize + 4 * genus as usize).saturating_sub(4);
         self.tally.grow(&n.path, 0, predicted)?;
-        charge(self.tally, &n.path, points.saturating_mul(FORM_POINT))?;
+        let one = points.saturating_mul(point_weight(found.form.name));
+        charge(self.tally, &n.path, one)?;
         let mesh = match &solid {
-            Some(s) => s.build(detail).map_err(|er| refused(&n.path, er))?,
+            // A refused raise may build itself again to name an inset that holds
+            // (`raise::SEARCH_BUILDS` builds of its own size): it makes no more of those than the
+            // model's budget has room for, so a refusal costs no more than the budget either.
+            Some(s) => {
+                let left = procgen::MAX_BUILD_WORK.saturating_sub(self.tally.work.get());
+                let room = u32::try_from(left / one.max(1)).unwrap_or(u32::MAX);
+                s.with_search(room.min(s.search_builds())).build(detail).map_err(|er| refused(&n.path, er))?
+            }
             None => match spec.build(detail).map_err(|er| refused(&n.path, er))? {
                 Built::Mesh(m) => m,
                 _ => return Err(e(&n.path, ErrorCode::Geometry, format!("'{word}' does not build to a solid"))),

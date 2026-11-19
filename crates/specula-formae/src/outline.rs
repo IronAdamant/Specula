@@ -220,34 +220,24 @@ impl Outline {
                 return Err(Fault::Winding { ring: ri, signed_area: s });
             }
         }
-        // Edges: (ring, index). Bucket them on a grid of about one cell per edge.
+        // Edges: (ring, index), each with its box grown by the floor, so that two edges nearer
+        // than it have boxes that meet. Every pair whose boxes meet is looked at once, by a tree
+        // of boxes ([`box_pairs`]). (A grid of about one cell per edge was used before: a
+        // logarithmic spiral band of twenty turns at detail 4096 crowded its inner turns, most of
+        // its 160,000 points, into a few cells, and its check took half a minute.)
         let edges: Vec<(usize, usize)> = self.rings.iter().enumerate().flat_map(|(ri, r)| (0..r.len()).map(move |i| (ri, i))).collect();
         let seg = |e: (usize, usize)| {
             let r = &self.rings[e.0];
             (r[e.1], r[(e.1 + 1) % r.len()])
         };
-        let (lo, hi) = bounds_of(self.points()).expect("rings are not empty");
-        let total = edges.len();
-        let side = ((total as f64).sqrt() as usize).clamp(1, 2048);
-        let (w, h) = ((hi[0] - lo[0]).max(size * 1e-12), (hi[1] - lo[1]).max(size * 1e-12));
-        let cell = |x: f64, y: f64| -> (usize, usize) {
-            let cx = (((x - lo[0]) / w) * side as f64) as usize;
-            let cy = (((y - lo[1]) / h) * side as f64) as usize;
-            (cx.min(side - 1), cy.min(side - 1))
-        };
-        let mut grid: Vec<Vec<usize>> = vec![Vec::new(); side * side];
-        // (Each edge's box grown by the floor, so that two edges nearer than it share a cell.)
         let floor = size * EDGE_FLOOR;
-        for (ei, &e) in edges.iter().enumerate() {
-            let (a, b) = seg(e);
-            let (x0, y0) = cell(a[0].min(b[0]) - floor, a[1].min(b[1]) - floor);
-            let (x1, y1) = cell(a[0].max(b[0]) + floor, a[1].max(b[1]) + floor);
-            for gx in x0..=x1 {
-                for gy in y0..=y1 {
-                    grid[gy * side + gx].push(ei);
-                }
-            }
-        }
+        let boxes: Vec<(Pt, Pt)> = edges
+            .iter()
+            .map(|&e| {
+                let (a, b) = seg(e);
+                ([a[0].min(b[0]) - floor, a[1].min(b[1]) - floor], [a[0].max(b[0]) + floor, a[1].max(b[1]) + floor])
+            })
+            .collect();
         let adjacent = |a: (usize, usize), b: (usize, usize)| {
             if a.0 != b.0 {
                 return false;
@@ -255,36 +245,30 @@ impl Outline {
             let n = self.rings[a.0].len();
             a.1 == b.1 || (a.1 + 1) % n == b.1 || (b.1 + 1) % n == a.1
         };
-        for bucket in &grid {
-            for (x, &i) in bucket.iter().enumerate() {
-                for &j in &bucket[x + 1..] {
-                    let (ea, eb) = (edges[i], edges[j]);
-                    let (a0, a1) = seg(ea);
-                    let (b0, b1) = seg(eb);
-                    if adjacent(ea, eb) {
-                        // Neighbours share one point; they must not fold back over each other, nor
-                        // the far end of either come within the floor of the other.
-                        let n = self.rings[ea.0].len();
-                        if n > 3 && collinear_overlap(a0, a1, b0, b1) {
-                            return Err(Fault::Crossing { a: ea, b: eb });
-                        }
-                        // (`a` then `b` round the ring, or `b` then `a`: the far ends are the others.)
-                        let (fa, fb) = if a1 == b0 { (a0, b1) } else { (a1, b0) };
-                        let gap = dist_to_segment(fa, b0, b1).min(dist_to_segment(fb, a0, a1));
-                        if gap <= floor {
-                            return Err(Fault::Gap { a: ea, b: eb, gap });
-                        }
-                        continue;
-                    }
-                    if segments_meet(a0, a1, b0, b1) {
-                        return Err(Fault::Crossing { a: ea, b: eb });
-                    }
-                    let gap = dist_to_segment(a0, b0, b1).min(dist_to_segment(a1, b0, b1)).min(dist_to_segment(b0, a0, a1)).min(dist_to_segment(b1, a0, a1));
-                    if gap <= floor {
-                        return Err(Fault::Gap { a: ea, b: eb, gap });
-                    }
+        let pair = |i: usize, j: usize| -> Option<Fault> {
+            let (ea, eb) = (edges[i.min(j)], edges[i.max(j)]);
+            let (a0, a1) = seg(ea);
+            let (b0, b1) = seg(eb);
+            if adjacent(ea, eb) {
+                // Neighbours share one point; they must not fold back over each other, nor the
+                // far end of either come within the floor of the other.
+                let n = self.rings[ea.0].len();
+                if n > 3 && collinear_overlap(a0, a1, b0, b1) {
+                    return Some(Fault::Crossing { a: ea, b: eb });
                 }
+                // (`a` then `b` round the ring, or `b` then `a`: the far ends are the others.)
+                let (fa, fb) = if a1 == b0 { (a0, b1) } else { (a1, b0) };
+                let gap = dist_to_segment(fa, b0, b1).min(dist_to_segment(fb, a0, a1));
+                return (gap <= floor).then_some(Fault::Gap { a: ea, b: eb, gap });
             }
+            if segments_meet(a0, a1, b0, b1) {
+                return Some(Fault::Crossing { a: ea, b: eb });
+            }
+            let gap = dist_to_segment(a0, b0, b1).min(dist_to_segment(a1, b0, b1)).min(dist_to_segment(b0, a0, a1)).min(dist_to_segment(b1, a0, a1));
+            (gap <= floor).then_some(Fault::Gap { a: ea, b: eb, gap })
+        };
+        if let Some(f) = box_pairs(&boxes, pair) {
+            return Err(f);
         }
         // No crossings, so one point of a hole tells where the whole hole is.
         let outer = Outline { rings: vec![self.rings[0].clone()], chord_error: 0.0 };
@@ -301,6 +285,88 @@ impl Outline {
         }
         Ok(())
     }
+}
+
+/// Every pair `(i, j)`, `i ≠ j`, of `boxes` (closed, `(lo, hi)`) that meet, each once, given to
+/// `visit` until it answers something. A tree of the boxes, split at the median of their middles
+/// along the axis where the middles spread farthest down to leaves of at most 8, descended two
+/// branches at once wherever their boxes meet (as [`crate::Mesh::self_crossing`]'s): the work is
+/// near `n log n` plus the pairs that meet, however unlike in size the boxes are, where a grid's
+/// is not (a grid sized for the whole puts a spiral's small inner turns in a few cells).
+pub(crate) fn box_pairs<T>(boxes: &[(Pt, Pt)], mut visit: impl FnMut(usize, usize) -> Option<T>) -> Option<T> {
+    struct Node {
+        lo: Pt,
+        hi: Pt,
+        kids: Option<(usize, usize)>,
+        span: std::ops::Range<usize>,
+    }
+    if boxes.is_empty() {
+        return None;
+    }
+    let mut order: Vec<usize> = (0..boxes.len()).collect();
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut stack = vec![(0usize, boxes.len(), usize::MAX, false)];
+    while let Some((s, e, parent, right)) = stack.pop() {
+        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        let (mut clo, mut chi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        for &b in &order[s..e] {
+            for k in 0..2 {
+                lo[k] = lo[k].min(boxes[b].0[k]);
+                hi[k] = hi[k].max(boxes[b].1[k]);
+                let c = boxes[b].0[k] + boxes[b].1[k];
+                clo[k] = clo[k].min(c);
+                chi[k] = chi[k].max(c);
+            }
+        }
+        let id = nodes.len();
+        nodes.push(Node { lo, hi, kids: None, span: s..e });
+        if parent != usize::MAX {
+            let kids = nodes[parent].kids.get_or_insert((usize::MAX, usize::MAX));
+            if right {
+                kids.1 = id;
+            } else {
+                kids.0 = id;
+            }
+        }
+        if e - s > 8 {
+            let ax = usize::from(chi[1] - clo[1] > chi[0] - clo[0]);
+            let mid = (s + e) / 2;
+            let centre = |b: usize| boxes[b].0[ax] + boxes[b].1[ax];
+            order[s..e].select_nth_unstable_by(mid - s, |&x, &y| centre(x).total_cmp(&centre(y)).then(x.cmp(&y)));
+            stack.push((mid, e, id, true));
+            stack.push((s, mid, id, false));
+        }
+    }
+    let meet = |a: (Pt, Pt), b: (Pt, Pt)| (0..2).all(|k| a.0[k] <= b.1[k] && b.0[k] <= a.1[k]);
+    let mut pairs = vec![(0usize, 0usize)];
+    while let Some((a, b)) = pairs.pop() {
+        let (na, nb) = (&nodes[a], &nodes[b]);
+        if a != b && !meet((na.lo, na.hi), (nb.lo, nb.hi)) {
+            continue;
+        }
+        match (na.kids, nb.kids) {
+            (None, None) => {
+                for (x, &i) in order[na.span.clone()].iter().enumerate() {
+                    let from = if a == b { x + 1 } else { 0 };
+                    for &j in &order[nb.span.clone()][from..] {
+                        if meet(boxes[i], boxes[j]) {
+                            if let Some(found) = visit(i, j) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+            }
+            _ if a == b => {
+                let (l, r) = na.kids.expect("a branch");
+                pairs.extend([(l, l), (r, r), (l, r)]);
+            }
+            (Some((l, r)), _) if nb.kids.is_none() || na.span.len() >= nb.span.len() => pairs.extend([(l, b), (r, b)]),
+            (_, Some((l, r))) => pairs.extend([(a, l), (a, r)]),
+            (Some((l, r)), None) => pairs.extend([(l, b), (r, b)]),
+        }
+    }
+    None
 }
 
 fn orient(a: Pt, b: Pt, c: Pt) -> f64 {

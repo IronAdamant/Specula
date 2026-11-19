@@ -2098,7 +2098,7 @@ impl Ctx<'_> {
     fn ranged(&self, n: &Node, name: &str, default: f64, lo: f64, hi: f64) -> Result<f32, RecipeError> {
         let v = self.num(n, name, default)?;
         if v < lo || v > hi {
-            return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("{v} is outside {lo}..{hi}")).with_numbers(v, if v > hi { hi } else { lo }));
+            return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("\"{name}\" is {v}, outside {lo}..{hi}")).with_numbers(v, if v > hi { hi } else { lo }));
         }
         if self.coarse && matches!(name, "bevel" | "corner_bevel") && lo <= 0.0 {
             return Ok(0.0);
@@ -2130,7 +2130,7 @@ impl Ctx<'_> {
         let v = self.num(n, name, default as f64)?;
         let r = dmath::round_f64(v);
         if r < lo as f64 || r > hi as f64 {
-            return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("{v} is outside {lo}..{hi}")).with_numbers(v, if r > hi as f64 { hi as f64 } else { lo as f64 }));
+            return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("\"{name}\" is {v}, outside {lo}..{hi}")).with_numbers(v, if r > hi as f64 { hi as f64 } else { lo as f64 }));
         }
         let r = r as u32;
         if self.coarse {
@@ -2535,6 +2535,7 @@ impl Ctx<'_> {
         };
         self.tally.grow(&n.path, 0, predicted)?;
         let mut s = build()?;
+        self.hold_closed(n, &s)?;
         self.tally.made_now(&n.path, &mut s);
         self.tally.settle(predicted, s.triangle_count());
         check_extent(&s, &n.path)?;

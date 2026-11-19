@@ -228,3 +228,93 @@ fn solids_at_their_corners_build_or_are_refused_as_data() {
 fn solids_at_their_corners_full() {
     corners(8);
 }
+
+/// Every plane word (names and aliases) as an outline by name, its arguments drawn at their
+/// corners together, at details 8, 9, 24 and 64, extruded by a height drawn from a millimetre to
+/// fifty metres: each builds into a mesh the modeller accepts and its own `is_watertight` holds,
+/// or is refused as data. Never a model that opens when the modeller finishes it (the review of
+/// stage 2: a semicircle of radius 0.1 mm at detail 24 extruded by a millimetre built open).
+fn outlines_at_corners(sets: usize) {
+    let mut words: Vec<&'static str> = forms().iter().filter(|f| f.kind == Kind::Plane).map(|f| f.name).collect();
+    words.extend(aliases().iter().filter(|a| a.kind == Kind::Plane).map(|a| a.name));
+    let (mut built, mut opened) = (0usize, 0usize);
+    for w in words {
+        let found = find(w, Some(Kind::Plane)).unwrap();
+        let params = params_of(&found);
+        let mut s = Seq(w.bytes().fold(0xC2B2_AE3D_27D4_EB4Fu64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)) | 1);
+        for _ in 0..sets {
+            let given: Vec<(&str, f64)> = params.iter().map(|p| (p.name, corner(p, &mut s))).collect();
+            let height = [1e-3, 0.2, 50.0][(s.next() * 3.0) as usize % 3];
+            for detail in [8u32, 9, 24, 64] {
+                let text = recipe(&format!(r#"{{"op": "extrude", "outline": {{"form": "{w}", "args": {}, "detail": {detail}}}, "height": {height:e}}}"#, args(&given)));
+                match try_make(&text) {
+                    Ok(m) => {
+                        sound(&m, &text);
+                        built += 1;
+                    }
+                    Err(er) => {
+                        assert!(matches!(er.code, ErrorCode::OutOfRange | ErrorCode::Limit | ErrorCode::Geometry), "{text}: {er}");
+                        if er.message.contains("not closed") {
+                            assert!(er.measured.is_some() && er.limit.is_some(), "{text}: {er}");
+                            opened += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(built > 200, "{built} built, {opened} refused as opening");
+}
+
+#[test]
+fn outlines_at_their_corners_build_closed_or_are_refused() {
+    outlines_at_corners(2);
+}
+
+#[test]
+#[ignore = "eight corner draws of every plane word as an extruded outline: minutes in the gate's build"]
+fn outlines_at_their_corners_full() {
+    outlines_at_corners(8);
+}
+
+/// The review's cases of an outline by name that built open: each is now refused as data with
+/// its numbers (the least triangle against the modeller's), or builds closed.
+#[test]
+fn the_reviews_open_outlines_are_closed_or_refused() {
+    let cases = [
+        (r#"{"form": "semicircle", "args": {"radius": 1e-4}, "detail": 24}"#, 1e-3),
+        (r#"{"form": "lens", "args": {"radius": 1e-4, "separation": 0.05}, "detail": 24}"#, 1e-3),
+        (r#"{"form": "limacon", "args": {"radius": 0.0001001, "ratio": 4e-6}, "detail": 24}"#, 1e-3),
+        (r#"{"form": "sine_band", "args": {"length": 1767.9, "amplitude": 1e-4, "cycles": 1.885, "phase": 360, "thickness": 9990.01}, "detail": 8}"#, 1e-3),
+        (r#"{"form": "sine_band", "args": {"length": 1767.9, "amplitude": 1e-4, "cycles": 1.885, "phase": 360, "thickness": 9990.01}, "detail": 9}"#, 1e-3),
+    ];
+    let mut refused_open = 0;
+    for (outline, height) in cases {
+        let text = recipe(&format!(r#"{{"op": "extrude", "outline": {outline}, "height": {height:e}}}"#));
+        match try_make(&text) {
+            Ok(m) => sound(&m, &text),
+            Err(er) => {
+                assert!(er.code == ErrorCode::Geometry && er.measured.is_some(), "{text}: {er}");
+                refused_open += usize::from(er.message.contains("not closed"));
+            }
+        }
+    }
+    assert!(refused_open >= 2, "{refused_open}");
+    // The modeller's own outlines are older than this rule and keep their outcome: this one
+    // still builds (open), as it did (docs/design/PROCEDURAL_MODELLING.md, "Shapes by name").
+    let plain = try_make(&recipe(r#"{"op": "extrude", "outline": {"sides": 24, "radius": 1e-4}, "height": 1e-3}"#)).unwrap();
+    assert!(!plain.lods[0].is_watertight());
+}
+
+/// A refusal names the field it is about, in its message as well as its path: a `detail` out of
+/// range says `detail` (the review of stage 2: "100000 is outside 8..4096" named nothing).
+#[test]
+fn a_refusal_names_its_field() {
+    for (text, value) in [(recipe(r#"{"op": "form", "form": "sphere", "detail": 100000}"#), "100000"), (recipe(r#"{"op": "extrude", "outline": {"form": "circle", "detail": 3}, "height": 1}"#), "3")] {
+        let er = refused(&text);
+        assert!(er.code == ErrorCode::OutOfRange && er.path.ends_with("detail") && er.message.contains("\"detail\"") && er.message.contains(value), "{er}");
+        assert!(er.message.contains("detail"), "{er}");
+    }
+    let er = refused(&recipe(r#"{"op": "form", "form": "sphere", "args": {"radius": 1e6}}"#));
+    assert!(er.message.contains("radius"), "{er}");
+}
