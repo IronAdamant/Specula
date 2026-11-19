@@ -730,8 +730,18 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       volume loses its digits when the section is thin and far from the axis (up to a
       thousandth); on strongly stretched forms a corner's normal points behind its own
       face; one form is marked flat that is curved; and the crate's tests add twelve
-      minutes to the gate. **A fresh agent is investigating and mending them**; stage 1c
-      does not start until it has.
+      minutes to the gate. **A fresh agent investigated and mended them** (`028b895e`): the
+      superellipsoid, the ellipsoid and the elliptic cylinder are a profile turned on a
+      ring, cut so that the axis points are samples at every detail, with a proof in place
+      of the crossing search and an error that is a bound; a turned figure's volume is
+      Pappus's from the section's own measures; a normal behind its face is proved
+      impossible for solids of revolution and refused as data elsewhere; the tests' default
+      run is under two minutes, the full runs marked and listed. It also found a fault of
+      stage 1a (edges nearer each other than the floor passed as well made; refused now).
+      **Claude ran its own probe again, unchanged and wider: the mends hold, and one small
+      fault is left** (a very shallow lens built two parts in a thousand million wider
+      than its radius), which is the next builder's first job. **Stage 1c, 2.5D, is being
+      built** by a fresh agent.
       Then 1c (2.5D: a plane figure raised, a solid drawn flat, a solid cut into layers),
       the modeller, the engine's 2D item with two read-only tools and
       `docs/design/FORMAE.md`, and further families. Each stage is reviewed by Claude, who
