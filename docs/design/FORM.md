@@ -884,3 +884,34 @@ and **checked only when a style asks** for one.
     the graveyard's ground, generated); its includes now carry their own paths, and
     `graveyard_plot` is read at 11% of its surface (its ground is the rest), where its terrain
     was credited to its headstones.
+  - **Its second review** (another model, 2026-11-20, of `ead581da`) **said not to merge the
+    mends**: two major findings, each shown by a probe, and neither mended yet. **What "What
+    was mended" above gets wrong:**
+    1. **"A record's surface is that shape's own surface in the finished model" is false
+       under any operation that is not the same in every direction.** An operation scales
+       every record under it by one ratio (the whole's surface after over before), and a
+       scale by a vector, a taper, a bend, a twist or a subdivision changes each shape by
+       another factor. A box of 0.6 by 3 by 0.6 unioned with a ball and flattened to a
+       twentieth is 72% square by the record and 59% round in the model; a box beside a
+       terrain, flattened, is recorded at nine times its surface. Sepulcra's `rune_column`
+       scales its includes so.
+    2. **A long outline with a point in its middle is pressed flat at both ends.** Whether an
+       outline is "curved along its middle" is taken from whether a point lies there: a
+       stadium with one more point on its straight side (the same polygon) reads 89% to 100%
+       square where it read 100% round; a capped column of three sections (a spear's shaft,
+       a limb) reads up to 98% square; a sword's blade, readable at its own length as 61%
+       pointed, reads 63% square after the press.
+    Smaller: a recipe of 52 sculpts that built before is refused for work now (the
+    attribution is charged about a hundred times what it costs); a group's stretch still
+    lands on the wrong axes for a round cone and for a column not along Y; a sculpt's shares
+    from sampled triangles can be far off (30 balls with a displacement of 0.2 mm: up to 89%
+    apart from the same mesh without it); a sculpt keeps its first 96 outlines in the tree's
+    order and not its largest; a long outline on a diagonal is not shortened and its reading
+    flips between 384 and 512 pixels; raising the reading's cap from 32 to 48 fails no test,
+    and the test that the records add up cannot fail on a wrong record (the rest is defined
+    as what is left); and three sentences above are false of the code as mended: a cut's
+    wall is the rest's and not the box's, a scatter is recorded and not unread, and a whole
+    male figure reads 96% round. It found sound: no mesh changed; a boolean's faces are
+    given to the right operand exactly; operand ops, nested booleans, includes of every kind
+    and scatters on cases of its own; the cost's ceiling; the determinism; Sepulcra's counts;
+    and 15 of 23 ordinary recipes read as a person would.

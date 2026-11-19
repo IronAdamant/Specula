@@ -688,7 +688,14 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       to one at most, so a pole and a coin read as a can does; a column's outline has its
       caps, and the measured figure reads round. By its own account nineteen faults seeded
       back were each caught, Sepulcra's counts did not move, and reading costs 9 to 243 ms
-      an asset. **These mends are not reviewed yet.**
+      an asset. **Their reviewer said not to merge them** (2026-11-20; FORM.md, "Its
+      second review"): an operation that is not the same in every direction (a scale by a
+      vector, a taper, a bend) moves surface from one record to another, since all records
+      under it are scaled by one ratio (a flattened box and ball read 72% square where the
+      model is 59% round); and a long outline with a point in its middle is pressed flat
+      at both ends (a spear's shaft and a sword's blade read square). Smaller: a recipe of
+      52 sculpts that built before is refused for work. What it found sound: no mesh
+      changed, booleans, includes and scatters. **Not mended yet.**
     - **Where its verification stands** (2026-11-19, night): the full gate passed on
       `bec48409` (everything of part 4 up to the form views in a before and after and in
       the line-up: 3,298 tests, the repeats, the slow-worker run, the speed budgets, clippy

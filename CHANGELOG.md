@@ -364,7 +364,9 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       an agent that did not write it mended what it found: booleans say which operand each
       face came from (`csg::evaluate_bevelled_leaves`), a sculpt's primitives are weighed by
       their triangles (`sdf::surface_by_primitive`), includes and scatters record truly, thin
-      outlines are read, a column's outline has its caps. Those mends are not reviewed.
+      outlines are read, a column's outline has its caps. Their review said not to merge them
+      (one ratio for every record under an operation; long outlines pressed flat: FORM.md,
+      "Its second review").
     - **Shape language, a fifth version** (2026-11-20, by an agent that did not write the
       fourth, on its review's findings): sides from the smoothed outline, a part's thickness
       where it levels off, joints where the outline turns inward, each part smoothed at its
