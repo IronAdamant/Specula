@@ -685,10 +685,28 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       a lens, a leaf and a teardrop read a third to a half square (the fourth read them
       right); an apple's stalk of 9 to 11 pixels flickers; the round advice fails on a
       thin plank; five of its rules are held by no test; under 384 pixels an oval reads
-      square. **None of it is mended yet, and the slow case is on this branch**: do not
-      take the measure for sound, and do not read a coiled silhouette with it. Sepulcra is
-      not counted again by it. No preset asks for it, and the check exists only for a
-      style that asks by name. Sepulcra's recipes
+      square. **A sixth version mends most of it, under a changed way of working**
+      (2026-11-20, by an agent that wrote none of the five before; merged; FORM.md, "Its
+      sixth version"). What changed in how it is held, since five reviews each found
+      shapes the author had not tried: a set of 103 common assets was written down with
+      the lead a person would give each **before** the measure was run on them, and the
+      measure states its rate on it; every threshold is free of the size the shape is
+      drawn at, or is a stated floor of the pixel grid; every loop counts its steps, and
+      a test holds the count; a rule no test needs was taken out; every earlier
+      reviewer's probe is a permanent test. By its author's account: **it leads as a
+      person would on 90 of the 103 in every mask (87%; the fifth version 89)**; its cost
+      is linear (a coil of thin wire 5 times a disc, where it was 300 times; the worst
+      found, a comb of one-pixel teeth, 15 times); a leaf and a teardrop read round; a
+      stalk no longer flickers; thin limbs read; nothing under 192 pixels across is read
+      (it was 110), and from there a shape reads the same at four sizes. **What it still
+      gets wrong, named in FORM.md and pinned by tests:** thirteen of the common assets (a
+      sword with a round guard, a cumulus cloud, a fish, a cat, a bell, a cauldron, a
+      castle tower, an aeroplane and five more); shapes that swing with the angle (a T, a
+      star of sixteen shallow points, a lens with tips of 90 degrees, a notched disc,
+      which was steady before); a body with sixteen hairs is not read at all. **Not
+      reviewed yet: a sixth review is running, held to the bar set on 2026-11-20 at the
+      top of this page.** Sepulcra is not counted again by it. No preset asks for it, and
+      the check exists only for a style that asks by name. Sepulcra's recipes
       by the fourth version: 29 lead pointed, 14 round, 13 square. **The measure from the recipe is built too** (the modeller records
       each named shape's own outlines and its surface; the studio reads them by the same
       measure, weighed by surface: `built_of` in `studio_check`, with the shapes named). By

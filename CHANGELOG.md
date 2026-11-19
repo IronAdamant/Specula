@@ -372,6 +372,13 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       both ends and loses length only where its sides run straight; the record never
       refuses a build; each record is held against the same shape built alone (FORM.md,
       "What was mended, second round"). Not reviewed yet.
+    - **Shape language, a sixth version** (2026-11-20, by an agent that wrote none before,
+      on the fifth review's findings and a changed way of holding the measure): 103 common
+      assets with the lead a person would give each, written before measuring, and the
+      rate stated on them (90 of 103 in every mask); thresholds free of the size a shape
+      is drawn at; every loop's steps counted and held (a coiled shape costs 5 times a
+      disc, where it cost 300); nothing under 192 pixels across is read; what it still
+      misreads is named and pinned (FORM.md, "Its sixth version"). Not reviewed yet.
     - **Shape language, a fifth version** (2026-11-20, by an agent that did not write the
       fourth, on its review's findings): sides from the smoothed outline, a part's thickness
       where it levels off, joints where the outline turns inward, each part smoothed at its
