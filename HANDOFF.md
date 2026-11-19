@@ -578,16 +578,14 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       a fourteenth of the size, and a part about a fifteenth of the size thick. Sepulcra's
       recipes lead pointed (30 of 56), square (20) and round (6): no check is asked of it.
       **These mends are not reviewed yet.**
-    - **Where its verification stands** (2026-11-19): the full gate passed on `24bfe7de`
-      (the mends of the fourth round of reviews: 3,288 tests), and seven live checks on it
-      (window, sight, terrain, GI, studio, procgen, and the new `form_sheet_check`), the
-      window's pictures looked at on both adapters; the same had passed on `1a19d379`
-      before those mends. A gate earlier that day failed once, on a test written that day
-      that gave the engine 500 passes to reach a state a GPU worker brings about (the cause
-      was found by reproducing it: one run in eight); the test now waits on the state.
-      **Owed:** one narrow review, by a model that did not write them, of the three pieces
-      written again after the fourth round (shape language, the rounded field's solve, the
-      form checks without faceting). Nothing of part 4 is pushed.
+    - **Where its verification stands** (2026-11-19, evening): the full gate passed on
+      `466e262b` (the mends of the fifth round of reviews and the light report: 3,296
+      tests, the repeats, the slow-worker run, the speed budgets, clippy for both targets,
+      both builds), and seven live checks on it (window, sight, terrain, GI, studio, procgen,
+      `form_sheet_check`), the window's pictures looked at on both adapters; the same had
+      passed on `24bfe7de` before those mends. **Owed:** a review, by models that did not
+      write them, of the fifth round's mends (shape language, the rounded field's guard and
+      thin weight, the form checks) and of the light report. Nothing of part 4 is pushed.
     - **Owed from the form checks:** faceting, from what a recipe says is round (above).
     - **The light report: built** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)):
       `perf_light` draws a view offscreen as the world has it and with each light feature
