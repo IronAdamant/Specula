@@ -556,3 +556,18 @@ fn operators_raise_and_turn_every_one_ring_figure() {
     }
     assert!(built > 100 && apex > 0, "{built} built, {apex} pyramids refused for their apex");
 }
+
+/// The needle superellipsoid (rx 1e-4, exponent 32, the rest at their defaults) at detail 64, which
+/// test 3 once reported crossing (before the crossing predicate counted orientations within their
+/// rounding as touching: most likely that report was rounding): it is refused as crossing at this
+/// detail, soundly, or built with no two faces crossing, searched in full (test 3's own search
+/// stops at 10,000 faces, under this build's 24,576).
+#[test]
+fn the_needle_superellipsoid_is_refused_or_simple() {
+    let s = Spec::new("superellipsoid", Some(Kind::Solid), &[("rx", 1e-4), ("exponent", 32.0)]).unwrap();
+    match s.build(64) {
+        Ok(b) => assert_eq!(mesh_of(&b).self_crossing(), None, "built with two faces crossing"),
+        Err(e @ Error::Constraint { rule: "crosses_at_this_detail", .. }) => sound_solid_refusal("the needle superellipsoid", &s, 64, &e),
+        Err(e) => panic!("{e}"),
+    }
+}
