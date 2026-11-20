@@ -305,6 +305,8 @@ Shapes by name (a gear, a heart, an arch, a star, a gem...) are a library that r
 `shape2d` items take: `specula call formae_list '{}'` names them all.
 A model (a prop, a pickup, scenery) is a recipe under `assets/models/`: `notes/models.md` is
 how one is written, built and looked at, in three calls.
+3D things, physics (a collider, a body that falls), a light and a sound are each a word on a
+spawn or one call from a module: `notes/world.md`.
 
 Replace this note with what the game is to be (memory_note {id: "brief", ...}): every agent is
 given it at its first call.
@@ -382,6 +384,9 @@ by name; `formae_get` gives one ready to paste.
 
 **Models** (props, pickups, scenery) are recipes under `assets/models/`: `notes/models.md`.
 
+**3D, physics, light and sound** from a module (a sphere, a model, a collider, a body that
+falls, a lamp, a sound's recipe): `notes/world.md`.
+
 **game.json** (an unknown key is refused, by name)
 
 - `title`; `tick_hz` (1 to 240; 30 when left out); `modules` (folders); `locale`; `start`:
@@ -443,7 +448,8 @@ by name; `formae_get` gives one ready to paste.
   map does not read is refused when the module loads, with the name.
 - Events from the engine, at a tick: `for e in cx.events()`, with `e.from == "engine"`,
   `e.name` and `e.data.get("key")`: `run` (`phase` is `start` when a run begins; any other
-  `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`).
+  `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`); from physics,
+  `contact` and `fell` (`notes/world.md`).
 - The world: `cx.spawn(Spawn::new("cube").name("n").parent("/{{module}}").position(v)
   .scale(v).color("#rrggbb").tags(&["mob"]))?` (an `Id`; `v` is `Vec3::new(x, y, z)`, `f32`),
   `cx.find("/{{module}}/n")?` (an `Option<Id>`), `cx.set(id, Patch::new().position(v)
@@ -475,6 +481,57 @@ by name; `formae_get` gives one ready to paste.
   expect, as a file (the sample's was `checks/smoke.json`).
 - `notes/` is what the project remembers. Leave a note of what you decided and why:
   `notes/NAME.md`, with the front matter this file has (`title`, `kind: decision`, `about`).
+"##;
+
+/// What a module can put in the world beyond a coloured cube, in one page: 3D things, physics,
+/// light and sound. Found by making a ball on a ramp by hand (2026-11-21): all of it worked
+/// from a module at the first try, and none of it was said anywhere a module's author is
+/// pointed at. Every word of the SDK and every tool it names is held by a test below.
+const WORLD_NOTE: &str = r##"---
+title: What a module can put in the world (3D, physics, light, sound)
+kind: fact
+about: modules/, assets/sounds/, game.json
+---
+All of it is a spawn, in the module's `start` or `tick` (`use specula_sdk::{Spawn, Vec3}`):
+
+    cx.spawn(Spawn::new("cube").name("floor").parent(ROOT).position(Vec3::new(0.0, -0.1, 0.0))
+        .scale(Vec3::new(8.0, 0.2, 8.0)).color("#8c96a3").collider_box(Vec3::new(1.0, 1.0, 1.0)))?;
+    cx.spawn(Spawn::new("sphere").name("ball").parent(ROOT).position(Vec3::new(-1.0, 4.0, 0.0))
+        .color("#5aa9ff").collider_sphere(0.5).dynamic(1.0))?;
+    cx.spawn(Spawn::model("models/gear.json").name("gear").parent(ROOT))?;
+    cx.spawn(Spawn::new("group").name("lamp").parent(ROOT).position(Vec3::new(2.0, 4.0, 3.0)).light(6.0, 12.0))?;
+
+- **Shapes**: `cube` and `sphere` (1 m across before `.scale`), `quad` (a 1 m floor tile),
+  `group` (draws nothing, holds children), `Spawn::model(recipe)` (a recipe under `assets/`:
+  `notes/models.md`). `.rotation_deg(Vec3)` turns it about X, then Y, then Z. Metres, +Y up.
+- **Physics**: `.collider_box(size)`, `.collider_sphere(radius)`, `.collider_capsule(radius,
+  height)` are in the thing's own units (a cube's own box is 1, 1, 1 whatever its scale). A
+  collider alone stands still; `.dynamic(mass_kg)` makes it fall, roll and be pushed;
+  `.kinematic()` is moved by the rules only. Gravity is 9.81 m/s2 down. Read where a body is
+  with `cx.entity(id)?` (`.position()`, `.rotation_deg()`); what is near with
+  `cx.query_near("tag", at, radius, 16)?`; **what touches any thing now** with
+  `cx.touching(id)?` (ids; "is it on the ground", "what is in this zone").
+- **What physics tells the rules**, among `cx.events()` at the next tick (`e.from ==
+  "engine"`, values by `e.data.get("key")`): `contact`, for a thing tagged `contacts` or
+  under a group that is (`.tags(&["contacts"])` on the game's root hears of everything): `kind`
+  is `begin` or `end` (`enter`, `exit` for a trigger), `a` and `b` the two things' paths
+  (when only one is heard it is `a`), `speed` how fast they met (m/s), `point`, `normal`.
+  And `fell`, when a body has dropped 5 m below everything it could land on:
+  `entity` (its path), `position`. Put it back (`cx.set(id, Patch::new().position(v)
+  .field("body", Value::map().with("kind", "dynamic").with("velocity", Vec3::new(0.0, 0.0,
+  0.0))))?`) or delete it; a run that ends with one out there says so.
+- **Light**: `.light(intensity, range_m)` on any spawn (1 lights a white surface 1 m away
+  fully). The camera of a 3D game is `game.json`'s `"view": {"eye": [x, y, z], "target": [x,
+  y, z], "fov_y_deg": 50}`.
+- **Sound**: `cx.sound("bounce", Some(position), 1.0)?` plays `assets/sounds/bounce.json`, a
+  recipe: `{"sound": 1, "name": "bounce", "bus": "sfx", "duration": 0.25, "loudness": -20,
+  "layers": [{"name": "thump", "source": {"wave": "sine", "freq": {"points": [[0, 220], [0.2,
+  90]], "curve": "exp"}}, "env": {"attack": 0.002, "decay": 0.18, "sustain": 0, "release":
+  0.04}}]}`. `specula call audio_preview '{"path": "assets/sounds/bounce.json"}'` measures one without
+  playing it. A sound with no file plays nothing and changes nothing: `specula run` names it.
+- **Seeing it**: `specula run . --ticks 40 --frame out.png --size 800x480` writes what the
+  camera sees at that tick. Any other field of a spawn (`specula tools world_spawn` lists
+  them) goes in by `.field("name", value)`.
 "##;
 
 /// How a model is made through the engine, in one page: what a measured comparison's cold
@@ -606,6 +663,7 @@ pub fn files(name: &str, module: &str) -> Vec<(String, String)> {
     out.push(("notes/how.md".to_owned(), fill(HOW)));
     out.push(("notes/checks.md".to_owned(), fill(CHECKS_NOTE)));
     out.push(("notes/models.md".to_owned(), MODELS_NOTE.to_owned()));
+    out.push(("notes/world.md".to_owned(), WORLD_NOTE.to_owned()));
     out.push((".gitignore".to_owned(), GITIGNORE.to_owned()));
     out
 }
@@ -729,8 +787,26 @@ mod tests {
         assert!(source.contains(&format!("name: \"{module}\"")) && source.contains(&format!("const ROOT: &str = \"/{module}\";")));
         let smoke = Json::parse(text("checks/smoke.json")).expect("the check");
         assert_eq!(smoke.get("steps").and_then(Json::as_array).map(<[Json]>::len), Some(6));
-        let (notes, bad) = specula_memoria::Notes::read([("brief", text("notes/brief.md")), ("how", text("notes/how.md")), ("checks", text("notes/checks.md")), ("models", text("notes/models.md"))]);
+        let (notes, bad) = specula_memoria::Notes::read([("brief", text("notes/brief.md")), ("how", text("notes/how.md")), ("checks", text("notes/checks.md")), ("models", text("notes/models.md")), ("world", text("notes/world.md"))]);
         assert!(bad.is_empty(), "{bad:?}");
+        // The world's page (2026-11-21): one page, pointed at, and every word of the SDK and
+        // every tool it names exists; its sound is a recipe the synthesiser renders.
+        let world = text("notes/world.md");
+        assert!(world.len() <= 9 * 512, "notes/world.md is {} bytes: it is one page", world.len());
+        // What physics tells the rules is told under the names and the tag the engine uses.
+        assert!(world.contains(&format!(".tags(&[\"{}\"])", crate::physics_told::CONTACTS_TAG)) && world.contains("`contact`") && world.contains("`fell`") && world.contains(&format!("dropped {} m below", crate::physics_told::FELL_BELOW_M)), "notes/world.md and physics_told differ");
+        assert!(notes.brief().contains("notes/world.md") && text("notes/how.md").contains("notes/world.md"), "the world's page is not pointed at");
+        let sdk = include_str!("../../specula-sdk/src/module.rs");
+        for word in ["model", "rotation_deg", "collider_box", "collider_sphere", "collider_capsule", "dynamic", "kinematic", "light", "query_near", "touching", "sound", "entity"] {
+            assert!(world.contains(&format!("{word}(")) && sdk.contains(&format!("pub fn {word}(")), "notes/world.md and the SDK differ on {word}");
+        }
+        for tool in ["audio_preview", "world_spawn"] {
+            assert!(world.contains(tool) && crate::tools::definitions().iter().any(|d| d.name == tool), "notes/world.md and the engine's tools differ on {tool}");
+        }
+        let from = world.find("{\"sound\": 1").expect("the page's sound");
+        let recipe: String = world[from..world[from..].find('`').map_or(world.len(), |end| from + end)].split_whitespace().collect::<Vec<_>>().join(" ");
+        let sound = specula_audio::Recipe::parse(&recipe).unwrap_or_else(|e| panic!("the page's sound is not a recipe: {e}\n{recipe}"));
+        assert!(specula_audio::synth::render(&sound, &specula_audio::RenderOptions::default()).is_ok(), "the page's sound does not render");
         // The models' page (2026-11-21): one page, pointed at from the brief and the guide, and
         // every tool, shape, operation, raise and material it names is one the engine has.
         let models = text("notes/models.md");

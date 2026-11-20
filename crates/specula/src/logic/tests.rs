@@ -867,3 +867,41 @@ fn only_the_owner_or_a_granted_lead_loads_native_code() {
     assert_eq!(host.proposals.len(), 0);
     crate::inputguard::reset_for_test();
 }
+
+/// Spawns with the SDK's typed words for a turn, a collider, a body and a light.
+#[derive(Default)]
+struct TypedSpawns;
+impl Module for TypedSpawns {
+    fn describe(&self) -> ModuleInfo {
+        ModuleInfo { name: "typed", ..ModuleInfo::default() }
+    }
+    fn start(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        use specula_sdk::Vec3;
+        cx.spawn(Spawn::new("cube").name("ramp").rotation_deg(Vec3::new(0.0, 0.0, -20.0)).collider_box(Vec3::new(1.0, 1.0, 1.0)))?;
+        cx.spawn(Spawn::new("sphere").name("ball").collider_sphere(0.5).dynamic(2.0))?;
+        cx.spawn(Spawn::new("cube").name("lift").collider_box(Vec3::new(1.0, 1.0, 1.0)).kinematic())?;
+        cx.spawn(Spawn::new("sphere").name("pill").collider_capsule(0.25, 1.0).dynamic(1.0))?;
+        cx.spawn(Spawn::new("group").name("lamp").light(6.0, 12.0))?;
+        Ok(())
+    }
+}
+
+/// The SDK's typed words for a spawn are fields the engine takes, and mean what they say
+/// (they are sugar over `field`, which the compiler cannot check: this test is the check).
+#[test]
+fn the_sdks_typed_spawn_words_are_what_the_engine_takes() {
+    let mut r = Run::new();
+    r.load(ModuleCode::of::<TypedSpawns>()).unwrap();
+    let of = |r: &Run, path: &str| r.world.get(r.world.find_path(path).unwrap_or_else(|e| panic!("{path}: {e:?}"))).unwrap().clone();
+    let ramp = of(&r, "/ramp");
+    assert!((ramp.rotation_deg.z + 20.0).abs() < 1e-5 && ramp.collider.is_some() && ramp.body.is_none(), "a turned collider that stands still");
+    let ball = of(&r, "/ball");
+    assert!(format!("{:?}", ball.collider).contains("Sphere") && format!("{:?}", ball.body).contains("Dynamic") && format!("{:?}", ball.body).contains("2.0"), "{:?} {:?}", ball.collider, ball.body);
+    assert!(format!("{:?}", of(&r, "/lift").body).contains("Kinematic"));
+    assert!(format!("{:?}", of(&r, "/pill").collider).contains("Capsule"));
+    let lamp = of(&r, "/lamp").light.expect("a light");
+    assert!(format!("{lamp:?}").contains("6.0") && format!("{lamp:?}").contains("12.0"), "{lamp:?}");
+    // A model by its recipe is a spawn of shape `model` with that recipe (building one needs
+    // a model library, which this host has not: the words are held as they are written).
+    assert_eq!(Spawn::model("models/gear.json").0, specula_sdk::Value::map().with("shape", "model").with("recipe", "models/gear.json"));
+}

@@ -24,8 +24,10 @@ use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
 /// Bumped when the layout changes. Version 2 adds the joint settings and joints' hidden state
 /// (warm starts, last state, the step that solved them); version 1 snapshots (no joints) still
-/// load. Others are refused with `unsupported_version`.
-pub const SNAPSHOT_VERSION: u32 = 2;
+/// load. Version 3 adds, to each contact, the fastest its two bodies closed while it formed
+/// (what its begin event says: the rules of a game hear it, so a restored run must say the
+/// same); in an older snapshot it is 0. Others are refused with `unsupported_version`.
+pub const SNAPSHOT_VERSION: u32 = 3;
 
 /// Why a joint wasn't solved, as saved (index + 1; 0: it was).
 const INACTIVE: [&str; 4] = ["missing_body", "asleep", "no_dynamic_body", "cosmetic_link"];
@@ -321,6 +323,7 @@ impl Space {
             w.u64(kb);
             w.bool(c.touching);
             w.bool(c.trigger);
+            w.f32(c.approach);
             w.f32(c.friction);
             w.f32(c.restitution);
             c.sat.save(w);
@@ -500,6 +503,7 @@ impl Space {
             }
             let touching = r.bool(f).map_err(d)?;
             let trigger = r.bool(f).map_err(d)?;
+            let approach = if version >= 3 { r.f32(f).map_err(d)? } else { 0.0 };
             let friction = r.f32(f).map_err(d)?;
             let restitution = r.f32(f).map_err(d)?;
             let sat = SatCache::load(r).map_err(d)?;
@@ -517,7 +521,7 @@ impl Space {
                 };
             }
             let cosmetic = ba.desc.cosmetic || bb.desc.cosmetic;
-            contacts.push(Contact { key: (ka, kb), a: sa, b: sb, points, len, touching, trigger, friction, restitution, sat, cosmetic });
+            contacts.push(Contact { key: (ka, kb), a: sa, b: sb, points, len, touching, trigger, friction, restitution, sat, cosmetic, approach });
         }
         let keys = |r: &mut ByteReader<'_>, f: &str, max: usize| -> Result<Vec<u64>, PhysicsError> {
             let n = r.count(f, max, 8).map_err(decode)?;

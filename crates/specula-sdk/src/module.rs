@@ -255,6 +255,42 @@ impl Spawn {
     pub fn props(self, props: Value) -> Spawn {
         self.field("props", props)
     }
+    /// A model built from a recipe of the project (`"models/gear.json"`, under the assets):
+    /// it stands on y = 0 of where it is put.
+    pub fn model(recipe: &str) -> Spawn {
+        Spawn::new("model").field("recipe", recipe)
+    }
+    /// Turned by degrees about X, then Y, then Z.
+    pub fn rotation_deg(self, r: Vec3) -> Spawn {
+        self.field("rotation_deg", r)
+    }
+    /// A box to collide with, `size` in the entity's own units (`Vec3::new(1.0, 1.0, 1.0)` is
+    /// a cube's own shape, whatever its scale). A collider with no body stands still.
+    pub fn collider_box(self, size: Vec3) -> Spawn {
+        self.field("collider", Value::map().with("shape", "box").with("size", size))
+    }
+    /// A ball to collide with (0.5 is a sphere's own shape).
+    pub fn collider_sphere(self, radius: f32) -> Spawn {
+        self.field("collider", Value::map().with("shape", "sphere").with("radius", radius))
+    }
+    /// A capsule along the entity's +Y, `height` from end to end.
+    pub fn collider_capsule(self, radius: f32, height: f32) -> Spawn {
+        self.field("collider", Value::map().with("shape", "capsule").with("radius", radius).with("height", height))
+    }
+    /// A body that falls, rolls and is pushed, of `mass_kg` (it needs a collider).
+    pub fn dynamic(self, mass_kg: f32) -> Spawn {
+        self.field("body", Value::map().with("kind", "dynamic").with("mass", mass_kg))
+    }
+    /// A body the rules move and physics does not (a platform, a door): it pushes dynamic
+    /// bodies and nothing pushes it.
+    pub fn kinematic(self) -> Spawn {
+        self.field("body", "kinematic")
+    }
+    /// A point light carried by the entity: an `intensity` of 1 lights a white surface one
+    /// metre away fully; nothing is lit past `range_m`.
+    pub fn light(self, intensity: f32, range_m: f32) -> Spawn {
+        self.field("light", Value::map().with("intensity", intensity).with("range", range_m))
+    }
 }
 
 /// What to change: the same fields as the `world_set` tool (`position`, `rotation_deg`, `scale`,
@@ -476,6 +512,15 @@ impl<'a> Cx<'a> {
     /// by name, `unknown_op`.)
     pub fn random_restart(&mut self, stream: &str) -> Result<(), SdkError> {
         self.ask(Value::map().with("op", "rng_restart").with("stream", stream)).map(drop)
+    }
+
+    /// What touches entity `id` now, by id in increasing order (for a trigger: what is in
+    /// it), as of the last physics step. Any thing with a collider can be asked about, tagged
+    /// or not; at most 64 are answered. For "is it on the ground", "what is in this zone",
+    /// "did these two meet" without waiting for an event.
+    pub fn touching(&mut self, id: Id) -> Result<Vec<Id>, SdkError> {
+        let v = self.ask(Value::map().with("op", "touching").with("id", id.0))?;
+        Ok(v.get("ids").and_then(Value::as_list).unwrap_or_default().iter().filter_map(Value::as_u64).map(Id).collect())
     }
 
     /// Moves a character entity by `motion` (metres this tick, gravity included) through the
