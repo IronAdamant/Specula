@@ -38,6 +38,17 @@
         "- Whoever checks the props starts with no engine running: the commands in your README must work from there.",
         "- The engine has a shape library: named plane figures and solids (a gear, a heart, an arch, a star, a torus, a gem, a capsule, a heater shield...) that a recipe takes by name and changes by numbers. `{tool} call {run} formae_list '{{}}'` names them all in one short answer; `{tool} call {run} formae_get '{{\"name\": \"gear\"}}'` gives one ready to paste."
       ]
+    },
+    {
+      "name": "guided",
+      "kind": "engine",
+      "exe": "library",
+      "text": [
+        "What you have",
+        "- You build the props with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`). Models are recipes (JSON) that the engine builds: `notes/models.md` in your work folder says how one is written, built and looked at.",
+        "- An engine left running, with its tools: start it with `{tool} engine start {run}` and stop it with `{tool} engine stop {run}`; call a tool with `{tool} call {run} TOOL '{{json}}'` or `TOOL @args.json` (`{tool} tools {run} [FILTER]` lists the tools). The engine starts with no window. Never run the engine's executable yourself.",
+        "- Whoever checks the props starts with no engine running: the commands in your README must work from there."
+      ]
     }
   ],
   "baseline": "none",
