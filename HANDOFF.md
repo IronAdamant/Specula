@@ -414,8 +414,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       `statue_angel` 3, `statue_mourner` 2). The build now counts them and says where
       (`thin_edges`, `thin_at`, a sentence in the model's notes). **The mesher itself
       is not mended**: the mend (a vertex for each sheet through a cell) is written
-      down, about a day's work, and it changes the meshes of those six, so it waits
-      for the owner's word ("Open owner decisions"). **The box mend's review is
+      down, about a day's work, and it changes the meshes of those six, so it waited
+      for the owner's word, which came the same night: **"You can mend the mesher. Yes
+      it'll take long but the fix needs to be now."** A fresh agent is making it
+      (branch `m6-mesher`), the six shown before and after in the engine. **The box mend's review is
       queued** (`.swarmnotes/m6/part4/reviews/brief-bounds.md`).
       What it means for the sculpt stage is written into the page's section 6: a joined
       part's reach is taken from its field, not from its box.
@@ -2261,19 +2263,14 @@ Not decisions of this kind, and also with the owner: the seven items of
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-1. **May the sculpt mesher be mended where a part is thinner than a cell, though it moves
-   the meshes of three approved props?** (2026-11-20.) Where a sheet of a sculpt is thinner
-   than one cell of its grid, the mesher makes an edge shared by four triangles. Six
-   sculpts of the repository have 1 to 18 such edges: `grave_rock` (1), `statue_angel` (3)
-   and `statue_mourner` (2), which the owner approved at the window in M4, and three of the
-   fidelity set. Nothing visible is known to be wrong with them; the fault is that such an
-   edge is not a proper surface (the level-of-detail check keeps no volume for that part,
-   and a collider or a boolean made from it can go wrong). The build now says where they
-   are. The mend is about a day's work and changes those six meshes by a few triangles
-   each, so their pinned hashes move and the props are looked at again before and after, as
-   was done for the turned sculpt nodes on 2026-11-19. *Claude's recommendation:* mend it,
-   with before-and-after pictures of the three Sepulcra props checked by a model that did
-   not take them. Until the owner says, the mesher stays as it is.
+Nothing is open (2026-11-20).
+
+(Whether the sculpt mesher may be mended where a sheet is thinner than a cell, though it
+moves the meshes of three approved props (`grave_rock`, `statue_angel`, `statue_mourner`)
+and three of the fidelity set by a few triangles each, was decided on 2026-11-20: "You can
+mend the mesher. Yes it'll take long but the fix needs to be now." A fresh agent is making
+the mend (`.swarmnotes/m6/part4/mesher/brief.md`), with the six shown before and after in
+the engine and checked by a model that did not take the pictures.)
 
 (An empty folder a reviewer made by mistake, `C:\sr-k2t`, was removed on 2026-11-20 at the
 owner's word. The reviewer had been refused the permission and asked the lead to do it; the
