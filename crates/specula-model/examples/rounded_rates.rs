@@ -7,7 +7,9 @@
 //! took for every thousand units charged (a count: the same on every machine). Run it on a
 //! quiet machine: a time taken while other builds run says nothing of a rate. The cases are
 //! the calibrated one (a cube of roundness 0.3 cut from a 2 m box) and the dearest the
-//! weights' second mending found by count, with the eighth review's own cases.
+//! weights' second mending found by count, with the eighth and ninth reviews' own cases (a
+//! plank cut where its samples lie just past its thin face, beside the rim; a cube under 40
+//! and 120 nested unions).
 
 #![allow(clippy::disallowed_methods, reason = "a benchmark harness (timings), not simulation code")]
 
@@ -25,6 +27,11 @@ fn cut(cutter: SdfNode) -> SdfNode {
 
 fn rounded(half: [f32; 3], power: f32, disc: bool, at: [f32; 3]) -> SdfNode {
     cut(node(Prim::Rounded { half, power, disc }, at))
+}
+
+/// `leaf` under `depth` plain unions of one child each.
+fn chain(leaf: SdfNode, depth: usize) -> SdfNode {
+    (0..depth).fold(leaf, |t, _| SdfNode { kind: Kind::Group { op: Combine::Union, kids: vec![t], smooth: 0.0 }, m: Modifiers::default() })
 }
 
 /// Seconds, work and the rounded samples' powers of one build at resolution 96.
@@ -50,6 +57,9 @@ fn main() {
         ("review: hair 1:9000, roundness 0.05", rounded([5.55e-5, 0.5, 5.55e-5], 40.0, false, [0.0; 3])),
         ("review: foil 1:20, roundness 0.99", rounded([0.5, 0.025, 0.5], 2.0202, false, [0.0; 3])),
         ("100 m disc past the corner", rounded([50.0, 5e-5, 0.0], 10.0, true, [-36.8, 0.0, -36.8])),
+        ("ninth review: plank 1:1e5 past its face", rounded([1.0, 0.5, 1e-5], 6.67, false, [0.0, 0.0, -0.98])),
+        ("ninth review: cube under 40 unions", cut(chain(node(Prim::Rounded { half: [0.3; 3], power: 6.67, disc: false }, [0.0; 3]), 40))),
+        ("ninth review: cube under 120 unions", cut(chain(node(Prim::Rounded { half: [0.3; 3], power: 6.67, disc: false }, [0.0; 3]), 120))),
     ];
     println!("{:<44} {:>14} {:>16}", "case", "rate (plain 1)", "powers / 1000 u");
     for (name, tree) in &cases {

@@ -1205,8 +1205,27 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       build under deeply nested unions (the mesher's pruning evaluates a subtree again
       at each level and is charged once: 6 times the calibrated powers at 120 levels).
       **Until a reviewer says merge: do not give `roundness` to a shape that is thin
-      along one axis.** No recipe in the repository uses `roundness`. A fresh agent is
-      mending both, with the reviewer's bracketed distance as a permanent test.
+      along one axis.** No recipe in the repository uses `roundness`. **A fresh agent
+      mended both** (2026-11-20, merged; PROCEDURAL_MODELLING.md, "What was mended after
+      the ninth"). What it found: the start was never the cause. There is one nearest
+      point, and the old sure way stopped after twelve steps where a thin shape needs
+      about thirty, and called where it stood the answer. Now a first try is believed
+      only when it has arrived, and whatever has not goes to **a bracketed solve that
+      cannot fail to arrive** (its `mu` lies between two bounds known beforehand, and
+      every step stays between them or halves them). The field is held against a
+      certified bracket that shares nothing with the solve (33,206 samples over every
+      region of thin boxes and cylinders, all inside; 2,970 lines scanned for a step,
+      none). **Pruning now evaluates each node once** (it was once for each level of
+      nesting, charged once), with pruned trees and meshes the same to the bit, so
+      "no build takes more than one power for each 84 units it is charged" is true
+      under nested unions, held by a count. What it costs: the stricter arrival rule
+      takes 1.4 to 1.7 more powers a sample, so two builds of rounded shapes that are
+      not in the repository are refused where they built (a cube at roundness 0.67
+      cut from a box at resolution 80; a millionth-thick sheet at 0.4 at 64). By its
+      own account eight seeded faults were each caught. **Its review (the tenth of
+      this field) is running; the warning above stands until it says merge.** Owed
+      with it: the rates on a quiet machine (`cargo run --release -p specula-model
+      --example rounded_rates 5`).
     - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.
