@@ -69,6 +69,9 @@ pub const READ_BY_TESTS: &[&str] = &[
     "docs/design/TIMELINE.md",
     // crates/specula-formae/tests/doc_table.rs holds the shape library's table of every form.
     "docs/design/FORMAE.md",
+    // crates/specula-formae/tests/doc_table.rs holds that the modelling document's list of shapes
+    // points at the shape library.
+    "docs/design/PROCEDURAL_MODELLING.md",
 ];
 
 /// Folders whose every file is read by tests, by the tooling or by the live checks, whatever

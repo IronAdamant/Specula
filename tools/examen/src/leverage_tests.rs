@@ -150,6 +150,32 @@ fn the_data_is_good_and_check_holds_what_the_data_test_holds() {
     assert!(!lev::check_job(&changed(&small, "id", Json::Str("other".to_owned())), "small").is_empty());
 }
 
+/// The shape library's comparison (`evals/leverage-props/`, written and not run: the lead runs
+/// it): its jobs are in the harness's form and pass what every job is held to; its two arms
+/// differ only in the line that points at the library, which the engine arm never names.
+#[test]
+fn the_shape_librarys_jobs_are_in_the_harness_form() {
+    let root = lev::repo().join("evals").join("leverage-props");
+    let s = lev::load_json(&root.join("settings.json")).unwrap();
+    let mut seen: Vec<String> = Vec::new();
+    for name in ["kit", "props"] {
+        let job = lev::load_json(&root.join("jobs").join(format!("{name}.json"))).unwrap();
+        assert_eq!(lev::check_job(&job, name), Vec::<String>::new(), "{name}");
+        assert!(s.get("jobs").and_then(|j| j.get(name)).is_some(), "{name} has no limits");
+        for a in job.get("acceptance").and_then(Json::as_array).unwrap() {
+            let id = text(a, "id").unwrap().to_owned();
+            assert!(!seen.contains(&id), "{id} twice");
+            seen.push(id);
+        }
+    }
+    let arm = |name: &str| -> Vec<String> { s.get("arm_text").and_then(|a| a.get(name)).and_then(Json::as_array).unwrap().iter().filter_map(Json::as_str).map(str::to_owned).collect() };
+    let (library, engine) = (arm("library"), arm("engine"));
+    assert!(engine.iter().all(|l| !l.contains("formae") && !l.contains("shape library")), "the engine arm names the library");
+    assert!(library.iter().any(|l| l.contains("formae_list")));
+    let rest: Vec<&String> = library.iter().filter(|l| !l.contains("formae_list")).collect();
+    assert_eq!(rest, engine.iter().collect::<Vec<_>>(), "the arms differ only in the library's line");
+}
+
 #[test]
 fn weighted_is_each_kind_times_its_weight() {
     let by = j(r#"{"input": 10, "cache_write": 100, "cache_read": 1000, "output": 20}"#);

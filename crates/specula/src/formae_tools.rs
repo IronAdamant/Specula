@@ -29,7 +29,14 @@ use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
 
 /// Rows of the catalogue a page (and the default).
 pub const MAX_LIST: usize = 200;
-const DEFAULT_LIST: usize = 50;
+const DEFAULT_LIST: usize = 20;
+/// The ceiling of a page of rows, bytes (about two thousand tokens): a page past it ends early,
+/// with `next_cursor`.
+pub const MAX_ROWS_BYTES: usize = 8 * 1024;
+/// The ceiling of the first answer (`formae_list` with nothing asked), bytes: held by a test.
+pub const MAX_INDEX_BYTES: usize = 3 * 1024;
+/// What `formae_get` answers without `full` stays under, bytes: held by a test for every word.
+pub const MAX_SHORT_BYTES: usize = 3 * 1024;
 /// The ceiling of an answer of either tool, bytes.
 pub const MAX_ANSWER_BYTES: usize = 64 * 1024;
 /// The most points `formae_get` builds to measure a form (a larger count is answered without
@@ -289,15 +296,71 @@ fn kind_arg(args: &Json) -> Result<Option<Kind>, String> {
     })
 }
 
-/// One row of the catalogue.
+/// A parameter in a few words: `radius=1 m`, `sides=6`, `angle=60 deg`.
+fn param_short(p: &formae::Param) -> String {
+    let unit = match p.unit.name() {
+        "metres" => " m",
+        "degrees" => " deg",
+        _ => "",
+    };
+    format!("{}={}{unit}", p.name, p.default)
+}
+
+/// What a form is pasted as: a solid's recipe shape; a plane figure's outline in an extrusion,
+/// and its `shape2d` item; a curve's `shape2d` item (stroked).
+fn paste(f: &formae::Form) -> Vec<(&'static str, Json)> {
+    let name = Json::from(f.name);
+    match f.kind {
+        Kind::Solid => vec![("recipe_shape", Json::obj([("op", Json::from("form")), ("form", name)]))],
+        Kind::Plane => vec![
+            ("recipe_shape", Json::obj([("op", Json::from("extrude")), ("outline", Json::obj([("form", name.clone())])), ("height", Json::from(0.1))])),
+            ("shape2d_item", Json::obj([("form", name), ("fill", Json::from("#8c96a3"))])),
+        ],
+        _ => vec![("shape2d_item", Json::obj([("form", name), ("stroke", Json::obj([("width", Json::from(0.02))]))]))],
+    }
+}
+
+/// One row of the catalogue: what pastes, with the parameters' defaults (a parameter goes in
+/// `args`: `{"op": "form", "form": "gear", "args": {"teeth": 12}}`).
 fn row(f: &formae::Form) -> Json {
-    Json::obj([
+    let mut o = vec![
         ("name", Json::from(f.name)),
         ("kind", Json::from(f.kind.name())),
         ("family", Json::from(f.family.name())),
         ("about", Json::from(f.about)),
-        ("params", Json::arr(f.params.iter().map(|p| Json::from(p.name)))),
-    ])
+        ("args", Json::from(f.params.iter().map(param_short).collect::<Vec<_>>().join(", "))),
+    ];
+    o.extend(paste(f));
+    Json::obj(o)
+}
+
+/// The first answer, with nothing asked: every name by kind and family, one line a family, and
+/// how to ask for more. A few hundred tokens: the rows are asked for.
+fn index() -> Json {
+    let mut kinds: Vec<(&'static str, Json)> = Vec::new();
+    for kind in [Kind::Plane, Kind::Curve, Kind::Solid] {
+        // (A family's line in the table's order, wherever its forms stand in it.)
+        let mut lines: Vec<(&str, String)> = Vec::new();
+        for f in formae::forms().iter().filter(|f| f.kind == kind) {
+            let family = f.family.name();
+            match lines.iter_mut().find(|l| l.0 == family) {
+                Some(l) => {
+                    l.1.push(' ');
+                    l.1.push_str(f.name);
+                }
+                None => lines.push((family, format!("{family}: {}", f.name))),
+            }
+        }
+        kinds.push((kind.name(), Json::arr(lines.into_iter().map(|l| Json::from(l.1)))));
+    }
+    let mut out = kinds;
+    out.push(("aliases", Json::from(format!("{} more words name these (cube, ball, donut, hexagon, pill...): formae_get takes them too", formae::aliases().len()))));
+    out.push(("figure", Json::from("the measured human body: {\"op\": \"figure\"} as a recipe shape, or \"rig\": {\"figure\": {...}}; formae_list {\"figures\": true} gives its fields")));
+    out.push((
+        "ask",
+        Json::from("formae_get {\"name\": \"gear\"}: one form's parameters and snippets to paste. formae_list {\"family\": \"gear\"} or {\"word\": \"star\"}: rows to paste. A solid is a recipe shape {\"op\": \"form\", \"form\": NAME, \"args\": {...}}; a plane figure an outline {\"form\": NAME} (extrude, loft, lathe, sweep) or a shape2d item."),
+    ));
+    Json::obj(out)
 }
 
 /// What starts from the measured human figure, read from the modeller's own field tables.
@@ -313,12 +376,26 @@ fn figures() -> Json {
 }
 
 fn list_tool(args: &Json) -> Result<Json, String> {
-    check_keys(args, "formae_list", &[&["kind", "family", "word", "cursor", "limit"]])?;
+    check_keys(args, "formae_list", &[&["kind", "family", "word", "cursor", "limit", "rows", "figures"]])?;
+    let flag = |key: &str| -> Result<bool, String> {
+        match args.get(key) {
+            None | Some(Json::Null) => Ok(false),
+            Some(v) => v.as_bool().ok_or_else(|| format!("'{key}' is true or false")),
+        }
+    };
+    let (rows_asked, figures_asked) = (flag("rows")?, flag("figures")?);
+    let filtered = ["kind", "family", "word", "cursor", "limit"].iter().any(|k| args.get(k).is_some_and(|v| !v.is_null()));
+    if !filtered && !rows_asked {
+        let mut out = index();
+        if figures_asked {
+            out.set("figures", figures());
+        }
+        return Ok(out);
+    }
     let kind = kind_arg(args)?;
     let family = text(args, "family", 32)?;
     let word = text(args, "word", MAX_WORD)?.map(|w| w.to_ascii_lowercase());
-    let limit = int_arg(args, "limit", 1, MAX_LIST as u64)?.map_or(DEFAULT_LIST, |l| l as usize);
-    let cursor = match text(args, "cursor", 16)? {
+    let limit = int_arg(args, "limit", 1, MAX_LIST as u64)?.map_or(DEFAULT_LIST, |l| l as usize);    let cursor = match text(args, "cursor", 16)? {
         None => 0,
         Some(c) => c.parse::<usize>().map_err(|_| "'cursor' is the next_cursor of the page before".to_string())?,
     };
@@ -341,21 +418,18 @@ fn list_tool(args: &Json) -> Result<Json, String> {
     for (i, f) in all.iter().enumerate().skip(cursor) {
         let r = row(f);
         let n = r.to_string().len();
-        if rows.len() >= limit || bytes + n > MAX_ANSWER_BYTES / 2 {
+        if rows.len() >= limit || bytes + n > MAX_ROWS_BYTES {
             next = Some(i);
             break;
         }
         bytes += n;
         rows.push(r);
     }
-    let mut out = vec![
-        ("forms", Json::arr(rows)),
-        ("matched", Json::from(all.len())),
-        ("of", Json::from(formae::forms().len())),
-        ("aliases", Json::from(formae::aliases().len())),
-        ("figures", figures()),
-        ("next", Json::from("formae_get {name} for one form: its parameters, measures and snippets to paste")),
-    ];
+    let mut out = vec![("forms", Json::arr(rows)), ("matched", Json::from(all.len())), ("of", Json::from(formae::forms().len()))];
+    if figures_asked {
+        out.push(("figures", figures()));
+    }
+    out.push(("next", Json::from("a parameter goes in \"args\" ({\"op\": \"form\", \"form\": \"gear\", \"args\": {\"teeth\": 12}}); formae_get {\"name\": NAME} for one form's ranges, the raised and drawn forms, and with \"full\": true its measures and anchors")));
     if let Some(n) = next {
         out.push(("next_cursor", Json::from(n.to_string())));
     }
@@ -383,7 +457,7 @@ fn measures_json(m: &formae::Measures) -> Json {
 }
 
 fn get_tool(args: &Json) -> Result<Json, String> {
-    check_keys(args, "formae_get", &[&["name", "kind", "args", "detail", "view"]])?;
+    check_keys(args, "formae_get", &[&["name", "kind", "args", "detail", "view", "full"]])?;
     let name = text(args, "name", MAX_WORD)?.ok_or("'name' (a form's name or alias) is required")?;
     let kind = kind_arg(args)?;
     let found = look_up(&name, kind)?;
@@ -392,6 +466,13 @@ fn get_tool(args: &Json) -> Result<Json, String> {
     let view_name = text(args, "view", 32)?.unwrap_or_else(|| "isometric".to_string());
     let view = draw::view(&view_name).ok_or_else(|| format!("'view' must be one of {}", view_names().join(", ")))?;
     let f = found.form;
+    let full = match args.get("full") {
+        None | Some(Json::Null) => false,
+        Some(v) => v.as_bool().ok_or("'full' is true or false")?,
+    };
+    if !full {
+        return short_answer(found, &given, detail, &view);
+    }
     let params: Vec<Json> = formae::params_of(&found)
         .iter()
         .map(|p| {
@@ -479,6 +560,39 @@ fn get_tool(args: &Json) -> Result<Json, String> {
     Ok(answer)
 }
 
+/// `formae_get`'s answer unless `full` is asked: the snippets first, then the parameters in a
+/// line each (name, default and unit, range), the count at the detail, and what `full` adds.
+/// Nothing is built: the snippets are the name and the numbers.
+fn short_answer(found: Found, given: &[(&'static str, f64)], detail: u32, view: &draw::View) -> Result<Json, String> {
+    let f = found.form;
+    let spec = match Spec::of(found, given) {
+        Ok(s) => s,
+        Err(e) => return Ok(Json::obj([("name", Json::from(f.name)), ("refused", Json::from(refusal(&e)))])),
+    };
+    let count = spec.count(detail).map_err(|e| refusal(&e))?;
+    let mut out: Vec<(&'static str, Json)> = vec![
+        ("name", Json::from(spec.name())),
+        ("about", Json::from(f.about)),
+        ("snippets", snippets(&spec, &found, given, detail, view, None)),
+        (
+            "args",
+            Json::arr(formae::params_of(&found).iter().map(|p| {
+                let given = given.iter().find(|g| g.0 == p.name).map_or(String::new(), |g| format!(", given {}", g.1));
+                Json::from(format!("{} ({}..{}{}){given}: {}", param_short(p), p.min, p.max, if p.integer { ", whole" } else { "" }, p.about))
+            })),
+        ),
+    ];
+    if let Some(a) = found.alias {
+        out.push(("alias_of", Json::from(a.of)));
+    }
+    if f.curved {
+        out.push(("detail", Json::from(format!("{detail}: segments in a full turn, {}..{}", formae::DETAIL_MIN, formae::DETAIL_MAX))));
+    }
+    out.push(("count", Json::from(format!("{} points, {} parts", count.points, count.parts))));
+    out.push(("full", Json::from("\"full\": true adds the measures in closed form and as built, the error at this detail, the anchors, the kin and a drawing")));
+    Ok(Json::obj(out))
+}
+
 /// Snippets ready to paste: the recipe part, the recipe outline, the shape2d item, the raised
 /// forms of a plane figure, a solid drawn in a view.
 fn snippets(spec: &Spec, found: &Found, given: &[(&'static str, f64)], detail: u32, view: &draw::View, built: Option<&Built>) -> Json {
@@ -554,19 +668,22 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "formae_list".into(),
             description: format!(
-                "The shape library's catalogue: named plane figures, curves and solids an agent starts from by name and changes by numbers \
-                 (a heart, a gear, an icosahedron, a torus knot...), filtered by kind, family or a word (in a name, an alias or the line \
-                 about it), paged; each row its name, kind, family, one line and its parameters' names. With them, under 'figures', the \
-                 measured human figure and its fields (the modeller's own). At most {MAX_LIST} rows a page and {MAX_ANSWER_BYTES} bytes \
-                 an answer; next_cursor for the next page. Read-only."
+                "The shape library: named plane figures, curves and solids to build from by name and change by numbers (a gear, a heart, \
+                 an arch, a star, a torus, a gem, a capsule...), cheaper than writing their points. With nothing asked: every name by kind \
+                 and family on a few lines (under {MAX_INDEX_BYTES} bytes) and how to ask for more. With kind, family or word (in a name, \
+                 an alias or its line), or rows: true: rows that paste (the recipe shape, a plane figure's outline in an extrusion and its \
+                 shape2d item), with each parameter's default; at most {MAX_LIST} rows and {MAX_ROWS_BYTES} bytes a page, next_cursor for \
+                 the next. figures: true adds the measured human figure's fields (the modeller's own). Read-only."
             ),
             input_schema: schema(
                 vec![
                     ("kind", kind()),
-                    ("family", s(32, "Only this family (triangle, polygon, circle, arch, spiral, platonic, archimedean, catalan, sphere, torus, sweep...: formae_list with no filter shows each row's).")),
+                    ("family", s(32, "Only this family (triangle, polygon, circle, arch, spiral, platonic, archimedean, catalan, sphere, torus, sweep...: formae_list with nothing asked names them).")),
                     ("word", s(MAX_WORD, "Only forms whose name, an alias or its line has this word.")),
                     ("cursor", s(16, "next_cursor of the page before.")),
-                    ("limit", int(1, MAX_LIST as u64, "Rows a page (default 50).")),
+                    ("limit", int(1, MAX_LIST as u64, "Rows a page (default 20).")),
+                    ("rows", Json::obj([("type", Json::from("boolean")), ("description", Json::from("Rows of every form, paged, with no filter."))])),
+                    ("figures", Json::obj([("type", Json::from("boolean")), ("description", Json::from("Add the measured human figure's fields."))])),
                 ],
                 &[],
             ),
@@ -574,12 +691,12 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "formae_get".into(),
             description: format!(
-                "One form of the shape library by its name or an alias: its parameters with units, defaults and ranges; with the arguments \
-                 given (defaults otherwise) and the detail (segments in a full turn, {}..{}), its measures in closed form and as built, \
-                 the error at that detail, its anchors, its point and face counts, its kin in the other dimensions, and snippets to \
-                 paste: the recipe shape or outline, a plane figure raised, the shape2d item, a solid drawn in a view or cut into layers. \
-                 Builds at most {MAX_GET_POINTS} points (a larger count is answered without the measures as built); an unknown name \
-                 answers with the nearest. Read-only.",
+                "One form of the shape library by its name or an alias, short: snippets to paste first (the recipe shape or outline, a \
+                 plane figure raised, the shape2d item, a solid drawn in a view or cut into layers), with the arguments given (defaults \
+                 otherwise) and the detail (segments in a full turn, {}..{}); then each parameter's default, unit and range, and the \
+                 point count. full: true adds its measures in closed form and as built, the error at that detail, its anchors, its kin \
+                 in the other dimensions and a drawing (it builds at most {MAX_GET_POINTS} points). An unknown name answers with the \
+                 nearest. Read-only.",
                 formae::DETAIL_MIN,
                 formae::DETAIL_MAX
             ),
@@ -590,6 +707,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("args", Json::obj([("type", Json::from("object")), ("maxProperties", Json::from(MAX_ARGS)), ("description", Json::from("The form's parameters by name, numbers (formae_get with no args lists them)."))])),
                     ("detail", int(u64::from(formae::DETAIL_MIN), u64::from(formae::DETAIL_MAX), "Segments in a full turn (default 64).")),
                     ("view", s(32, "The view a solid's drawing snippet uses (default isometric): top, front, side, isometric, game_isometric, dimetric, cavalier, cabinet.")),
+                    ("full", Json::obj([("type", Json::from("boolean")), ("description", Json::from("Add the measures, the error, the anchors, the kin and a drawing."))])),
                 ],
                 &["name"],
             ),

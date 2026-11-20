@@ -74,6 +74,17 @@ fn the_documents_table_is_the_crates() {
     }
 }
 
+/// The modelling document's list of shapes (its operation tiers) points a reader at the library
+/// by the call that names it (stage 3b: an agent uses what its first read points at).
+#[test]
+fn the_modelling_documents_list_of_shapes_points_at_the_library() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/design/PROCEDURAL_MODELLING.md");
+    let doc = std::fs::read_to_string(path).expect("docs/design/PROCEDURAL_MODELLING.md").replace("\r\n", "\n");
+    let tiers = doc.split_once("## Operation tiers").expect("its operation tiers").1;
+    let tiers = tiers.split_once("\n## ").map_or(tiers, |t| t.0);
+    assert!(tiers.contains("formae_list") && tiers.contains("Named shapes go in by name"), "the list of shapes does not point at formae_list");
+}
+
 #[test]
 #[ignore = "writes the table into docs/design/FORMAE.md (run when a form is added)"]
 fn write_the_table() {

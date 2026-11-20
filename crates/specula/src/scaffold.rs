@@ -336,6 +336,9 @@ form and are read when they are changed; `assets/ui/theme.json` is the look, and
 reading. Delete the sample's `checks/` folder: it checks the tap game. Every call of the SDK
 that a game of this size needs is on this page.
 
+**Shapes by name:** `specula call formae_list '{}'` names a library (a gear, a heart, an
+arch, a star, a torus, a gem...) that recipes and `shape2d` items take by name.
+
 **The loop: edit, run, read.** One command builds the modules as they are on disk, plays the
 game from its start with no window, and prints how it stands as one JSON object:
 
@@ -671,6 +674,9 @@ mod tests {
         assert!(bad.is_empty(), "{bad:?}");
         let brief = notes.brief();
         assert!(brief.contains("is a new Specula project") && brief.contains("How it is built and checked") && brief.contains("specula run . --ticks"), "{brief}");
+        // The shape library is pointed at where a cold agent already looks (stage 3b of the
+        // library): the guide, and the start of it that the first call's brief carries.
+        assert!(brief.contains("formae_list") && text("notes/how.md").contains("specula call formae_list"), "{brief}");
         // The guide names every key a game file takes (what the comparison's builders opened
         // the engine's design documents for), and the sample's game file shows a report.
         let how = text("notes/how.md");

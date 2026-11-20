@@ -1,0 +1,34 @@
+{
+  "leverage": 1,
+  "note": "The shape library's comparison (stage 3b of specula-formae): the same props built through the engine by a cold agent, with the library pointed at in the brief ('library') and without a word of it ('engine'). Written, not run. The harness ('examen leverage') runs the arms 'engine' and 'plain' of evals/leverage today and takes its arm text from its own code; these jobs are in its job form (examen's tests hold them to check_job), and the arms' text is here as data, for whoever runs them to give each builder (the lead). Both arms run the same engine, which itself points at the library where a cold agent looks (model_build's description, the modelling family's catalog line, a project's notes/how.md and the brief at the first call): the 'engine' arm measures what those pointers do alone, and a run of the 'engine' arm on a commit before stage 3b measures the engine with none.",
+  "runs_per_cell": 2,
+  "builder_model": "claude-sonnet-5-5",
+  "judge_model": "claude-opus-5-5",
+  "arms": ["library", "engine"],
+  "arm_text": {
+    "engine": [
+      "What you have",
+      "- You build the props with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`). Models are recipes (JSON) that the engine builds: its documents are in the repository's `docs/design/` (PROCEDURAL_MODELLING.md for recipes).",
+      "- An engine left running, with its tools, from your work folder: `specula call TOOL '{json}'` (`model_build` builds a recipe and reports its triangles, bounds and whether it is closed; `sight_frame` and `studio_sheet` take pictures). Start no window."
+    ],
+    "library": [
+      "What you have",
+      "- You build the props with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`). Models are recipes (JSON) that the engine builds: its documents are in the repository's `docs/design/` (PROCEDURAL_MODELLING.md for recipes).",
+      "- An engine left running, with its tools, from your work folder: `specula call TOOL '{json}'` (`model_build` builds a recipe and reports its triangles, bounds and whether it is closed; `sight_frame` and `studio_sheet` take pictures). Start no window.",
+      "- The engine has a shape library: named plane figures and solids (a gear, a heart, an arch, a star, a torus, a gem, a capsule, a heater shield...) that a recipe takes by name and changes by numbers. `specula call formae_list '{}'` names them all in one short answer; `specula call formae_get '{\"name\": \"gear\"}'` gives one ready to paste."
+    ]
+  },
+  "jobs": {
+    "kit":   {"token_cap": 400000,  "wall_s": 3600},
+    "props": {"token_cap": 1500000, "wall_s": 10800}
+  },
+  "judge": {"token_cap": 150000, "wall_s": 1800},
+  "token_weights": {"input": 1.0, "cache_write": 1.25, "cache_read": 0.1, "output": 5.0},
+  "rules": [
+    "Download nothing and install nothing.",
+    "Someone may be using this machine: open no window that takes the keyboard or comes to the front, and never move the pointer or press keys for them.",
+    "Anything you start that listens, listens on 127.0.0.1 only.",
+    "Stop every process you started before you finish.",
+    "Write a file with your file-writing tool, never with a shell here-document: on this machine a here-document is refused when its text holds an apostrophe, and what was written into it is lost."
+  ]
+}

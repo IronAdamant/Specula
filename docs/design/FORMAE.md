@@ -86,14 +86,25 @@ In the three senses the word has in games, all built:
   solid in the 2D world has at most 4,096 points and 4,096 faces (hidden faces are found pair by
   pair where the solid is not convex), and at most 64 layers.
 - **Two read-only tools**, in a family of their own (`formae`):
-  - `formae_list`: the catalogue, by kind, family or a word, paged (at most 200 rows a page and
-    64 KB an answer). Beside it, under `figures`, the measured human figure: the `figure` shape
-    and the `figure` rig, with their fields read from the modeller's own field table.
-  - `formae_get {name, kind?, args?, detail?, view?}`: one form, its parameters with units,
-    defaults and ranges; with the arguments given, its measures in closed form and as built, the
-    error at that detail, its anchors, its counts, its kin, and snippets to paste (the recipe
-    shape or outline, the raised forms, the `shape2d` item, a solid drawn and layered). An
-    unknown name answers with the nearest.
+  - `formae_list`: the catalogue. **With nothing asked, every name by kind and family, a line a
+    family, and how to ask for more, in under 3 KB** (about 600 tokens: stage 3b, a cheap first
+    read for a cold agent; it was 39 KB). With a kind, a family or a word, or `rows: true`: rows
+    that paste (the recipe shape, a plane figure's outline in an extrusion and its `shape2d`
+    item), each parameter with its default, at most 200 rows and 8 KB a page. `figures: true`
+    adds the measured human figure: the `figure` shape and the `figure` rig, with their fields
+    read from the modeller's own field table.
+  - `formae_get {name, kind?, args?, detail?, view?, full?}`: one form, short by default (under
+    3 KB, nothing built): the snippets to paste first (the recipe shape or outline, the raised
+    forms, the `shape2d` item, a solid drawn and layered), then each parameter's default, unit
+    and range, and its count. `full: true` adds its measures in closed form and as built, the
+    error at that detail, its anchors, its kin and a drawing. An unknown name answers with the
+    nearest.
+  - **Where a cold agent meets it** (stage 3b): `model_build`'s description, the modelling
+    family's line in the tool catalog, a new project's `notes/how.md` (so the brief at an
+    agent's first call), and PROCEDURAL_MODELLING.md's list of shapes each name `formae_list`.
+    A recipe that names a library word as a shape (`{"op": "heart"}`) or as an outline's kind
+    (`{"heart": ...}`) is answered with how to write it by name, and a near miss
+    (`{"op": "icosahedrn"}`) with the library's nearest names.
   - **Where their work runs**: on the calling agent's own protocol thread, never the engine
     thread. They read nothing of the world and the library is pure, so the engine neither waits
     for them nor holds anything for them. Each is bounded before it works: `formae_get` builds at

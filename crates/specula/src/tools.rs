@@ -2693,7 +2693,9 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
                           time and whether the build cache already had it, and for animated models the bones and \
                           clips (name, duration, loop). Recipe errors come back structured (code, path into the \
                           recipe, message). A .glb/.gltf path imports a glTF asset (textures, materials, skin, \
-                          clips). Iterate on a recipe file with this, then world_spawn it as shape \"model\"."
+                          clips). Iterate on a recipe file with this, then world_spawn it as shape \"model\". \
+                          Named shapes (a gear, a heart, an arch, a gem, a torus...) go in a recipe by name: \
+                          formae_list names them."
                 .into(),
             input_schema: schema(
                 vec![

@@ -56,6 +56,8 @@ Imported meshes (glTF) remain first-class. A recipe can `import` one and keep mo
 | **4** | **Generators**: scatter with rules (Poisson-disk placement, slope and height masks); building/facade grammars (floors → bays → windows); terrain heightfields with erosion; road and path layout from splines | Whole districts, forests, landscapes | M4 |
 
 Notes:
+- **Named shapes go in by name** beside the primitives: a gear, a heart, an arch, a star, a gem, a torus knot and
+  about 150 more (`formae_list '{}'` names them all in one short answer; "Shapes by name" below).
 - **Bevel is in tier 1 on purpose.** Real objects never have perfectly sharp edges. A small chamfer catches light and
   makes a primitive read as a crafted object. It is the cheapest large quality win in stylised 3D.
 - **Booleans are notoriously fragile** in floating point (slivers, holes, non-manifold results). The plan:

@@ -15,30 +15,55 @@ fn ok(name: &str, args: &str) -> Json {
 /// modeller's own fields for it.
 #[test]
 fn the_catalogue_lists_every_form_and_the_figure() {
+    let all: Vec<String> = formae::forms().iter().map(|f| f.name.to_string()).collect();
+    // The first answer: every name, by kind and family, under its small ceiling, the figure
+    // named and how to ask; no rows and no figure's fields.
+    let first = ok("formae_list", "{}");
+    let text = first.to_string();
+    assert!(text.len() <= MAX_INDEX_BYTES, "the first answer is {} bytes", text.len());
+    assert!(first.get("forms").is_none() && first.get("figures").is_none(), "{text}");
+    let mut named: Vec<String> = Vec::new();
+    for kind in ["plane", "curve", "solid"] {
+        for line in first.get(kind).and_then(Json::as_array).unwrap() {
+            let (_, names) = line.as_str().unwrap().split_once(": ").unwrap();
+            named.extend(names.split(' ').map(str::to_string));
+        }
+    }
+    named.sort();
+    let mut want_all = all.clone();
+    want_all.sort();
+    assert_eq!(named, want_all, "the first answer names every form once");
+    assert!(text.contains("figure") && text.contains("formae_get"), "{text}");
+    // Rows, every one, page by page under their ceiling, each with what pastes.
     let mut seen = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..100 {
         let args = match &cursor {
-            None => r#"{"limit": 200}"#.to_string(),
+            None => r#"{"rows": true, "limit": 200}"#.to_string(),
             Some(c) => format!(r#"{{"limit": 200, "cursor": "{c}"}}"#),
         };
         let a = ok("formae_list", &args);
-        assert!(a.to_string().len() <= MAX_ANSWER_BYTES);
+        assert!(a.to_string().len() <= MAX_ROWS_BYTES + 1024, "a page of {} bytes", a.to_string().len());
         for r in a.get("forms").and_then(Json::as_array).unwrap() {
+            assert!(r.get("recipe_shape").is_some() || r.get("shape2d_item").is_some(), "{r}");
             seen.push(r.get("name").and_then(Json::as_str).unwrap().to_string());
         }
-        let fig = a.get("figures").and_then(Json::as_array).unwrap();
-        let fields = fig[0].get("fields").and_then(Json::as_array).unwrap();
-        let names: Vec<&str> = fields.iter().filter_map(|f| f.get("name").and_then(Json::as_str)).collect();
-        let want: Vec<&str> = specula_model::shape_fields("figure").unwrap().iter().map(|f| f.0).collect();
-        assert!(!want.is_empty() && names == want, "{names:?} against {want:?}");
+        assert!(a.get("figures").is_none());
         cursor = a.get("next_cursor").and_then(Json::as_str).map(str::to_string);
         if cursor.is_none() {
             break;
         }
     }
-    let all: Vec<String> = formae::forms().iter().map(|f| f.name.to_string()).collect();
     assert_eq!(seen, all);
+    // The figure's fields, when asked for: the modeller's own.
+    for args in [r#"{"figures": true}"#, r#"{"word": "heart", "figures": true}"#] {
+        let a = ok("formae_list", args);
+        let fig = a.get("figures").and_then(Json::as_array).unwrap();
+        let fields = fig[0].get("fields").and_then(Json::as_array).unwrap();
+        let names: Vec<&str> = fields.iter().filter_map(|f| f.get("name").and_then(Json::as_str)).collect();
+        let want: Vec<&str> = specula_model::shape_fields("figure").unwrap().iter().map(|f| f.0).collect();
+        assert!(!want.is_empty() && names == want, "{names:?} against {want:?}");
+    }
     let solids = ok("formae_list", r#"{"kind": "solid", "family": "platonic"}"#);
     let rows = solids.get("forms").and_then(Json::as_array).unwrap();
     assert!(!rows.is_empty() && rows.iter().all(|r| r.get("kind").and_then(Json::as_str) == Some("solid")));
@@ -58,23 +83,29 @@ fn every_form_is_answered_under_its_ceiling() {
     words.extend(formae::aliases().iter().map(|a| (a.name.to_string(), a.kind.name())));
     for (w, k) in &words {
         for detail in [8, 64] {
-            let a = ok("formae_get", &format!(r#"{{"name": "{w}", "kind": "{k}", "detail": {detail}}}"#));
+            let a = ok("formae_get", &format!(r#"{{"name": "{w}", "kind": "{k}", "detail": {detail}, "full": true}}"#));
             assert!(a.to_string().len() <= MAX_ANSWER_BYTES, "{w}");
             assert!(a.get("params").is_some() && a.get("count").is_some() && a.get("snippets").is_some() && a.get("kin").is_some(), "{w}: {a}");
         }
+        // Short, by default: the snippets first, and nothing that needs a build.
+        let a = ok("formae_get", &format!(r#"{{"name": "{w}", "kind": "{k}"}}"#));
+        let text = a.to_string();
+        assert!(text.len() <= MAX_SHORT_BYTES, "{w}: {} bytes", text.len());
+        assert!(a.get("snippets").is_some() && a.get("args").is_some() && a.get("kin").is_none() && a.get("built").is_none(), "{w}: {a}");
+        assert!(text.find("\"snippets\"") < text.find("\"args\""), "{w}: the snippets come first");
     }
     let e = get_tool(&j(r#"{"name": "icosahedrn"}"#)).unwrap_err();
     assert!(e.contains("icosahedron"), "{e}");
     let e = get_tool(&j(r#"{"name": "torus", "args": {"tub": 1}}"#)).unwrap_err();
     assert!(e.contains("tube"), "{e}");
-    let big = ok("formae_get", r#"{"name": "sphere", "detail": 4096}"#);
+    let big = ok("formae_get", r#"{"name": "sphere", "detail": 4096, "full": true}"#);
     assert!(big.get("built").and_then(|b| b.get("not_built")).is_some(), "{big}");
 }
 
 /// Measures as built and in closed form are the library's: a ball's volume.
 #[test]
 fn a_balls_measures_are_the_librarys() {
-    let a = ok("formae_get", r#"{"name": "sphere", "args": {"radius": 2}, "detail": 64}"#);
+    let a = ok("formae_get", r#"{"name": "sphere", "args": {"radius": 2}, "detail": 64, "full": true}"#);
     let closed = a.get("closed").and_then(|c| c.get("size")).and_then(Json::as_f64).unwrap();
     assert!((closed - 4.0 / 3.0 * std::f64::consts::PI * 8.0).abs() < 1e-9, "{closed}");
     let built = a.get("built").and_then(|b| b.get("measures")).and_then(|m| m.get("size")).and_then(Json::as_f64).unwrap();
@@ -140,6 +171,19 @@ fn the_dearest_items_are_built_within_their_limits() {
         }
     }
     assert!(built > 100, "{built} of the dearest items built");
+}
+
+/// The library is pointed at where a cold agent already looks (stage 3b): `model_build`'s
+/// description, the modelling family's line in the catalog, and the library's own catalog lines
+/// say how to ask for it. (The project's guide and the first call's brief are held in
+/// `scaffold.rs`'s tests, and the modelling document by the library's `doc_table` test.)
+#[test]
+fn the_library_is_pointed_at_where_an_agent_looks() {
+    let defs = crate::tools::definitions();
+    let build = defs.iter().find(|d| d.name == "model_build").expect("model_build");
+    assert!(build.description.contains("formae_list"), "{}", build.description);
+    let model = crate::toolscope::FAMILIES.iter().find(|f| f.name == "model").expect("the model family");
+    assert!(model.about.contains("formae_list"), "{}", model.about);
 }
 
 /// Every tool argument has a limit in its schema.

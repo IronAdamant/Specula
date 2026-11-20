@@ -1,0 +1,34 @@
+{
+  "leverage": 1,
+  "id": "kit",
+  "title": "Kit: four pickups for a game",
+  "brief": [
+    "Make four pickups for a small game, each as a model recipe in your work folder (one file a prop, under `assets/models/`), with one style for all of them. Sizes are in metres, +Y up, each prop standing on y = 0 and centred on the Y axis.",
+    "",
+    "The props",
+    "1. A gear token: a flat spur gear 0.3 wide and 0.05 thick, 12 teeth all alike and evenly spaced, with a round hole through its middle 0.06 across, standing upright.",
+    "2. A heart: a heart 0.3 wide and 0.05 thick with softly rounded edges, standing upright (its point down).",
+    "3. A star: a five-pointed star 0.3 across and 0.05 thick, standing upright, its points sharp.",
+    "4. A coin: a disc 0.2 across and 0.02 thick with a raised rim 0.015 wide on both faces, standing upright.",
+    "",
+    "Checkable without hands",
+    "Someone who cannot open your files in a modelling program will check them, so offer two things for every prop, however you make them:",
+    "1. A headless build: one command that builds every recipe with no window and prints, as JSON, for each prop its name, its triangle count, whether it is closed (watertight) and its bounds (least and greatest x, y, z).",
+    "2. A frame: a PNG picture of each prop, 512 by 512, from the front, the whole prop in view.",
+    "",
+    "Hand in, in your work folder",
+    "- The four recipes and the style they share.",
+    "- README.md: the exact commands for the headless build and the frames, and what you checked yourself and how."
+  ],
+  "acceptance": [
+    {"id": "k01", "kind": "checkable", "text": "The headless build exists, builds all four recipes with no window and prints each one's name, triangle count, closedness and bounds as JSON."},
+    {"id": "k02", "kind": "checkable", "text": "A 512 x 512 PNG frame of each of the four props is written by the commands in README.md, with the whole prop in view."},
+    {"id": "k03", "kind": "behaviour", "text": "The gear token has 12 teeth, all alike and evenly spaced, and a round hole through its middle that one can see through in its frame."},
+    {"id": "k04", "kind": "behaviour", "text": "The gear token's bounds are within 5% of 0.3 wide, 0.3 tall and 0.05 thick, and it stands on y = 0."},
+    {"id": "k05", "kind": "behaviour", "text": "The heart reads as a heart in its frame (two lobes on top, a point below) and its edges are rounded, not sharp."},
+    {"id": "k06", "kind": "behaviour", "text": "The star has five sharp points, evenly spaced, and is about 0.3 across and 0.05 thick."},
+    {"id": "k07", "kind": "behaviour", "text": "The coin is a disc about 0.2 across with a raised rim on both faces, its middle thinner than its rim."},
+    {"id": "k08", "kind": "behaviour", "text": "Every one of the four recipes builds closed (watertight) as the headless build reports, and the props share one style."},
+    {"id": "k09", "kind": "behaviour", "text": "README.md gives commands for the two checks that work as written from a fresh start."}
+  ]
+}
