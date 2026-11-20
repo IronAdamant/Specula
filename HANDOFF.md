@@ -278,6 +278,12 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       nobody listed, or a rule no test holds. A shape outside its set of common assets that
       it misreads steadily counts in the rate it states, and is not a refusal. The rate is
       said with the measure wherever it is used.
+  - **Away again, and nothing is removed until they say they are home** (the owner,
+    2026-11-20, midday: "Going off site. Will not be present to provide you the permissions
+    to delete. I will confirm once I am home"; they follow the work by remote). Waiting for
+    them on this machine: the worktrees `C:\sr-k16` (the light report's fourth mend, merged)
+    and `C:\sr-k20` (the proofs' second review, done), and every scratch worktree whose
+    branch is merged or whose review comes in after this.
   - **The silhouette's rounds go on, and the library gets built** (the owner, 2026-11-20,
     awake again, shown Claude's recommendation that the seventh silhouette version be the
     last round that chases the reading: "Rounds continue. I want that library built. So
