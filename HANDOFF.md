@@ -2,7 +2,7 @@
 
 These are notes from Claude (Opus 5.5 through M5's first wave; Fable 5.2 from 2026-11-12) to whoever picks up Specula
 next, most likely a new Claude conversation with no memory of the earlier ones. This page is **current state and
-what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-17**.
+what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-21**.
 
 - **Owner, 2026-11-16: the scope talk. M6 has started.** A fresh instance reviewed these documents and
   put nine questions; the answers are below in the owner's words, with Claude's reading marked where
@@ -381,7 +381,45 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       library's raise cannot put a soft edge on a figure with a point or a notch (a heart,
       a crescent, a lune: it stops where an inset first closes an edge); no one call
       builds every recipe of a project with a line each; the shell prints JSON with a
-      third of it spaces.
+      third of it spaces. (The last two are done on `m6-usus`, and measured; the soft edge
+      is not built.)
+    - **By hand only, and lean** (the owner, 2026-11-21, with the week's usage near its
+      end: "Only by hand working. I got one reset to go"). No subagent and no paid
+      measurement until they say. What was done by hand that day, all on `m6-usus`
+      (`C:/sf-harness`; head `3e983874`; notes in `.swarmnotes/m6/part4/blind/STUMBLES.md`,
+      pictures in `gallery-full/part4/blind/`):
+      - *The dozen-props job, by hand, with the mended engine*: twelve recipes written in
+        one go, all twelve built at the first try and closed, five requests. What still
+        stumbled is mended: `model_schema` says what each operation does (a "slightly
+        curved" shield came out flat: nothing said which way a bend bends or that a flat
+        slab wants subdividing first); it and the project's page say that a round solid by
+        name is thousands of triangles unless given a `detail`; a style that names no
+        colour family no longer fails every coloured prop for "neutral saturation".
+      - *3D, physics and sound from a module, by hand, cold*: a ball on a ramp, lit, with a
+        model from a recipe. **It compiled and ran at the first try, and none of it was said
+        anywhere a module's author is pointed at.** Mended: `notes/world.md` in every new
+        project (one page, held against the SDK and the engine by a test); typed words on
+        the SDK's `Spawn` (a turn, colliders, bodies, a light, a model); a headless run
+        names a sound the rules asked for that no file makes, a screen text with a key
+        nothing fills, and a body that has fallen out of the world.
+      - *Physics tells the rules* (the owner, of the two gaps left: "Can this be looked at
+        and fixed by yourself please?", and of the limit that only tagged things were
+        heard: "Could we fix that?"): `contact` events for a thing tagged `contacts` or
+        under a group that is; `fell` when a body drops 5 m beyond everything it could
+        land on; `Cx::touching(id)` asks what touches any thing now
+        (docs/design/MODULES.md, "What physics tells a module"). **Found on the way: the
+        physics said 0.4 m/s for a landing at 3.1** (it measured after its own solver had
+        slowed the approach, in `physics_events` too); mended in the physics, and the
+        snapshot is version 3 for it (older ones load).
+      - Written again from the page alone in a fresh project, the game counts its bounces
+        from the events, plays the bounce louder for a harder landing, says what the ball
+        is on, and puts the ball back when it falls.
+      - **Not reviewed by another model** (no subagents), and **not gated**: on its base
+        every suite passes but `reply_wait_guard`, which fails there as before this work
+        and is mended on the working branch. Not merged anywhere.
+      - Still to do by hand, in order: the mends carried onto the engine without the
+        library (so that arm can be measured again), the branches brought into one line
+        (`m6-usus`, the library's 5a, the working branch), then both soft-edge routes.
   - **The shape library's comparison, the small job: found, and not cheaper** (2026-11-20,
     at the owner's "go for it. And save the comparison where needed";
     [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Results (2026-11-20: the shape
