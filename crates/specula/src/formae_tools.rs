@@ -590,7 +590,12 @@ fn short_answer(found: Found, given: &[(&'static str, f64)], detail: u32, view: 
     }
     out.push(("count", Json::from(format!("{} points, {} parts", count.points, count.parts))));
     out.push(("full", Json::from("\"full\": true adds the measures in closed form and as built, the error at this detail, the anchors, the kin and a drawing")));
-    Ok(Json::obj(out))
+    let answer = Json::obj(out);
+    // (Its ceiling: every word's short answer is held under it by a test.)
+    if answer.to_string().len() > MAX_SHORT_BYTES {
+        return Err(format!("the short answer for '{}' would pass {MAX_SHORT_BYTES} bytes: ask with \"full\": true", f.name));
+    }
+    Ok(answer)
 }
 
 /// Snippets ready to paste: the recipe part, the recipe outline, the shape2d item, the raised
