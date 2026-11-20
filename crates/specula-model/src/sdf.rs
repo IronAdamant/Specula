@@ -227,6 +227,41 @@ pub struct SdfStats {
     pub rounded_samples: u64,
     /// The most powers taken between two charges: what ran before it was paid for.
     pub rounded_most_between: u64,
+    /// Edges of the mesh that more than two triangles share ([`thin_edges`]): where a part
+    /// thinner than a cell has its two sides in one cell. The mesh is closed (every edge is
+    /// met as often each way) and not a surface there.
+    pub thin_edges: u64,
+    /// The box round those edges, when there are any.
+    pub thin_at: Option<(V3, V3)>,
+}
+
+/// Edges more than two triangles share, and the box round them.
+///
+/// Dual contouring puts one vertex in each cell the surface crosses and a quad across each
+/// edge of the grid whose ends differ in sign. Where a sheet is thinner than a cell, a face of
+/// the grid can have its four corners inside, outside, inside, outside in turn (the two sides
+/// of the sheet pass between them): all four of its edges cross, and their four quads share
+/// the one mesh edge between the two cells on either side of that face. The mesh stays closed
+/// (two of the quads go one way and two the other) and is not a surface there: a check that
+/// asks for every edge to be shared by two triangles fails it (a level of detail then keeps no
+/// volume for it), and a crescent's rim, a shell thinner than a cell and a fin seen edge on do
+/// it at every resolution a recipe can ask for. Said here and in the build's report, so that
+/// it is not met without a word; meshing each sheet on its own vertices is not done yet
+/// (docs/design/PROCEDURAL_MODELLING.md, tier 3). Sorted, not hashed (F2).
+fn thin_edges(shape: &Shape) -> (u64, Option<(V3, V3)>) {
+    let mut edges: Vec<(u32, u32)> = shape.tris.iter().flat_map(|t| [0, 1, 2].map(|k| (t[k].min(t[(k + 1) % 3]), t[k].max(t[(k + 1) % 3])))).collect();
+    edges.sort_unstable();
+    let (mut count, mut lo, mut hi) = (0u64, [f32::MAX; 3], [f32::MIN; 3]);
+    for run in edges.chunk_by(|a, b| a == b) {
+        if run.len() > 2 {
+            count += 1;
+            for v in [run[0].0, run[0].1] {
+                let p = shape.positions[v as usize];
+                (lo, hi) = (math3::vmin(lo, p), math3::vmax(hi, p));
+            }
+        }
+    }
+    (count, (count > 0).then_some((lo, hi)))
 }
 
 /// The least radius each primitive of the tree turns at, in the tree's own metres, one entry
@@ -1951,6 +1986,404 @@ fn bounds(n: &SdfNode) -> Option<(V3, V3, f32, f32)> {
     Some((wlo, whi, lip, slack))
 }
 
+/// The box the mesher works in when a recipe gives none, for a grid of `resolution` cells
+/// along its longest side: [`bounds`]'s, grown to hold what [`reach`] says the solid reaches
+/// where that is further by more than a quarter cell. **Never smaller than [`bounds`]'s**:
+/// a mesh's cells are its box's longest side over its resolution, so any box that shrank would
+/// move every mesh that is right today; one that grows does so only where `bounds` cut the
+/// solid off. `None` where the tree is unbounded (a half-space in a union).
+fn mesh_box(tree: &SdfNode, resolution: u32) -> Option<(V3, V3)> {
+    let (lo, hi, _, _) = bounds(tree)?;
+    // A side moves only when the reach passes it by more than a quarter of a cell. Nothing
+    // within that is lost: the grid's samples begin a cell and a half before the box, the
+    // first layer forced outside and the second, half a cell before it, evaluated; so a solid
+    // that ends within a quarter cell past the box is sampled and meshed as in any larger box.
+    // (So the last places in which the two boxes differ, added up in different orders, and a
+    // reach a little more generous than the solid move no mesh.)
+    let longest = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max);
+    let close = 0.25 * longest / resolution.max(1) as f32;
+    let grown = match reach(tree, 0.0) {
+        Some((rlo, rhi, r)) => {
+            let (rlo, rhi) = (math3::sub(rlo, [r; 3]), math3::add(rhi, [r; 3]));
+            ([0, 1, 2].map(|k| if rlo[k] < lo[k] - close { rlo[k] } else { lo[k] }), [0, 1, 2].map(|k| if rhi[k] > hi[k] + close { rhi[k] } else { hi[k] }))
+        }
+        // (A node whose scale or stretch is not above nothing, which no recipe can write.)
+        None => (lo, hi),
+    };
+    #[cfg(test)]
+    BOXES.with(|b| {
+        let [taken, grew] = b.get();
+        b.set([taken + 1, grew + u64::from(grown != (lo, hi))]);
+    });
+    Some(grown)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// (Tests only) how many boxes [`mesh_box`] gave on this thread, and how many of them
+    /// [`reach`] grew past [`bounds`]'s.
+    static BOXES: std::cell::Cell<[u64; 2]> = const { std::cell::Cell::new([0; 2]) };
+}
+
+/// Where a node's field is at most `need` (metres, in its parent's frame): **every such
+/// point lies within `r` of the box `lo..hi`** (`(lo, hi, r)`, in the parent's frame). At
+/// `need = 0` that is the node's solid. `None` where [`bounds`] has none (a half-space in a
+/// union, or first in a cut or a meeting), and for a scale or stretch not above nothing.
+///
+/// [`bounds`] widens a box by each distance modifier's amount and each join's width, which
+/// is right only where the field reads the distance outside. A node stretched unevenly reads
+/// short of it by its least stretch over its greatest
+/// ([docs/design/DISTANCE_FIELDS.md](../../../docs/design/DISTANCE_FIELDS.md), 2.5), so a
+/// swelling, a shell, noise or a smooth join on it reaches that much further along its long
+/// axis, and `bounds` cut it off (two spheres stretched ten to one and joined smoothly lost a
+/// tenth of their length). Here each node is asked for the level of its field its caller
+/// needs, from the root's 0 down, and answers for that level:
+///
+/// - **Its distance modifiers first** ([`finish`], undone last first): noise moves the field
+///   by at most its amount; a shell's solid is where `|d|` is at most half its thickness; a
+///   swelling takes `round` off; and the field was multiplied by the node's scale times its
+///   least stretch. So the field is at most `need` only where the node's own is at most
+///   `(need + |noise| + shell / 2 + round) / (scale * least stretch)`.
+/// - **A primitive** whose field is never less than the distance to its solid outside it (a
+///   sphere, a box, a cylinder, a cone, a capsule, a torus, a round cone: exact; a rounded
+///   box or cylinder: never below the distance to its hard shape) reaches its own box and a
+///   ball of the level ([`prim_reach`] for an ellipsoid and a column, which read short).
+/// - **A union or a near-union** of `n` children joined with width `k` is never below the
+///   least of them by more than `min(n - 1, 4) * k / 4` (5.5: a dip of `k / 4` a join, and
+///   under `k` for a chain however long; a near-union joins a chain of some of them): each
+///   child is asked for the level and that much more, and the union reaches what its
+///   children reach; where only one part is near, less ([`union_reach`]). **A meeting or a cut**, sharp or smooth, is never below its children's
+///   greatest (a cut: its first child's; 5.6): each bounded child is asked for the level
+///   itself, and the meeting reaches no further than any of them.
+/// - **Then into the parent's frame**, as [`local`] maps out of it: a twist or a bend turns
+///   points about an axis through the node's middle, so a point reaches no further from it,
+///   and by a turn no greater than its rate times how far along the axis it is; an
+///   elongation and a repetition move a point by at most their half lengths and spans; a
+///   stretch makes the ball an ellipsoid, which is a ball of its least radius and a box of
+///   the rest; a turn turns the box and leaves the ball, a move moves both, a mirror takes
+///   both sides.
+///
+/// It is often tighter than `bounds` (which widens at every level of a tree by the greatest
+/// width under it, so nested groups pile up) and sometimes looser (a column or an ellipsoid
+/// read short of the distance, and a wide join is answered for where it could reach, not where
+/// it does): the mesher takes `bounds`'s box and grows it only where this reaches further
+/// ([`mesh_box`]).
+fn reach(n: &SdfNode, need: f32) -> Option<(V3, V3, f32)> {
+    reach_within(n, need, &mut REACH_ASKS.clone())
+}
+
+/// How many nodes [`reach`] asks in all before smooth unions stop asking their children for
+/// the three levels of [`union_reach`] and ask them once (as many as a tree of [`MAX_NODES`]
+/// two levels deep asks; a deep chain of pairs would ask three times as many at each level).
+const REACH_ASKS: u32 = 1 << 14;
+
+fn reach_within(n: &SdfNode, need: f32, asks: &mut u32) -> Option<(V3, V3, f32)> {
+    *asks = asks.saturating_sub(1);
+    let m = &n.m;
+    let least = m.stretch[0].min(m.stretch[1]).min(m.stretch[2]);
+    let shrink = m.scale * least;
+    if !(shrink > 0.0 && shrink.is_finite()) {
+        return None;
+    }
+    let mut own = need + m.round;
+    if m.shell > 0.0 {
+        own += m.shell * 0.5;
+    }
+    if let Some((amount, _, _)) = m.displace {
+        own += amount.abs();
+    }
+    let level = own.max(0.0) / shrink;
+    let (mut lo, mut hi, mut r) = match &n.kind {
+        Kind::Prim(p) => prim_reach(p, level)?,
+        Kind::Group { op, kids, smooth } if matches!(op, Combine::Union | Combine::Near) && *smooth > 0.0 && kids.len() > 1 => union_reach(kids, *smooth, level, asks)?,
+        Kind::Group { op, kids, .. } => {
+            let union = matches!(op, Combine::Union | Combine::Near);
+            let mut got = Vec::with_capacity(kids.len());
+            for (i, k) in kids.iter().enumerate() {
+                match reach_within(k, level, asks) {
+                    Some(b) => got.push(b),
+                    // As in `bounds`: an unbounded child makes a union unbounded, and a cut or
+                    // a meeting whose first child it is; a later one bounds nothing.
+                    None if union || i == 0 => return None,
+                    None => {}
+                }
+                if *op == Combine::Difference {
+                    break;
+                }
+            }
+            if got.len() == 1 {
+                got[0]
+            } else if union {
+                hull_reach(&got)
+            } else {
+                // A meeting of several: each child's box with its ball as a cube, met.
+                let (mut lo, mut hi) = ([f32::MIN; 3], [f32::MAX; 3]);
+                for (l, h, gr) in &got {
+                    lo = math3::vmax(lo, math3::sub(*l, [*gr; 3]));
+                    hi = math3::vmin(hi, math3::add(*h, [*gr; 3]));
+                }
+                (lo, hi, 0.0)
+            }
+        }
+    };
+    if lo[0] > hi[0] || lo[1] > hi[1] || lo[2] > hi[2] {
+        // Nothing (a meeting of parts that do not meet): as in `bounds`.
+        return Some(([0.0; 3], [0.0; 3], 0.0));
+    }
+    if m.twist != 0.0 || m.bend != 0.0 {
+        (lo, hi) = turned_reach(lo, hi, r, m.twist, m.bend);
+        r = 0.0;
+    }
+    for k in 0..3 {
+        lo[k] -= m.elongate[k];
+        hi[k] += m.elongate[k];
+    }
+    if let Some((count, spacing)) = m.repeat {
+        for k in 0..3 {
+            if count[k] > 1 && spacing[k] > 0.0 {
+                let span = (count[k] - 1) as f32 * spacing[k] * 0.5;
+                lo[k] -= span;
+                hi[k] += span;
+            }
+        }
+    }
+    // A ball of radius `r` stretched is an ellipsoid of radii `r * stretch`: a ball of the
+    // least of them and a box of what the others pass it by (a point `e` of the ellipsoid is
+    // `e * least / stretch`, in the ball, plus the rest, each axis within the difference).
+    for k in 0..3 {
+        let extra = r * (1.0 - least / m.stretch[k]);
+        lo[k] -= extra;
+        hi[k] += extra;
+    }
+    r *= shrink;
+    let s = m.scale;
+    let (lo_s, hi_s) = (math3::mul(math3::scale(lo, s), m.stretch), math3::mul(math3::scale(hi, s), m.stretch));
+    let turn = Affine::rotate_euler_deg([m.rotate[0] as f64, m.rotate[1] as f64, m.rotate[2] as f64]);
+    let (mut wlo, mut whi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for c in 0..8 {
+        let p = [if c & 1 == 0 { lo_s[0] } else { hi_s[0] }, if c & 2 == 0 { lo_s[1] } else { hi_s[1] }, if c & 4 == 0 { lo_s[2] } else { hi_s[2] }];
+        let w = math3::add(turn.apply_point(p), m.at);
+        wlo = math3::vmin(wlo, w);
+        whi = math3::vmax(whi, w);
+    }
+    for k in 0..3 {
+        if m.mirror[k] {
+            let e = wlo[k].abs().max(whi[k].abs());
+            wlo[k] = -e;
+            whi[k] = e;
+        }
+    }
+    Some((wlo, whi, r))
+}
+
+/// What a union of reaches reaches: every one's ball is the least one's and a cube of the
+/// difference.
+fn hull_reach(got: &[(V3, V3, f32)]) -> (V3, V3, f32) {
+    let r = got.iter().map(|g| g.2).fold(f32::MAX, f32::min);
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for (l, h, gr) in got {
+        lo = math3::vmin(lo, math3::sub(*l, [gr - r; 3]));
+        hi = math3::vmax(hi, math3::add(*h, [gr - r; 3]));
+    }
+    (lo, hi, r)
+}
+
+/// [`reach`] for a smooth union or near-union of two or more children at a level `L` of its
+/// field, joined with width `k` (the polynomial join, which dips by at most `k / 4` a join and
+/// is the lesser where the two differ by `k` or more: DISTANCE_FIELDS 5.1, 5.5).
+///
+/// Two answers, each sound, and the tighter is kept:
+///
+/// - Every child asked for `L` and the most the union dips, `min(n - 1, 4) * k / 4`.
+/// - **Where the union dips, two children are near.** A point where the union is at most `L`
+///   is one where the least child is (that child's `L`), or else the join dipped it there.
+///   Then the least child is within the dip of `L`; and another child is within `k` of `L`
+///   for a pair (5.4: both fields are at most `L + k (1 - h/2)^2`), or within `9 k / 4` for
+///   more: at the first join that took the running value to `L` or below, the two it joined
+///   were both above `L` and under `k` apart, so both are at most `L + 5 k / 4`; the running
+///   value is a chain of the children before, never more than `k` below their least (5.5),
+///   so one of them is under `L + 9 k / 4`, and the child joined there is another. (A
+///   near-union is such a chain of the children that take part.) So the union reaches its
+///   children's `L` and, for each child, its dipped reach met with another's at that level.
+///   Beside a part that reads short far from itself (an ellipsoid, a column, a stretched
+///   part), only where another part is near can the join reach out.
+///
+/// The second asks every child three times: past [`REACH_ASKS`] asks in all, only the first.
+fn union_reach(kids: &[SdfNode], k: f32, level: f32, asks: &mut u32) -> Option<(V3, V3, f32)> {
+    let n = kids.len();
+    let dip = k * ((n - 1).min(4) as f32) * 0.25;
+    let dipped = kids.iter().map(|kid| reach_within(kid, level + dip, asks)).collect::<Option<Vec<_>>>()?;
+    let first = hull_reach(&dipped);
+    if *asks == 0 {
+        return Some(first);
+    }
+    let paired_level = level + if n == 2 { k } else { 2.25 * k };
+    let plain = kids.iter().map(|kid| reach_within(kid, level, asks)).collect::<Option<Vec<_>>>()?;
+    let paired = kids.iter().map(|kid| reach_within(kid, paired_level, asks)).collect::<Option<Vec<_>>>()?;
+    let cube = |(l, h, r): (V3, V3, f32)| (math3::sub(l, [r; 3]), math3::add(h, [r; 3]));
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for b in &plain {
+        let (l, h) = cube(*b);
+        (lo, hi) = (math3::vmin(lo, l), math3::vmax(hi, h));
+    }
+    for (i, d) in dipped.iter().enumerate() {
+        let (dl, dh) = cube(*d);
+        for (j, p) in paired.iter().enumerate() {
+            let (pl, ph) = cube(*p);
+            let (ml, mh) = (math3::vmax(dl, pl), math3::vmin(dh, ph));
+            if i != j && (0..3).all(|a| ml[a] <= mh[a]) {
+                (lo, hi) = (math3::vmin(lo, ml), math3::vmax(hi, mh));
+            }
+        }
+    }
+    let (fl, fh) = cube(first);
+    let (lo, hi) = (math3::vmax(lo, fl), math3::vmin(hi, fh));
+    Some(if (lo, hi) == (fl, fh) { first } else { (lo, hi, 0.0) })
+}
+
+/// [`reach`] for a primitive at a level of its own field (in its own frame).
+///
+/// - An **ellipsoid**'s field, `k0 (k0 - 1) / k1` with `k0 = |q / radii|` and `k1 = |q /
+///   radii^2|`, reads short off its axes. Outside it is at most `level` exactly where `k0 - 1`
+///   is at most `level * k1 / k0`, and `k1 / k0` depends only on the direction: with `w_i`
+///   the shares of `(q / radii)^2`, it is `sqrt(sum of w_i / r_i^2)`. So along an axis of
+///   radius `a` a point reaches at most `a * s * (1 + level * sqrt(s^2 / a^2 + (1 - s^2) /
+///   least^2))` for some `s` from 0 to 1 (the rest of the share put on the least radius,
+///   where it counts most). The two terms' greatest values bound it: `a` at `s = 1`, and the
+///   second's, which is `level` itself when `a` is at most `sqrt 2` times the least radius
+///   and otherwise `level * a / (2 * least * sqrt(1 - (least / a)^2))`. A box, no ball.
+/// - A **column**'s field is `(k - 1) * cap`: `k` is how many of its section's own radii out
+///   a point is (the section's measure across, which is never less than the share of either
+///   half, and the cap's along past an end), and `cap` the section's smaller half. So where
+///   the field is at most `level`, `k` is at most `1 + level / cap`: the point is its foot on
+///   the axis, plus at most that many breadths toward the column's side, that many depths
+///   across, and, past an end, the cap there and `level` along. Between two sections each
+///   half stays between theirs (the curve through them never leaves them). So the box of
+///   its feet's segment and of that oriented box, the worst over each pair of neighbouring
+///   sections; no ball.
+/// - **The rest** are never less than the distance to their solid outside it, and their
+///   solid lies in their box: the box and a ball of `level`. (A rounded box's or cylinder's
+///   field is never below its hard shape's distance, whose solid is that box.)
+fn prim_reach(p: &Prim, level: f32) -> Option<(V3, V3, f32)> {
+    Some(match *p {
+        Prim::HalfSpace { .. } => return None,
+        Prim::Ellipsoid { radii } => {
+            let least = radii[0].min(radii[1]).min(radii[2]);
+            let e = radii.map(|a| ellipsoid_reach(a, least, level));
+            ([-e[0], -e[1], -e[2]], e, 0.0)
+        }
+        Prim::Column { a, b, side, sections, count, square } => {
+            let used = &sections[..(count as usize).clamp(1, MAX_SECTIONS)];
+            let axis = math3::sub(b, a);
+            let (from, to) = (math3::add(a, math3::scale(axis, used[0][0])), math3::add(a, math3::scale(axis, used[used.len() - 1][0])));
+            // Its own frame, as [`column`] takes it.
+            let up = math3::scale(axis, 1.0 / math3::length(axis).max(1e-6));
+            let lean = math3::sub(side, math3::scale(up, math3::dot(side, up)));
+            let right = if math3::length(lean) > 1e-6 { math3::normalize(lean) } else { math3::perpendicular(up) };
+            let across = math3::cross(up, right);
+            // How far out toward `right` and `across` and past an end: each half times `1 +
+            // level / cap`, the worst between two neighbouring sections; past an end, the cap
+            // there and the level.
+            let pairs = if used.len() == 1 { std::slice::from_ref(&used[0]).windows(1) } else { used.windows(2) };
+            let (mut out_right, mut out_across, mut out) = (0.0f32, 0.0f32, 0.0f32);
+            let widest = |s: &[f32; 3]| if square == 2.0 { s[1].max(s[2]) } else { len2(s[1], s[2]) };
+            for pair in pairs {
+                let cap = pair.iter().map(|s| s[1].min(s[2])).fold(f32::MAX, f32::min);
+                let grow = 1.0 + level / cap;
+                out_right = out_right.max(pair.iter().map(|s| s[1]).fold(0.0f32, f32::max) * grow);
+                out_across = out_across.max(pair.iter().map(|s| s[2]).fold(0.0f32, f32::max) * grow);
+                out = out.max(pair.iter().map(widest).fold(0.0f32, f32::max) * grow);
+            }
+            let past = [used[0], used[used.len() - 1]].iter().map(|s| s[1].min(s[2])).fold(0.0f32, f32::max) + level;
+            // (Or, every way at once: the offset is that many of the section's own offsets to
+            // its surface, none longer than its widest reach, nor past an end, where the cap's
+            // rounding is narrower. The lesser of the two on each axis.)
+            let half = [0, 1, 2].map(|w| (right[w].abs() * out_right + across[w].abs() * out_across + up[w].abs() * past).min(out));
+            (math3::sub(math3::vmin(from, to), half), math3::add(math3::vmax(from, to), half), 0.0)
+        }
+        _ => {
+            let (lo, hi, _, _) = bounds(&SdfNode { kind: Kind::Prim(*p), m: Modifiers::default() })?;
+            (lo, hi, level)
+        }
+    })
+}
+
+/// How far along an axis of radius `a` an ellipsoid whose least radius is `least` reaches at
+/// a level of its field ([`prim_reach`]): the greatest of `h(s) = a s (1 + level sqrt(s^2 /
+/// a^2 + (1 - s^2) / least^2))` for `s` from 0 to 1. At `s = 1` it is `a + level`. Inside,
+/// writing `g = least^-2 - c s^2` with `c = least^-2 - a^-2`, `h' = 0` asks `least^-2 - 2 c s^2
+/// = -sqrt(g) / level`, which squared is a quadratic in `s^2`: every greatest value inside is
+/// at one of its roots where the left side is below nothing. The greatest of those and the
+/// end, in double precision, with a millionth to spare.
+fn ellipsoid_reach(a: f32, least: f32, level: f32) -> f32 {
+    // (The end is exact, as a ball's box is: no margin.)
+    let end = a + level;
+    let (a, least, level) = (f64::from(a), f64::from(least), f64::from(level));
+    let alpha = 1.0 / (least * least);
+    let c = alpha - 1.0 / (a * a);
+    let mut best = 0.0f64;
+    if c > 0.0 && level > 0.0 {
+        let h = |y: f64| {
+            let s = y.sqrt();
+            a * s * (1.0 + level * (alpha - c * y).max(0.0).sqrt())
+        };
+        let (qa, qb, qc) = (4.0 * c * c * level * level, c - 4.0 * c * alpha * level * level, alpha * alpha * level * level - alpha);
+        let disc = qb * qb - 4.0 * qa * qc;
+        if disc >= 0.0 {
+            for y in [(-qb + disc.sqrt()) / (2.0 * qa), (-qb - disc.sqrt()) / (2.0 * qa)] {
+                if y > 0.0 && y <= 1.0 && alpha - 2.0 * c * y < 0.0 {
+                    best = best.max(h(y));
+                }
+            }
+        }
+    }
+    end.max((best * (1.0 + 1e-6)) as f32)
+}
+
+/// The box a twist and a bend ([`local`]: a twist turns a point about Y by `twist` degrees a
+/// metre of its height, then a bend about Z by `bend` degrees a metre of its x) take a box
+/// and a ball of radius `r` back to. Both turn about an axis through the middle, so the
+/// ball keeps its radius about the axis, and each turns by no more than its rate times the
+/// greatest the coordinate it goes by can be: under a quarter turn, a coordinate grows by at
+/// most the other's greatest times the sine; at a quarter turn or more, to the radius.
+fn turned_reach(lo: V3, hi: V3, r: f32, twist: f32, bend: f32) -> (V3, V3) {
+    let (lo, hi) = (math3::sub(lo, [r; 3]), math3::add(hi, [r; 3]));
+    let most = [0, 1, 2].map(|k| lo[k].abs().max(hi[k].abs()));
+    // How far a coordinate pair `(x, y)` can be from where it was turned by up to `angle`
+    // radians: each grows by the other's greatest times the sine, never past their radius.
+    let turned = |x: f32, y: f32, angle: f32| {
+        let radius = len2(x, y);
+        if angle < 0.5 * std::f32::consts::PI {
+            let (s, _) = crate::dmath::sin_cos(angle);
+            ((x + y * s).min(radius), (y + x * s).min(radius))
+        } else {
+            (radius, radius)
+        }
+    };
+    let deg = std::f32::consts::PI / 180.0;
+    // Out of the bend first (it was applied last): its angle goes by x before it, which is no
+    // more than the radius about Z.
+    let (mut lo, mut hi) = (lo, hi);
+    let mut t = most;
+    if bend != 0.0 {
+        let (x, y) = turned(most[0], most[1], bend.abs() * deg * len2(most[0], most[1]));
+        t = [x, y, most[2]];
+        lo[0] = -x;
+        hi[0] = x;
+        lo[1] = -y;
+        hi[1] = y;
+    }
+    if twist != 0.0 {
+        // Its angle goes by y, which the twist keeps.
+        let (x, z) = turned(t[0], t[2], twist.abs() * deg * t[1]);
+        lo[0] = -x;
+        hi[0] = x;
+        lo[2] = -z;
+        hi[2] = z;
+    }
+    (lo, hi)
+}
+
 /// Options for [`mesh`].
 #[derive(Clone, Copy, Debug)]
 pub struct MeshOptions {
@@ -1975,8 +2408,8 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     if !(2..=MAX_RESOLUTION).contains(&opt.resolution) {
         return Err(SdfError::limit(format!("resolution {} is outside 2..{MAX_RESOLUTION}", opt.resolution), opt.resolution as f64, MAX_RESOLUTION as f64));
     }
-    let (auto_lo, auto_hi) = match bounds(tree) {
-        Some((lo, hi, _, _)) => (lo, hi),
+    let (auto_lo, auto_hi) = match mesh_box(tree, opt.resolution) {
+        Some(b) => b,
         None if opt.bounds.is_some() => ([0.0; 3], [0.0; 3]),
         None => return Err(SdfError::geometry("the sdf is unbounded (a half-space in a union): give it \"bounds\"")),
     };
@@ -2361,6 +2794,7 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     }
     // Triangles collapsed by vertices clamped or moved onto each other.
     shape.weld_exact();
+    (stats.thin_edges, stats.thin_at) = thin_edges(&shape);
     // (The last samples' powers past their weight.)
     charge(&mut work, 0)?;
     let bill = bill.into_inner();
@@ -4237,5 +4671,484 @@ mod tests {
         g.m.scale = 3.0;
         let r = round_radii(&g);
         assert!(r.len() == 3 && near(r[0], 3.0) && r[1].is_none() && near(r[2], 0.3), "{r:?}");
+    }
+
+    // ---- The box the mesher works in ([`mesh_box`], [`reach`]) ----
+
+    fn group(op: Combine, kids: Vec<SdfNode>, smooth: f32) -> SdfNode {
+        SdfNode { kind: Kind::Group { op, kids, smooth }, m: Modifiers::default() }
+    }
+
+    /// A ball of radius `r` stretched `ratio` times along x, its +x tip at `tip`.
+    fn needle(r: f32, ratio: f32, tip: V3) -> SdfNode {
+        let mut n = prim(Prim::Sphere { radius: r });
+        n.m.stretch = [ratio, 1.0, 1.0];
+        n.m.at = [tip[0] - r * ratio, tip[1], tip[2]];
+        n
+    }
+
+    /// The furthest x along the line from `from` in +x where the field is at most 0 (by a
+    /// scan of 20,000 steps up to `span`, then halving): the surface, from the field alone.
+    fn surface_along_x(tree: &SdfNode, from: V3, span: f32) -> f32 {
+        let pr = prepare(tree, 1, &mut 0);
+        let at = |t: f32| eval(&pr, [from[0] + t, from[1], from[2]]);
+        let steps = 20_000;
+        let last = (0..=steps).map(|i| span * i as f32 / steps as f32).rfind(|t| at(*t) <= 0.0).expect("the line starts inside");
+        let (mut a, mut b) = (last, (last + span / steps as f32).min(span));
+        for _ in 0..40 {
+            let m = 0.5 * (a + b);
+            if at(m) <= 0.0 {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        from[0] + a
+    }
+
+    /// The automatic mesh is closed and reaches the surface along +x (where the field says it
+    /// is), within a cell and a half.
+    fn reaches(name: &str, tree: &SdfNode, res: u32, truth_x: f32) -> SdfStats {
+        let (shape, st) = mesh(tree, &MeshOptions { max_triangles: 2_000_000, max_work: MAX_WORK * 8, ..opts(res) }).unwrap();
+        assert_eq!(unbalanced(&shape), 0, "{name}: not closed");
+        let b = shape.bounds();
+        assert!((b.max[0] - truth_x).abs() <= 1.5 * st.cell, "{name}: the mesh ends at x = {} where the surface is at {truth_x} (cell {})", b.max[0], st.cell);
+        st
+    }
+
+    /// Two needles stretched ten to one and joined smoothly reach `10 k / 4` past their tips
+    /// (each field reads a tenth of the distance past the tip, and the join dips `k / 4`).
+    /// `bounds` widened by `k` and cut the join off at 1.1275 (bounds investigation, 2026-11-20).
+    #[test]
+    fn two_stretched_parts_joined_reach_their_whole_join() {
+        let k = 0.1;
+        let t = group(Combine::Union, vec![needle(0.1, 10.0, [1.0, 0.0, 0.0]), needle(0.1, 10.0, [1.0, 0.0, 0.0])], k);
+        let truth = surface_along_x(&t, [0.0; 3], 2.0);
+        assert!((truth - (1.0 + 10.0 * k / 4.0)).abs() < 1e-3, "{truth}");
+        reaches("two needles", &t, 96, truth);
+    }
+
+    /// A swelling on a stretched node moves its surface by the swelling over the stretch's
+    /// ratio along its long axis: a needle of ten to one rounded by 0.05 reaches 0.5 past its
+    /// tip (`bounds` grew by 0.05 and cut it at 1.076).
+    #[test]
+    fn a_round_on_a_stretched_part_reaches_through_its_short_field() {
+        let mut n = needle(0.1, 10.0, [1.0, 0.0, 0.0]);
+        n.m.round = 0.05;
+        let truth = surface_along_x(&n, [0.0; 3], 2.0);
+        assert!((truth - 1.5).abs() < 1e-3, "{truth}");
+        reaches("rounded needle", &n, 96, truth);
+        // A shell, and a group's swelling with a stretched child, the same way.
+        let mut s = needle(0.1, 10.0, [1.0, 0.0, 0.0]);
+        s.m.shell = 0.04;
+        reaches("shelled needle", &s, 96, surface_along_x(&s, [0.9, 0.0, 0.0], 1.0));
+        let mut g = group(Combine::Union, vec![prim(Prim::Sphere { radius: 0.3 }), needle(0.05, 12.0, [1.0, 0.0, 0.0])], 0.0);
+        g.m.round = 0.03;
+        reaches("a group's swelling", &g, 96, surface_along_x(&g, [0.0; 3], 2.0));
+    }
+
+    /// A column's field reads its own smaller half across its broad side, so a flat column
+    /// swollen by 5 cm reaches out across it by 5 cm times its breadth over its depth: a column
+    /// 0.3 broad and 0.05 deep to x = 0.6, where `bounds` took 0.35. An ellipsoid's reads short
+    /// off its axes the same way (the drawn trees of the box's truth hold it).
+    #[test]
+    fn a_flat_column_reaches_through_its_short_field() {
+        let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+        sections[..2].copy_from_slice(&[[0.0, 0.3, 0.05], [1.0, 0.3, 0.05]]);
+        let mut c = prim(Prim::Column { a: [0.0, -0.5, 0.0], b: [0.0, 0.5, 0.0], side: [1.0, 0.0, 0.0], sections, count: 2, square: 2.0 });
+        c.m.round = 0.05;
+        let truth = surface_along_x(&c, [0.0; 3], 1.0);
+        assert!((truth - 0.6).abs() < 1e-3, "{truth}");
+        reaches("a flat column swollen", &c, 96, truth);
+    }
+
+    /// Groups inside groups of stretched parts: each level's dip reaches through every
+    /// stretched part under it (`bounds` lost half a metre here).
+    #[test]
+    fn nested_groups_of_stretched_parts_reach_their_surface() {
+        let k = 0.1;
+        let four = || group(Combine::Union, (0..4).map(|_| needle(0.1, 10.0, [1.0, 0.0, 0.0])).collect(), k);
+        let t = group(Combine::Union, vec![four(), four()], k);
+        reaches("two groups of four needles", &t, 96, surface_along_x(&t, [0.0; 3], 3.0));
+    }
+
+    /// What was right stays right, at the same box: two groups of sixteen balls joined (the
+    /// distance-field review's nesting), and a needle with an exact ball at its tip.
+    #[test]
+    fn the_box_keeps_what_was_right() {
+        let k = 0.1;
+        let balls = |n: usize| group(Combine::Union, (0..n).map(|_| prim(Prim::Sphere { radius: 0.5 })).collect(), k);
+        let t = group(Combine::Union, vec![balls(16), balls(16)], k);
+        reaches("2 x 16 balls", &t, 96, surface_along_x(&t, [0.0; 3], 1.5));
+        let c = group(Combine::Union, vec![needle(0.1, 10.0, [1.0, 0.0, 0.0]), { let mut b = prim(Prim::Sphere { radius: 0.05 }); b.m.at = [1.0, 0.0, 0.0]; b }], k);
+        reaches("a needle and a ball", &c, 96, surface_along_x(&c, [0.0; 3], 2.0));
+        for tree in [&t, &c] {
+            let (lo, hi, _, _) = bounds(tree).unwrap();
+            assert_eq!(mesh_box(tree, 160), Some((lo, hi)), "the box did not move");
+        }
+    }
+
+    /// A twist turns a point about Y by an angle that grows with its height, and a flat box's
+    /// corners swing out past the box about it: a box 2 by 0.2 by 2 twisted 90 degrees a metre
+    /// reaches x = sqrt 2 cos(36 degrees) = 1.144 at its top (`bounds` took the box's own,
+    /// 1.0). A bend the same in its plane.
+    #[test]
+    fn a_twisted_or_bent_node_reaches_where_its_corners_swing() {
+        let mut t = prim(Prim::Box { half: [1.0, 0.1, 1.0], round: 0.0 });
+        t.m.twist = 90.0;
+        let swing = 2f32.sqrt() * crate::dmath::sin_cos(36f32.to_radians()).1;
+        reaches("twisted flat box", &t, 96, swing);
+        let mut b = prim(Prim::Box { half: [1.0, 1.0, 0.1], round: 0.0 });
+        b.m.bend = 10.0;
+        let (lo, hi) = mesh_box(&b, 160).unwrap();
+        let (lo, hi) = (math3::sub(lo, [0.25 * cell_of(lo, hi); 3]), math3::add(hi, [0.25 * cell_of(lo, hi); 3]));
+        let pr = prepare(&b, 1, &mut 0);
+        // Every point of the bent box (sampled finely over its own box and well past it) is in.
+        let mut inside = 0;
+        for i in 0..=80 {
+            for j in 0..=80 {
+                for k in [-0.09f32, 0.0, 0.09] {
+                    let p = [-2.0 + i as f32 * 0.05, -2.0 + j as f32 * 0.05, k];
+                    if eval(&pr, p) <= 0.0 {
+                        inside += 1;
+                        assert!((0..3).all(|a| p[a] >= lo[a] && p[a] <= hi[a]), "{p:?} is in the bent box and outside {lo:?}..{hi:?}");
+                    }
+                }
+            }
+        }
+        assert!(inside > 1000);
+    }
+
+    /// The agent's path: two spheres of radius 0.1 stretched ten to one, joined at `smooth`
+    /// 0.1, in a recipe. The model spans the whole join, x from -1.25 to 1.25, with no
+    /// `bounds` given (it was ±1.1215).
+    #[test]
+    fn a_recipe_of_stretched_parts_joined_spans_its_whole_join() {
+        let style = crate::Style::parse(r##"{ "style": "t", "palette": {}, "materials": { "stone": { "color": "#8c96a3" } } }"##).unwrap();
+        let tree = r#"{ "op": "union", "smooth": 0.1, "of": [
+            { "op": "sphere", "radius": 0.1, "stretch": [10, 1, 1] },
+            { "op": "sphere", "radius": 0.1, "stretch": [10, 1, 1] } ] }"#;
+        let text = format!(r#"{{ "name": "needles", "parts": [ {{ "name": "n", "material": "stone", "shape": {{ "op": "sdf", "resolution": 150, "tree": {tree} }} }} ] }}"#);
+        let m = crate::build(&text, &crate::BuildParams::new(&style)).unwrap_or_else(|e| panic!("{e}"));
+        let b = m.lods[0].bounds();
+        // (The cell: 2.5 m and a little over the resolution.)
+        let cell = 2.6 / 150.0;
+        assert!((b.min[0] + 1.25).abs() <= cell && (b.max[0] - 1.25).abs() <= cell, "the model spans x {} to {}", b.min[0], b.max[0]);
+    }
+
+    /// A small deterministic sequence (xorshift) for drawing trees.
+    struct Draw(u64);
+
+    impl Draw {
+        fn unit(&mut self) -> f32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 40) as f32 / (1u64 << 24) as f32
+        }
+        fn range(&mut self, a: f32, b: f32) -> f32 {
+            a + (b - a) * self.unit()
+        }
+        fn pick(&mut self, n: usize) -> usize {
+            ((self.unit() * n as f32) as usize).min(n - 1)
+        }
+        fn chance(&mut self, p: f32) -> bool {
+            self.unit() < p
+        }
+        fn v3(&mut self, a: f32, b: f32) -> V3 {
+            [self.range(a, b), self.range(a, b), self.range(a, b)]
+        }
+    }
+
+    /// Every primitive but the half-space (which only a meeting or a cut may hold).
+    fn drawn_prim(d: &mut Draw) -> Prim {
+        match d.pick(11) {
+            0 => Prim::Sphere { radius: d.range(0.05, 0.4) },
+            1 => {
+                let half = d.v3(0.03, 0.4);
+                Prim::Box { half, round: d.range(0.0, 1.0) * half[0].min(half[1]).min(half[2]) * 0.9 }
+            }
+            2 => {
+                let (radius, half_height) = (d.range(0.05, 0.4), d.range(0.05, 0.4));
+                Prim::Cylinder { radius, radius_top: radius, half_height, round: d.range(0.0, 0.9) * radius.min(half_height) }
+            }
+            3 => Prim::Cylinder { radius: d.range(0.05, 0.4), radius_top: d.range(0.0, 0.4), half_height: d.range(0.05, 0.4), round: 0.0 },
+            4 => Prim::Capsule { radius: d.range(0.03, 0.2), half_height: d.range(0.0, 0.4) },
+            5 => Prim::Torus { radius: d.range(0.1, 0.4), tube: d.range(0.02, 0.1) },
+            6 => Prim::Ellipsoid { radii: d.v3(0.02, 0.5) },
+            7 => Prim::Rounded { half: d.v3(0.03, 0.4), power: d.range(2.0, 12.0), disc: d.chance(0.4) },
+            8 => Prim::RoundCone { a: d.v3(-0.3, 0.3), b: d.v3(-0.3, 0.3), ra: d.range(0.0, 0.15), rb: d.range(0.01, 0.15) },
+            9 => {
+                let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+                let count = 1 + d.pick(4);
+                let mut t = 0.0;
+                for (i, s) in sections.iter_mut().take(count).enumerate() {
+                    t = if i == 0 { d.range(0.0, 0.3) } else { (t + d.range(0.05, 0.4)).min(1.0 - 0.01 * (count - i) as f32) };
+                    *s = [t, d.range(0.02, 0.25), d.range(0.02, 0.25)];
+                }
+                let square = if d.chance(0.5) { 2.0 } else { d.range(2.0, 8.0) };
+                Prim::Column { a: d.v3(-0.3, 0.3), b: d.v3(-0.3, 0.3), side: d.v3(-1.0, 1.0), sections, count: count as u8, square }
+            }
+            _ => Prim::Sphere { radius: d.range(0.02, 0.1) },
+        }
+    }
+
+    /// A tree from the sequence: every primitive, unions, near-unions, meetings and cuts, sharp
+    /// and smooth, nested, and every modifier the box answers for.
+    fn drawn_tree(d: &mut Draw, depth: u32) -> SdfNode {
+        let kind = if depth < 3 && d.chance(if depth == 0 { 0.85 } else { 0.4 }) {
+            let op = [Combine::Union, Combine::Near, Combine::Intersection, Combine::Difference][d.pick(4)];
+            let n = 2 + d.pick(3);
+            let mut kids: Vec<SdfNode> = (0..n).map(|_| drawn_tree(d, depth + 1)).collect();
+            if matches!(op, Combine::Intersection | Combine::Difference) && d.chance(0.3) {
+                let normal = math3::normalize(d.v3(-1.0, 1.0));
+                kids.push(prim(Prim::HalfSpace { normal, offset: d.range(-0.2, 0.2) }));
+            }
+            Kind::Group { op, kids, smooth: if d.chance(0.6) { d.range(0.01, 0.3) } else { 0.0 } }
+        } else {
+            Kind::Prim(drawn_prim(d))
+        };
+        let mut m = Modifiers::default();
+        if d.chance(0.6) {
+            m.at = d.v3(-0.4, 0.4);
+        }
+        if d.chance(0.5) {
+            m.rotate = d.v3(-180.0, 180.0);
+        }
+        if d.chance(0.3) {
+            m.scale = d.range(0.5, 2.0);
+        }
+        if d.chance(0.5) {
+            m.stretch = [0, 1, 2].map(|_| if d.chance(0.5) { d.range(0.1, 12.0) } else { 1.0 });
+        }
+        if d.chance(0.15) {
+            m.mirror = [d.chance(0.5), d.chance(0.5), d.chance(0.5)];
+        }
+        if d.chance(0.3) {
+            m.round = d.range(0.0, 0.12);
+        }
+        if d.chance(0.15) {
+            m.shell = d.range(0.005, 0.08);
+        }
+        if d.chance(0.15) {
+            m.displace = Some((d.range(-0.06, 0.06), d.range(0.08, 0.5), 1 + d.pick(3) as u32));
+        }
+        if d.chance(0.12) {
+            m.twist = d.range(-300.0, 300.0);
+        }
+        if d.chance(0.12) {
+            m.bend = d.range(-200.0, 200.0);
+        }
+        if d.chance(0.12) {
+            m.elongate = d.v3(0.0, 0.3);
+        }
+        if d.chance(0.1) {
+            m.repeat = Some(([1 + d.pick(3) as u32, 1 + d.pick(2) as u32, 1], d.v3(0.1, 0.6)));
+        }
+        SdfNode { kind, m }
+    }
+
+    /// The worst point found outside the box the mesher takes for `tree` where its field is at
+    /// or below nothing: how far out it is (0 for none), and the point. The field is asked and
+    /// nothing else: on the box's faces pushed out by five distances, a grid on each, and at
+    /// points drawn in the shell to half the box's size past it.
+    fn escape(tree: &SdfNode, d: &mut Draw, take: impl Fn(&SdfNode) -> Option<(V3, V3)>) -> Option<(f32, V3)> {
+        let (lo, hi) = take(tree)?;
+        let size = (0..3).map(|a| hi[a] - lo[a]).fold(0.0f32, f32::max).max(1e-3);
+        let pr = prepare(tree, 1, &mut 0);
+        // What the box leaves out on purpose, a quarter of a cell at the finest resolution
+        // ([`mesh_box`]: the grid samples half a cell past it), and a hair more.
+        let tol = 0.25 * cell_of(lo, hi) + 1e-5 * size + 1e-6;
+        let mut worst: Option<(f32, V3)> = None;
+        let mut look = |p: V3| {
+            let out = math3::length([0, 1, 2].map(|a| (lo[a] - p[a]).max(p[a] - hi[a]).max(0.0)));
+            if out > tol && eval(&pr, p) <= 0.0 && worst.is_none_or(|(w, _)| out > w) {
+                worst = Some((out, p));
+            }
+        };
+        const N: usize = 14;
+        for push in [2.0 * tol, 0.004 * size, 0.02 * size, 0.08 * size, 0.3 * size] {
+            let (l, h) = (math3::sub(lo, [push; 3]), math3::add(hi, [push; 3]));
+            for axis in 0..3 {
+                let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+                for side in [l[axis], h[axis]] {
+                    for i in 0..=N {
+                        for j in 0..=N {
+                            let mut p = [0.0; 3];
+                            p[axis] = side;
+                            p[u] = l[u] + (h[u] - l[u]) * i as f32 / N as f32;
+                            p[v] = l[v] + (h[v] - l[v]) * j as f32 / N as f32;
+                            look(p);
+                        }
+                    }
+                }
+            }
+        }
+        for _ in 0..1500 {
+            let p = [0, 1, 2].map(|a| d.range(lo[a] - 0.5 * size, hi[a] + 0.5 * size));
+            look(p);
+        }
+        Some(worst.unwrap_or((0.0, [0.0; 3])))
+    }
+
+    /// A cell of the box at the finest resolution.
+    fn cell_of(lo: V3, hi: V3) -> f32 {
+        (0..3).map(|a| hi[a] - lo[a]).fold(0.0f32, f32::max) / MAX_RESOLUTION as f32
+    }
+
+    fn finest(tree: &SdfNode) -> Option<(V3, V3)> {
+        mesh_box(tree, MAX_RESOLUTION)
+    }
+
+    fn has_stretch(n: &SdfNode) -> bool {
+        n.m.stretch != [1.0; 3] || matches!(&n.kind, Kind::Group { kids, .. } if kids.iter().any(has_stretch))
+    }
+
+    /// **The box holds the solid, by the field alone**: trees drawn from a fixed sequence
+    /// (every primitive; unions, near-unions, meetings and cuts, sharp and smooth, nested;
+    /// every modifier the box answers for: stretch, scale, turn, mirror, swelling, shell,
+    /// noise, twist, bend, elongation, repetition), the field sampled outside the box the
+    /// mesher would take, and no point there where it is at or below nothing. Nothing of the
+    /// box's own reasoning is used: only [`eval`]. ([`bounds`] alone fails it.)
+    #[test]
+    fn no_solid_is_outside_the_box_the_mesher_takes() {
+        let mut d = Draw(0x9e37_79b9_7f4a_7c15);
+        let (mut trees, mut stretched) = (0, 0);
+        for i in 0..240 {
+            let tree = drawn_tree(&mut d, 0);
+            if count_nodes(&tree) > MAX_NODES {
+                continue;
+            }
+            let Some((out, at)) = escape(&tree, &mut d, finest) else { continue };
+            trees += 1;
+            stretched += usize::from(has_stretch(&tree));
+            assert!(out == 0.0, "tree {i}: the field is at or below nothing {out} m outside the box, at {at:?}\n{tree:?}");
+        }
+        assert!(trees > 150, "{trees} bounded trees");
+        assert!(stretched > 50, "{stretched} with a stretch");
+    }
+
+    /// The mesher's pruning ([`prune`]) is exact, bit for bit, at every point of the ball it
+    /// was pruned for: drawn trees, the bounds investigation's stretched cases, and pruning
+    /// again inside a pruned tree as the mesher does (a half block's tree from a block's).
+    #[test]
+    fn a_pruned_drawn_tree_is_the_whole_tree_in_its_ball() {
+        let mut d = Draw(0x2545_f491_4f6c_dd1d);
+        let mut trees: Vec<SdfNode> = (0..120).map(|_| drawn_tree(&mut d, 0)).filter(|t| count_nodes(t) <= MAX_NODES && bounds(t).is_some()).collect();
+        let k = 0.1;
+        let four = || group(Combine::Union, (0..4).map(|_| needle(0.1, 10.0, [1.0, 0.0, 0.0])).collect(), k);
+        trees.push(group(Combine::Union, vec![four(), four()], k));
+        trees.push(group(Combine::Union, vec![needle(0.05, 12.0, [0.6, 0.0, 0.0]), needle(0.04, 12.0, [0.6, 0.0, 0.0])], 0.04));
+        let mut cluster: Vec<SdfNode> = (0..8).map(|_| prim(Prim::Sphere { radius: 0.5 })).collect();
+        let mut up = needle(0.02, 20.0, [0.5, 0.0, 0.0]);
+        up.m.rotate = [0.0, 0.0, 90.0];
+        up.m.at = [0.0, 0.1, 0.0];
+        cluster.push(up);
+        trees.push(group(Combine::Union, cluster, k));
+        let mut compared = 0u64;
+        for (t, tree) in trees.iter().enumerate() {
+            let (lo, hi) = finest(tree).unwrap();
+            let size = (0..3).map(|a| hi[a] - lo[a]).fold(0.0f32, f32::max);
+            let whole = prepare(tree, 1, &mut 0);
+            for _ in 0..40 {
+                let c = [0, 1, 2].map(|a| d.range(lo[a] - 0.1 * size, hi[a] + 0.1 * size));
+                let reach = size * d.range(0.004, 0.15);
+                let block = prune(&whole, c, reach);
+                let c2 = math3::add(c, math3::scale(math3::normalize(d.v3(-1.0, 1.0)), 0.5 * reach * d.unit()));
+                let half = prune(&block, c2, 0.5 * reach);
+                for i in 0..24 {
+                    let dir = math3::normalize(d.v3(-1.0, 1.0));
+                    let (centre, r, tree) = if i % 2 == 0 { (c, reach, &block) } else { (c2, 0.5 * reach, &half) };
+                    let p = math3::add(centre, math3::scale(dir, r * d.unit()));
+                    assert_eq!(eval(tree, p).to_bits(), eval(&whole, p).to_bits(), "tree {t}, point {p:?}: {} against {}", eval(tree, p), eval(&whole, p));
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared > 90_000, "{compared}");
+    }
+
+    /// A part thinner than a cell is meshed with edges four triangles share (a face of the grid
+    /// whose corners go inside, outside, inside, outside): a crescent's rim, at every resolution
+    /// from 24 to 120, joined to itself or not (the bounds investigation's "two crescents
+    /// meshed open"). The mesh is closed both ways and not a surface there, and the build says
+    /// so and where, in its report and its notes; a plain ball has none.
+    #[test]
+    fn a_part_thinner_than_a_cell_is_said_where_it_is() {
+        let ball = |x: f32| {
+            let mut s = prim(Prim::Sphere { radius: 0.5 });
+            s.m.at = [x, 0.0, 0.0];
+            s
+        };
+        let crescent = group(Combine::Difference, vec![ball(0.0), ball(0.05)], 0.0);
+        let (shape, st) = mesh(&crescent, &opts(48)).unwrap();
+        assert_eq!(unbalanced(&shape), 0);
+        assert!(st.thin_edges > 100 && shape.open_edge_count() > 0, "{} thin edges", st.thin_edges);
+        // (Toward the rim, where the two balls' surfaces cross on the plane x = 0.025 at radius
+        // 0.4994, the sheet between them is thinner than a cell: x from about -0.24 to -0.04.)
+        let (lo, hi) = st.thin_at.unwrap();
+        assert!(lo[0] > -0.3 && hi[0] < 0.03 && hi[1] > 0.4 && lo[1] < -0.4, "{lo:?}..{hi:?}");
+        let (whole, st) = mesh(&ball(0.0), &opts(48)).unwrap();
+        assert!(st.thin_edges == 0 && st.thin_at.is_none() && whole.open_edge_count() == 0);
+        // Through a recipe: the report and the notes.
+        let style = crate::Style::parse(r##"{ "style": "t", "palette": {}, "materials": { "stone": { "color": "#8c96a3" } } }"##).unwrap();
+        let text = r#"{ "name": "crescent", "parts": [ { "name": "c", "material": "stone", "shape": { "op": "sdf", "tree": { "op": "difference", "of": [
+            { "op": "sphere", "radius": 0.5 }, { "op": "sphere", "radius": 0.5, "at": [0.05, 0, 0] } ] } } } ] }"#;
+        let m = crate::build(text, &crate::BuildParams::new(&style)).unwrap();
+        assert!(m.notes.iter().any(|n| n.contains("shared by more than two triangles") && n.contains("thinner than a cell")), "{:?}", m.notes);
+        assert!(m.extras.stats.iter().any(|(_, j)| j.get("thin_edges").and_then(|v| v.as_f64()).is_some_and(|c| c > 0.0)), "{:?}", m.extras.stats);
+    }
+
+    /// No sculpt in the repository's recipes, and no figure at the limits of its body and
+    /// shaping, has a box that [`reach`] grows: each is meshed exactly as before the box was
+    /// mended (the same box is the same cells, the same samples and the same mesh).
+    #[test]
+    fn the_repositorys_sculpts_keep_their_boxes() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        BOXES.with(|b| b.set([0; 2]));
+        for dir in [root.join("games/sepulcra/assets"), root.join("docs/fidelity/assets")] {
+            let style = crate::Style::parse(&std::fs::read_to_string(dir.join("style.json")).unwrap()).unwrap();
+            let mut lib = std::collections::BTreeMap::new();
+            for e in std::fs::read_dir(dir.join("recipes")).unwrap() {
+                let p = e.unwrap().path();
+                if p.extension().is_some_and(|x| x == "json") {
+                    lib.insert(p.file_stem().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap());
+                }
+            }
+            for (name, text) in lib.iter().filter(|(_, t)| t.contains("\"sdf\"")) {
+                let before = BOXES.with(|b| b.get())[1];
+                // (A build meshes each sculpt at its detail and, where it needs one, coarsely.)
+                crate::build(text, &crate::BuildParams { library: Some(&lib), ..crate::BuildParams::new(&style) }).unwrap();
+                assert_eq!(BOXES.with(|b| b.get())[1], before, "{name}: a sculpt's box grew");
+            }
+        }
+        let [taken, grew] = BOXES.with(|b| b.get());
+        assert!(taken >= 14, "{taken} sculpts meshed");
+        assert_eq!(grew, 0, "a repository sculpt's box grew");
+        use specula_corpus::{Body, Sex};
+        let mut figures = 0;
+        for sex in [Sex::Female, Sex::Male] {
+            let [short, tall] = specula_corpus::ansur::statures(sex).map(|mm| mm / 1000.0);
+            for stature in [short, 0.5 * (short + tall), tall] {
+                for (build, traits) in [(0.0, vec![]), (-2.5, vec![("shoulders", 3.0), ("hips", -3.0)]), (2.5, vec![("hips", 3.0), ("chest", 3.0), ("hands", 3.0), ("feet", -3.0)]), (0.0, vec![("legs", -3.0), ("arms", 3.0), ("head", 3.0)])] {
+                    let Ok(body) = Body::with_build(sex, stature, build).and_then(|b| b.with_traits(&traits)) else { continue };
+                    // (The default melting with the limbs at their limits, none, and twice the
+                    // default. A melting much wider than the default grows some boxes: the
+                    // figure's thin columns read short of the distance across their broad side,
+                    // which a wide join reaches through. Said in PROCEDURAL_MODELLING.md.)
+                    for (arms, legs, smooth) in [(35.0, 7.0, 0.025), (0.0, 0.0, 0.0), (60.0, 45.0, 0.025), (0.0, 45.0, 0.01), (35.0, 7.0, 0.05)] {
+                        let shaping = crate::figure::Shaping { arms, legs, smooth };
+                        for name in crate::figure::Part::NAMES {
+                            let part = crate::figure::Part::parse(name).unwrap();
+                            let tree = crate::figure::tree(&body, &shaping, part);
+                            let (lo, hi, _, _) = bounds(&tree).unwrap();
+                            assert_eq!(mesh_box(&tree, part.resolution()), Some((lo, hi)), "{sex:?} {stature} build {build} {traits:?}, arms {arms} legs {legs} smooth {smooth}: the {name}'s box grew");
+                            figures += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(figures > 300, "{figures}");
     }
 }
