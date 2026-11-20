@@ -3,7 +3,7 @@
 //! character and prop design, not a law, so it is in every asset's taste measures and is
 //! checked only when a style asks for one (`[taste] shape_language`). **It is a heuristic**: on
 //! forty common game assets written down before its seventh version read them, it leads as a
-//! person would in every mask for FRESH_RIGHT of them (FORM.md, "Its seventh version", names
+//! person would in every mask for 38 of them (FORM.md, "Its seventh version", names
 //! the others); on the 162 of the corpus its tests hold, which were read while it was tuned,
 //! for 136.
 //!
