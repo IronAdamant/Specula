@@ -986,8 +986,29 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       busy machine** (`a_stalls_event_carries_the_threads_own_time`: it asserts that a
       thread which spun for 40 ms of wall time worked, and under load the thread was
       given 16 ms of 81). All are the next builder's first jobs. **Stage 3b, the path by
-      which an agent finds the library cheaply, is being built** by a fresh agent; then
-      the sculpt primitives (stage 5), then further families (stage 4).
+      which an agent finds the library cheaply: built** (2026-11-20, `18151028`). The
+      three faults first: the stepped raise's closed area kept only a millionth of
+      its digits at a corner turning by nearly a half turn (another formula there);
+      the full runs' time was the cutting of concave faces by a clipper that looked
+      at every corner for every ear, and a grid sized over a whole 28 km plate for a
+      0.1 mm band (the full runs take 73 s where one took 803); a refusal names its
+      unknown field; the engine's load-dependent test spins on the thread's own
+      clock. Then the path: **`formae_list` with nothing asked answers every name, a
+      line a family, in about 3 KB** (seeing every row took 39 KB), rows on request;
+      `formae_get` is about 1 KB with snippets first; one line pointing at it in a
+      new project's `notes/brief.md` and `notes/how.md`, in `model_build`'s
+      description and the modelling family's catalog line; a wrong shape name in a
+      recipe answers with the library's nearest. **Claude's review**: its three
+      probes hold on the new code, and a running engine answers as said from a shell
+      (`.swarmnotes/m6/part4/formae/review-3b.md`). **The comparison by cold agents
+      is written and not run** (`evals/leverage-props/`: a kit of four pickups and a
+      dozen props): the harness's arms were in its code, and a builder is making
+      them data (`m6-formae-harness`). Claude runs it in three arms: an engine
+      without the library; the library found by the engine's pointers alone; the
+      library named in the brief. **Stage 5 is cut in two**: 5a, every form's
+      distance field in the library's own crate, is being built by a fresh agent;
+      5b, the node in the sculpt tree, waits for the modeller's box to be mended
+      (below: a stretched node can be cut off). Then further families (stage 4).
       Stage 3 is the engine's 2D item with two read-only tools and
       `docs/design/FORMAE.md`; then further families. Each stage is reviewed by Claude, who
       did not write it; the whole is pictured in the engine and gated before it is merged.
