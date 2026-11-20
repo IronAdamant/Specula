@@ -23,6 +23,7 @@ use crate::run::{said, stop_tree};
 
 mod form;
 mod launch;
+mod light;
 
 /// One native check.
 pub struct Check {
@@ -49,6 +50,11 @@ pub const CHECKS: &[Check] = &[
         name: "form_sheet_check",
         about: "the form views on a contact sheet: each form and silhouette tile shows the subject alone where its view's box says, no pipeline compiled by a frame (docs/design/FORM.md)",
         run: form::form_sheet,
+    },
+    Check {
+        name: "light_window_check",
+        about: "a perf_light report with a window held to 20 fps, on each adapter: the serve wait looks at its render, so it lands more than a render a frame; no validation message (docs/design/LIGHT.md)",
+        run: light::light_window,
     },
 ];
 
@@ -191,6 +197,17 @@ impl Cx {
     /// Starts a headless engine on `project` at `port` with `flags`, everything it keeps below
     /// the check's folder, and waits until it listens. It is stopped when the check ends.
     pub fn start(&mut self, project: &Path, port: u64, flags: &[&str]) -> Result<(), String> {
+        self.start_engine(project, port, flags, true)
+    }
+
+    /// [`Cx::start`] with a window: opened behind the others (`--no-activate`), never taking
+    /// the keyboard from the window the person is in. Returns the engine's log file.
+    pub fn start_window(&mut self, project: &Path, port: u64, flags: &[&str]) -> Result<PathBuf, String> {
+        self.start_engine(project, port, flags, false)?;
+        Ok(self.out.join(format!("engine-{}.log", self.started)))
+    }
+
+    fn start_engine(&mut self, project: &Path, port: u64, flags: &[&str], headless: bool) -> Result<(), String> {
         // (Numbered by how many were started, not by how many are running: an engine started
         // after another was stopped has a log of its own.)
         self.started += 1;
@@ -199,7 +216,7 @@ impl Cx {
         let file = File::create(&log).and_then(|f| Ok((f.try_clone()?, f))).map_err(|e| format!("{}: {e}", log.display()))?;
         let own = |name: &str| self.out.join(name).to_string_lossy().into_owned();
         let mut cmd = Command::new(&self.exe);
-        cmd.arg("--project").arg(project).args(["--headless", "--port", &port.to_string()]);
+        cmd.arg("--project").arg(project).args([if headless { "--headless" } else { "--no-activate" }, "--port", &port.to_string()]);
         cmd.args(["--settings", &own(self.operator), "--captures", &own("captures"), "--cache", &own("cache"), "--trace", &own("trace")]);
         cmd.args(flags).current_dir(project).stdin(Stdio::null()).stdout(file.0).stderr(file.1);
         let mut child = cmd.spawn().map_err(|e| format!("the engine could not be started ({}): {e}", self.exe.display()))?;

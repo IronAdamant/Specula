@@ -1163,10 +1163,22 @@ mod tests {
     /// Panics when a step leaves its render still in flight and answers anything but
     /// [`Step::Wait`]: a job that asked to be stepped again at once spun on the GPU's fence for
     /// its whole step credit (the third review).
+    ///
+    /// After every step it holds the job's answer to [`StepJob::on_gpu`] (what the window's
+    /// pulses are for: light review 5 found it held by nothing) to whether its render is on the
+    /// GPU: a render sent and not landed is the engine's flight of this job's slot, or its
+    /// result is in the slot unread; and a step that waits with the view loaded waits on it.
     fn step_once(e: &mut Engine, job: &mut LightJob, reply: &crate::jobs::Reply) -> Option<ToolOutput> {
         loop {
             let flying = job.flying;
             let step = job.step(e, reply);
+            let in_flight = e.captures.step_flight.as_ref().is_some_and(|(s, _)| std::ptr::eq(s.as_ptr(), std::rc::Rc::as_ptr(&job.slot))) || job.slot.borrow().is_some();
+            if !matches!(step, Step::Done(_)) {
+                assert_eq!(job.on_gpu(), in_flight, "the job says its render is{} on the GPU, and it is{}", if job.on_gpu() { "" } else { " not" }, if in_flight { "" } else { " not" });
+                if matches!(step, Step::Wait) && job.waited.is_some() {
+                    assert!(job.on_gpu(), "a step that waited with the view loaded did not wait on its render");
+                }
+            }
             match step {
                 Step::Done(o) => return Some(o),
                 Step::Handed => panic!("it answers itself"),
