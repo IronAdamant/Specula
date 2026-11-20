@@ -860,7 +860,25 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       document calls steady, and size still moves a few assets. **A seventh version is
       being made for those causes only** (the overhang; every rule held by a default
       test; the document true), with both corpora joined (162 assets) and the rate
-      stated on the half it was not tuned on. Claude recommended that the seventh be the
+      stated on the half it was not tuned on. **It is built, by two agents** (2026-11-20,
+      merged; FORM.md, "Its seventh version"): the first wrote the rule (two square
+      corners of an overhang are two corners: `apart`) and then lost its numbers to two
+      seed loops that raced over one worktree; a second, in a clean worktree, made every
+      table again one run at a time and finished it. **By its clean tables: of the
+      author's 103 common assets 91 lead as a person would in every mask (90 before); of
+      the sixth review's 59, 45 (42 before); of forty more, written with their leads
+      before any reading, 38** (the misread: a hamburger and a teapot; those forty are
+      easier than the review's 59, and the document says so). Overhang slabs, a
+      pedestal, a cornice, a ledge, a pillar and the combs moved toward square; a
+      watchtower, a lighthouse and a castle tower lead square where they led pointed.
+      **What got worse, named and held as it reads, not mended:** a cauldron that was
+      steadily (wrongly) pointed now flips between round, square and pointed as it
+      turns; a dog with tapered legs, a club and a pig swing more; a slab 0.04 thick
+      overhanging 0.08 flips in 28 of 360 masks. **Every rule was seeded away, one at a
+      time, 43 in all**: seven were caught by nothing; six have a test now (each held by
+      the reading it moves most, with tight bounds) and one, which changed no reading
+      of 548 shapes, was taken out. The default run takes 108 s of test time. **Its
+      seventh review is queued.** Claude recommended that the seventh be the
       last round that chases the reading; **the owner's word (2026-11-20): "Rounds
       continue."** So it is mended and reviewed until a reviewer says merge. Sepulcra is
       not counted again by it. No preset asks for it, and
