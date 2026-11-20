@@ -1027,7 +1027,7 @@ shapes are shared and a style has to hold across them, is the other job written
 nothing here measures a project that already holds assets to reuse, which is what the next stage
 builds (ROADMAP M6: a project's own catalogue; the engine telling an agent where everything is).
 
-## Results (2026-11-21: the same job after the builders' blindness was mended)
+## Results (2026-11-20: the same job after the builders' blindness was mended)
 
 The result above (found, and not cheaper) made the owner doubt the whole approach, and ask
 whether the builders had been working blind. They had. The runs were read request by request
@@ -1057,9 +1057,9 @@ the engine by a test; a raise that cannot go as deep as asked says what to do in
 
 **Measured again**, the same job, the same builder and judge models, the same harness, two runs
 a cell; every run is in
-[perf/leverage/2026-11-21-props-fixed](../../perf/leverage/2026-11-21-props-fixed/report.md):
+[perf/leverage/2026-11-20-props-fixed](../../perf/leverage/2026-11-20-props-fixed/report.md):
 
-| Arm | Before (2026-11-20) | After | Requests before, after | Builds, of which refused: before, after | Checks |
+| Arm | Before the mends (the runs above) | After | Requests before, after | Builds, of which refused: before, after | Checks |
 |---|---|---|---|---|---|
 | `found` (the same brief, to the byte, in both) | 509,455; 663,346 | 219,039; 360,234 | 44, 52; 29, 34 | 53/11, 146/77; 18/2, 22/4 | 8, 9; 9, 9 of 9 |
 | `guided` (new: the brief points at the project's page on models, not at a design document) | | 173,926; 158,904 | 22, 20 | 16/0, 23/3 | 9, 9 of 9 |
@@ -1090,3 +1090,29 @@ pays on a game that needs what it has (3D, physics, sound) is still not measured
 
 **The lesson, in the owner's words**: "sometimes, you need to pause, if you're seeing same
 numbers despite same attempts, which means something else has gone wrong."
+
+### With one call that builds every recipe, and compact answers (2026-11-20)
+
+Two things the runs above still paid for were then mended: `model_build_all` builds every recipe
+of a folder and answers a line each (triangles, size, closed, or the refusal with where and
+why), and the shell's commands print compact JSON through a pipe (indented for a person at a
+terminal). The `guided` arm again, two runs
+([perf/leverage/2026-11-20-props-build-all](../../perf/leverage/2026-11-20-props-build-all/report.md)):
+
+| | Weighted tokens | Requests | `model_build` calls, refused | Checks |
+|---|---|---|---|---|
+| `guided`, before these two | 173,926; 158,904 | 22, 20 | 16/0, 23/3 | 9, 9 of 9 |
+| `guided`, with them | 158,740; 151,322 | 18, 19 | 13/0, 13/0 | 9, 9 of 9 |
+
+**A small gain, inside what two runs alike differ by** (155,031 against 166,415 on the means:
+7% less, where the two runs of a cell are up to 9% apart). Both builders wrote their four
+recipes in one go, called `model_build_all` (two and three times), and had no build refused.
+Each still wrote one script: the job asks for commands that work from no engine running, and
+that script starts the engine, calls it and stops it. What a run costs now, by its ledger: the
+brief and the project's page, `model_schema` and a few look-ups (about 7,000 tokens of
+answers), the four recipes, two or three rounds of building and looking, the script and the
+README. **The floor for this job through the engine is about 150,000 weighted tokens**; the
+same job cost 510,000 to 660,000 in the first comparison, earlier the same day, in the arm with the old brief.
+
+One run's clock time was thirteen minutes where the others took two or three: its builder ran
+`python -` with a here-document, which hangs on this machine until its time limit. No tokens.

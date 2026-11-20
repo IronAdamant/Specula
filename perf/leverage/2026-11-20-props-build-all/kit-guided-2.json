@@ -1,0 +1,1273 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "kit",
+    "arm": "guided",
+    "kind": "engine",
+    "data": "evals/leverage-props",
+    "n": 2,
+    "phase": "judge",
+    "prepared": "2026-11-20T11:49:30Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 400000,
+        "wall_s": 3600
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      },
+      "baseline": "none"
+    },
+    "started_with": {
+      "files": 22,
+      "bytes": 39694,
+      "text_lines": 738,
+      "lines_by_kind": {
+        ".json": 369,
+        ".md": 241,
+        ".rs": 109,
+        ".toml": 19
+      }
+    },
+    "exe_key": "library",
+    "engine_build": "f77a13d1",
+    "port": 7682
+  },
+  "costs": {
+    "engine_stopped": true,
+    "engine": {
+      "calls": 38,
+      "refused": 6,
+      "args_bytes": 1151,
+      "answer_bytes": 62295,
+      "by_tool": {
+        "studio_sheet": 11,
+        "(tools)": 9,
+        "model_build": 9,
+        "engine.start": 5,
+        "engine.stop": 5,
+        "formae_get": 3,
+        "model_build_all": 3,
+        "model_schema": 2,
+        "formae_list": 1
+      }
+    },
+    "left": {
+      "files": 32,
+      "bytes": 492027,
+      "text_lines": 883,
+      "lines_by_kind": {
+        ".json": 392,
+        ".md": 283,
+        ".py": 80,
+        ".rs": 109,
+        ".toml": 19
+      }
+    },
+    "finished": "2026-11-20T12:15:02Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "k01",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "From no engine running: `python tools/kit.py build` (rc 0, ~7 s) printed a JSON array for gear, heart, star, coin with name, triangles (320/7228/36/1020), closed (all true) and bounds x/y/z [min,max]. The engine was stopped again afterwards and no window opened."
+        },
+        {
+          "id": "k02",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "`python tools/kit.py frames` (rc 0) rewrote frames/{gear,heart,star,coin}.png at 23:17. Pillow reports each as 512x512. Looked at all four: front view, whole prop in frame, nothing cut off."
+        },
+        {
+          "id": "k03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "frames/gear.png: counted 12 identical rectangular teeth, evenly spaced around the rim, with a centred round hole that shows the backdrop through it (about 90 px on a 455 px gear, so about 0.06). Recipe: form gear teeth 12, minus a cylinder of radius 0.03."
+        },
+        {
+          "id": "k04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Build bounds for gear: x -0.1495..0.1495 (0.299 wide), y 0.00046..0.2995 (0.299 tall), z -0.025..0.025 (0.050 thick). All within 5%, and min y is about 0 (0.0005 is the polygon outline)."
+        },
+        {
+          "id": "k05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "frames/heart.png: two rounded lobes with a notch on top and a rounded point at the bottom; it clearly reads as a heart. The edges are soft and shaded round (an SDF smooth union), with no hard creases. Bounds 0.300 wide, 0.0496 thick."
+        },
+        {
+          "id": "k06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "frames/star.png: five sharp, evenly spaced points with one pointing up (form star, 5 points). Bounds x 0.300 wide (tip to tip), y 0.285 tall, z 0.050 thick."
+        },
+        {
+          "id": "k07",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Coin bounds: 0.1998 x 0.1998 across, z 0.020 thick. My own studio_sheet of models/coin.json at az30/el20 and az210/el20 shows a raised rim step on both faces, with the middle recessed. The recipe has a 0.014 core inside a 0.02-thick ring 0.015 wide, so the middle is thinner than the rim. The rim stands only 0.003 proud of each face and is faint in the front frame."
+        },
+        {
+          "id": "k08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "The headless build reports closed: true for all four. All four use materials and colours from the one assets/style.json (a muted, low-chroma palette with a satin finish). In the frames, gear and coin are warm metal, the star is warm glow and the heart is the palette's muted pink accent, all with the same soft look."
+        },
+        {
+          "id": "k09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Ran the README's two commands exactly as written, from the work folder with no engine running. Both succeeded and each stopped the engine it had started. They need Python 3 with Pillow, which is present here and stated in the README."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 7,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "By the README's own account, the studio's style check (neutral_saturation) still flags the shared palette as slightly over its chroma limit; this was left unresolved.",
+        "The coin's raised rim is only 0.003 high on each face, so it barely shows in the 512 front frame (a faint ring line).",
+        "The heart's bottom point is quite blunt and rounded, and it is 0.0496 thick rather than 0.05 (within tolerance)."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 42339,
+      "tool_uses": 19,
+      "duration_s": 768.6,
+      "by_kind": {
+        "input": 40,
+        "cache_write": 36992,
+        "cache_read": 483420,
+        "output": 11340,
+        "requests": 19,
+        "context_at_end": 42339
+      },
+      "weighted": 151322,
+      "cost_usd": 0.30979,
+      "turns": 1,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 31713,
+      "tool_uses": 20,
+      "duration_s": 109.2,
+      "by_kind": {
+        "input": 32,
+        "cache_write": 26368,
+        "cache_read": 324152,
+        "output": 6287,
+        "requests": 15,
+        "context_at_end": 31713
+      },
+      "weighted": 96842,
+      "cost_usd": 0.4016424,
+      "turns": 22,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "engine": {
+        "calls": 18,
+        "refused": 8,
+        "args_bytes": 604,
+        "answer_bytes": 17701,
+        "by_tool": {
+          "(tools)": 8,
+          "studio_sheet": 6,
+          "model_build": 4,
+          "engine.start": 3,
+          "engine.stop": 3
+        }
+      }
+    },
+    "where": {
+      "run": "kit-guided-2",
+      "requests": 19,
+      "steps": 19,
+      "steps_before_the_first_code": 10,
+      "weighted": 151322,
+      "weighted_by_kind": {
+        "read_again": 48342,
+        "written_out": 56700,
+        "new_in_context": 46280
+      },
+      "builds": {
+        "steps": 0,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "find tools and their arguments": {
+          "steps": 4,
+          "answered_tokens": 5610,
+          "written_tokens": 360
+        },
+        "call the engine": {
+          "steps": 6,
+          "answered_tokens": 3286,
+          "written_tokens": 1503
+        },
+        "read its own files": {
+          "steps": 3,
+          "answered_tokens": 2085,
+          "written_tokens": 66
+        },
+        "write code": {
+          "steps": 3,
+          "answered_tokens": 93,
+          "written_tokens": 1586
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 900
+        },
+        "other commands": {
+          "steps": 1,
+          "answered_tokens": 647,
+          "written_tokens": 53
+        },
+        "run its own checks": {
+          "steps": 1,
+          "answered_tokens": 228,
+          "written_tokens": 100
+        },
+        "look at a frame": {
+          "steps": 1,
+          "answered_tokens": 0,
+          "written_tokens": 25
+        }
+      }
+    },
+    "trace": {
+      "run": "kit-guided-2",
+      "who": "builder",
+      "complete": true,
+      "requests": 19,
+      "weighted": 151322,
+      "in_the_ledger": 151322,
+      "reading": 94622,
+      "writing": 56700,
+      "written_out": 11340,
+      "of_which_unseen": 6887,
+      "start": {
+        "context": 7934,
+        "carried": 18056
+      },
+      "context_at_end": 42339,
+      "by_kind": {
+        "call the engine": {
+          "requests": 5,
+          "steps": 5,
+          "answered": 2879,
+          "written_out": 3368,
+          "writing": 16839,
+          "carried": 23700
+        },
+        "find tools and their arguments": {
+          "requests": 3,
+          "steps": 3,
+          "answered": 5591,
+          "written_out": 2087,
+          "writing": 10433,
+          "carried": 22979
+        },
+        "read its own files": {
+          "requests": 3,
+          "steps": 3,
+          "answered": 2085,
+          "written_out": 1038,
+          "writing": 5192,
+          "carried": 11594
+        },
+        "write code": {
+          "requests": 3,
+          "steps": 5,
+          "answered": 519,
+          "written_out": 1909,
+          "writing": 9544,
+          "carried": 7051
+        },
+        "look at a frame": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 0,
+          "written_out": 885,
+          "writing": 4425,
+          "carried": 3964
+        },
+        "words only": {
+          "requests": 2,
+          "steps": 0,
+          "answered": 0,
+          "written_out": 1021,
+          "writing": 5106,
+          "carried": 2404
+        },
+        "other commands": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 647,
+          "written_out": 719,
+          "writing": 3596,
+          "carried": 3638
+        },
+        "run its own checks": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 228,
+          "written_out": 313,
+          "writing": 1566,
+          "carried": 1236
+        }
+      },
+      "files": [
+        {
+          "file": "<run>\\BRIEF.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 843,
+          "written": 0
+        },
+        {
+          "file": "<run>\\work\\tools\\kit.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 817
+        },
+        {
+          "file": "<run>\\work\\README.md",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 710
+        },
+        {
+          "file": "<run>\\work\\assets\\models\\heart.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 59
+        },
+        {
+          "file": "<run>\\work\\captures\\run-1795176143-12052\\studio_00001.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        }
+      ],
+      "rows": [
+        {
+          "n": 1,
+          "context": 7934,
+          "new": 2591,
+          "read_again": 5343,
+          "written_out": 246,
+          "of_which_unseen": 233,
+          "cost": 5001,
+          "cost_so_far": 5001,
+          "carried": 3931,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\BRIEF.md",
+              "written": 13,
+              "answered": 843
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "context": 9266,
+          "new": 1334,
+          "read_again": 7932,
+          "written_out": 631,
+          "of_which_unseen": 606,
+          "cost": 5614,
+          "cost_so_far": 10615,
+          "carried": 6699,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>; ls -la . work work/* | head -50; cat work/notes/models.md",
+              "written": 25,
+              "answered": 1095
+            }
+          ]
+        },
+        {
+          "n": 3,
+          "context": 11616,
+          "new": 2352,
+          "read_again": 9264,
+          "written_out": 1118,
+          "of_which_unseen": 1022,
+          "cost": 9457,
+          "cost_so_far": 20072,
+          "carried": 16109,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "find tools and their arguments",
+              "what": "examen leverage engine start \"<run>\"; $E leverage call model_schema '{}'; $E leverage call formae_get '{\"na...",
+              "written": 96,
+              "answered": 3632
+            }
+          ]
+        },
+        {
+          "n": 4,
+          "context": 17473,
+          "new": 5859,
+          "read_again": 11614,
+          "written_out": 795,
+          "of_which_unseen": 713,
+          "cost": 12457,
+          "cost_so_far": 32530,
+          "carried": 7671,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage call <run>\"; $C formae_list '{}' | head -c 1500; echo; $C formae_get '{\"name\":\"heart\"}'; $C...",
+              "written": 82,
+              "answered": 1313
+            }
+          ]
+        },
+        {
+          "n": 5,
+          "context": 20367,
+          "new": 2896,
+          "read_again": 17471,
+          "written_out": 1018,
+          "of_which_unseen": 361,
+          "cost": 10458,
+          "cost_so_far": 42987,
+          "carried": 5683,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage call model_build_all '{}'",
+              "written": 657,
+              "answered": 202
+            }
+          ]
+        },
+        {
+          "n": 6,
+          "context": 22595,
+          "new": 2230,
+          "read_again": 20365,
+          "written_out": 487,
+          "of_which_unseen": 235,
+          "cost": 7261,
+          "cost_so_far": 50248,
+          "carried": 2748,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage call model_build_all '{}'",
+              "written": 215,
+              "answered": 151
+            }
+          ]
+        },
+        {
+          "n": 7,
+          "context": 23716,
+          "new": 1123,
+          "read_again": 22593,
+          "written_out": 554,
+          "of_which_unseen": 445,
+          "cost": 6432,
+          "cost_so_far": 56680,
+          "carried": 4934,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage call <run>\"; $C model_build '{\"recipe\":\"models/heart.json\"}'; $C studio_sheet '{\"subjects\":...",
+              "written": 109,
+              "answered": 997
+            }
+          ]
+        },
+        {
+          "n": 8,
+          "context": 25815,
+          "new": 2101,
+          "read_again": 23714,
+          "written_out": 885,
+          "of_which_unseen": 860,
+          "cost": 9422,
+          "cost_so_far": 66102,
+          "carried": 3964,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\work\\captures\\run-1795176143-12052\\studio_00001.png",
+              "written": 25,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 9,
+          "context": 27576,
+          "new": 1763,
+          "read_again": 25813,
+          "written_out": 514,
+          "of_which_unseen": 159,
+          "cost": 7353,
+          "cost_so_far": 73455,
+          "carried": 2663,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage call <run>\"; $C model_build_all '{}'; $C studio_sheet '{\"subjects\":[\"models/gear.json\"],\"vi...",
+              "written": 355,
+              "answered": 216
+            }
+          ]
+        },
+        {
+          "n": 10,
+          "context": 28814,
+          "new": 1240,
+          "read_again": 27574,
+          "written_out": 162,
+          "of_which_unseen": 134,
+          "cost": 5116,
+          "cost_so_far": 78571,
+          "carried": 963,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; tail -3 assets/models/heart.json; head -c 300 assets/style.json",
+              "written": 28,
+              "answered": 147
+            }
+          ]
+        },
+        {
+          "n": 11,
+          "context": 29283,
+          "new": 471,
+          "read_again": 28812,
+          "written_out": 429,
+          "of_which_unseen": 254,
+          "cost": 5615,
+          "cost_so_far": 84186,
+          "carried": 2508,
+          "steps": [
+            {
+              "tool": "Edit",
+              "kind": "write code",
+              "what": "<run>\\work\\assets\\models\\heart.json",
+              "written": 59,
+              "answered": 24
+            },
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage call <run>\"; $C model_build_all '{}'; $C studio_sheet '{\"subjects\":[\"models/gear.json\",\"mod...",
+              "written": 85,
+              "answered": 407
+            }
+          ]
+        },
+        {
+          "n": 12,
+          "context": 30568,
+          "new": 1287,
+          "read_again": 29281,
+          "written_out": 647,
+          "of_which_unseen": 526,
+          "cost": 7770,
+          "cost_so_far": 91957,
+          "carried": 5204,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "find tools and their arguments",
+              "what": "examen leverage call <run>\"; $C studio_sheet '{\"subjects\":[\"models/coin.json\"],\"views\":[\"front\"],\"tile\":512...",
+              "written": 121,
+              "answered": 1525
+            }
+          ]
+        },
+        {
+          "n": 13,
+          "context": 33380,
+          "new": 2814,
+          "read_again": 30566,
+          "written_out": 719,
+          "of_which_unseen": 666,
+          "cost": 10169,
+          "cost_so_far": 102126,
+          "carried": 3638,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/work; which python python3 node powershell pwsh; python -c \"import PIL;print(PIL.__version__)\"; py...",
+              "written": 53,
+              "answered": 647
+            }
+          ]
+        },
+        {
+          "n": 14,
+          "context": 35458,
+          "new": 2080,
+          "read_again": 33378,
+          "written_out": 730,
+          "of_which_unseen": 0,
+          "cost": 9588,
+          "cost_so_far": 111715,
+          "carried": 2457,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\work\\tools\\kit.py",
+              "written": 817,
+              "answered": 35
+            }
+          ]
+        },
+        {
+          "n": 15,
+          "context": 36946,
+          "new": 1490,
+          "read_again": 35456,
+          "written_out": 322,
+          "of_which_unseen": 203,
+          "cost": 7016,
+          "cost_so_far": 118731,
+          "carried": 1666,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "find tools and their arguments",
+              "what": "examen leverage engine stop <run>; sleep 2; python -I tools/kit.py build | tr -d '\\n ' ; echo; python -I to...",
+              "written": 112,
+              "answered": 434
+            }
+          ]
+        },
+        {
+          "n": 16,
+          "context": 38020,
+          "new": 1076,
+          "read_again": 36944,
+          "written_out": 313,
+          "of_which_unseen": 187,
+          "cost": 6604,
+          "cost_so_far": 125335,
+          "carried": 1236,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work/assets/models; sed -i 's/\"by\":\\[0,0.15,0\\]/\"by\":[0,0.15,-0.025]/' gear.json; sed -i 's/\"by\":\\...",
+              "written": 100,
+              "answered": 228
+            }
+          ]
+        },
+        {
+          "n": 17,
+          "context": 38871,
+          "new": 853,
+          "read_again": 38018,
+          "written_out": 749,
+          "of_which_unseen": 8,
+          "cost": 8614,
+          "cost_so_far": 133949,
+          "carried": 2086,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\work\\README.md",
+              "written": 710,
+              "answered": 34
+            },
+            {
+              "tool": "Bash",
+              "kind": "find tools and their arguments",
+              "what": "examen leverage tools engine_info | head -c 80",
+              "written": 31,
+              "answered": 19
+            }
+          ]
+        },
+        {
+          "n": 18,
+          "context": 40415,
+          "new": 1546,
+          "read_again": 38869,
+          "written_out": 967,
+          "of_which_unseen": 276,
+          "cost": 10654,
+          "cost_so_far": 144603,
+          "carried": 2404,
+          "steps": []
+        },
+        {
+          "n": 19,
+          "context": 42339,
+          "new": 1926,
+          "read_again": 40413,
+          "written_out": 54,
+          "of_which_unseen": 0,
+          "cost": 6719,
+          "cost_so_far": 151322,
+          "carried": 0,
+          "steps": []
+        }
+      ],
+      "how": "context, new, read_again and how far the context grew are the run's own records. written_out a request is its growth less its answers (characters / 4), scaled to the run's exact total; of_which_unseen is that less the visible text (thinking). cost is what the request read and wrote, weighted; carried is what reading again what it added cost at every later request (start.carried: the same for what every request starts from). reading + writing is in_the_ledger"
+    },
+    "judge_trace": {
+      "run": "kit-guided-2",
+      "who": "judge",
+      "complete": true,
+      "requests": 15,
+      "weighted": 96842,
+      "in_the_ledger": 96842,
+      "reading": 65407,
+      "writing": 31435,
+      "written_out": 6287,
+      "of_which_unseen": 4480,
+      "start": {
+        "context": 8230,
+        "carried": 15667
+      },
+      "context_at_end": 31713,
+      "by_kind": {
+        "read its own files": {
+          "requests": 3,
+          "steps": 6,
+          "answered": 5640,
+          "written_out": 2418,
+          "writing": 12088,
+          "carried": 29348
+        },
+        "find tools and their arguments": {
+          "requests": 4,
+          "steps": 4,
+          "answered": 1149,
+          "written_out": 1202,
+          "writing": 6008,
+          "carried": 7955
+        },
+        "look at a frame": {
+          "requests": 2,
+          "steps": 5,
+          "answered": 0,
+          "written_out": 1320,
+          "writing": 6600,
+          "carried": 6008
+        },
+        "write code": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 33,
+          "written_out": 563,
+          "writing": 2817,
+          "carried": 1850
+        },
+        "call the engine": {
+          "requests": 2,
+          "steps": 2,
+          "answered": 474,
+          "written_out": 351,
+          "writing": 1754,
+          "carried": 2356
+        },
+        "run its own checks": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 365,
+          "written_out": 180,
+          "writing": 898,
+          "carried": 1778
+        },
+        "other commands": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 48,
+          "written_out": 109,
+          "writing": 545,
+          "carried": 445
+        },
+        "words only": {
+          "requests": 1,
+          "steps": 0,
+          "answered": 0,
+          "written_out": 145,
+          "writing": 724,
+          "carried": 0
+        }
+      },
+      "files": [
+        {
+          "file": "<run>\\JUDGE.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 879,
+          "written": 0
+        },
+        {
+          "file": "<run>\\BRIEF.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 843,
+          "written": 0
+        },
+        {
+          "file": "<run>\\verdict.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 818
+        },
+        {
+          "file": "<run>\\work\\tools\\kit.py",
+          "reads": 1,
+          "writes": 0,
+          "answered": 800,
+          "written": 0
+        },
+        {
+          "file": "<run>\\work\\README.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 701,
+          "written": 0
+        },
+        {
+          "file": "<run>\\work\\frames\\gear.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\work\\frames\\heart.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\work\\frames\\star.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\work\\frames\\coin.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\work\\captures\\run-1795177076-10388\\studio_00001.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        }
+      ],
+      "rows": [
+        {
+          "n": 1,
+          "context": 8230,
+          "new": 2887,
+          "read_again": 5343,
+          "written_out": 1005,
+          "of_which_unseen": 957,
+          "cost": 9170,
+          "cost_so_far": 9170,
+          "carried": 11793,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\JUDGE.md",
+              "written": 13,
+              "answered": 879
+            },
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "ls -la <run>/; ls -laR <run>/work | head -100",
+              "written": 35,
+              "answered": 1163
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "context": 12854,
+          "new": 4626,
+          "read_again": 8228,
+          "written_out": 1142,
+          "of_which_unseen": 1058,
+          "cost": 12315,
+          "cost_so_far": 21485,
+          "carried": 14043,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\work\\README.md",
+              "written": 15,
+              "answered": 701
+            },
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\BRIEF.md",
+              "written": 13,
+              "answered": 843
+            },
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; ls -la frames tools notes checks crates modules; cat run.json ../run.json 2>/dev/null; cat a...",
+              "written": 56,
+              "answered": 1254
+            }
+          ]
+        },
+        {
+          "n": 3,
+          "context": 18585,
+          "new": 5733,
+          "read_again": 12852,
+          "written_out": 270,
+          "of_which_unseen": 254,
+          "cost": 9802,
+          "cost_so_far": 31287,
+          "carried": 3513,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\work\\tools\\kit.py",
+              "written": 16,
+              "answered": 800
+            }
+          ]
+        },
+        {
+          "n": 4,
+          "context": 20079,
+          "new": 1496,
+          "read_again": 18583,
+          "written_out": 134,
+          "of_which_unseen": 64,
+          "cost": 4396,
+          "cost_so_far": 35682,
+          "carried": 915,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "find tools and their arguments",
+              "what": "examen leverage tools engine_info; echo rc=$?",
+              "written": 70,
+              "answered": 63
+            }
+          ]
+        },
+        {
+          "n": 5,
+          "context": 20485,
+          "new": 408,
+          "read_again": 20077,
+          "written_out": 180,
+          "of_which_unseen": 88,
+          "cost": 3415,
+          "cost_so_far": 39097,
+          "carried": 1778,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work; mkdir -p ../judge-scratch; time python tools/kit.py build > ../judge-scratch/build.json 2> ....",
+              "written": 76,
+              "answered": 365
+            }
+          ]
+        },
+        {
+          "n": 6,
+          "context": 21311,
+          "new": 828,
+          "read_again": 20483,
+          "written_out": 344,
+          "of_which_unseen": 151,
+          "cost": 4804,
+          "cost_so_far": 43901,
+          "carried": 2743,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "find tools and their arguments",
+              "what": "examen leverage tools engine_info; \"<repo>/target/debug/examen.exe\" leverage tools \"<run>/work\" engine_info...",
+              "written": 193,
+              "answered": 453
+            }
+          ]
+        },
+        {
+          "n": 7,
+          "context": 22648,
+          "new": 1339,
+          "read_again": 21309,
+          "written_out": 729,
+          "of_which_unseen": 649,
+          "cost": 7447,
+          "cost_so_far": 51348,
+          "carried": 3650,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\work\\frames\\gear.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\work\\frames\\heart.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\work\\frames\\star.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\work\\frames\\coin.png",
+              "written": 17,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 8,
+          "context": 24519,
+          "new": 1873,
+          "read_again": 22646,
+          "written_out": 449,
+          "of_which_unseen": 362,
+          "cost": 6852,
+          "cost_so_far": 58200,
+          "carried": 3149,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "find tools and their arguments",
+              "what": "examen leverage engine start \"<run>\"; echo rc=$?; \"$E\" leverage tools studio | head -60; grep -n -i \"views\\...",
+              "written": 87,
+              "answered": 547
+            }
+          ]
+        },
+        {
+          "n": 9,
+          "context": 26220,
+          "new": 1703,
+          "read_again": 24517,
+          "written_out": 181,
+          "of_which_unseen": 84,
+          "cost": 5485,
+          "cost_so_far": 63685,
+          "carried": 1474,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage call studio_sheet '{\"recipe\":\"models/coin.json\",\"views\":[\"side\",\"top\",\"back\"],\"tile\":512}' ...",
+              "written": 97,
+              "answered": 376
+            }
+          ]
+        },
+        {
+          "n": 10,
+          "context": 27061,
+          "new": 843,
+          "read_again": 26218,
+          "written_out": 170,
+          "of_which_unseen": 36,
+          "cost": 4524,
+          "cost_so_far": 68209,
+          "carried": 883,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage call studio_sheet '{\"recipe\":\"models/coin.json\",\"views\":[\"left\",{\"az\":30,\"el\":20},{\"az\":210...",
+              "written": 134,
+              "answered": 98
+            }
+          ]
+        },
+        {
+          "n": 11,
+          "context": 27595,
+          "new": 536,
+          "read_again": 27059,
+          "written_out": 591,
+          "of_which_unseen": 566,
+          "cost": 6333,
+          "cost_so_far": 74542,
+          "carried": 2358,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\work\\captures\\run-1795177076-10388\\studio_00001.png",
+              "written": 25,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 12,
+          "context": 29114,
+          "new": 1521,
+          "read_again": 27593,
+          "written_out": 275,
+          "of_which_unseen": 191,
+          "cost": 6032,
+          "cost_so_far": 80574,
+          "carried": 1149,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "find tools and their arguments",
+              "what": "examen leverage engine stop \"<run>\"; echo rc=$?; \"<repo>/target/debug/examen.exe\" leverage tools engine_inf...",
+              "written": 84,
+              "answered": 86
+            }
+          ]
+        },
+        {
+          "n": 13,
+          "context": 29905,
+          "new": 795,
+          "read_again": 29110,
+          "written_out": 109,
+          "of_which_unseen": 20,
+          "cost": 4449,
+          "cost_so_far": 85023,
+          "carried": 445,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter 'ProcessId=7468' | Select-Object Proc...",
+              "written": 59,
+              "answered": 48
+            }
+          ]
+        },
+        {
+          "n": 14,
+          "context": 30233,
+          "new": 330,
+          "read_again": 29903,
+          "written_out": 563,
+          "of_which_unseen": 0,
+          "cost": 6219,
+          "cost_so_far": 91243,
+          "carried": 1850,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\verdict.json",
+              "written": 818,
+              "answered": 33
+            }
+          ]
+        },
+        {
+          "n": 15,
+          "context": 31713,
+          "new": 1482,
+          "read_again": 30231,
+          "written_out": 145,
+          "of_which_unseen": 0,
+          "cost": 5599,
+          "cost_so_far": 96842,
+          "carried": 0,
+          "steps": []
+        }
+      ],
+      "how": "context, new, read_again and how far the context grew are the run's own records. written_out a request is its growth less its answers (characters / 4), scaled to the run's exact total; of_which_unseen is that less the visible text (thinking). cost is what the request read and wrote, weighted; carried is what reading again what it added cost at every later request (start.carried: the same for what every request starts from). reading + writing is in_the_ledger"
+    }
+  }
+}

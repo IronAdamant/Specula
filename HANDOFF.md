@@ -312,7 +312,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     slot's next stage** (it does not wait for the sculpt's box, as the sculpt primitives
     do).
   - **Paused, and the builders were blind: the library's and part 4's work waits behind
-    three steps and three items** (the owner, 2026-11-21, shown that the library made four
+    three steps and three items** (the owner, 2026-11-20, shown that the library made four
     pickups no cheaper): "I'm starting to think that it may be better to just develop games
     in Rust without the engine ... I'm concerned that I'm pretty much wasted time for nothing
     on this one"; then: "We'll stick to zero-dependency ... I want you to keep building it
@@ -350,9 +350,9 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       the engine by a test; a raise that cannot go deeper says what to do. By hand again
       with the fixes: all four props built on the first try, each closed
       (`gallery-full/part4/blind/`). Not reviewed by another model yet (no subagents).
-      **Step 3, measured** (2026-11-21; LEVERAGE.md, "Results (2026-11-21: the same job
+      **Step 3, measured** (2026-11-20; LEVERAGE.md, "Results (2026-11-20: the same job
       after the builders' blindness was mended)";
-      [perf/leverage/2026-11-21-props-fixed](perf/leverage/2026-11-21-props-fixed/report.md)):
+      [perf/leverage/2026-11-20-props-fixed](perf/leverage/2026-11-20-props-fixed/report.md)):
       **with the brief unchanged to the byte, the same job costs half** (289,637 weighted
       tokens against 586,400, on the means of two runs); **with a brief that points at the
       project's page on models it costs 0.28 times what it did** (166,415; the two runs 9%
@@ -364,13 +364,13 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       the judges saw: the sculpted heart has a crease down its middle and a ragged seam,
       and thousands of triangles.
     - **What the measurement does not show is to be set up before part 4 goes on** (the
-      owner, 2026-11-21, of the three limits said with the result: "Worth setting up
+      owner, 2026-11-20, of the three limits said with the result: "Worth setting up
       before we continue with Part 4, library + recipes + templates, before we work on
       other parts"): (a) **the mends told apart from the library**: a build of the engine
       with the mends and without the library, so the no-library arm can be measured
       again; (b) **more than two runs a cell and more than one small job**; (c) **a job
       that needs what the engine has** (3D, physics, sound), measured.
-    - **The owner's answers on the three things not fixed** (2026-11-21): soft edges on a
+    - **The owner's answers on the three things not fixed** (2026-11-20): soft edges on a
       figure with a point or a notch: **both** routes (the raise itself, past where an
       inset first closes an edge; and rounding through the sculpt, from the plane
       figures' distance fields). One call that builds every recipe: "Do that and measure."
@@ -533,7 +533,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       down, about a day's work, and it changes the meshes of those six, so it waited
       for the owner's word, which came the same night: **"You can mend the mesher. Yes
       it'll take long but the fix needs to be now."** **A fresh agent made it**
-      (2026-11-20/21, merged; PROCEDURAL_MODELLING.md, tier 3). **Each sheet of the
+      (2026-11-20, merged; PROCEDURAL_MODELLING.md, tier 3). **Each sheet of the
       surface through a cell now gets a vertex of its own**: a cell's crossings are
       grouped into loops by pairing them on each face, and a face with four crossings
       is decided by the field at that face's own middle, so the two cells beside it
