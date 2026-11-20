@@ -1052,10 +1052,28 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       dozen props): the harness's arms were in its code, and a builder is making
       them data (`m6-formae-harness`). Claude runs it in three arms: an engine
       without the library; the library found by the engine's pointers alone; the
-      library named in the brief. **Stage 5 is cut in two**: 5a, every form's
-      distance field in the library's own crate, is being built by a fresh agent;
-      5b, the node in the sculpt tree, waits for the modeller's box to be mended
-      (below: a stretched node can be cut off). Then further families (stage 4).
+      library named in the brief. **The harness is done** (`4deccc36`, branch `m6-formae-harness`:
+      `examen leverage --data FOLDER`, arms as data, a report against a named baseline, a
+      `prompt` command that prints what each builder is told and runs nothing); the two
+      engines are built (`C:/sf-base` without the library, `C:/sf-harness` with it), and
+      **the comparison is held in the queue** under the owner's one-or-two rule, the
+      small job first. **Stage 5 is cut in two. 5a, every form's distance field in the
+      library's own crate: built** (2026-11-20, `ab17003a`; `field::of`, `of_solid`,
+      `plane`; each field says whether it is exact or a bound on each side, the solid it
+      is the field of, its box and its cost by count): plane figures from their exact
+      lines and arcs; slabs and prisms exactly; reliefs; solids of revolution exactly;
+      part turns and stretched turns as bounds; the flat-faced convex solids by their
+      nearest face, edge or corner; the rest by the nearest triangle of their build,
+      with the sign by winding; curves and two oversized sweeps refused as data.
+      **Claude's review, by a probe of its own** (seven checks from a build's points and
+      faces alone): 1,554 fields with no fault, and the probe shown to fail on a seeded
+      one (`.swarmnotes/m6/part4/formae/review-5a.md`). What the next builder must
+      know: the stage changed the faceting record's interface for forms (a growth law
+      of its own), which the working branch's later faceting round will meet at the
+      next merge; and a field of a build costs up to ten thousand pieces a sample, so
+      5b must decide what a sculpt may hold. **5b, the node in the sculpt tree, waits
+      for the review of the modeller's box** (running). Then further families (stage
+      4).
       Stage 3 is the engine's 2D item with two read-only tools and
       `docs/design/FORMAE.md`; then further families. Each stage is reviewed by Claude, who
       did not write it; the whole is pictured in the engine and gated before it is merged.
