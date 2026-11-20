@@ -283,8 +283,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     to delete. I will confirm once I am home"; they follow the work by remote). The two
     worktrees that were finished then (`C:\sr-k16`, `C:\sr-k20`) were removed at their word
     before they left ("Please request permissions for removal for those before I go").
-    Waiting for them: every scratch worktree whose branch is merged or whose review comes
-    in after that.
+    **They came back that night and removed the eleven that had finished meanwhile
+    themselves** (the automatic permission check had refused Claude's batch removal before
+    any prompt reached them). Removals are allowed again while they are at the machine; a
+    refused one is surfaced to them and never worked around.
   - **One or two subagents at a time** (the owner, 2026-11-20, evening, by remote, with six
     running): "Once your sub agents are done, and if possible, I'd like you to reduce how many
     is them down to just 1 or two as to conserve my usage and to extend it." So what is
