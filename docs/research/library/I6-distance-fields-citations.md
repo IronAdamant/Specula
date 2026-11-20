@@ -394,3 +394,237 @@ I searched arXiv (export API and the HTML search), the open web, and Google Scho
 ## Bottom line of this check
 
 R5.1, R5.2, R5.4, R5.7 and R5.8 can be used as Round 5 wrote them. R5.5 is fine to cite for the C=1 restatement; add that the published TOG article is CC BY 4.0, and that the quote sits in Section 1 rather than at its first paragraph. R5.6's equations and the 1.45 Lipschitz remark are confirmed from arXiv v1; record the arXiv licence as non-exclusive-distrib 1.0, and the later journal as CC BY 4.0 according to Crossref/OpenAlex (journal file not opened). R5.3's operator quotes were not re-verified, because every stated legal PDF URL was bot-checked or login-walled today; the citation metadata itself is sound. The "no modern peer-reviewed numeric smin bound" conclusion still holds, with SDFStent 2026 as a clear non-peer-reviewed statement of the quadratic k/4 reduction.
+
+---
+
+# Round 6: smooth-min bound hunt (20 Nov 2026)
+
+Narrow question: a peer-reviewed journal or conference paper that explicitly states how far a smooth minimum / smooth union falls below the plain min (quadratic smin by k/4, cubic by k/6, exponential / log-sum-exp by ln(2)*k or k*ln(n), or an equivalent sandwich such as smin(a,b) >= min(a,b) - k/4). Sources already checked in Rounds 1-5 and the second check were not reused as new hits (Quilez, Barbier 2025, Hubert-Brierre 2025, Zanni 2023, Dekkers 1996 TR, Alblas 2022, SDFStent arXiv:2605.22009 preprint, Galin 2020, Balint/Valasek). New angles: log-sum-exp softmin bounds in optimisation and ML, smooth-union control barrier function papers, neural CSG / differentiable SDF papers, implicit-modelling surveys, shape optimisation using smin, Pasko R-function displacement, and papers citing Quilez smin. Free and legal copies only; no shadow libraries. Every kept quote below was copied from a file opened today and then re-checked against a second legal fetch. Local copies: `/workspace/specula-research/raw/round6/` and `/workspace/specula-research/raw/round6/check/`.
+
+Short answer: the exponential / log-sum-exp operator now has peer-reviewed statements of the bound. Three independent papers (two journals, one conference proceedings) write the sandwich in numbered results. For two inputs the drop is at most (ln 2)/rho, which is exactly k*ln(2) under the usual SDF identification k = 1/rho. The polynomial figures k/4 and k/6 are still not stated in any peer-reviewed paper found after six passes. SDFStent 2026 remains the only explicit modern k/4 write-up, and it is still a preprint.
+
+## Hits (peer-reviewed, confirmed)
+
+### R6.1 Molnar and Ames (2023). Composing Control Barrier Functions for Complex Safety Specifications. Peer-reviewed journal.
+
+- Citation: Tamas G. Molnar and Aaron D. Ames. "Composing Control Barrier Functions for Complex Safety Specifications." IEEE Control Systems Letters, 7:3615-3620, 2023. DOI: 10.1109/LCSYS.2023.3339719. ISSN 2475-1456. (Crossref type: journal-article; Crossref DOI is registered as 10.1109/lcsys.2023.3339719; volume and pages agree.) The arXiv record comments that the letter was also accepted to the 2024 American Control Conference.
+- Verified free link: https://arxiv.org/pdf/2309.06647 (arXiv:2309.06647v2, 3 Dec 2023 UTC; HTTP 200). This is the author preprint. A second fetch of the same PDF (arxiv.org and export-style URL) had MD5 a7084d0f2fea53e27a6755a4ad913213, identical to the first copy. A Caltech authors-library record exists at https://authors.library.caltech.edu/records/pbxrp-5sm14 (DOI badge only; no extra PDF was downloaded from that page).
+- Licence / access: IEEE copyright on the published letter (Crossref points to IEEE's standard license page for both the version of record and the accepted manuscript). The arXiv API entry lists no Creative Commons licence, so the preprint is under arXiv's standard non-exclusive distribution licence. Quotes below are from arXiv v2, not from the IEEE layout.
+- Operator, equation (30): a smooth under-approximation of the min,
+  h(x) = -(1/kappa) ln( sum_{i in I} exp(-kappa * h_i(x)) ),
+  with smoothing parameter kappa > 0. This is the same formula as Quilez exponential smin, with k = 1/kappa and with the h_i playing the role of the input distances.
+- Bound, Theorem 4, equation (32), copied from the rendered preprint page: "Function h in (30) under-approximates the min expression in (20) with bounds:"
+  min_{i in I} h_i(x) - (ln N)/kappa  <=  h(x)  <=  min_{i in I} h_i(x)    for all x in R^n,   (32)
+  "such that lim_{kappa -> infinity} h(x) = min_{i in I} h_i(x)."
+- The same paper also states the matching smooth-max bound in Theorem 3, equation (25): max_i h_i(x) <= h(x) <= max_i h_i(x) + (ln N)/kappa, for the log-sum-exp over-approximation (22). Remark 2 notes that subtracting the buffer b = ln N makes the smooth max an under-estimator of the plain max.
+- Mapping: see the joint mapping section below. For two inputs, (32) is smin >= min - (ln 2)/kappa.
+
+### R6.2 Rabiee and Hoagg (2025). Soft-minimum and soft-maximum barrier functions for safety with actuation constraints. Peer-reviewed journal.
+
+- Citation: Pedram Rabiee and Jesse B. Hoagg. "Soft-minimum and soft-maximum barrier functions for safety with actuation constraints." Automatica, 171:111921, January 2025. DOI: 10.1016/j.automatica.2024.111921. ISSN 0005-1098. (Crossref: journal-article, volume 171, article-number 111921, published-print 2025-01.) An earlier conference version is cited in the paper as Rabiee and Hoagg, Proc. Amer. Contr. Conf., 2023; that earlier text was not opened in this pass.
+- Verified free link: https://arxiv.org/pdf/2305.10620 (arXiv:2305.10620v4, 26 Jul 2024 UTC; HTTP 200). The arXiv API comment is "Accepted for publication in Automatica" and the journal_ref field is "Automatica, 2025, Vol. 171, 111921". A second fetch from https://export.arxiv.org/pdf/2305.10620v4.pdf had MD5 ceee803036fcb41c6c361bf66857989d, identical to the first copy.
+- Licence / access: Elsevier copyright on the version of record (Crossref TDM licences). Crossref also lists an accepted-manuscript user licence starting 8 Oct 2025. The arXiv API entry lists no Creative Commons licence. Quotes below are from arXiv v4, not from the journal typesetting.
+- Operator, section 2 "Notation" (rendered page 2 of the preprint). For rho > 0,
+  softmin_rho(z_1, ..., z_N)  :=  -(1/rho) log( sum_{i=1}^N exp(-rho z_i) ),
+  which is the standard unshifted log-sum-exp soft minimum. (Their softmax is defined with an extra -(log N)/rho shift; that convention is not needed for the SDF mapping.) The paper writes "log" next to the natural exponential, so log is the natural logarithm (the same function Molnar and Igel write as ln).
+- Bound, Proposition 1, copied from the rendered preprint page 2:
+  "Proposition 1 Let z_1, ..., z_N in R. Then,"
+  min{z_1, ..., z_N} - (log N)/rho  <=  softmin_rho(z_1, ..., z_N)  <=  min{z_1, ..., z_N},
+  and a matching pair of inequalities for their shifted softmax. The following sentence is: "Proposition 1 shows that as rho -> infinity, softmin_rho and softmax_rho converge to the minimum and maximum. Thus, softmin_rho and softmax_rho are smooth approximations of the minimum and maximum. Note that if N > 1, then the soft minimum is strictly less than the minimum."
+- Mapping: Quilez exponential smin(a,b,k) is exactly softmin_rho with rho = 1/k. For two inputs the stated gap is (log 2)/rho = k*ln(2).
+
+### R6.3 Igel (2024). Smooth Min-Max Monotonic Networks. Peer-reviewed conference proceedings.
+
+- Citation: Christian Igel. "Smooth Min-Max Monotonic Networks." Proceedings of the 41st International Conference on Machine Learning, Proceedings of Machine Learning Research 235:20908-20923, 2024. Official page: https://proceedings.mlr.press/v235/igel24a.html. First page / last page in the PMLR metadata: 20908-20923. ISSN 2640-3498. No DOI was returned by Crossref for this item.
+- Verified free link: official proceedings PDF https://proceedings.mlr.press/v235/igel24a/igel24a.pdf and the same file at https://raw.githubusercontent.com/mlresearch/v235/main/assets/igel24a/igel24a.pdf (HTTP 200). Equations (5) and (6) were re-read from page 4 of this official file. A University of Copenhagen "Version of record" copy (with a cover sheet) is at https://curis.ku.dk/ws/portalfiles/portal/409988038/Smooth_Min_Max_Monotonic_Networks.pdf; the inequalities on its corresponding page match.
+- Licence: the official PDF footer reads "Proceedings of the 41st International Conference on Machine Learning, Vienna, Austria. PMLR 235, 2024. Copyright 2024 by the author(s)." Open proceedings copy; no Creative Commons line is printed on the first page.
+- Operator, equation (4): LSE_beta(x_1, ..., x_n) = (1/beta) log(sum_{i=1}^n exp(beta x_i)), and LSE_{-beta} is the corresponding soft minimum. As in R6.2, "log" is the natural log; the bounds themselves are written with ln.
+- Bounds, copied from the rendered official page 4:
+  "It holds:"
+  max_{1 <= i <= n} x_i  <  LSE_beta(x_1, ..., x_n)  <=  max_{1 <= i <= n} x_i + (1/beta) ln(n)     (5)
+  min_{1 <= i <= n} x_i - (1/beta) ln(n)  <=  LSE_{-beta}(x_1, ..., x_n)  <  min_{1 <= i <= n} x_i     (6)
+- Mapping: LSE_{-beta} is Quilez exponential smin with k = 1/beta. For two inputs, (6) is min - k*ln(2) <= smin < min. Igel's upper inequality is strict, which matches Rabiee's prose that for N > 1 the soft minimum is strictly less than the min (equality in the lower bound holds when all inputs are equal).
+
+## Supporting optimisation sources (same operator; the bound is assembled from definitions)
+
+### R6.4 Beck and Teboulle (2012). Smoothing and First Order Methods: A Unified Framework. Peer-reviewed journal.
+
+- Citation: Amir Beck and Marc Teboulle. "Smoothing and First Order Methods: A Unified Framework." SIAM Journal on Optimization, 22(2):557-580, 2012. DOI: 10.1137/100818327. ISSN 1052-6234. (Crossref: published-print 2012-01, published-online 2012-06-05.)
+- Verified free link: author copy https://www.tau.ac.il/~becka/smoothing.pdf (HTTP 200). A second fetch of the same URL matched the first copy, MD5 7974194fe16ea3e2a29d7729dccc30a7. The PDF footer reads "Copyright (c) by SIAM. Unauthorized reproduction of this article is prohibited." This is the standard author-posted SIAM PDF, not an open-access licence.
+- What it states, Definition 2.1 plus Example 4.4. A function g is "(alpha, beta, K)-smoothable" if for every mu > 0 there is a smooth g_mu satisfying
+  g(x) - beta_1 mu  <=  g_mu(x)  <=  g(x) + beta_2 mu    for every x in X,
+  with beta_1 + beta_2 = beta > 0. Example 4.4 then says that g(x) = max{x_1, ..., x_n} has omega(0) = log(n), that g(x) <= mu * omega(x/mu), and that
+  "mu omega(x/mu) = mu log(sum_{i=1}^n exp(x_i/mu)) is a mu-smooth approximation of max{x_1, ..., x_n} with parameters (1, log n, 0)."
+  Combined with Definition 2.1(i) and the one-sided inequality g <= LSE, this is the bound
+  max <= LSE_mu <= max + mu * log(n).
+- Mapping: negate both sides (or apply the same argument to -x) to obtain min - mu*log(n) <= softmin_mu <= min, i.e. k*ln(n) with k = mu. The paper never writes the softmin form in so many words; the max form plus the definition is enough, but R6.1-R6.3 are clearer citations for a design-doc sentence.
+
+### R6.5 Nesterov (2005). Smooth minimization of non-smooth functions. Peer-reviewed journal; quotes from the 2003 manuscript.
+
+- Citation: Yu. Nesterov. "Smooth minimization of non-smooth functions." Mathematical Programming, Series A, 103(1):127-152, 2005. DOI: 10.1007/s10107-004-0552-5. ISSN 0025-5610. (Crossref: published-online 2004-12-29, published-print 2005-05.)
+- Verified free link: the 2003 CORE discussion-paper manuscript, fetched from UCLouvain DIAL https://research.dial.uclouvain.be/server/api/core/bitstreams/5e279fca-57a4-4476-9fe8-e8df213808c4/content (HTTP 200; PDF metadata "TeX output 2003.02.04"). This is not the Springer journal layout. A journal PDF was not obtained from a legal free source (the UIUC course URL returned HTTP 500 today). Quotes are therefore from the manuscript; that they match the 2005 journal wording is not confirmed.
+- What the manuscript states: after Theorem 1, equation (2.7) is
+  f_mu(x)  <=  f_0(x)  <=  f_mu(x) + mu * D_2,
+  where D_2 = max d_2(u) over the dual set Q_2 and f_0 is the unsmoothed max-structure. For the entropy prox-function, Lemma 3 gives D_2 = ln m, and Lemma 4 identifies the smooth dual as phi*(s) = mu ln(sum_l exp(s^{(l)}/mu)). Together these are again LSE_mu in [max, max + mu ln m]. As with R6.4, this is the classical origin of the bound, but it is pieced together rather than written as a single softmin theorem. Prefer R6.1-R6.3 for the design doc.
+
+## Mapping from these operators to SDF exponential smooth union
+
+Quilez's exponential smooth minimum (the "sminExp" / log-sum-exp form on https://iquilezles.org/articles/smin/) is
+smin_k(a,b) = -k * ln( exp(-a/k) + exp(-b/k) )
+and, for n inputs, smin_k(a_1, ..., a_n) = -k * ln( sum_i exp(-a_i/k) ).
+
+This is the same function as:
+- Molnar and Ames equation (30), with kappa = 1/k and with the input fields h_i standing in for the distances a_i;
+- Rabiee and Hoagg softmin_rho, with rho = 1/k;
+- Igel's LSE_{-beta}, with beta = 1/k.
+
+Under any of Theorem 4 / Proposition 1 / equation (6),
+min_i a_i  -  k * ln(n)   <=   smin_k(a_1, ..., a_n)   <=   min_i a_i.
+For the usual two-shape SDF union, n = 2 and the stated gap is k*ln(2). The lower bound is attained when a = b (smin_k(a,a) = a - k*ln(2)); the value is strictly below the plain min whenever n > 1, as Rabiee notes. In SDF language: the exponential smooth union underestimates distance by at most k*ln(2), and therefore inflates the combined shape by at most that amount.
+
+This is not a statement about the polynomial quadratic or cubic smin. Those remain a separate, still uncited-in-journals arithmetic fact (k/4 and k/6 in the unnormalised Quilez forms).
+
+## Still not found after six passes
+
+- A peer-reviewed paper that states the polynomial quadratic smin deviation k/4 (Quilez form min(a,b) - h^2 k/4, or smin >= min - k/4).
+- A peer-reviewed paper that states the cubic figure k/6.
+- SDFStent (Li et al., arXiv:2605.22009v1, 21 May 2026) still states the quadratic k/4 reduction explicitly, and is still a preprint "Under review at Computer Methods and Programs in Biomedicine". It does not change the peer-reviewed half of this conclusion.
+
+## Other angles checked this round (not hits for the numeric bound)
+
+- CSG-Stump (Ren et al., ICCV 2021, open CVF PDF) and CAPRI-Net (Yu et al., CVPR 2022, open CVF PDF) were opened. They discuss differentiable Boolean / CSG assembly (weighted or staged min, max, and difference). No statement of a k/4, k/6, or k*ln(2) smin-to-min gap was found in either text.
+- Pasko-style R-function blending was already flagged in Round 2 as not checked in full text and as belonging to a potential-field framework rather than SDF smin. This pass did not turn up a free paper in that line that states the Quilez polynomial or log-sum-exp numeric gap.
+- Shape-optimisation and "papers citing iq smin" searches did not surface a peer-reviewed statement of k/4 or k/6.
+- Samakhoana and Grimmer, "An Elementary Proof of the Near Optimality of LogSumExp Smoothing," arXiv:2512.10825v3 (13 Jul 2026), states that LogSumExp differs from the coordinate-wise max by at most ln(d). The author's publications page still lists it as an arXiv preprint, so it is not treated as peer-reviewed here. A web-search snippet that assigned it a Journal of Complexity DOI was not confirmed against Crossref or the author's own page and is disregarded.
+- Luo, Wang, Werenski and Yang, "On the modulus of Lipschitz smoothness of log-sum-exp function," Optimization Letters (2026), is a peer-reviewed smoothness-modulus result (1/2 rather than 1). It is not a statement of the max / min approximation gap and was not used as a hit.
+- Lindemann and Dimarogonas, IEEE Control Systems Letters 2019, is the source Molnar cites for the log-sum-exp combination itself. It was not re-opened as a bound source in this pass.
+
+## Self-check (second fetch, same day)
+
+- R6.1: second arXiv PDF, same MD5; Theorem 4 / (30) / (32) and Theorem 3 / (25) re-read from rendered pages 3-4 of arXiv v2.
+- R6.2: second arXiv v4 PDF, same MD5; Proposition 1 and the softmin definition re-read from rendered page 2.
+- R6.3: official PMLR GitHub PDF re-fetched and the inequalities on page 4 re-read; they match the KU institutional "Version of record" copy used for the first reading.
+- R6.4: second fetch of the Tel Aviv author PDF, same MD5; Definition 2.1 and Example 4.4 re-read from the extracted text.
+- R6.5: the DIAL file is the same 2003-02-04 CORE manuscript already held; journal wording remains uncompared.
+- Publication metadata for R6.1, R6.2, R6.4 and R6.5 was re-checked against the Crossref API today. R6.3 was checked against the PMLR item page.
+
+## Bottom line for the design doc
+
+Cite one of R6.1, R6.2 or R6.3 (or all three) for the exponential smooth-union bound: smin_k >= min - k*ln(n), and k*ln(2) in the two-shape case, with the mapping k = 1/kappa = 1/rho = 1/beta made explicit. Molnar and Ames Theorem 4 is the most directly worded "under-approximation of the min" result; Igel equations (5)-(6) are the cleanest numbered pair covering both soft max and soft min; Rabiee and Hoagg Proposition 1 is the Automatica journal statement of the same softmin sandwich. Beck and Teboulle 2012 and Nesterov 2005 remain the classical optimisation sources for the same log-sum-exp gap, but they are less convenient to quote. For the polynomial k/4 (and k/6) figures, keep citing Quilez's smin article, and optionally the SDFStent preprint, and keep the "no peer-reviewed source found" caveat.
+
+---
+
+# Round 6 addendum (20 Nov 2026)
+
+Independent second pass the same morning, after the LSE hits above were already in this file. This addendum does three things: it records that SDFStent is no longer only a preprint; it corrects the Molnar arXiv licence and adds a check of the published IEEE pages; and it restates the bottom line.
+
+## R6.6 Li, Dorn, Lasso, Jolley, Feinstein, James and Marsden (2026). SDFStent. Peer-reviewed journal; quotes from the May preprint.
+
+- Citation: Bohan J. Li, Nicholas C. Dorn, Andras Lasso, Matthew A. Jolley, Jeffrey A. Feinstein, Doug L. James, and Alison L. Marsden. "SDFStent: Real-time interactive virtual stenting via SDF deformation fields." Computer Methods and Programs in Biomedicine, 287:109645, December 2026. DOI: 10.1016/j.cmpb.2026.109645. ISSN 0169-2607. PII S0169-2607(26)00394-9. PMID 42777594. PubMed history: received 14 May 2026, revised 21 Aug 2026, accepted 8 Sep 2026, electronic publication 21 Sep 2026. Crossref type is journal-article, volume 287, article-number 109645, published date-parts 2026-12. This is the same work as arXiv:2605.22009v1, which Round 5 and the Round 5 second check treated as a preprint "Under review at Computer Methods and Programs in Biomedicine".
+- Verified free link: https://arxiv.org/pdf/2605.22009 (arXiv:2605.22009v1, 21 May 2026 UTC; HTTP 200; MD5 348eda8bb9293582c727b213e301c1d3 on both fetches today). There is still only v1; the arXiv abs comment has not been updated and still says "Under review". The journal version of record is Elsevier subscription (Crossref lists TDM licences, not Creative Commons; NCBI ID Converter reports the DOI is not in PMC). No later accepted manuscript was found on a legal free host today (author repositories and SSRN were looked for; the published PDF was not opened). Quotes below are therefore from arXiv v1, which predates the 21 Aug 2026 revision. That the December article still contains these sentences is not confirmed from the version of record.
+- Licence / access: the preprint is under arXiv's standard non-exclusive distribution licence (http://arxiv.org/licenses/nonexclusive-distrib/1.0/). The journal article is not open access.
+- Operator, equation (10), rendered preprint page 10 (section 2.2 "Quadratic smooth minimum of capsules"):
+  smin(alpha, beta) = min(alpha, beta) if |alpha - beta| > k,
+  and smin(alpha, beta) = min(alpha, beta) - (k/4) * (1 - |alpha - beta|/k)^2 if |alpha - beta| <= k.
+  This is the unnormalised Quilez quadratic smin, cited as [26] I. Quilez, "Smooth minimum for SDFs" (2013).
+- Bound, equation (13) and the following sentence, copied from the same rendered page after substituting alpha = beta in (10):
+  smin(alpha, beta) = alpha - k/4.    (13)
+  "In regions of space where the two capsule shapes are superimposed, the resulting SDF value is reduced by exactly k/4 mm, leading to a slight inflation of the shape by k/4 mm."
+  They later correct the prescribed stent radius by that same k/4 offset. This is an explicit statement of the quadratic peak deviation, not merely a formula from which the bound can be read off.
+- Mapping: direct. For two SDF inputs, the quadratic smooth union falls below the plain min by at most k/4, with equality when the two fields are equal. This is the polynomial figure that Rounds 1-5 and the first write-up of Round 6 still listed as uncited in the peer-reviewed literature.
+- Caveat, stated plainly: the work is now peer-reviewed and published, but the only free legal copy opened today is the May preprint, and the journal article was revised afterwards. If a copy of the December 2026 article (or a later accepted manuscript) can be opened, the k/4 sentences should be re-read there before treating the journal typesetting as the source of the quote.
+
+## Corrections and extra checks on R6.1-R6.5
+
+- Molnar and Ames arXiv licence, correction: the existing R6.1 note that "the arXiv API entry lists no Creative Commons licence" is incomplete. The abs page https://arxiv.org/abs/2309.06647 (fetched today) carries an article licence link, "Rights to this article", to http://creativecommons.org/licenses/by/4.0/, with the CC BY 4.0 icon. Quotes from arXiv v2 are therefore under CC BY 4.0.
+- Molnar and Ames published pages, added check: the NSF Public Access Repository copy at https://par.nsf.gov/servlets/purl/10489246 (HTTP 200, 7,214,985 bytes) is the IEEE-paginated letter (header "IEEE CONTROL SYSTEMS LETTERS, VOL. 7, 2023", footer dated 4 Feb 2024 UTC from IEEE Xplore). The PDF is image-based (no extractable text). Theorem 4, equation (30) and equation (32) were read from rendered pages 3617-3618 and match the arXiv v2 wording already quoted in R6.1, including "under-approximates the min expression in (20) with bounds" and
+  min_i h_i(x) - (ln N)/kappa  <=  h(x)  <=  min_i h_i(x)    for all x in R^n,    (32).
+  Theorem 3 / equation (25) on page 3617 likewise matches the smooth-max bound already quoted.
+- R6.1, R6.2 and R6.4 were re-fetched independently in this pass. MD5 values match those already recorded: Molnar arXiv v2 a7084d0f2fea53e27a6755a4ad913213, Rabiee arXiv v4 ceee803036fcb41c6c361bf66857989d, Beck author PDF 7974194fe16ea3e2a29d7729dccc30a7. Proposition 1, Definition 2.1 and Example 4.4 were re-read and agree with the quotes above.
+- Igel 2024 (R6.3) was spot-checked against the official proceedings text already on disk: equations (5) and (6) on the "It holds:" block are as R6.3 wrote them, including the strict inequalities on the soft-max lower side and the soft-min upper side.
+
+## Extra sources opened or searched in this pass (not additional hits)
+
+- Madan and Levin, "Fast Evaluation of Smooth Distance Constraints on Co-Dimensional Geometry," ACM Trans. Graph. 41(4):68, July 2022 (SIGGRAPH 2022). Author PDF https://www.dgp.toronto.edu/projects/smooth-distances/smooth-distance_compressed.pdf (HTTP 200). Uses a LogSumExp smooth minimum of primitive distances (eq. 3) and says the error is "merely logarithmic in mesh size" and "logarithmic in A". It does not write the explicit sandwich min - (ln n)/alpha <= softmin <= min, so it is not a hit under the same standard used above.
+- Wang, Han, Zhang and Song, "An efficient geometric constraint handling method for surrogate-based aerodynamic shape optimization," Engineering Applications of Computational Fluid Mechanics 17(1):e2153173, 2023, DOI 10.1080/19942060.2022.2153173, is open access CC BY 4.0 and search snippets show the KS bound g_max < KS < g_max + (ln n)/rho. The Taylor and Francis PDF returned HTTP 403 to curl today, so those sentences were not confirmed from a file and it is not added as a hit.
+- Nesterov 2005: the 2003 CORE manuscript was already in hand; a legal free copy of the 2005 journal PDF was still not obtained (the UIUC course URL returned HTTP 500). No change to R6.5.
+- "Lange et al." was searched and not identified as a paper that states the numeric smin deviation bound.
+- Cubic k/6: still no peer-reviewed source.
+
+## Updated bottom line
+
+The exponential / log-sum-exp bound is settled: cite Molnar and Ames 2023 Theorem 4 (R6.1; now also checked against the published IEEE pages, arXiv v2 CC BY 4.0), Igel 2024 equations (5)-(6) (R6.3), or Rabiee and Hoagg 2025 Proposition 1 (R6.2). For two shapes this is smin_k >= min - k*ln(2), with k = 1/kappa = 1/rho = 1/beta.
+
+For the polynomial quadratic figure, there is now a published journal article on the same result: Li et al., Computer Methods and Programs in Biomedicine 287:109645, 2026 (R6.6). Equation (13) and the sentence "reduced by exactly k/4 mm" are verified in the May 2026 preprint. Because that preprint was revised before acceptance and the December article was not opened, keep a short caveat on the journal wording, or re-read the version of record if a copy becomes available. Cubic k/6 is still without a peer-reviewed source; Quilez's smin article remains the place that states it.
+
+
+---
+
+# Round 6 second check (20 Nov 2026)
+
+Independent re-fetch and re-read. The Round 6 write-up and the 11:12 addendum were not trusted. Fresh copies are in `/workspace/specula-research/raw/round6-check/`. DBLP's API and HTML were bot-walled today, so journal and proceedings metadata were checked against Crossref, the official PMLR item page, and (for R6.6) PubMed / Europe PMC / OpenAlex. The two-input mapping `smin_k(a,b) = -k ln(e^{-a/k}+e^{-b/k})` with `k = 1/kappa = 1/rho = 1/beta` was checked by arithmetic, not taken from the earlier write-up.
+
+## R6.1 Molnar and Ames (2023). CONFIRMED (licence already corrected in the 11:12 addendum; that correction is itself confirmed).
+
+- Link and identity: `https://arxiv.org/pdf/2309.06647` loads (HTTP 200). The PDF banner is `arXiv:2309.06647v2 [eess.SY] 3 Dec 2023`. Title, authors (Tamas G. Molnar, Aaron D. Ames), and abstract match the claimed letter. MD5 `a7084d0f2fea53e27a6755a4ad913213` matches the Round 6 copies. The arXiv API gives v2 updated 2023-12-03T22:19:12Z, with the comment "Accepted to the IEEE Control System Letters (L-CSS) and the 2024 American Control Conference (ACC)."
+- Metadata: Crossref DOI `10.1109/lcsys.2023.3339719` (same DOI as `10.1109/LCSYS.2023.3339719`) is a journal-article, container "IEEE Control Systems Letters", volume 7, pages 3615-3620, published 2023, ISSN 2475-1456, authors Tamas G. Molnar and Aaron D. Ames. This agrees with the citation.
+- Peer review: yes. It is a published IEEE Control Systems Letters article (Crossref type journal-article). The arXiv comment also records acceptance to ACC 2024.
+- Licence: the original R6.1 inference ("arXiv API lists no Creative Commons licence, therefore the preprint is under arXiv's standard non-exclusive licence") is not safe. The API entry indeed has no licence element, but the abs page `https://arxiv.org/abs/2309.06647`, fetched today, has a "Rights to this article" link to `http://creativecommons.org/licenses/by/4.0/` with the CC BY 4.0 icon. Quotes from arXiv v2 are therefore under CC BY 4.0. The version of record remains under IEEE's standard licence (Crossref points to IEEE's licence page for both vor and am). The 11:12 addendum already recorded this; confirmed here from a fresh abs fetch. The NSF Public Access IEEE PDF named in the addendum was not re-opened in this check; the bound below is from arXiv v2.
+- Operator, equation (30), copied from the extracted v2 PDF: `h(x) = -(1/kappa) ln( sum_{i in I} exp(-kappa * h_i(x)) )`, with kappa > 0. This is Quilez exponential smin with `k = 1/kappa`.
+- Bound, Theorem 4, equation (32), copied from the same file (the two-column extract splits the left-hand min, but the layout is unambiguous): "Function h in (30) under-approximates the min expression in (20) with bounds:"
+  `min_{i in I} h_i(x) - (ln N)/kappa  <=  h(x)  <=  min_{i in I} h_i(x)    for all x in R^n`, (32)
+  "such that lim_{kappa -> infinity} h(x) = min_{i in I} h_i(x)." For two inputs this is `smin >= min - (ln 2)/kappa`.
+
+## R6.2 Rabiee and Hoagg (2025). CONFIRMED.
+
+- Link and identity: `https://arxiv.org/pdf/2305.10620` loads (HTTP 200). The PDF banner is `arXiv:2305.10620v4 [eess.SY] 26 Jul 2024`. Title and authors (Pedram Rabiee, Jesse B. Hoagg) match. MD5 `ceee803036fcb41c6c361bf66857989d` matches the Round 6 copies. The arXiv API gives v4 updated 2024-07-26T00:16:22Z, comment "Accepted for publication in Automatica", journal_ref "Automatica, 2025, Vol. 171, 111921", and DOI `10.1016/j.automatica.2024.111921`.
+- Metadata: Crossref DOI `10.1016/j.automatica.2024.111921` is a journal-article, container Automatica, volume 171, article-number / page 111921, published-print 2025-01, ISSN 0005-1098, authors Pedram Rabiee and Jesse B. Hoagg. Title in Crossref is sentence case. This agrees with the citation.
+- Peer review: yes. Published Automatica article (Crossref type journal-article).
+- Licence: Elsevier copyright on the version of record (Crossref TDM licences; assertion "© 2024 Elsevier Ltd. All rights are reserved..."). Crossref also lists an accepted-manuscript user licence starting 8 Oct 2025. The arXiv abs page, fetched today, links to `http://arxiv.org/licenses/nonexclusive-distrib/1.0/`. Quotes below are from arXiv v4.
+- Operator, Notation section: for rho > 0,
+  `softmin_rho(z_1, ..., z_N) := -(1/rho) log( sum_{i=1}^N exp(-rho z_i) )`.
+  This is the unshifted log-sum-exp soft minimum, i.e. Quilez exponential smin with `k = 1/rho`. (Their softmax carries an extra `-(log N)/rho` shift; that shift is not needed for the SDF mapping.) The paper writes log next to the natural exponential; Igel's companion bounds use ln for the same function, so log is the natural logarithm.
+- Bound, Proposition 1, reconstructed from the two-column v4 PDF (the same sandwich appears in both columns of the Notation / Proposition 1 block):
+  "Proposition 1 Let z_1, ..., z_N in R. Then,"
+  `min{z_1, ..., z_N} - (log N)/rho  <=  softmin_rho(z_1, ..., z_N)  <=  min{z_1, ..., z_N}`,
+  and a matching pair for their shifted softmax. The following sentence is: "Proposition 1 shows that as rho -> infinity, softmin_rho and softmax_rho converge to the minimum and maximum. ... Note that if N > 1, then the soft minimum is strictly less than the minimum." For two inputs the stated gap is `(log 2)/rho = k ln 2`.
+
+## R6.3 Igel (2024). CONFIRMED.
+
+- Link and identity: the official item page `https://proceedings.mlr.press/v235/igel24a.html` loads and is the right paper: Christian Igel, "Smooth Min-Max Monotonic Networks," Proceedings of the 41st International Conference on Machine Learning, PMLR 235:20908-20923, 2024. The official PDF used here is the GitHub proceedings file listed on that page, `https://raw.githubusercontent.com/mlresearch/v235/main/assets/igel24a/igel24a.pdf` (HTTP 200, 16 pages, MD5 `44636cca66495eac632332e0397836ea`). The first-page footer and the extracted page 4 match the PMLR venue and the equations quoted below. A minor link note: `https://proceedings.mlr.press/v235/igel24a/igel24a.pdf` returned HTTP 404 today, so that second URL in R6.3 is not currently a working fetch path.
+- Metadata: official PMLR page and BibTeX agree on author, title, volume 235, pages 20908-20923, year 2024, conference 21-27 Jul, Vienna. ISSN 2640-3498 is stated on the PMLR homepage. A Crossref title/author query did not return a DOI for this item, which agrees with R6.3.
+- Peer review: yes. ICML 2024 paper in the official PMLR proceedings.
+- Licence: first-page footer, copied from the official PDF: "Proceedings of the 41st International Conference on Machine Learning, Vienna, Austria. PMLR 235, 2024. Copyright 2024 by the author(s)." No Creative Commons line is printed on that page. The proceedings series is openly posted.
+- Operator, equation (4), official page 4: `LSE_beta(x_1, ..., x_n) = (1/beta) log(sum_{i=1}^n exp(beta x_i))`, beta > 0. Then `LSE_{-beta}` is the same formula with parameter -beta, which equals `-(1/beta) log(sum exp(-beta x_i))`, i.e. Quilez exponential smin with `k = 1/beta`.
+- Bounds, equations (5)-(6), copied from official page 4 after "It holds:":
+  `max_i x_i  <  LSE_beta(x_1, ..., x_n)  <=  max_i x_i + (1/beta) ln(n)`     (5)
+  `min_i x_i - (1/beta) ln(n)  <=  LSE_{-beta}(x_1, ..., x_n)  <  min_i x_i`     (6)
+  For two inputs, (6) is `min - k ln 2 <= smin < min`. The upper inequality is strict, which matches Rabiee's prose for N > 1.
+
+## Mapping arithmetic. CONFIRMED.
+
+Let `smin_k(a,b) = -k ln(e^{-a/k} + e^{-b/k})` with k > 0. This is identical to Molnar's h with kappa = 1/k, to Rabiee's softmin with rho = 1/k, and to Igel's LSE_{-beta} with beta = 1/k (checked numerically as well as algebraically). For two inputs:
+
+- `smin_k(a,b) = min(a,b) - k ln(1 + exp(-|a-b|/k))`.
+- The subtracted term lies in `(0, k ln 2]`, so `min - k ln 2 <= smin_k < min`.
+- At a = b the subtracted term is exactly `k ln 2`, so the lower bound is sharp: `smin_k(a,a) = a - k ln 2`.
+- For n inputs the same argument gives `min - k ln n <= smin <= min`, sharp when all inputs are equal.
+
+This is exactly the two-input form of Theorem 4 / (32), Proposition 1, and Igel (6).
+
+## R6.6 Li et al. (2026), 11:12 addendum. CONFIRMED (journal metadata and preprint quotes; version-of-record wording still unverified, as the addendum already said).
+
+- DOI and publisher record: Crossref `10.1016/j.cmpb.2026.109645` exists and returns status ok. Type journal-article; title "SDFStent: Real-time interactive virtual stenting via SDF deformation fields"; container "Computer Methods and Programs in Biomedicine"; volume 287; page / article-number 109645; published-print 2026-12; created 2026-09-21T16:05:14Z; print ISSN 0169-2607; alternative-id / unpunctuated PII S0169260726003949; copyright assertion "© 2026 Published by Elsevier B.V." Authors, in order: Bohan J. Li, Nicholas C. Dorn, Andras Lasso, Matthew A. Jolley, Jeffrey A. Feinstein, Doug L. James, Alison L. Marsden.
+- PubMed / Europe PMC: PMID 42777594 is the journal record (MEDLINE, PublicationType Journal Article, PublicationStatus ppublish). Journal issue date Dec 2026, volume 287, start page 109645, DOI and formatted PII `S0169-2607(26)00394-9` all match the addendum. History: received 14 May 2026, revised 21 Aug 2026, accepted 8 Sep 2026; ArticleDate (Electronic) 21 Sep 2026; copyright "Copyright © 2026. Published by Elsevier B.V." PubMed also lists electronic ISSN 1872-7565, which Crossref did not include; the print ISSN in the citation is still correct. A different PMID, 42238061, is the arXiv preprint record (`arXiv:2605.22009v1`, 21 May 2026), not the journal article.
+- Same work as the preprint: yes. arXiv API `2605.22009` has only v1 (published/updated 2026-05-21T05:12:07Z), the same title, and the same seven authors. The abs comment is still "39 pages, 12 figures, 4 tables. Under review at Computer Methods and Programs in Biomedicine" and has not been updated to the published letter. Because PubMed records a revision on 21 Aug 2026, after v1, the December article may differ from the preprint.
+- Licence / access: abs page licence is `http://arxiv.org/licenses/nonexclusive-distrib/1.0/`. The journal article is not open access. Crossref lists only Elsevier TDM and STM-ASF licences, no Creative Commons and no accepted-manuscript user licence. OpenAlex reports `is_oa: false`, `oa_status: closed`, `oa_url: null`, and `any_repository_has_fulltext: false`. Europe PMC has `isOpenAccess N`, `inEPMC N`, `inPMC N`, `hasPDF N`, `epmcAuthMan N`, and a single full-text URL marked "Subscription required". The NCBI PMC ID converter returns "Identifier not found in PMC". A request to the ScienceDirect PII page returned HTTP 403. No legal free copy of the published version was found today.
+- Preprint quotes, confirmed from a fresh arXiv v1 PDF (HTTP 200, 39 pages, MD5 `348eda8bb9293582c727b213e301c1d3`, matching the addendum) and by reading the rendered page 10 image. Section 2.2, equation (10):
+  `smin(alpha, beta) = min(alpha, beta)` if `|alpha - beta| > k`,
+  and `smin(alpha, beta) = min(alpha, beta) - (k/4) * (1 - |alpha - beta|/k)^2` if `|alpha - beta| <= k`.
+  Substituting alpha = beta in (10) gives equation (13): `smin(alpha, beta) = alpha - k/4`.
+  The next sentence, copied from the rendered page, is: "In regions of space where the two capsule shapes are superimposed, the resulting SDF value is reduced by exactly k/4 mm, leading to a slight inflation of the shape by k/4 mm." They then correct the prescribed stent radius by that same k/4 offset. This is an explicit statement of the quadratic peak deviation.
+- Because no free version of record was available, it is not confirmed that equation (13) and the "reduced by exactly k/4 mm" sentence survive unchanged in the December 2026 article. That is the same caveat the addendum already made, and it still stands.
+
+## Bottom line of this check
+
+R6.1, R6.2 and R6.3 can be used as written for the exponential / log-sum-exp bound, including the mapping `k = 1/kappa = 1/rho = 1/beta` and the two-input form `smin_k >= min - k ln 2`, sharp at a = b. Use the addendum's corrected licence for Molnar arXiv v2 (CC BY 4.0), not the original R6.1 licence sentence. R6.6 is a published, peer-reviewed journal article on the same work as arXiv:2605.22009, and the May preprint does state the quadratic k/4 drop in equation (13) and in the accompanying sentence. Until a copy of the December article can be opened, keep the caveat that those sentences have been checked only in the preprint, which predates the 21 Aug 2026 revision.
