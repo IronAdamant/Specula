@@ -417,8 +417,18 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       down, about a day's work, and it changes the meshes of those six, so it waited
       for the owner's word, which came the same night: **"You can mend the mesher. Yes
       it'll take long but the fix needs to be now."** A fresh agent is making it
-      (branch `m6-mesher`), the six shown before and after in the engine. **The box mend's review is
-      queued** (`.swarmnotes/m6/part4/reviews/brief-bounds.md`).
+      (branch `m6-mesher`), the six shown before and after in the engine. **The box mend's reviewer said
+      not to merge it** (2026-11-20; PROCEDURAL_MODELLING.md, "Its review said not to
+      merge the mend"): it found no point of any solid outside the new box and agreed
+      with each rule's reasoning, and **the new box also grows where the old one cut
+      nothing off, so ordinary sculpts with no stretch, twist or bend change mesh** (29
+      of 300 drawn trees; up to 39% coarser cells; the smallest case five balls in a
+      row, joined smoothly and turned). The repository's seven sculpts are unchanged,
+      which is all the mender's test held, and "no mesh that was right changes by a
+      byte" is false outside the repository. Two caps are held by no test. **A fresh
+      agent is mending it** (`m6-bounds2`): for a tree with nothing stretched, twisted
+      or bent, the mesher's box is the old box, unless a build shows the old box cut
+      the solid off.
       What it means for the sculpt stage is written into the page's section 6: a joined
       part's reach is taken from its field, not from its box.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language

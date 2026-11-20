@@ -217,6 +217,26 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     against pruned at 72,000 points a case: no difference).
   - Not settled then, settled since (above): `twist` and `bend`; an `ellipsoid` and a
     `column` reading short far away.
+  - **Its review said not to merge the mend** (2026-11-20, by a model that wrote none of it).
+    It found no point of any solid outside the new box (150 drawn trees of every primitive
+    and modifier, millimetres to kilometres, searched by the field's own bound; 300
+    stretched joins meshed twice; the ellipsoid's reach never short against a search over
+    directions) and agreed with each rule's reasoning. What it refused it for: **the new
+    box also grows where the old one cut nothing off, so ordinary sculpts with no stretch,
+    twist or bend change mesh**, and "every mesh that was right is the same mesh" above is
+    false. Of 300 drawn trees with none of those, 29 changed (58 of 600 meshes at
+    resolutions 24 and 64); of 36 boxes that grew at 64, 32 were meshed again in a much
+    larger box and none had a vertex past the old one. The box grew by up to 13 cells and
+    39% in its longest side, so those cells are up to 39% coarser. The smallest case: five
+    balls of radius 0.2 in a row, 0.3 apart, joined at `smooth` 0.15 and turned by
+    `[30, 40, 50]`. The repository's seven sculpts are unchanged, which is all the test of
+    boxes held. The causes, by its reading: a smooth union's reach is a box with no ball,
+    so the join's dip becomes a cube that a turn on the group then inflates; and a
+    column's reach grows the larger half of a pair of sections by the level over the
+    smaller. Also: two caps no test holds (16 notes a build; 16,384 asks a tree, a budget
+    that a chain of two-child smooth unions 16 deep already spends); and at `smooth` 0.1
+    and 0.2 two builds of the figure's `body` change too, where only the whole figure was
+    named. **A fresh agent is mending it.**
 - **A part thinner than a cell meshes with edges that four triangles share** (looked into on
   2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
   It is not the join and not the box: **one crescent** (`{"op": "difference", "of": [{"op":
