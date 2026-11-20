@@ -853,6 +853,44 @@ whole ring (exact where what is kept still has neighbouring faces and corners, a
 where it has none); the rim of a ring is its widest row's, and a lathe whose profile has
 several rows at its widest is one rim seen from above.
 
+#### Its fourth review
+
+A model that wrote none of it (2026-11-20) **said not to merge it**. The measure of a ring and
+its rim held against a truth of the reviewer's own (the convex hull of every finished vertex
+seen down the mapped axis, the ellipse sampled at 20,000 points: over 200 random chains of
+uneven scales, turns, leans and mirrors on cylinders, cones, a waisted lathe, tori and
+capsules, the worst turn 0.0001° out and the worst stand-in five parts in a million), "the
+widest rim" is the right outline to hold a ring to, and the most a count can be is exact
+under every limit on triangles it tried (a radial copy, a mirror, a subdivision, a weld, the
+budget, the model's room, a scatter, the third review's lathe: each builds at its most and is
+refused one past it). Sepulcra's counts are as stated, twelve props held by the rim (the
+eleven named above and `mausoleum_domed`), and no mesh changed. What it refused it for:
+
+1. **The fix can still name a count the build refuses: for work.** The most a count can be
+   holds every limit on triangles and not the build's limit on work (1,500 million units),
+   and work grows with the count: the far levels' simplification, assembly, operations on
+   every vertex, the collider, and a texture's baking, which gets what the rest leaves. One
+   lathe of 301 rows and 8 segments with a 512-pixel texture graph of two noises and two far
+   levels builds; the fix names 108; at 108 the build is refused ("needs 1555437000 work
+   units; at most 1500000000"). The same with a 256-pixel graph of ten noises, and with no
+   texture under four far levels, hard shading and eight or more `ao` steps. None of
+   Sepulcra's 56 is such a recipe. "Limits that remain" above names a boolean's work and the
+   coarse far level, and not this.
+2. **Three of its rules are held by no default test**: with the budget's branch taken out
+   the fix names 256 and the build is refused over its budget; with the model's room taken
+   out, 129 and refused for the model's triangles; with a scatter's copies not counted, 256
+   and refused at a part of 408,000 triangles; and every test passes under each. (As written
+   all three are exact.) The test of counts that build covers copies limited by a part's
+   triangles only.
+3. *Minor:* a ring is held to its rim whether or not the rim can be seen (a cone's base
+   sunk in a tower), and "what it cannot know" reads as a whole shape hidden.
+
+Not settled by it: whether the slow test of advice (85 to 173 s for its file in a release
+build on a busy machine) keeps inside the gate's time under sixteen threads; what the check
+says at the advice's work bound on a real recipe. Not checked: booleans and sculpts at their
+most, two round shapes that share a piece, an include with a budget of its own, the full
+run of 400 chains, clippy.
+
 **Not built:** pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so
 `seam_m` does not see them: the form views do).

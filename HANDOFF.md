@@ -1076,8 +1076,15 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       only after it added a test), no mesh changed, and Sepulcra's four-sided cones read
       90° again by their rims (the median is 90°; no verdict at 20° moved; one at 45°
       did, `urn_toppled`). One of its tests takes about 90 s in a debug build. **Its
-      review is running. Give no style a `max_facet_deg` until a reviewer says
-      merge.** The recipe measure's three small findings were mended with it (the
+      reviewer said not to merge it** (2026-11-20; FORM.md, "Its fourth review"): the
+      rim and the ring hold against a truth of its own, the most a count can be is
+      exact under every limit on triangles it tried, and **the fix can still name a
+      count the build refuses, for work**: the build's work limit is not among the
+      limits held, and work grows with the count (a lathe with a 512-pixel texture
+      and two far levels is told 108 segments and refused at 108). None of Sepulcra's
+      props is such a recipe. And three of its rules (the budget, the model's room, a
+      scatter's copies) are held by no default test. **A fresh agent is mending
+      those. Give no style a `max_facet_deg` until a reviewer says merge.** The recipe measure's three small findings were mended with it (the
       snap held by a test; the wobbling rod's limit stated and held: up to 1.8% of the
       width a long rod is cut and reads square, past it it is pressed and reads rounder;
       the two weak tests made exact).
