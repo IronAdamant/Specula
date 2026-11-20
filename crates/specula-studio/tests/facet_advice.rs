@@ -6,6 +6,7 @@
 //! must fail.
 
 use specula_model::{build, BuildParams, Style};
+use specula_studio::check::{faceting_advice_work, MOST_ADVICE_WORK};
 use specula_studio::facts::{AssetFacts, RecipeInfo};
 use specula_studio::Bible;
 
@@ -111,6 +112,131 @@ fn every_kind_is_told_a_count_that_holds() {
         n += follow(shape, ops, first, counts, most);
     }
     assert!(n >= 30, "{n} followed");
+}
+
+/// Whether `text` builds.
+fn builds(text: &str) -> bool {
+    let s = Style::parse(STYLE).unwrap();
+    build(text, &BuildParams::new(&s)).is_ok()
+}
+
+/// **Advice is only ever a recipe that builds** (the third review's first finding). The
+/// review's lathe of 301 rows: past 108 segments the build refuses it (a part of more than
+/// 65,536 triangles). At limits of 1.2° and 2° no count it can be built with holds, and the
+/// advice says so: at 108 its faces turn 3.4° and its rim, seen down its axis (an ellipse of
+/// 1 by 0.6), 5.6°. (By its faces alone, which the review measured, 2° held at 98.) At 6° it
+/// names a count, which builds and holds.
+#[test]
+fn the_reviews_lathe_is_told_only_what_builds() {
+    let mut prof = String::from("[[0,0]");
+    for k in 1..300 {
+        let y = f64::from(k) * 0.01;
+        let r = if k % 2 == 0 { 0.5 } else { 0.45 } + 0.0003 * f64::from(k);
+        prof.push_str(&format!(",[{r:.4},{y:.4}]"));
+    }
+    prof.push_str(",[0,3.0]]");
+    let lathe = |n: u32| one(&format!(r#"{{"op":"lathe","segments":{n},"profile":{prof}}}"#), r#"{"op":"scale","by":[1,1.7,0.6]}"#);
+    let f = facts(&lathe(8));
+    let r = f.round.iter().find(|r| r.what == "lathe").unwrap();
+    assert!(r.most == 108 && r.most_by.contains("one part") && r.most_estimated.is_none(), "{r:?}");
+    assert!(builds(&lathe(108)) && !builds(&lathe(109)));
+    for limit in [1.2, 2.0] {
+        let (failed, fix) = verdict(&f, limit);
+        assert!(failed && named(&fix).is_none() && fix.contains("at the most it can be built with (108; past it the triangles one part may have would be exceeded) it still turns 5.6°"), "{limit}: {fix}");
+    }
+    let (failed, fix) = verdict(&f, 6.0);
+    let k = named(&fix).unwrap_or_else(|| panic!("{fix}"));
+    assert!(failed && k <= 108 && builds(&lathe(k)) && !verdict(&facts(&lathe(k)), 6.0).0, "told {k}: {fix}");
+}
+
+/// Every kind where its part can be built with fewer than its range allows (copies stacked in
+/// one place, so that the asset stays small and its facets show): the most it can be built
+/// with builds and one more does not (but for a sculpt, whose most is estimated), and at a
+/// limit just above and just below what that most turns, the advice names a count that builds
+/// and holds, or says that the most does not hold.
+#[test]
+fn every_kind_is_told_only_counts_that_build() {
+    let mut followed = 0;
+    for (shape, count, ops, first) in [
+        (r#"{"op":"cylinder","radius":0.5,"height":1,"sides":{N}}"#, "sides", r#"{"op":"array","count":128,"offset":[0,0,0]}"#, 6),
+        (r#"{"op":"cone","radius":0.5,"height":0.4,"sides":{N}}"#, "sides", r#"{"op":"array","count":200,"offset":[0,0,0]},{"op":"scale","by":[1,1,2]}"#, 5),
+        (r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":{N},"sides":64}"#, "segments", r#"{"op":"array","count":2,"offset":[0,0,0]}"#, 7),
+        (r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":512,"sides":{N}}"#, "sides", r#"{"op":"array","count":4,"offset":[0,0,0]}"#, 3),
+        (r#"{"op":"capsule","radius":0.3,"height":1.5,"segments":{N},"rings":32}"#, "segments", r#"{"op":"array","count":4,"offset":[0,0,0]}"#, 5),
+        (r#"{"op":"capsule","radius":0.3,"height":1.5,"segments":256,"rings":{N}}"#, "rings", r#"{"op":"array","count":4,"offset":[0,0,0]}"#, 1),
+        (r#"{"op":"lathe","segments":{N},"profile":[[0,0],[0.5,0],[0.42,0.15],[0.2,0.5],[0.06,1],[0,1.05]]}"#, "segments", r#"{"op":"array","count":200,"offset":[0,0,0]},{"op":"lean","z":0.5}"#, 6),
+        (r#"{"op":"sphere","radius":0.5,"subdivisions":{N}}"#, "subdivisions", r#"{"op":"array","count":4,"offset":[0,0,0]}"#, 0),
+        (r#"{"op":"sdf","resolution":{N},"tree":{"op":"sphere","radius":0.5}}"#, "resolution", r#"{"op":"array","count":24,"offset":[0,0,0]}"#, 8),
+    ] {
+        let at = |n: u32| one(&shape.replace("{N}", &n.to_string()), ops);
+        let start = facts(&at(first));
+        let r = start.round.iter().find(|r| r.count == count && r.count_value == first).unwrap_or_else(|| panic!("{shape}: {:?}", start.round));
+        let most = r.most;
+        assert!(r.most_by != "its range" && builds(&at(most)), "{shape} [{ops}]: {r:?}");
+        if r.most_estimated.is_none() {
+            assert!(!builds(&at(most + 1)), "{shape} [{ops}]: {} builds, past the most it is said to build with", most + 1);
+        }
+        // (About what it turns at its most: the limits are put either side of it, and what each
+        // advice says is then built and checked.)
+        let t = r.turn_at(most).unwrap();
+        for limit in [t * 1.0005 + 0.002, t * 0.9995 - 0.002] {
+            let (failed, fix) = verdict(&start, limit);
+            assert!(failed, "{shape} [{ops}] at {limit}°: it passes as it is");
+            match named(&fix) {
+                Some(k) => {
+                    assert!(k <= most && builds(&at(k)), "{shape} [{ops}] at {limit}°: told {k}, past {most}: {fix}");
+                    let (still, again) = verdict(&facts(&at(k)), limit);
+                    assert!(!still, "{shape} [{ops}] at {limit}°: told {k} ({fix}), which fails: {again}");
+                    followed += 1;
+                }
+                None => assert!(limit < t && fix.contains(&format!("at the most{} it can be built with ({most};", if count == "subdivisions" { " \"subdivisions\"" } else { "" })), "{shape} [{ops}] at {limit}°: {fix}"),
+            }
+        }
+    }
+    assert!(followed >= 9, "{followed} followed");
+}
+
+/// **The whole check's advice work is bounded** ([`MOST_ADVICE_WORK`] faces and rim corners
+/// measured, all of one check's advice together; past it no count is named). Sepulcra's 56 at
+/// limits of 20°, 5° and 1° spend a small share of it (their figures are in FORM.md); a recipe
+/// made to spend as much as the limits on a part allow (a torus of 21 copies each stretched its
+/// own way, so 21 maps, and a profile of three edges, whose segments can be built up to 512)
+/// stays within it, at a time held as a budget.
+#[test]
+fn the_advice_work_is_bounded_for_the_whole_check() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+    let style = Style::parse(&std::fs::read_to_string(root.join("style.json")).unwrap()).unwrap();
+    let mut lib = std::collections::BTreeMap::new();
+    for e in std::fs::read_dir(root.join("recipes")).unwrap() {
+        let p = e.unwrap().path();
+        if p.extension().is_some_and(|x| x == "json") {
+            lib.insert(p.file_stem().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap());
+        }
+    }
+    let (mut assets, mut most) = (0, 0u64);
+    for (stem, text) in &lib {
+        if specula_core::Json::parse(text).ok().is_some_and(|j| j.get("texgraph").is_some()) {
+            continue;
+        }
+        assets += 1;
+        let m = build(text, &BuildParams { library: Some(&lib), ..BuildParams::new(&style) }).unwrap_or_else(|e| panic!("{stem}: {e}"));
+        let f = AssetFacts::from_model(&m, RecipeInfo::parse(text).as_ref(), Some(stem), &[], 0);
+        for limit in [20.0, 5.0, 1.0] {
+            most = most.max(faceting_advice_work(&f, limit));
+        }
+    }
+    assert!(assets == 56 && most > 0 && most < MOST_ADVICE_WORK / 10, "{assets} assets; the most one check's advice measured: {most}");
+    let heavy = one(r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":3,"sides":3}"#, r#"{"op":"array","count":21,"offset":[0,0,0],"jitter":{"rotate":[40,30,50],"scale":0.4}},{"op":"scale","by":[1,2.5,0.4]}"#);
+    let f = facts(&heavy);
+    let r = f.round.iter().find(|r| r.count == "segments").unwrap();
+    assert!(r.most == 512 && r.recount_maps() == 21, "{r:?}");
+    for limit in [0.9, 2.0, 7.0] {
+        let t = std::time::Instant::now();
+        let w = faceting_advice_work(&f, limit);
+        let took = t.elapsed();
+        assert!(w > 0 && w <= MOST_ADVICE_WORK, "{limit}°: {w}");
+        assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(1500)), "{limit}°: {took:?} for {w}");
+    }
 }
 
 /// Where no count holds, the advice says so and names none: a capsule's ends need more than 32

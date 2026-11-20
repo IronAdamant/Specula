@@ -75,13 +75,34 @@ pub struct Round {
     /// The largest turn between neighbouring faces round it, degrees, in the finished model
     /// (a ring's: between neighbouring faces round its axis, in any band of them; a sloped
     /// band's faces turn less than a wall's: a cone's `2·asin(cos a · sin(180°/sides))`, `a`
-    /// its faces' slope from the axis).
+    /// its faces' slope from the axis). What its outline does seen down its axis is [`Round::rim`].
     pub turn_deg: f32,
-    /// The largest radius it turns at in the finished model, metres.
+    /// The largest radius it has in the finished model, metres.
     pub radius_m: f32,
-    /// How far the middle of a facet stands in from the true curve, at the most, metres, in
-    /// the finished model: what is seen of the faceting in a silhouette.
+    /// The radius of the band of faces that turns by `turn_deg` (a ring's: its wider rim's
+    /// furthest from the axis, square to the axis; any other's: `radius_m`), metres.
+    pub turn_radius_m: f32,
+    /// How far the middle of a facet stands in from the true curve of its own band, at the
+    /// most, metres, in the finished model: the faces' own faceting. A sloped band's faces stand
+    /// in less than its outline does seen down its axis ([`Round::rim`]), which a silhouette from
+    /// above shows.
     pub sag: f32,
+    /// A ring's widest rim seen down its axis, in the finished model (under the shape's own
+    /// map, the rim projected along the mapped axis: a polygon whose true curve is an ellipse):
+    /// how far its outline turns at a corner and stands in. `None` for what is not a ring (a
+    /// sphere, a capsule's ends, a torus's tube, a sculpt).
+    pub rim: Option<Rim>,
+    /// The fewest and the most of its count it can be built with: the most is the greatest
+    /// at which the build is sure every limit it holds this shape's part and the model to
+    /// holds (its own range, the triangles of a part and of the model, the recipe's budget),
+    /// as the build checks them, or, where [`Round::most_estimated`] says, estimated.
+    pub least: u32,
+    pub most: u32,
+    /// What stops the count at `most`: `"its range"`, or the limit it would break past it.
+    pub most_by: &'static str,
+    /// Why `most` is an estimate and not sure (its triangles pass through a boolean, or it is a
+    /// sculpt's resolution); `None`: sure.
+    pub most_estimated: Option<&'static str>,
     /// How far a displacement moved its facets (with the curve they stand for), metres; 0 for
     /// none.
     pub displaced_m: f32,
@@ -92,6 +113,27 @@ pub struct Round {
     /// ([`Round::turn_at`]): advice is checked by it before it is given. Empty for a shape not
     /// measured, and for a record made by hand.
     pub recount: Recount,
+}
+
+/// A ring's widest rim seen down its axis ([`Round::rim`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rim {
+    /// The largest turn of its outline at a corner, degrees (as built, 360° over the count).
+    pub turn_deg: f32,
+    /// Its furthest corner from the axis, square to it, metres.
+    pub radius_m: f32,
+    /// How far the middle of a side of its outline stands in from the true curve's outline
+    /// (the rim's ellipse), metres.
+    pub sag: f32,
+}
+
+/// Which of a ring's two turns a limit holds it to ([`Round::held`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum By {
+    /// The turn between neighbouring faces.
+    Faces,
+    /// The turn of its widest rim's outline, seen down its axis.
+    Rim,
 }
 
 /// What a [`Round`] needs to be measured again at another count (opaque).
@@ -138,33 +180,63 @@ enum Again {
 }
 
 impl Round {
-    /// The largest turn between neighbouring faces this shape would have in the finished model
-    /// with `count` in place of its count, measured as this record was (the same maps, the
-    /// same faces): `None` when that cannot be said (not measured; a record made by hand).
-    pub fn turn_at(&self, count: u32) -> Option<f32> {
+    /// The turns this shape would have in the finished model with `count` in place of its
+    /// count, measured as this record was (the same maps, the same faces): between its faces,
+    /// and (a ring's) of its widest rim seen down its axis. `None` when that cannot be said
+    /// (not measured; a record made by hand).
+    pub fn turns_at(&self, count: u32) -> Option<(f32, Option<f32>)> {
         let maps = &self.recount.maps;
         if maps.is_empty() {
             return None;
         }
-        let t = match &self.recount.kind {
+        let (t, rim) = match &self.recount.kind {
             Again::No => return None,
-            Again::Ring(ring) => maps.iter().map(|m| ring.under(m, count).0).fold(0.0, f64::max),
-            Again::Sphere(r) => maps.iter().map(|m| sphere_under(m, *r, count).0).fold(0.0, f64::max),
-            Again::Even(per) => per / f64::from(count.max(1)),
-            Again::Cell(k) => 2.0 * dmath::asin_f64((k / f64::from(count.max(1))).min(1.0)).to_degrees(),
+            Again::Ring(ring) => maps.iter().map(|m| ring.under(m, count)).fold((0.0, Some(0.0)), |(t, r), u| (u.faces.turn.max(t), r.map(|r: f64| r.max(u.rim.map_or(0.0, |s| s.turn))))),
+            Again::Sphere(r) => (maps.iter().map(|m| sphere_under(m, *r, count).0).fold(0.0, f64::max), None),
+            Again::Even(per) => (per / f64::from(count.max(1)), None),
+            Again::Cell(k) => (2.0 * dmath::asin_f64((k / f64::from(count.max(1))).min(1.0)).to_degrees(), None),
         };
-        Some(t as f32)
+        Some((t as f32, rim.map(|r| r as f32)))
     }
 
-    /// The work [`Round::turn_at`] takes at `count`, in faces measured (for a caller that
-    /// bounds a search).
+    /// The greater of the two turns [`Round::turns_at`] answers.
+    pub fn turn_at(&self, count: u32) -> Option<f32> {
+        self.turns_at(count).map(|(t, r)| t.max(r.unwrap_or(0.0)))
+    }
+
+    /// The work [`Round::turns_at`] takes at `count`, in faces and corners measured (for a
+    /// caller that bounds a search).
     pub fn turn_at_work(&self, count: u32) -> u64 {
         let maps = self.recount.maps.len() as u64;
         match &self.recount.kind {
-            Again::Ring(ring) => maps * u64::from(count) * ring.prof.len() as u64,
+            // (Every band's faces, and the rim's corners twice: its outline and its curve.)
+            Again::Ring(ring) => maps * u64::from(count.max(3)) * (ring.prof.len() as u64 + 2),
             Again::Sphere(_) => maps * (20u64 << (2 * count.min(5))),
             _ => 1,
         }
+    }
+
+    /// The turn a limit holds it to where its facets are seen (stand in by `seen` or more): of
+    /// its faces' turn and its rim's (seen down its axis), the greater of those that are seen,
+    /// and which it was (the faces' on a tie). `None` when neither is seen.
+    pub fn held(&self, seen: f32) -> Option<(f32, By)> {
+        let faces = (self.sag >= seen).then_some((self.turn_deg, By::Faces));
+        let rim = self.rim.filter(|r| r.sag >= seen).map(|r| (r.turn_deg, By::Rim));
+        match (faces, rim) {
+            (Some(f), Some(r)) => Some(if r.0 > f.0 { r } else { f }),
+            (f, r) => f.or(r),
+        }
+    }
+
+    /// How many maps it is measured again through (its copies' distinct maps; one for those
+    /// that are all similarities): what one measure at another count costs goes with it.
+    pub fn recount_maps(&self) -> usize {
+        self.recount.maps.len()
+    }
+
+    /// The greater of its two stand-ins (its faces' and its rim's).
+    pub fn sag_seen(&self) -> f32 {
+        self.rim.map_or(self.sag, |r| r.sag.max(self.sag))
     }
 }
 
@@ -188,7 +260,16 @@ impl Round {
             ("turn_deg", r(self.turn_deg, 100.0)),
             ("radius_m", r(self.radius_m, 1.0e4)),
             ("sag_m", r(self.sag, 1.0e5)),
+            ("turn_radius_m", r(self.turn_radius_m, 1.0e4)),
+            ("most", Json::from(self.most)),
+            ("most_by", Json::from(self.most_by)),
         ]);
+        if let Some(rim) = self.rim {
+            j.set("rim", Json::obj([("turn_deg", r(rim.turn_deg, 100.0)), ("radius_m", r(rim.radius_m, 1.0e4)), ("sag_m", r(rim.sag, 1.0e5))]));
+        }
+        if let Some(why) = self.most_estimated {
+            j.set("most_estimated", Json::from(why));
+        }
         if self.displaced_m > 0.0 {
             j.set("displaced_m", r(self.displaced_m, 1.0e4));
         }
@@ -218,6 +299,42 @@ pub(crate) struct Note {
     pub ring: Option<u32>,
     /// A sculpt's primitive: its number, depth first.
     pub primitive: Option<usize>,
+    /// The fewest and the most of its count its builder takes (its own range).
+    pub least: u32,
+    pub most: u32,
+    /// How the shape's triangles grow with the count, as its builder predicts them.
+    pub grows: Grows,
+    /// The triangles its builder makes alone at another count (a ring's go as a line with
+    /// its count: with what it made as built, that line); `None` where the prediction is
+    /// what it makes (a sphere's) or there is none (a sculpt's).
+    pub alone: Option<(u32, u64)>,
+    /// The model's triangles before the shape was checked against the limits.
+    pub total_before: u64,
+}
+
+/// How a shape's triangles grow with its count, **as its builder predicts them**: the build
+/// holds a shape to the limits on a part's and the model's triangles by this prediction before
+/// it builds it, and never makes more than it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Grows {
+    /// `per` a count, and `fixed` besides.
+    Linear { per: u64, fixed: u64 },
+    /// Twenty, four times over for each (a sphere's subdivisions).
+    Fourfold,
+    /// With the square of the count, from what was built (a sculpt's resolution): an estimate,
+    /// since what a mesher makes is known only once it has made it.
+    Square,
+}
+
+impl Grows {
+    /// The triangles predicted at `k` (none for [`Grows::Square`], which has no prediction).
+    pub(crate) fn at(self, k: u32) -> u64 {
+        match self {
+            Grows::Linear { per, fixed } => per.saturating_mul(u64::from(k)).saturating_add(fixed),
+            Grows::Fourfold => 20u64 << (2 * k.min(20)),
+            Grows::Square => 0,
+        }
+    }
 }
 
 /// A round shape while the model is built.
@@ -235,7 +352,30 @@ pub(crate) struct Rec {
     pub many: Option<f64>,
     pub displaced: f64,
     pub unknown: Option<&'static str>,
+    /// The triangles the shape had as built.
+    pub made: u64,
+    /// Where the build's log of the model's triangles stood when it was made (the checks
+    /// after it hold its triangles too).
+    pub since: usize,
+    /// The tightest check on a piece of a part its triangles were in: room for its share
+    /// (the part's limit less the rest of the piece), its share, and what limit it was.
+    pub tight: Option<(u64, u64, &'static str)>,
+    /// The most of its triangles any check counted.
+    pub share_max: u64,
+    /// Why its most count can only be estimated.
+    pub estimate: Option<&'static str>,
 }
+
+/// Why a count's greatest that builds is estimated: a sculpt's triangles at another resolution
+/// are known only once its mesher has made them (taken here to grow as its square).
+pub(crate) const SCULPT_ESTIMATE: &str = "a sculpt's triangles at another resolution are known only once it is meshed (taken to grow as the square of it)";
+/// And a boolean's result.
+pub(crate) const BOOLEAN_ESTIMATE: &str = "it passes through a boolean, whose triangles are known only once it is done (taken to grow as its own do)";
+
+/// What stops a count at its greatest that builds, past its range.
+pub(crate) const PART_LIMIT: &str = "the triangles one part may have";
+pub(crate) const MODEL_LIMIT: &str = "the triangles the model may have";
+pub(crate) const BUDGET_LIMIT: &str = "the recipe's budget.max_triangles";
 
 /// What an operation did to the triangles of a shape, for the round shapes among them.
 pub(crate) enum Moved {
@@ -359,24 +499,116 @@ impl Rec {
         }
     }
 
+    /// A check on a part's piece of `checked` triangles counted `share` of its own: kept when it
+    /// leaves its share less room than any before.
+    pub(crate) fn charge(&mut self, share: u64, checked: u64, estimate: Option<&'static str>) {
+        if share == 0 {
+            return;
+        }
+        self.share_max = self.share_max.max(share);
+        if estimate.is_some() && self.estimate.is_none() {
+            self.estimate = estimate;
+        }
+        let room = (crate::recipe::MAX_PART_TRIANGLES as u64).saturating_sub(checked.saturating_sub(share));
+        let tighter = match self.tight {
+            Some((r, s, _)) => u128::from(room) * u128::from(s) < u128::from(r) * u128::from(share),
+            None => true,
+        };
+        if tighter {
+            self.tight = Some((room, share, PART_LIMIT));
+        }
+    }
+
+    /// The greatest count, from the one built to its range's most, at which every limit the
+    /// build held this shape's triangles to would still hold, and what stops it there: the
+    /// shape itself checked by its builder's prediction (against a part's limit and the model's
+    /// room when it was made), each piece of a part its triangles were in (their share grown as
+    /// the shape's own triangles grow: by no more than the prediction grows, which bounds what
+    /// is built), the model's triangles at their greatest since it was made, and the recipe's
+    /// budget (`budget`: its limit and the finished model's triangles).
+    fn most_count(&self, peak: u64, budget: Option<(u64, u64)>) -> (u32, &'static str) {
+        let n = self.note.count_value;
+        let a = u128::from(self.made.max(1));
+        let p_n = u128::from(self.note.grows.at(n));
+        let part = crate::recipe::MAX_PART_TRIANGLES as u128;
+        let model = crate::recipe::MAX_MODEL_TRIANGLES as u128;
+        let before = u128::from(self.note.total_before);
+        let share = u128::from(self.share_max.max(self.made));
+        let model_room = model.saturating_sub(u128::from(peak));
+        for k in n.saturating_add(1)..=self.note.most {
+            // (What it would have at k: its own triangles as the build checks them (its
+            // prediction), and what its builder makes: on the line through what it made as
+            // built and alone at another count; with no such line, what the prediction adds,
+            // which bounds it.)
+            let (own, grown) = match (self.note.grows, self.note.alone) {
+                (Grows::Square, _) => {
+                    let nn = u128::from(n.max(1)) * u128::from(n.max(1));
+                    let g = (a * u128::from(k) * u128::from(k)).div_ceil(nn);
+                    (g, g)
+                }
+                (g, Some((m, tm))) if m != n && self.made > 0 => {
+                    let (a, tm) = (i128::from(self.made), i128::from(tm));
+                    let rise = (a - tm) * (i128::from(k) - i128::from(n));
+                    let run = i128::from(n) - i128::from(m);
+                    // (Rounded up: never less than the line.)
+                    let along = rise.div_euclid(run) + i128::from(run > 0 && rise.rem_euclid(run) != 0);
+                    (u128::from(g.at(k)), (a + along).max(0) as u128)
+                }
+                (g, _) => {
+                    let p = u128::from(g.at(k));
+                    (p, a + p.saturating_sub(p_n))
+                }
+            };
+            let grown = grown.max(a);
+            let more = grown - a;
+            let why = if own > part {
+                Some(PART_LIMIT)
+            } else if before + own > model || share * more > model_room * a {
+                Some(MODEL_LIMIT)
+            } else if self.tight.is_some_and(|(room, s, _)| u128::from(s) * grown > u128::from(room) * a) {
+                self.tight.map(|t| t.2)
+            } else if budget.is_some_and(|(limit, has)| share * more > u128::from(limit.saturating_sub(has)) * a) {
+                Some(BUDGET_LIMIT)
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                return (k - 1, why);
+            }
+        }
+        (self.note.most.max(n), "its range")
+    }
+
     /// What it is in the finished model.
-    fn measure(&self, path: String) -> Round {
+    fn measure(&self, path: String, peak: u64, budget: Option<(u64, u64)>) -> Round {
         let n = &self.note;
         // (As built: a ring's and a sphere's faces measured one by one; any other's from its
         // note.)
+        let sphere = |m: &M3| {
+            let (turn, far, sag) = sphere_under(m, n.radius, n.count_value);
+            Under { faces: Seen { turn, radius: far, sag }, far, rim: None }
+        };
         let built = match (&self.ring, n.what) {
             (Some(ring), _) => ring.under(&IDENTITY, n.count_value),
-            (None, "sphere") => sphere_under(&IDENTITY, n.radius, n.count_value),
-            _ => (n.turn_deg, n.radius, sag_of(n.radius, n.turn_deg)),
+            (None, "sphere") => sphere(&IDENTITY),
+            _ => Under { faces: Seen { turn: n.turn_deg, radius: n.radius, sag: sag_of(n.radius, n.turn_deg) }, far: n.radius, rim: None },
         };
+        let (most, most_by) = self.most_count(peak, budget);
+        let rim = |s: Seen| Rim { turn_deg: s.turn as f32, radius_m: s.radius as f32, sag: s.sag as f32 };
         let as_built = |unmeasured: Option<&'static str>| Round {
             path: path.clone(),
             what: n.what,
             count: n.count,
             count_value: n.count_value,
-            turn_deg: built.0 as f32,
-            radius_m: built.1 as f32,
-            sag: built.2 as f32,
+            turn_deg: built.faces.turn as f32,
+            radius_m: built.far as f32,
+            turn_radius_m: built.faces.radius as f32,
+            sag: built.faces.sag as f32,
+            rim: built.rim.map(rim),
+            least: n.least,
+            most,
+            most_by,
+            most_estimated: self.estimate,
             displaced_m: self.displaced as f32,
             unmeasured,
             recount: Recount::default(),
@@ -384,7 +616,7 @@ impl Rec {
         if self.unknown.is_some() {
             return as_built(self.unknown);
         }
-        let (mut turn, mut radius, mut sag) = (0.0f64, 0.0f64, 0.0f64);
+        let mut all = Under { faces: Seen::default(), far: 0.0, rim: built.rim.map(|_| Seen::default()) };
         let factors: Vec<(Option<f64>, Option<&M3>)> = match self.many {
             Some(f) => vec![(Some(f), None)],
             None => self.maps.iter().map(|m| (similarity(m), Some(m))).collect(),
@@ -392,13 +624,13 @@ impl Rec {
         let mut maps: Vec<M3> = Vec::new();
         let mut uneven = false;
         for (f, m) in factors {
-            let (t, r, s) = match (f, m, &self.ring) {
+            let u = match (f, m, &self.ring) {
                 // (A similarity keeps every angle: as built, scaled.)
                 (Some(f), _, _) => {
                     if !maps.contains(&IDENTITY) {
                         maps.push(IDENTITY);
                     }
-                    (built.0, built.1 * f, built.2 * f)
+                    built.scaled(f)
                 }
                 (None, Some(m), Some(ring)) => {
                     uneven = true;
@@ -408,16 +640,14 @@ impl Rec {
                 (None, Some(m), None) if n.what == "sphere" => {
                     uneven = true;
                     maps.push(*m);
-                    sphere_under(m, n.radius, n.count_value)
+                    sphere(m)
                 }
                 _ => return as_built(Some("stretched unevenly (only faces round a ring's axis and a sphere's are measured so)")),
             };
-            if !(t.is_finite() && r.is_finite() && s.is_finite()) {
+            if !u.finite() {
                 return as_built(Some("flattened by a map (not measured)"));
             }
-            turn = turn.max(t);
-            radius = radius.max(r);
-            sag = sag.max(s);
+            all.take(&u);
         }
         let kind = match (&self.ring, n.what, n.count) {
             (Some(ring), _, _) => Again::Ring(ring.clone()),
@@ -428,7 +658,62 @@ impl Rec {
             _ => Again::No,
         };
         let recount = Recount { kind, maps };
-        Round { path, what: n.what, count: n.count, count_value: n.count_value, turn_deg: turn as f32, radius_m: radius as f32, sag: sag as f32, displaced_m: self.displaced as f32, unmeasured: None, recount }
+        Round {
+            turn_deg: all.faces.turn as f32,
+            radius_m: all.far as f32,
+            turn_radius_m: all.faces.radius as f32,
+            sag: all.faces.sag as f32,
+            rim: all.rim.map(rim),
+            recount,
+            ..as_built(None)
+        }
+    }
+}
+
+/// How far facets turn, at what radius, and stand in.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Seen {
+    pub turn: f64,
+    pub radius: f64,
+    pub sag: f64,
+}
+
+/// A round shape under one map: its faces (the radius: of the band that turns the most), its
+/// largest radius, and a ring's widest rim seen down its axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Under {
+    pub faces: Seen,
+    pub far: f64,
+    pub rim: Option<Seen>,
+}
+
+impl Under {
+    fn nan() -> Under {
+        let x = Seen { turn: f64::NAN, radius: f64::NAN, sag: f64::NAN };
+        Under { faces: x, far: f64::NAN, rim: Some(x) }
+    }
+
+    fn scaled(&self, f: f64) -> Under {
+        let s = |x: Seen| Seen { turn: x.turn, radius: x.radius * f, sag: x.sag * f };
+        Under { faces: s(self.faces), far: self.far * f, rim: self.rim.map(s) }
+    }
+
+    fn finite(&self) -> bool {
+        let ok = |x: &Seen| x.turn.is_finite() && x.radius.is_finite() && x.sag.is_finite();
+        ok(&self.faces) && self.far.is_finite() && self.rim.as_ref().is_none_or(ok)
+    }
+
+    /// The worst of two copies: the larger turn (with its radius), radius and stand-in.
+    fn take(&mut self, u: &Under) {
+        if u.faces.turn > self.faces.turn {
+            self.faces.turn = u.faces.turn;
+            self.faces.radius = u.faces.radius;
+        }
+        self.faces.sag = self.faces.sag.max(u.faces.sag);
+        self.far = self.far.max(u.far);
+        if let (Some(a), Some(b)) = (&mut self.rim, u.rim) {
+            *a = Seen { turn: a.turn.max(b.turn), radius: a.radius.max(b.radius), sag: a.sag.max(b.sag) };
+        }
     }
 }
 
@@ -460,6 +745,9 @@ pub(crate) struct Ring {
     phase: f64,
     /// The largest radius any of its vertices has (the record's radius).
     radius: f64,
+    /// Its widest rim's radius: the furthest of its column's vertices from the axis (its
+    /// outline seen down the axis is that rim's polygon, every rim being one like it, smaller).
+    rim: f64,
     /// The profile's edges that turn round the axis, as `[ρ0, y0, ρ1, y1]`, one for each
     /// direction (the widest of those alike: faces of one direction turn alike, and the
     /// widest stands in furthest).
@@ -547,7 +835,8 @@ impl Ring {
             prof.sort_by(|a, b| b[0].max(b[2]).total_cmp(&a[0].max(a[2])));
             prof.truncate(MAX_PROFILE);
         }
-        Ring { what, sides, phase, radius, prof }
+        let rim = at.iter().flatten().map(|p| p[0]).fold(0.0f64, f64::max);
+        Ring { what, sides, phase, radius, rim, prof }
     }
 
     /// Its first vertex's angle at `count` (the builder's start, less what was measured as
@@ -563,27 +852,67 @@ impl Ring {
     }
 
     /// Put through `m` with `count` faces round its axis: the largest turn between neighbouring
-    /// faces round it (degrees), its largest radius, and the furthest any face stands in from
-    /// the true surface of its band (each band's surface of revolution, carried through `m`).
-    pub(crate) fn under(&self, m: &M3, count: u32) -> (f64, f64, f64) {
+    /// faces round it (degrees) with the radius of the band that turns so, its largest radius,
+    /// the furthest any face stands in from the true surface of its band (each band's surface
+    /// of revolution, carried through `m`), and its widest rim seen down the mapped axis.
+    pub(crate) fn under(&self, m: &M3, count: u32) -> Under {
         self.under_at(m, count, self.phase_at(count))
     }
 
-    fn under_at(&self, m: &M3, count: u32, phase: f64) -> (f64, f64, f64) {
+    fn under_at(&self, m: &M3, count: u32, phase: f64) -> Under {
         let n = count.max(3) as usize;
         let step = std::f64::consts::TAU / n as f64;
-        let Some(w) = normal_map(m) else { return (f64::NAN, f64::NAN, f64::NAN) };
+        let Some(w) = normal_map(m) else { return Under::nan() };
         let half = dmath::sin_f64(0.5 * step);
         let c2 = dmath::cos_f64(0.5 * step);
         // (1 − cos of half a step, without the cancellation.)
         let one_less = 2.0 * dmath::sin_f64(0.25 * step) * dmath::sin_f64(0.25 * step);
         let mids: Vec<(f64, f64)> = (0..n).map(|k| dmath::sin_cos_f64(phase + step * (k as f64 + 0.5))).collect();
-        let (mut turn, mut far, mut sag) = (0.0f64, 0.0f64, 0.0f64);
-        for &(s, c) in &mids {
-            // (The widest row's vertices are at the faces' middles less half a step.)
-            let (sv, cv) = (s * c2 - c * half, c * c2 + s * half);
-            far = far.max(norm(apply(m, [self.radius * cv, 0.0, -self.radius * sv])));
+        // Seen down the mapped axis: every point less its part along the axis's image (a rim's
+        // points at one height lie in a plane the map carries to one plane, and seen along the
+        // axis every rim falls on the same polygon scaled by its radius: the widest is the
+        // outline). The rim's corners `u` (at radius 1), and the curve's point between each two.
+        let axis = apply(m, [0.0, 1.0, 0.0]);
+        let al = norm(axis);
+        if !(al > 0.0 && al.is_finite()) {
+            return Under::nan();
         }
+        let d = axis.map(|x| x / al);
+        let seen = |v: [f64; 3]| {
+            let t = dot(v, d);
+            [v[0] - t * d[0], v[1] - t * d[1], v[2] - t * d[2]]
+        };
+        let corner = |&(s, c): &(f64, f64)| {
+            // (The vertices are at the faces' middles less half a step.)
+            let (sv, cv) = (s * c2 - c * half, c * c2 + s * half);
+            [cv, sv]
+        };
+        let (mut far, mut reach) = (0.0f64, 0.0f64);
+        let mut u: Vec<[f64; 3]> = Vec::with_capacity(n);
+        for mid in &mids {
+            let [cv, sv] = corner(mid);
+            let v = apply(m, [cv, 0.0, -sv]);
+            far = far.max(self.radius * norm(v));
+            let p = seen(v);
+            reach = reach.max(norm(p));
+            u.push(p);
+        }
+        // The rim: its outline's turn at each corner, and how far the curve between two corners
+        // stands out of the side between them (at the arc's middle, where the curve runs
+        // parallel to the side: an affine map keeps that), at the rim's radius.
+        let mut rim = Seen { turn: 0.0, radius: self.rim * reach, sag: 0.0 };
+        for k in 0..n {
+            let (a, b, c) = (u[(k + n - 1) % n], u[k], u[(k + 1) % n]);
+            let (e0, e1) = (sub3(b, a), sub3(c, b));
+            rim.turn = rim.turn.max(dmath::atan2_f64(norm(cross(e0, e1)), dot(e0, e1)).to_degrees());
+            let (s, cc) = mids[k];
+            let q = seen(apply(m, [cc, 0.0, -s]));
+            let l = norm(e1);
+            if l > 0.0 {
+                rim.sag = rim.sag.max(self.rim * norm(cross(e1, sub3(q, b))) / l);
+            }
+        }
+        let (mut turn, mut turn_radius, mut sag) = (0.0f64, 0.0f64, 0.0f64);
         for e in &self.prof {
             // A face of this band at middle angle μ: its edges at the rims are chords, at
             // ρ·cos(half a step) from the axis; its normal in the (outward, up) plane at μ is
@@ -602,18 +931,28 @@ impl Ring {
             let gap = e[0].max(e[2]) * a.abs() * one_less;
             let normal = |&(s, c): &(f64, f64)| apply(&w, [a * c, b, -a * s]);
             let mut prev = normal(&mids[n - 1]);
+            let mut band = 0.0f64;
             for mid in &mids {
                 let cur = normal(mid);
                 let l = norm(cur);
                 if l > 0.0 {
                     sag = sag.max(gap / l);
                 }
-                turn = turn.max(dmath::atan2_f64(norm(cross(prev, cur)), dot(prev, cur)).to_degrees());
+                band = band.max(dmath::atan2_f64(norm(cross(prev, cur)), dot(prev, cur)).to_degrees());
                 prev = cur;
             }
+            // (The band that turns the most, and its wider rim's reach from the axis.)
+            if band > turn {
+                turn = band;
+                turn_radius = e[0].max(e[2]) * reach;
+            }
         }
-        (turn, far, sag)
+        Under { faces: Seen { turn, radius: turn_radius, sag }, far, rim: Some(rim) }
     }
+}
+
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// A sphere of `radius` and `sub` subdivisions (as [`Shape::sphere`] builds it) put through
@@ -684,9 +1023,18 @@ pub(crate) fn slots_in(owners: &[u32]) -> Vec<u32> {
 /// than), the furthest standing first; then the rest by how far they stand in; the ones not
 /// measured are kept before both, up to eight. At most [`crate::MAX_ROUND`] are kept, except
 /// that the answers are all kept, however many.
-pub(crate) fn finish(recs: &[Rec], paths: &[String], shapes: &[&Shape]) -> (Vec<Round>, usize, usize) {
+///
+/// `totals` is the build's log of the model's triangles at each check (a record's most count
+/// holds the greatest since it was made), `budget` the recipe's limit on the finished model's
+/// triangles with what it has.
+pub(crate) fn finish(recs: &[Rec], paths: &[String], shapes: &[&Shape], totals: &[u64], budget: Option<(u64, u64)>) -> (Vec<Round>, usize, usize) {
     if recs.is_empty() {
         return (Vec::new(), 0, 0);
+    }
+    // (The greatest of the log from each place on.)
+    let mut peak_from = vec![0u64; totals.len() + 1];
+    for i in (0..totals.len()).rev() {
+        peak_from[i] = peak_from[i + 1].max(totals[i]);
     }
     let slots = recs.iter().map(|r| r.slot as usize + 1).max().unwrap_or(0);
     let mut present = vec![false; slots];
@@ -704,10 +1052,11 @@ pub(crate) fn finish(recs: &[Rec], paths: &[String], shapes: &[&Shape]) -> (Vec<
         .filter(|r| present.get(r.slot as usize).copied().unwrap_or(false))
         .map(|r| {
             let base = paths.get(r.record as usize).cloned().unwrap_or_default();
-            r.measure(match r.note.primitive {
+            let path = match r.note.primitive {
                 Some(i) => format!("{base}.tree#{i}"),
                 None => base,
-            })
+            };
+            r.measure(path, peak_from[r.since.min(totals.len())], budget)
         })
         .collect();
     let total = all.len();
@@ -768,15 +1117,24 @@ mod tests {
         Ring::of(&Shape::lathe(&[[1.0, 0.0], [1.0, 1.0]], sides, true), "lathe", sides, 1.0)
     }
 
+    /// A ring's faces' turn, its largest radius and its faces' stand-in; for a wall its rim seen
+    /// down its axis is its section, so the rim's turn and stand-in are its faces'.
+    fn faces(ring: &Ring, m: &M3, count: u32) -> (f64, f64, f64) {
+        let u = ring.under(m, count);
+        let rim = u.rim.unwrap();
+        assert!((rim.turn - u.faces.turn).abs() < 1e-9 && (rim.sag - u.faces.sag).abs() < 1e-9 * u.faces.sag.max(1.0), "a wall's rim is its section: {u:?}");
+        (u.faces.turn, u.far, u.faces.sag)
+    }
+
     #[test]
     fn a_ring_under_a_map_is_measured_exactly() {
-        let (t, r, s) = wall(6).under(&scale([2.0; 3]), 6);
+        let (t, r, s) = faces(&wall(6), &scale([2.0; 3]), 6);
         assert!((t - 60.0).abs() < 1e-9 && (r - 2.0).abs() < 1e-6 && (s - 2.0 * sag_of(1.0, 60.0)).abs() < 1e-6, "{t} {r} {s}");
         // Stretched along its axis only: the ring is untouched.
-        let (t, r, s) = wall(12).under(&scale([1.0, 5.0, 1.0]), 12);
+        let (t, r, s) = faces(&wall(12), &scale([1.0, 5.0, 1.0]), 12);
         assert!((t - 30.0).abs() < 1e-9 && (r - 1.0).abs() < 1e-6 && (s - sag_of(1.0, 30.0)).abs() < 1e-6);
         // Stretched across it by three: an ellipse of 3 by 1 drawn with 12 points.
-        let (t, r, s) = wall(12).under(&scale([3.0, 1.0, 1.0]), 12);
+        let (t, r, s) = faces(&wall(12), &scale([3.0, 1.0, 1.0]), 12);
         let pts: Vec<(f64, f64)> = (0..12).map(|k| (3.0 * dmath::cos_f64(k as f64 * 30f64.to_radians()), dmath::sin_f64(k as f64 * 30f64.to_radians()))).collect();
         let mut turn: f64 = 0.0;
         for k in 0..12 {
@@ -845,10 +1203,34 @@ mod tests {
         // A wall turns a full side face to face; a cone's faces, sloped, turn less:
         // 2·asin(cos a · sin(180°/n)), its faces sloped by a from the axis.
         let cone = Ring::of(&Shape::cylinder(0.5, 0.0, 1.0, 4, 0.0).unwrap(), "cone", 4, 0.5);
-        let (t, _, s) = cone.under(&IDENTITY, 4);
+        let u = cone.under(&IDENTITY, 4);
+        let (t, s) = (u.faces.turn, u.faces.sag);
         let ca = 1.0 / (1.0f64 + (0.5 * dmath::cos_f64(std::f64::consts::FRAC_PI_4)) * (0.5 * dmath::cos_f64(std::f64::consts::FRAC_PI_4))).sqrt();
         let want = 2.0 * dmath::asin_f64(ca * dmath::sin_f64(std::f64::consts::FRAC_PI_4)).to_degrees();
         assert!((t - want).abs() < 1e-4 && (s - 0.5 * ca * (1.0 - dmath::cos_f64(std::f64::consts::FRAC_PI_4))).abs() < 1e-6, "{t} against {want}; {s}");
+        // Seen from above its rim is a square: 90° at a corner, standing in 0.5·(1 − cos 45°).
+        let rim = u.rim.unwrap();
+        // (Its rim's radius is read off the built mesh's f32 points.)
+        assert!((rim.turn - 90.0).abs() < 1e-9 && (rim.sag - 0.5 * (1.0 - dmath::cos_f64(std::f64::consts::FRAC_PI_4))).abs() < 1e-7 && (rim.radius - 0.5).abs() < 1e-6, "{rim:?}");
+        // Stretched across by two and leant, from above it is a parallelogram: the rim's
+        // corners seen down the mapped axis, measured point by point here.
+        let m: M3 = mul(&[[1.0, 0.0, 0.0], [0.7, 1.0, -0.3], [0.0, 0.0, 1.0]], &scale([2.0, 1.0, 1.0]));
+        let u = cone.under(&m, 4);
+        let d = apply(&m, [0.0, 1.0, 0.0]);
+        let d = d.map(|x| x / norm(d));
+        let seen = |v: [f64; 3]| sub3(v, d.map(|x| x * dot(v, d)));
+        let p: Vec<[f64; 3]> = (0..4).map(|k| seen(apply(&m, [0.5 * dmath::cos_f64(ring_angle(&cone, k)), 0.0, -0.5 * dmath::sin_f64(ring_angle(&cone, k))]))).collect();
+        let mut turn = 0.0f64;
+        for k in 0..4 {
+            let (a, b) = (sub3(p[k], p[(k + 3) % 4]), sub3(p[(k + 1) % 4], p[k]));
+            turn = turn.max(dmath::atan2_f64(norm(cross(a, b)), dot(a, b)).to_degrees());
+        }
+        assert!((u.rim.unwrap().turn - turn).abs() < 1e-6 && turn > 95.0, "{:?} against {turn}", u.rim);
+    }
+
+    /// The angle of a ring's `k`th vertex round its axis, as built.
+    fn ring_angle(ring: &Ring, k: usize) -> f64 {
+        ring.phase + std::f64::consts::TAU * k as f64 / f64::from(ring.sides)
     }
 
     #[test]

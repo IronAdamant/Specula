@@ -428,6 +428,7 @@ impl Ctx<'_> {
         let (shape, st, bs) = res.map_err(|er| csg_err(&n.path, er))?;
         // The leaves were counted as they were built: the result replaces them.
         self.tally.grow(&n.path, leaf_tris, shape.triangle_count())?;
+        self.tally.charged(&shape.owners, 1, shape.triangle_count(), Some(crate::facet::BOOLEAN_ESTIMATE));
         let mut j = vec![
             ("op", Json::from(n.op.as_str())),
             ("input_triangles", Json::from(st.input_triangles)),
@@ -747,7 +748,7 @@ impl Ctx<'_> {
             Some(part) if figure => part.resolution() as i64,
             _ => 48,
         };
-        let mut res = self.int(n, "resolution", usual, 4, sdf::MAX_RESOLUTION as i64)?;
+        let mut res = self.int(n, "resolution", usual, SDF_LEAST_RESOLUTION, sdf::MAX_RESOLUTION as i64)?;
         if self.coarse {
             res = (res / 2).max(4);
         }
@@ -780,6 +781,9 @@ impl Ctx<'_> {
         // primitive with something round speaks for its own triangles (a cutter's, and a
         // primitive a difference takes away, for the walls they leave).
         let what = if figure { "figure" } else { "sdf" };
+        // (Its mesh was checked against the room left when it was made: the model's triangles
+        // before it are what is counted now less its own.)
+        let total_before = (self.tally.triangles.get().saturating_sub(shape.triangle_count())) as u64;
         let rounds: Vec<Option<crate::facet::Note>> = sdf::round_radii(&tree)
             .into_iter()
             .enumerate()
@@ -792,6 +796,11 @@ impl Ctx<'_> {
                     radius: f64::from(radius),
                     ring: None,
                     primitive: Some(i),
+                    least: SDF_LEAST_RESOLUTION as u32,
+                    most: sdf::MAX_RESOLUTION,
+                    grows: crate::facet::Grows::Square,
+                    alone: None,
+                    total_before,
                 })
             })
             .collect();
@@ -1269,6 +1278,14 @@ impl Gen<'_, '_> {
         }
         let copies: usize = places.iter().map(|p| { let vs = &built[p.item as usize]; vs[(p.variant % vs.len() as u64) as usize].iter().map(|q| q.shape.triangle_count()).sum::<usize>() }).sum();
         self.tally.grow(&n.path, 0, copies)?;
+        // (Each item's variant is in the copies as often as it was placed.)
+        for (i, vs) in built.iter().enumerate() {
+            for (v, pieces) in vs.iter().enumerate() {
+                let times = places.iter().filter(|p| p.item as usize == i && (p.variant % vs.len() as u64) as usize == v).count() as u64;
+                let owners: Vec<u32> = pieces.iter().flat_map(|q| q.shape.owners.iter().copied()).collect();
+                self.tally.charged(&owners, times, copies, None);
+            }
+        }
         // Copies merged by material.
         let mut by_mat: Vec<BuiltPart> = Vec::new();
         // (Each item's variant's places, for the round shapes in it: each place a copy.)
