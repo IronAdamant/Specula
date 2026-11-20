@@ -22,17 +22,9 @@ fn the_catalogue_lists_every_form_and_the_figure() {
     let text = first.to_string();
     assert!(text.len() <= MAX_INDEX_BYTES, "the first answer is {} bytes", text.len());
     assert!(first.get("forms").is_none() && first.get("figures").is_none(), "{text}");
-    let mut named: Vec<String> = Vec::new();
-    for kind in ["plane", "curve", "solid"] {
-        for line in first.get(kind).and_then(Json::as_array).unwrap() {
-            let (_, names) = line.as_str().unwrap().split_once(": ").unwrap();
-            named.extend(names.split(' ').map(str::to_string));
-        }
-    }
-    named.sort();
-    let mut want_all = all.clone();
-    want_all.sort();
-    assert_eq!(named, want_all, "the first answer names every form once");
+    // (Every form is named, or counted on its family's line: see `index_holds_any_table`.)
+    let rows: Vec<(Kind, &str, &str)> = formae::forms().iter().map(|f| (f.kind, f.family.name(), f.name)).collect();
+    check_index(&first, &rows);
     assert!(text.contains("figure") && text.contains("formae_get"), "{text}");
     // Rows, every one, page by page under their ceiling, each with what pastes.
     let mut seen = Vec::new();
@@ -228,4 +220,68 @@ fn an_items_fill_is_its_figure_and_its_faces_are_shaded() {
     colours.sort_unstable();
     colours.dedup();
     assert!(colours.len() > 2 && colours.iter().all(|c| c[0] < 255 && c[0] >= 63), "{colours:?}");
+}
+
+/// Reads a first answer back and holds it to `rows`: under its ceiling; every kind's families
+/// once each, in the table's order, each line either every name of its family or its count,
+/// its first names and how many more (`"family (N): a b +M more"`), or, when not a line a
+/// family fits, one line a kind with its counts of forms and families.
+fn check_index(answer: &Json, rows: &[(Kind, &str, &str)]) {
+    let text = answer.to_string();
+    assert!(text.len() <= MAX_INDEX_BYTES, "the first answer is {} bytes of {MAX_INDEX_BYTES}", text.len());
+    assert!(text.contains("figure") && text.contains("formae_get") && text.contains("formae_list"), "{text}");
+    for kind in [Kind::Plane, Kind::Curve, Kind::Solid] {
+        let mut families: Vec<(&str, Vec<&str>)> = Vec::new();
+        for &(_, family, name) in rows.iter().filter(|r| r.0 == kind) {
+            match families.iter_mut().find(|f| f.0 == family) {
+                Some(f) => f.1.push(name),
+                None => families.push((family, vec![name])),
+            }
+        }
+        let lines: Vec<&str> = answer.get(kind.name()).and_then(Json::as_array).unwrap().iter().map(|l| l.as_str().unwrap()).collect();
+        let forms: usize = families.iter().map(|f| f.1.len()).sum();
+        if lines.len() == 1 && lines[0].starts_with(&format!("{forms} forms in {} families: ", families.len())) && !families.is_empty() {
+            continue;
+        }
+        assert_eq!(lines.len(), families.len(), "{}: a line a family: {lines:?}", kind.name());
+        for (line, (family, names)) in lines.iter().zip(&families) {
+            if let Some(all) = line.strip_prefix(&format!("{family}: ")) {
+                assert_eq!(all.split(' ').collect::<Vec<_>>(), *names, "{line}");
+            } else {
+                let cut = line.strip_prefix(&format!("{family} ({}):", names.len())).unwrap_or_else(|| panic!("{line}"));
+                let words: Vec<&str> = cut.split(' ').filter(|w| !w.is_empty()).collect();
+                let (more, shown) = words.split_last().unwrap();
+                let more: usize = more.strip_prefix('+').unwrap_or_else(|| panic!("{line}")).parse().unwrap();
+                assert!(shown.len() + more == names.len() && *shown == names[..shown.len()] && more > 0, "{line}");
+            }
+        }
+    }
+}
+
+/// **The first answer holds whatever is added to the library**: a made-up table twice the size
+/// of the library's (each family twice as long), one with twice as many families, and one of
+/// two hundred families of fifty forms each, all answer under the ceiling, every family named or
+/// counted (`check_index`); and the library's own table, while it fits, names every form.
+#[test]
+fn index_holds_any_table() {
+    let real: Vec<(Kind, &str, &str)> = formae::forms().iter().map(|f| (f.kind, f.family.name(), f.name)).collect();
+    let names: Vec<String> = real.iter().map(|r| format!("{}_twin", r.2)).collect();
+    let families: Vec<String> = real.iter().map(|r| format!("{}_twin", r.1)).collect();
+    let mut longer = real.clone();
+    longer.extend(real.iter().zip(&names).map(|(r, n)| (r.0, r.1, n.as_str())));
+    let mut wider = real.clone();
+    wider.extend(real.iter().zip(&names).zip(&families).map(|((r, n), f)| (r.0, f.as_str(), n.as_str())));
+    let many_names: Vec<String> = (0..200 * 50).map(|i| format!("made_up_form_{i}")).collect();
+    let many_families: Vec<String> = (0..200).map(|i| format!("family_{i}")).collect();
+    let huge: Vec<(Kind, &str, &str)> = many_names.iter().enumerate().map(|(i, n)| ([Kind::Plane, Kind::Curve, Kind::Solid][i % 3], many_families[i / 50].as_str(), n.as_str())).collect();
+    for (what, rows) in [("the library", &real), ("each family twice as long", &longer), ("twice the families", &wider), ("200 families of 50", &huge)] {
+        let a = index_of(rows, 79);
+        check_index(&a, rows);
+        if what == "the library" && a.to_string().len() + 1 <= MAX_INDEX_BYTES {
+            assert!(!a.to_string().contains(" more\""), "the library's table fits, so every name is in it: {a}");
+        }
+    }
+    // (The three larger tables are cut, the last to a line a kind.)
+    assert!(index_of(&longer, 79).to_string().contains(" more"));
+    assert!(index_of(&huge, 79).to_string().contains("forms in"));
 }

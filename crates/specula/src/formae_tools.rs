@@ -337,29 +337,76 @@ fn row(f: &formae::Form) -> Json {
 /// The first answer, with nothing asked: every name by kind and family, one line a family, and
 /// how to ask for more. A few hundred tokens: the rows are asked for.
 fn index() -> Json {
-    let mut kinds: Vec<(&'static str, Json)> = Vec::new();
+    let rows: Vec<(Kind, &str, &str)> = formae::forms().iter().map(|f| (f.kind, f.family.name(), f.name)).collect();
+    index_of(&rows, formae::aliases().len())
+}
+
+/// The first answer for a table of `(kind, family, name)` rows (the library's, or a test's),
+/// always under [`MAX_INDEX_BYTES`] however large the table grows. While it fits, every name,
+/// one line a family (`"block: box wedge"`). When it does not, each family's line keeps its
+/// first names, as many as fit for every family alike, and says how many it has and how many
+/// more there are (`"archimedean (13): truncated_tetrahedron +12 more"`); a family's rows are
+/// one call away. When not even a line a family fits, a line a kind says how many forms and
+/// families it has (`"81 forms in 14 families: ..."`), which is a few dozen bytes a kind.
+fn index_of(rows: &[(Kind, &str, &str)], aliases: usize) -> Json {
+    // (Each kind's families in the table's order, wherever their forms stand in it.)
+    let mut kinds: Vec<(Kind, Vec<(&str, Vec<&str>)>)> = Vec::new();
     for kind in [Kind::Plane, Kind::Curve, Kind::Solid] {
-        // (A family's line in the table's order, wherever its forms stand in it.)
-        let mut lines: Vec<(&str, String)> = Vec::new();
-        for f in formae::forms().iter().filter(|f| f.kind == kind) {
-            let family = f.family.name();
-            match lines.iter_mut().find(|l| l.0 == family) {
-                Some(l) => {
-                    l.1.push(' ');
-                    l.1.push_str(f.name);
-                }
-                None => lines.push((family, format!("{family}: {}", f.name))),
+        let mut families: Vec<(&str, Vec<&str>)> = Vec::new();
+        for &(_, family, name) in rows.iter().filter(|r| r.0 == kind) {
+            match families.iter_mut().find(|f| f.0 == family) {
+                Some(f) => f.1.push(name),
+                None => families.push((family, vec![name])),
             }
         }
-        kinds.push((kind.name(), Json::arr(lines.into_iter().map(|l| Json::from(l.1)))));
+        kinds.push((kind, families));
     }
-    let mut out = kinds;
-    out.push(("aliases", Json::from(format!("{} more words name these (cube, ball, donut, hexagon, pill...): formae_get takes them too", formae::aliases().len()))));
-    out.push(("figure", Json::from("the measured human body: {\"op\": \"figure\"} as a recipe shape, or \"rig\": {\"figure\": {...}}; formae_list {\"figures\": true} gives its fields")));
-    out.push((
-        "ask",
-        Json::from("formae_get {\"name\": \"gear\"}: one form's parameters and snippets to paste. formae_list {\"family\": \"gear\"} or {\"word\": \"star\"}: rows to paste. A solid is a recipe shape {\"op\": \"form\", \"form\": NAME, \"args\": {...}}; a plane figure an outline {\"form\": NAME} (extrude, loft, lathe, sweep) or a shape2d item."),
-    ));
+    let rest = |out: &mut Vec<(&'static str, Json)>| {
+        out.push(("aliases", Json::from(format!("{aliases} more words name these (cube, ball, donut, hexagon, pill...): formae_get takes them too"))));
+        out.push(("figure", Json::from("the measured human body: {\"op\": \"figure\"} as a recipe shape, or \"rig\": {\"figure\": {...}}; formae_list {\"figures\": true} gives its fields")));
+        out.push((
+            "ask",
+            Json::from("formae_get {\"name\": \"gear\"}: one form's parameters and snippets to paste. formae_list {\"family\": \"gear\"} or {\"word\": \"star\"}: rows to paste. A solid is a recipe shape {\"op\": \"form\", \"form\": NAME, \"args\": {...}}; a plane figure an outline {\"form\": NAME} (extrude, loft, lathe, sweep) or a shape2d item."),
+        ));
+    };
+    // `shown`: the names a family's line keeps (`None`: all of them).
+    let answer = |shown: Option<usize>| {
+        let mut out: Vec<(&'static str, Json)> = Vec::new();
+        for (kind, families) in &kinds {
+            let lines = families.iter().map(|(family, names)| match shown {
+                Some(k) if names.len() > k => {
+                    let mut line = format!("{family} ({}):", names.len());
+                    for n in &names[..k] {
+                        line.push(' ');
+                        line.push_str(n);
+                    }
+                    Json::from(format!("{line} +{} more", names.len() - k))
+                }
+                _ => Json::from(format!("{family}: {}", names.join(" "))),
+            });
+            out.push((kind.name(), Json::arr(lines)));
+        }
+        rest(&mut out);
+        Json::obj(out)
+    };
+    let fits = |j: &Json| j.to_string().len() <= MAX_INDEX_BYTES;
+    let all = answer(None);
+    if fits(&all) {
+        return all;
+    }
+    let widest = kinds.iter().flat_map(|k| k.1.iter().map(|f| f.1.len())).max().unwrap_or(0);
+    for k in (0..widest).rev() {
+        let cut = answer(Some(k));
+        if fits(&cut) {
+            return cut;
+        }
+    }
+    let mut out: Vec<(&'static str, Json)> = Vec::new();
+    for (kind, families) in &kinds {
+        let forms: usize = families.iter().map(|f| f.1.len()).sum();
+        out.push((kind.name(), Json::arr([Json::from(format!("{forms} forms in {} families: formae_list {{\"kind\": \"{}\", \"rows\": true}} gives their rows", families.len(), kind.name()))])));
+    }
+    rest(&mut out);
     Json::obj(out)
 }
 
