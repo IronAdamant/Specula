@@ -239,6 +239,30 @@ fn the_advice_work_is_bounded_for_the_whole_check() {
     }
 }
 
+/// **A ring is held to its rim seen down its axis** where that turns more than its faces (the
+/// third review's second finding): a round tower of 32 sides under a shallow roof of 8 passed
+/// a limit of 20° by the roof's faces (12.3°); from above the roof is an octagon, 45° a corner.
+/// It fails now, saying which turn it is held to, and the advice followed builds and passes.
+#[test]
+fn a_shallow_roof_is_held_by_its_rim() {
+    let roof = |n: u32| {
+        format!(
+            r#"{{ "name": "t", "parts": [
+        {{ "name": "tower", "material": "stone", "shape": {{"op":"cylinder","radius":1.0,"height":3.0,"sides":32}} }},
+        {{ "name": "roof", "material": "stone", "shape": {{"op":"cone","radius":1.3,"height":0.35,"sides":{n}}}, "ops": [{{"op":"move","by":[0,3,0]}}] }} ] }}"#
+        )
+    };
+    let f = facts(&roof(8));
+    let s = Style::parse(STYLE).unwrap();
+    let bible = Bible::load(&s, Some("[form]\nmax_facet_deg = 20\n"), "t.toml").unwrap();
+    let main = bible.check(&f).findings.into_iter().find(|x| x.check == "faceting").unwrap();
+    assert!(!main.passed && (main.value - 45.0).abs() < 1e-3 && main.message.contains("cone at parts[1].shape: its rim, seen along its axis, turns 45.0° at a corner") && main.message.contains("its faces turn 12.3°"), "{main:?}");
+    let k = named(&main.fix).unwrap_or_else(|| panic!("{}", main.fix));
+    assert!(k == 18 && builds(&roof(k)) && !verdict(&facts(&roof(k)), 20.0).0, "{}", main.fix);
+    let j = f.to_json(0);
+    assert_eq!(j.get("faceting").and_then(|x| x.get("by")).and_then(specula_core::Json::as_str), Some("its rim, seen along its axis"));
+}
+
 /// Where no count holds, the advice says so and names none: a capsule's ends need more than 32
 /// rings for a limit of 2°.
 #[test]
