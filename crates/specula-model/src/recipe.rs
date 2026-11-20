@@ -664,7 +664,9 @@ impl Parser<'_> {
             }
             let Some(f) = schema.iter().find(|f| f.name == k) else {
                 let names: Vec<&str> = schema.iter().map(|f| f.name).collect();
-                return Err(e(&fpath, ErrorCode::UnknownField, format!("'{op}' accepts: {}{}", names.join(", "), if with_op { ", when, note" } else { "" })));
+                // An outline written as a library word (`{"heart": ...}`) is told how to name it.
+                let hint = if op == "outline" { form::library_hint(k, false).map_or(String::new(), |h| format!("; {h}")) } else { String::new() };
+                return Err(e(&fpath, ErrorCode::UnknownField, format!("'{k}' is not a field of '{op}'{hint}; it accepts: {}{}", names.join(", "), if with_op { ", when, note" } else { "" })));
             };
             if node.get(k).is_some() {
                 return Err(e(&fpath, ErrorCode::WrongType, "duplicate field"));
@@ -691,7 +693,10 @@ impl Parser<'_> {
             .ok_or_else(|| e(&format!("{path}.op"), ErrorCode::MissingField, format!("every {what} needs \"op\"")))?;
         let Some((_, schema)) = table.iter().find(|(n, _)| *n == name) else {
             let names: Vec<&str> = table.iter().map(|(n, _)| *n).collect();
-            return Err(e(&format!("{path}.op"), ErrorCode::UnknownOp, format!("unknown {what} '{name}' (known: {})", names.join(", "))));
+            // A shape the modeller does not know may be one of the shape library's: said first,
+            // with how to write it (or the library's nearest names).
+            let hint = if what == "shape" { form::library_hint(name, true).map_or(String::new(), |h| format!("; {h}")) } else { String::new() };
+            return Err(e(&format!("{path}.op"), ErrorCode::UnknownOp, format!("unknown {what} '{name}'{hint} (known {what}s: {})", names.join(", "))));
         };
         self.node(path, v, name, schema, true)
     }
@@ -880,7 +885,7 @@ impl Recipe {
             &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures", "wind", "edits"];
         for (k, _) in obj {
             if !TOP.contains(&k.as_str()) {
-                return Err(e(k, ErrorCode::UnknownField, format!("a recipe accepts: {}", TOP.join(", "))));
+                return Err(e(k, ErrorCode::UnknownField, format!("'{k}' is not a field of a recipe; it accepts: {}", TOP.join(", "))));
             }
         }
         let get = |k: &str| obj.iter().find(|(n, _)| n == k).map(|(_, v)| v);
@@ -1032,7 +1037,7 @@ impl Recipe {
                 &["name", "material", "color", "when", "shape", "include", "generate", "params", "ops", "smooth_angle", "lod_detail", "bones", "blend", "texture", "uv_scale", "note"];
             for (k, _) in po {
                 if !PART.contains(&k.as_str()) {
-                    return Err(e(&format!("{path}.{k}"), ErrorCode::UnknownField, format!("a part accepts: {}", PART.join(", "))));
+                    return Err(e(&format!("{path}.{k}"), ErrorCode::UnknownField, format!("'{k}' is not a field of a part; it accepts: {}", PART.join(", "))));
                 }
             }
             let pget = |k: &str| po.iter().find(|(n, _)| n == k).map(|(_, v)| v);

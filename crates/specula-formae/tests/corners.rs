@@ -118,10 +118,14 @@ fn gather(faults: &mut Vec<String>, word: &str, said: String) {
     }
 }
 
+/// Every word of a kind, or only the one `FORMAE_CORNER_WORD` names (to run one case again).
 fn words(kind: Kind) -> Vec<Found> {
     let mut v: Vec<Found> = forms().iter().filter(|f| f.kind == kind).map(|f| Found { form: f, alias: None }).collect();
     for a in aliases().iter().filter(|a| a.kind == kind) {
         v.push(find(a.name, Some(kind)).expect("every alias resolves"));
+    }
+    if let Ok(only) = std::env::var("FORMAE_CORNER_WORD") {
+        v.retain(|w| w.name() == only);
     }
     v
 }

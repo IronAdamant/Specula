@@ -318,3 +318,46 @@ fn a_refusal_names_its_field() {
     let er = refused(&recipe(r#"{"op": "form", "form": "sphere", "args": {"radius": 1e6}}"#));
     assert!(er.message.contains("radius"), "{er}");
 }
+
+/// A wrong name costs one request (stage 3b): a shape the modeller does not know that is one of
+/// the shape library's is answered with how to write it; one near a library word with the
+/// nearest names; an outline written as a library word is told how to name it; an unknown
+/// field that is no library word is not sent to the library.
+#[test]
+fn a_wrong_name_is_answered_with_the_librarys() {
+    for (shape, says) in [
+        (r#"{"op": "torus_knot"}"#, r#"{"op": "form", "form": "torus_knot""#),
+        (r#"{"op": "icosahedron"}"#, r#"{"op": "form", "form": "icosahedron""#),
+        (r#"{"op": "heart", "size": 1}"#, r#""raise": {"as": "slab""#),
+        (r#"{"op": "gear"}"#, r#""outline": {"form": "gear"}"#),
+        (r#"{"op": "icosahedrn"}"#, "nearest: icosahedron"),
+        (r#"{"op": "sine_wave"}"#, "open curve"),
+        (r#"{"op": "extrude", "outline": {"heart": {"width": 1}}, "height": 1}"#, r#"an outline by name is {"form": "heart""#),
+    ] {
+        let er = refused(&recipe(shape));
+        assert!(er.message.contains(says), "{shape}: {er}");
+    }
+    let er = refused(&recipe(r#"{"op": "extrude", "outline": {"sides": 6, "radiuss": 1}, "height": 1}"#));
+    assert!(er.code == ErrorCode::UnknownField && !er.message.contains("shape library"), "{er}");
+    let er = refused(&recipe(r#"{"op": "qqqqqqqqqqqq"}"#));
+    assert!(er.code == ErrorCode::UnknownOp && !er.message.contains("nearest"), "{er}");
+}
+
+/// A refusal for an unknown field says which field it was, beside what is taken there (review
+/// 3, finding 2: "a raise as slab takes: thickness" left the reader to find their stranger), in
+/// the message alone: a raise, a form's `args`, a shape, a part and the recipe.
+#[test]
+fn an_unknown_field_is_named_in_its_refusal() {
+    let part = |extra: &str| format!(r#"{{ "name": "t", "parts": [ {{ "name": "p", "material": "stone", "shape": {{"op": "box", "size": [1, 1, 1]}}{extra} }} ] }}"#);
+    for (text, stranger, takes) in [
+        (recipe(r#"{"op": "form", "form": "circle", "raise": {"as": "slab", "thickness": 0.1, "rise": 1}}"#), "'rise'", "thickness"),
+        (recipe(r#"{"op": "form", "form": "sphere", "args": {"radius": 1, "girth": 2}}"#), "'girth'", "radius"),
+        (recipe(r#"{"op": "box", "size": [1, 1, 1], "colour": [1, 0, 0]}"#), "'colour'", "size"),
+        (part(r#", "colour": [1, 0, 0]"#), "'colour'", "material"),
+        (r#"{ "name": "t", "colour": 1, "parts": [] }"#.to_string(), "'colour'", "parts"),
+    ] {
+        let er = refused(&text);
+        assert!(er.code == ErrorCode::UnknownField, "{er}");
+        assert!(er.message.contains(&format!("{stranger} is not")) && er.message.contains(takes), "{er}");
+    }
+}

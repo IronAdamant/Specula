@@ -145,6 +145,33 @@ fn look_up(path: &str, word: &str, want: FKind, shape: bool) -> Result<Found, Re
     Err(e(path, code, msg))
 }
 
+/// What the shape library says of a word a recipe used where it knows no such shape (an `op`)
+/// or outline (a field of an outline): how to write it by name when it is one of the library's,
+/// and the library's nearest names otherwise (`shape`: for an `op`; a field is hinted only when
+/// it is a word of the library, never by nearness, so a mistyped field is not sent to a form).
+/// So a guess ("heart", "gear") costs one request and not three.
+pub(super) fn library_hint(word: &str, shape: bool) -> Option<String> {
+    let get = format!("formae_get {{\"name\": \"{word}\"}} gives its parameters");
+    if formae::find(word, Some(FKind::Solid)).is_ok() {
+        return Some(format!("'{word}' is a solid of the shape library: {{\"op\": \"form\", \"form\": \"{word}\", \"args\": {{...}}}} ({get})"));
+    }
+    if formae::find(word, Some(FKind::Plane)).is_ok() {
+        return Some(if shape {
+            format!("'{word}' is a plane figure of the shape library: as a shape it is raised, {{\"op\": \"form\", \"form\": \"{word}\", \"raise\": {{\"as\": \"slab\", \"thickness\": 0.1}}}}, or extruded, {{\"op\": \"extrude\", \"outline\": {{\"form\": \"{word}\"}}, \"height\": 0.1}} ({get})")
+        } else {
+            format!("'{word}' is a plane figure of the shape library: an outline by name is {{\"form\": \"{word}\", \"args\": {{...}}}} ({get})")
+        });
+    }
+    if formae::find(word, Some(FKind::Curve)).is_ok() {
+        return Some(format!("'{word}' is an open curve of the shape library, which has no inside: its band (formae_get {{\"name\": \"{word}\"}} names it) is a plane figure"));
+    }
+    if !shape {
+        return None;
+    }
+    let near = formae::nearest(word, None);
+    (!near.is_empty()).then(|| format!("the shape library's nearest: {} (a solid is {{\"op\": \"form\", \"form\": NAME}}; formae_list names them all)", near.join(", ")))
+}
+
 impl Parser<'_> {
     /// A form's `args`: an object of the form's parameter names, each a number or an
     /// expression (checked against the form by [`Parser::check_form`]).
@@ -172,7 +199,7 @@ impl Parser<'_> {
             for (k, _) in &args.fields {
                 if !takes.contains(&k.as_str()) {
                     let list = if takes.is_empty() { "no parameters".to_string() } else { takes.join(", ") };
-                    return Err(e(&args.at(k), ErrorCode::UnknownField, format!("'{word}' takes: {list}")));
+                    return Err(e(&args.at(k), ErrorCode::UnknownField, format!("'{k}' is not a parameter of '{word}'; it takes: {list}")));
                 }
             }
         }
@@ -181,7 +208,7 @@ impl Parser<'_> {
             let (takes, need) = raise_takes(kind);
             for (k, _) in &r.fields {
                 if k != "as" && !takes.contains(&k.as_str()) {
-                    return Err(e(&r.at(k), ErrorCode::UnknownField, format!("a raise as {kind} takes: {}", takes.join(", "))));
+                    return Err(e(&r.at(k), ErrorCode::UnknownField, format!("'{k}' is not a field of a raise as {kind}; it takes: as, {}", takes.join(", "))));
                 }
             }
             for k in &takes[..need] {

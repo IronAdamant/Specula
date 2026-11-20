@@ -46,6 +46,67 @@ fn raised_straight_figures_hold_their_closed_forms_exactly() {
     assert!(checked > 60, "only {checked}");
 }
 
+/// The same at a needle's corners (review 3, finding 1): a trapezoid 1396 m wide and 6 mm high
+/// turns by π less 8e-6 at its base, where `tan(φ/2)` written as `cross / (|u||v| + dot)` is a
+/// difference of nearly equal numbers and kept a millionth of `K`: the stepped form's closed
+/// area came out 1.4e-7 off its build. Both are exact here, so they agree to rounding.
+#[test]
+fn a_needles_corners_keep_the_closed_forms_digits() {
+    let f = Spec::new("isosceles_trapezoid", Some(Kind::Plane), &[("bottom", 1396.0204849349107), ("top", 0.0022821874604764857), ("height", 0.005855418312375316)]).unwrap();
+    let s = stepped(&f, 4, 1.090642593765301, 0.00011416950158157617).unwrap();
+    for detail in [8, 9] {
+        let m = s.build(detail).unwrap();
+        let (b, c) = (m.measures(), s.closed());
+        let (ab, ac) = (b.boundary.unwrap(), c.boundary.expect("a closed area"));
+        assert!((ab - ac).abs() <= 1e-12 * ac, "built area {ab}, closed {ac}");
+        let (vb, vc) = (b.size.unwrap(), c.size.expect("a closed volume"));
+        assert!((vb - vc).abs() <= 1e-12 * vc, "built volume {vb}, closed {vc}");
+    }
+}
+
+/// What a raised build costs is near linear in its points, held by counts (review 3, finding 1:
+/// the full runs went from minutes to 800 s). The review's case, a relief of a sine band 0.1 mm
+/// long with 69 waves on a plate 28 km wide, puts all of the plate's reflex corners in a speck
+/// of it: over the region's bounds they fell in one cell of the cut's grid and every ear looked
+/// at every one (a refused build took 63 s); over their own bounds an ear looks at a few. And a
+/// raised figure's caps are cut by the cap's cutter in `Mesh::triangles` (and so in `validate`),
+/// never by the plain ear clipper that looks at every corner for every ear (a cap of a slab at
+/// detail 101 took 80 s).
+#[test]
+fn a_raised_builds_cuts_look_at_a_few_corners_an_ear() {
+    let band = Spec::new("sine_band", Some(Kind::Plane), &[("length", 0.0001001), ("amplitude", 0.2), ("cycles", 69.51661131181342), ("phase", 40.87970191516081), ("thickness", 7.213465925256866)]).unwrap();
+    let speck = relief(&band, 0.004212653259110444, 9990.00999000999, 0.06268813941829753).unwrap();
+    crate::cap::LOOKS.with(|l| l.set(0));
+    // (Refused for a sliver past the floor at this detail, after the cut: its cost is the cut's.)
+    let n = speck.count(30).unwrap().points;
+    assert!(speck.build(30).is_err());
+    let looks = crate::cap::LOOKS.with(std::cell::Cell::get);
+    // (The refusal's search for a coarser detail cuts again at 15 and 8: about 90 looks a point
+    // in all. Over the region's bounds: 307 million, 37,000 a point.)
+    assert!(looks <= 256 * n, "{looks} corners looked at for {n} points");
+    // A small disc on a plate: built, its faces' triangles tiling them, none by the clipper.
+    let disc = Spec::new("circle", Some(Kind::Plane), &[("radius", 0.1)]).unwrap();
+    let solid = relief(&disc, 0.2, 5.0, 0.5).unwrap();
+    crate::mesh::CLIPPED.with(|c| c.set(0));
+    let m = solid.build(2048).unwrap();
+    let tris = m.triangles();
+    assert_eq!(crate::mesh::CLIPPED.with(std::cell::Cell::get), 0, "a cap went to the plain ear clipper");
+    // The faces' triangles tile them: their areas sum to the faces'.
+    let area: f64 = tris.iter().map(|(_, t)| {
+        let [a, b, c] = t.map(|v| m.points[v as usize]);
+        let (u, v) = (sub3(b, a), sub3(c, a));
+        0.5 * len3(cross3(u, v))
+    }).sum();
+    let want = m.measures().boundary.unwrap();
+    assert!((area - want).abs() <= 1e-9 * want, "{area} against {want}");
+    // And a slab of a star of a hundred points: a hundred reflex corners in each cap.
+    let star = Spec::new("star", Some(Kind::Plane), &[("points", 100.0)]).unwrap();
+    crate::mesh::CLIPPED.with(|c| c.set(0));
+    let m = slab(&star, 0.1).unwrap().build(64).unwrap();
+    assert!(m.triangles().len() as u64 >= m.points.len() as u64 - 4);
+    assert_eq!(crate::mesh::CLIPPED.with(std::cell::Cell::get), 0, "a cap went to the plain ear clipper");
+}
+
 /// A round bevel's and a pillow's volume converge on their closed forms as the profile's quarter
 /// circle (or ellipse) is cut finer: the error is a profile chord's sag times the band's
 /// length, falling as the square of the step (three to five times each time the detail

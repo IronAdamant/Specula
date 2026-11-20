@@ -14,6 +14,13 @@ use crate::maths::*;
 use crate::outline::EDGE_FLOOR;
 use crate::Measures;
 
+#[cfg(test)]
+thread_local! {
+    /// How many faces [`Mesh::triangles`] gave to its plain ear clipper (the cap's cutter
+    /// refused them), on this thread: the tests hold that a raised cap never needs it.
+    pub(crate) static CLIPPED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// A built solid.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mesh {
@@ -438,7 +445,8 @@ impl Mesh {
     }
 
     /// The faces as triangles `(face, [a, b, c])`: a convex face as a fan, any other by
-    /// cutting ears in its own plane.
+    /// cutting ears in its own plane (the cap's cutter, checked to tile the face; a plain ear
+    /// clipper where it refuses).
     pub fn triangles(&self) -> Vec<(u32, [u32; 3])> {
         let mut out = Vec::new();
         for (fi, f) in self.faces.iter().enumerate() {
@@ -459,6 +467,19 @@ impl Mesh {
                 }
                 continue;
             }
+            // A face that is not convex (a raised figure's cap: up to the build's ceiling of
+            // points) is cut by the cap's cutter, whose ears are found from a grid of reflex
+            // corners and whose result is checked to tile the face; the plain ear clipper below,
+            // which looks at every corner for every ear (n³ at worst: one cap of a slab at detail
+            // 101 took 80 s, and every refusal's search met it again in `validate`; review 3,
+            // finding 1), is kept only for a face the cutter refuses.
+            let ccw: Vec<Pt> = if sign > 0.0 { q.clone() } else { q.iter().map(|p| [p[1], p[0]]).collect() };
+            if let Ok(tris) = crate::cap::cut(&ccw, &[(0..n as u32).collect()]) {
+                out.extend(tris.into_iter().map(|t| (fi, t.map(|i| f.verts[i as usize]))));
+                continue;
+            }
+            #[cfg(test)]
+            CLIPPED.with(|c| c.set(c.get() + 1));
             let mut idx: Vec<usize> = (0..n).collect();
             let mut guard = 0;
             while idx.len() > 3 && guard < n * n {

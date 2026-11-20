@@ -427,8 +427,14 @@ impl Terrace {
                 let (u, v) = (sub(b, a), sub(c, b));
                 let cr = u[0] * v[1] - u[1] * v[0];
                 let dt = u[0] * v[0] + u[1] * v[1];
-                // tan(φ/2) = sin φ / (1 + cos φ) = cross / (|u||v| + dot).
-                k += cr / (len(u) * len(v) + dt);
+                // tan(φ/2) = sin φ / (1 + cos φ) = cross / (|u||v| + dot) where the corner turns
+                // less than a right angle; = (1 − cos φ) / sin φ = (|u||v| − dot) / cross where it
+                // turns more. The first form near a turn of π (a needle's tip) is a difference of
+                // two nearly equal numbers and kept a millionth of `K` (review 3, finding 1: a
+                // flat trapezoid's stepped area 1.4e-7 off its build); each form is used where
+                // nothing cancels.
+                let uv = len(u) * len(v);
+                k += if dt >= 0.0 { cr / (uv + dt) } else { (uv - dt) / cr };
             }
         }
         k

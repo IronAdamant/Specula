@@ -49,6 +49,13 @@ fn left(a: Pt, b: Pt, c: Pt) -> bool {
     turn(a, b, c) > turn_bound(a, b, c)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many reflex corners the ear tests have looked at, on this thread (the tests hold the
+    /// cut's cost by it: a count, never a time).
+    pub(crate) static LOOKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// The number of triangles a region of `n` points in `rings` rings is cut into: `n + 2 h − 2`
 /// for `h = rings − 1` holes (Euler's formula for a disc with holes).
 pub(crate) fn triangles_of(n: u64, rings: u64) -> u64 {
@@ -242,20 +249,33 @@ fn ears(pts: &[Pt], poly: Vec<u32>) -> Result<Vec<[u32; 3]>, CapFault> {
     let mut prev: Vec<usize> = (0..n).map(|i| (i + n - 1) % n).collect();
     let mut next: Vec<usize> = (0..n).map(|i| (i + 1) % n).collect();
     let mut alive = vec![true; n];
-    // The grid of reflex corners.
+    // The grid of reflex corners, over the reflex corners' own bounds (a cut only ever asks
+    // whether one of them lies in an ear). Over the whole region's, a small figure's many
+    // corners on a large plate (a relief of a 0.1 mm sine band on a plate 28 km wide) all fell
+    // in one cell, and every ear looked at every one of them: one cut took a minute (review 3,
+    // finding 1). A cell is clamped to the grid, so an ear reaching past these bounds still
+    // looks in every cell its box covers: the same corners are looked at, and the same ears cut.
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    let (mut rlo, mut rhi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    let reflex = |i: usize, prev: &[usize], next: &[usize]| !left(at(prev[i]), at(i), at(next[i]));
     for i in 0..n {
         let q = at(i);
+        let r = reflex(i, &prev, &next);
         for k in 0..2 {
             lo[k] = lo[k].min(q[k]);
             hi[k] = hi[k].max(q[k]);
+            if r {
+                rlo[k] = rlo[k].min(q[k]);
+                rhi[k] = rhi[k].max(q[k]);
+            }
         }
     }
-    let reflex = |i: usize, prev: &[usize], next: &[usize]| !left(at(prev[i]), at(i), at(next[i]));
     let side = ceil((n as f64).sqrt()).max(1.0) as usize;
     let cell = |q: Pt, k: usize| -> usize {
-        let w = (hi[k] - lo[k]).max(f64::MIN_POSITIVE);
-        (((q[k] - lo[k]) / w * side as f64) as usize).min(side - 1)
+        let w = (rhi[k] - rlo[k]).max(f64::MIN_POSITIVE);
+        let t = (q[k] - rlo[k]) / w * side as f64;
+        // (Below the bounds, or with no reflex corner at all, the first cell.)
+        if t.is_nan() || t <= 0.0 { 0 } else { (t as usize).min(side - 1) }
     };
     let mut grid: Vec<Vec<usize>> = vec![Vec::new(); side * side];
     for i in 0..n {
@@ -281,6 +301,8 @@ fn ears(pts: &[Pt], poly: Vec<u32>) -> Result<Vec<[u32; 3]>, CapFault> {
         for gx in x0..=x1 {
             for gy in y0..=y1 {
                 for &j in &grid[gx * side + gy] {
+                    #[cfg(test)]
+                    LOOKS.with(|l| l.set(l.get() + 1));
                     if !alive[j] || ids.contains(&poly[j]) {
                         continue;
                     }

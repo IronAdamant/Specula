@@ -1121,9 +1121,18 @@ mod tests {
         // A frame that worked, with a piece of work reported in the middle of it (a capture
         // read): the frame's own time is what its caller measured, not what ran since that
         // piece. It read from the last report before, and said "waited" of such a frame.
+        //
+        // The frame spins until the thread's own clock says it ran 40 ms, and the wall's too
+        // (by the wall alone, on a busy machine a thread given 16 ms of 81 read as waiting: the
+        // test failed on the machine's load, not on the design). What the design guarantees is
+        // that the frame's `cpu_ms` counts all of that running, from the caller's mark; whether
+        // a share of running is "mostly waited" is a rule on numbers, held below on given ones.
         let from = engine.watch_mark();
         let started = Instant::now();
-        while started.elapsed() < Duration::from_millis(40) {
+        let own_from = from.cpu.expect("the mark read the thread's own clock");
+        let ran_40 = |engine: &Engine| engine.watch.cpu.as_ref().and_then(|c| c.now_ms()).expect("the clock was calibrated") - own_from >= 40.0;
+        while !(ran_40(&engine) && started.elapsed() >= Duration::from_millis(40)) {
+            assert!(started.elapsed() < Duration::from_secs(120), "the thread's own clock did not reach 40 ms in two minutes of spinning");
             std::hint::spin_loop();
         }
         engine.engine_work_done(0, None, "capture_read", Duration::from_millis(1));
@@ -1134,7 +1143,18 @@ mod tests {
         let stall = engine.watch.stalls.back().unwrap().clone();
         assert_eq!(stall.get("zone").and_then(Json::as_str), Some("frame"));
         let (ms, cpu) = (stall.get("ms").and_then(Json::as_f64).unwrap(), stall.get("cpu_ms").and_then(Json::as_f64).expect("cpu_ms is there"));
-        assert!(!mostly_waited(ms, Some(cpu)) && cpu > 10.0, "a frame that ran for {ms} ms read as {cpu} ms of running");
+        // Read from the frame's own start: all 40 ms it ran (less the hundredth `cpu_ms` is
+        // rounded to), and never more than the frame. Read from the piece reported in the
+        // middle, as it once was, it was about none of them.
+        assert!(cpu >= 39.99 && cpu <= ms, "a frame whose thread ran at least 40 ms of its {ms} ms read as {cpu} ms of running");
+        // The rule, on given numbers: under half of a stall running, and at least 2 ms not, is
+        // mostly waiting. The frame this test once failed on (16 ms of 81) was; one that ran
+        // most of its time, or waited under 2 ms, was not; with no clock nothing is said.
+        assert!(mostly_waited(81.04, Some(15.97)));
+        assert!(!mostly_waited(81.04, Some(60.0)));
+        assert!(!mostly_waited(40.5, Some(40.0)));
+        assert!(!mostly_waited(3.0, Some(1.4)), "a stall that waited under 2 ms did not mostly wait");
+        assert!(!mostly_waited(81.04, None));
     }
 
     #[test]
