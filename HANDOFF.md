@@ -311,6 +311,25 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     file with it and without, and whether what was there was reused. **It is the library
     slot's next stage** (it does not wait for the sculpt's box, as the sculpt primitives
     do).
+  - **The shape library's comparison, the small job: found, and not cheaper** (2026-11-20,
+    at the owner's "go for it. And save the comparison where needed";
+    [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Results (2026-11-20: the shape
+    library, the small job)"; [perf/leverage/2026-11-20-props](perf/leverage/2026-11-20-props/READ_FIRST.md)).
+    Four pickups built by cold agents in three arms, two runs each: an engine without the
+    library, the library found by the engine's own pointers (a brief that says nothing of
+    it), the library named in the brief. **Both `found` builders took shapes by name in two
+    or three of four recipes: the path works. And nothing got cheaper**: 521,057 weighted
+    tokens without the library, 586,400 found, 535,216 told, every valid run passing 8 or 9
+    of 9 checks, and two runs of one arm a third apart, so the arms cannot be told apart.
+    A build's tokens go to reading and looking up tools and to calling the engine again and
+    again, not to writing shapes; and builders wrote their own scripts and checks for what
+    the engine could say in one call (whether a model is closed; every recipe built and
+    printed). **One run is not a measurement** (`kit-none-1`: the harness gave it port 7680,
+    which a Windows service holds on this machine; no engine, 0 of 9): it is kept, the
+    report's own means for `none` include it and are not to be quoted, and a third run was
+    made. The harness's ports start one higher now. **Not run: the dozen-props job** (the
+    owner sees this first). What the result points at is the next stage (a project's own
+    catalogue; the orientation) and a call that builds and frames every recipe of a project.
   - **One or two subagents at a time** (the owner, 2026-11-20, evening, by remote, with six
     running): "Once your sub agents are done, and if possible, I'd like you to reduce how many
     is them down to just 1 or two as to conserve my usage and to extend it." So what is
@@ -2237,7 +2256,7 @@ These held all through M5 and were written down nowhere in the repository until 
   first two with it: build into another folder with `CARGO_TARGET_DIR` instead of cleaning.
 - **Nothing private in a tracked file or a commit message:** the owner's Windows user name, e-mail
   address, home folder paths and where their diary is kept. The repository is public.
-  `crates/specula/tests/private_paths.rs` holds part of this; read a commit before it is pushed. No
+  `tools/examen/tests/private_paths.rs` holds part of this; read a commit before it is pushed. No
   session or share links (AGENTS rule 11).
 - **Hands off the person at the machine:** never move their pointer, press keys for them, take the
   keyboard's focus, raise a window over theirs or touch their clipboard. Never record or capture the

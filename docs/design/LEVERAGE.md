@@ -959,3 +959,70 @@ fifth measurement stands: at these sizes the first meeting is not paid back, and
 the engine the cheaper arm is a game that asks for more of what the engine does. Two things the
 runs point at that are not built: the other screens folded into the one read (or a game's words
 changed without reading its screens), and a line in the guide on depth for a game drawn flat.
+
+## Results (2026-11-20: the shape library, the small job)
+
+Another question, with the same harness: does the engine's library of shapes by name
+(`specula-formae`) make props cheaper for a cold agent, and does a cold agent find it? The job
+(`kit`: four pickups for a game, each a model recipe: a gear token with twelve teeth and a hole, a
+heart with softly rounded edges, a five-pointed star, a coin with a raised rim; a headless build
+that prints each one's triangles, closedness and bounds; a frame of each) was built in three arms
+that all build through the engine:
+
+- **`none`**: an engine built without the library (`8b67796d`);
+- **`found`**: an engine with the library and its pointers (`4deccc36`), **and a brief that says
+  not a word of it**, to the byte the brief of `none`: whether it is found by the engine's own
+  pointers (a new project's notes, the tools' descriptions, the documents);
+- **`told`**: the same engine, with one more line in the brief that names the library and its two
+  calls.
+
+Builders: Sonnet 5.5, a cap of 400,000 tokens and an hour. Judges: Opus 5.5, one list of nine
+items, against a build they had not seen. The jobs and the arms are data on the library's branch
+(`evals/leverage-props/`; the harness reads a data folder since that branch). Every run is in
+[perf/leverage/2026-11-20-props](../../perf/leverage/2026-11-20-props/report.md).
+
+**One run is not a measurement and is kept as it came out.** `kit-none-1` never had an engine:
+the harness gave it port 7680, which a Windows service held on this machine; the engine failed to
+start about eight times, and the builder wrote its recipes by guess and built nothing (0 of 9).
+It is in the folder and in the report's tables, **whose means and ratios for `none` therefore
+include it and are not to be quoted**. A third `none` run was made on a free port. The figures
+below are the six runs that had an engine.
+
+| Arm | Weighted tokens (each run) | Mean | Requests | Engine calls | Checks passed |
+|---|---|---|---|---|---|
+| `none` | 447,786; 594,327 | 521,057 | 31; 48 | 50; 158 | 9, 9 of 9 |
+| `found` | 509,455; 663,346 | 586,400 | 44; 52 | 139; 232 | 8, 9 of 9 |
+| `told` | 507,469; 562,963 | 535,216 | 64; 56 | 130; 173 | 9, 9 of 9 |
+
+**What it says.**
+
+- **A cold agent finds the library without being told.** Both `found` builders took shapes by
+  name in two or three of their four recipes, as both `told` builders did. The path works.
+- **On a job this small the library made nothing cheaper.** `found` cost 1.13 times `none` and
+  `told` 1.03 times, for the same checks passed, **and two runs of one arm differ by a third**
+  (447,786 and 594,327 with nothing changed between them): the arms cannot be told apart. No
+  arm wrote fewer words (24,000 to 35,000 tokens written in every run).
+- **Where a build's tokens go is not the shapes.** By the ledgers (`examen leverage where`), in
+  every arm a build is reading (its own project, the engine's documents) and looking up tools
+  and their arguments (11,000 to 38,000 tokens of answers a run for the two together), then
+  calling the engine to build and to look, again and again (8 to 35 steps), with the whole
+  context read again at every request. Writing code is 2,500 to 5,600 of the 24,000 to 35,000
+  tokens a run writes, with the library or without. The `told` builders read a third as much
+  as the `none` builders and called the engine two to four times as often.
+- **Builders wrote their own tooling for what the engine could say in one call.** By the
+  judges' notes, three of the four library-arm builders wrote their own check of watertightness
+  on an exported file, where `model_build`'s report says whether a model is closed; two
+  builders (one in `none`, one in `told`) wrote their build and frame commands in Python; and
+  every builder wrote a script to build four recipes and print four lines. That is the larger
+  cost, and it is the engine's to take away: a call that builds every recipe of a project and
+  prints each one's facts, and a call that frames each. (The same lesson as `specula run` and
+  `specula check` for games, in the passes above.)
+- **A named shape does not carry its own good use.** One `told` builder drew its heart by hand
+  beside a library that has one; one `found` builder asked for a `pillow` with an inset of a
+  tenth of a millimetre and called the square-edged result softly rounded (its judge did not).
+
+**What it does not say.** Four pickups are the smallest job there is: a dozen props, where
+shapes are shared and a style has to hold across them, is the other job written
+(`props`), and it is not run. Two runs a cell cannot show a difference smaller than a third. And
+nothing here measures a project that already holds assets to reuse, which is what the next stage
+builds (ROADMAP M6: a project's own catalogue; the engine telling an agent where everything is).
