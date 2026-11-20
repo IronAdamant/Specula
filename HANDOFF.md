@@ -1360,8 +1360,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       takes 1.4 to 1.7 more powers a sample, so two builds of rounded shapes that are
       not in the repository are refused where they built (a cube at roundness 0.67
       cut from a box at resolution 80; a millionth-thick sheet at 0.4 at 64). By its
-      own account eight seeded faults were each caught. **Its review (the tenth of
-      this field) is running; the warning above stands until it says merge.** Owed
+      own account eight seeded faults were each caught. **Its reviewer (the tenth
+      of this field) said not to merge it, and found the field sound** (2026-11-20;
+      PROCEDURAL_MODELLING.md, "A tenth"): against a bracket of its own, 124,143
+      samples outside 66 shapes with none short or over past rounding, no step in 2.77
+      million, the charge bound held in every arrangement, the pruning the same to the
+      bit. What it refused it for: **"the sure way cannot fail to arrive" is false** (it
+      can reach its cap of 64 steps and return where it stands: one sample in 136,680,
+      on a sheet a hundred-millionth as thick as long, two parts in a thousand short;
+      and nothing makes the answer at the cap a bound), and three of its rules are held
+      by no default test (the cap; the arrival rule's second condition, which nothing
+      at all holds; two smaller ones). The mends are small and **queued** (the mesher's
+      mend is in the same file). **The warning above stands until a reviewer says
+      merge.** Owed
       with it: the rates on a quiet machine (`cargo run --release -p specula-model
       --example rounded_rates 5`).
     - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm

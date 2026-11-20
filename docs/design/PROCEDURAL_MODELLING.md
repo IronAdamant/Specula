@@ -564,6 +564,43 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
       dearest by count, both reviews' cases (the plank past its face, the cube under 40 and
       120 unions) against a plain cut in the same run, with each one's powers a thousand
       units.
+    **A tenth** (2026-11-20, of those mends, against a bracket of the reviewer's own found by
+    halving alone) **said not to merge them, for one false sentence and rules no default test
+    holds; the field was sound in every sample it drew.** Until they are mended the warning
+    stands: do not give `roundness` to a shape that is thin along one axis.
+    1. **"The sure way cannot fail to arrive" is false.** It can reach its cap of 64 steps
+       and return where it stands. Half sizes 0.05 by 5e-10 by 0.0425 at a power of 2 (the
+       reviewer's every case was at that power), sampled exactly at the rim: the field is two parts in a thousand short of the
+       distance (short by less than what rounding the coordinates can move it). One sample
+       in 136,680 of the reviewer's sweep hit the cap, all of them on a sheet a
+       hundred-millionth as thick as long. Nothing makes the answer at the cap a bound: with
+       the cap lowered to 12, answers come out up to 35% over the distance. The likely
+       cause: the lower bound is lowered to a thousandth of itself near the surface, the
+       bracket is then some 46 natural logarithms wide, and nothing keeps the halvings it
+       needs, with Newton's steps between them, under 64.
+    2. **The cap is held by no default test** (lowered to 12, every default test and the
+       ignored full bracket test pass; only the ignored full step scan fails).
+    3. **The arrival rule's second condition is held by nothing** (the next step on `mu`
+       under a ten-millionth of it: dropped, every test passes, default and ignored, and so
+       do the reviewer's 124,000 samples and 2.77 million scanned for a step). Either it is
+       not needed, and it is what costs 1.4 to 1.7 powers a sample, or the rod it was said
+       to mend is in no test.
+    4. *Minor:* two more rules held by no test (the sure way's own lower bound made sure;
+       the first steps' square roots counted). And both solves end with the greater of
+       their answer and a lower bound worked out in single precision that is not made sure,
+       so the field can pass the distance by about a rounding of the coordinates (seen:
+       0.08 of what rounding allows).
+    Found sound: 124,143 samples outside 66 shapes (thin on one axis and on two, boxes and
+    cylinders, a twentieth of a millimetre to five kilometres, roundness 0.01 to 1, on faces,
+    rims and corners, a hair either side of each face, denormal and negative-zero
+    coordinates, a thousand-millionth of the thickness to a thousand sizes out), none short
+    or over past rounding; 12,537 inside, none said outside; no step in 2.77 million
+    samples; no power uncounted and none past the ceiling; the charge bound held in every
+    arrangement that built (cuts, smooth and `near` groups of twelve, a smooth rounded
+    cutter, colours, twist with bend and displacement, stretch with scale, a hundred nested
+    unions); the old pruning against the new on 273 drawn trees, the same to the bit; of 21
+    ordinary recipes at resolutions 32 to 128 the only new refusal is the one the author
+    named.
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded
