@@ -131,9 +131,19 @@ trait StepJob {
   busy iGPU is followed by frames without step work.
 - A step returns `Step::Done(answer)`, `Step::More`, `Step::Wait` (nothing to do until a worker's job
   returns: the job goes to the back, the jobs behind it get their slices, and the pass ends once every
-  queued job has waited; the filmstrips' motion checks), or
+  queued job has waited; the filmstrips' motion checks, and a render still on the GPU), or
   `Step::Handed` (it offloaded its finish,
   an encode, with a clone of the reply).
+- **A job with a render on the GPU** (`perf_light`, `timeline_preview`) says so
+  (`StepJob::on_gpu`) and answers `Step::Wait` while the render is in flight, never `Step::More`
+  (which asked to be stepped again at once and spun on the fence for the whole credit). With a
+  window, a pass is once a frame, which landed one render a frame (light review 4: a report took
+  3.7 times as long at 20 frames a second); so while any queued job has a render on the GPU the
+  window's serve wait also *pulses* (`Schedule::serve_with`): it runs `pump_steps` about every
+  millisecond, between calls, in whole-millisecond waits (no busy wait), only while what a pulse
+  costs lately fits before the frame's deadline, and not at all when no job has a render on the
+  GPU. The credit is the same: a pulse earns what the time since the last pump earns. Headless,
+  the loop already goes round at once while a step job is queued.
 - Past its caller's deadline a job answers `timed_out`; when its session closes it is dropped
   (answered `session_closed`).
 

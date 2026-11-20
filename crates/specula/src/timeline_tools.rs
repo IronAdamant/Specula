@@ -914,13 +914,22 @@ impl StepJob for PreviewJob {
         "timeline_preview"
     }
 
+    fn on_gpu(&self) -> bool {
+        self.flying.is_some()
+    }
+
     fn step(&mut self, e: &mut Engine, reply: &crate::jobs::Reply) -> Step {
         // A tile per two steps at least: submitted, then landed once the GPU is done (lead
         // review: rendering and reading a tile in one step held the engine thread 80-113 ms in a
         // 20,000-entity world).
         if self.flying.is_some() {
             return match self.land(e) {
-                Ok(_) => Step::More,
+                Ok(true) => Step::More,
+                // Still on the GPU: it waits, as `perf_light`'s job does (light review 4:
+                // answering `More` here asked to be stepped again at once, and the engine thread
+                // spun on the fence for its whole step credit, four fifths of a headless run).
+                // With a window, a pass comes about every millisecond while it does (`on_gpu`).
+                Ok(false) => Step::Wait,
                 Err(out) => Step::Done(out),
             };
         }
@@ -1293,6 +1302,56 @@ mod tests {
         assert_eq!(names, ["timeline_get", "timeline_set", "timeline_validate", "timeline_play", "timeline_pause", "timeline_scrub", "timeline_stop", "timeline_preview", "timeline_check"]);
     }
 
+    /// Light review 4: a preview whose tile is still on the GPU answers `Wait` (and says it has a
+    /// render on the GPU, so the window looks again within about a millisecond), never `More`,
+    /// which asked to be stepped again at once and spun on the fence for the step credit. Stepped
+    /// as a pass steps a job alone: after a submit, again at once. Its tiles are all there.
+    /// (GPU; skips cleanly without it.)
+    #[test]
+    fn a_preview_tile_still_on_the_gpu_waits() {
+        use crate::timeline::tests::{engine, put, session, spawn};
+        let Some(mut e) = engine("a_preview_tile_still_on_the_gpu_waits") else { return };
+        spawn(&mut e, "pillar", 0.0);
+        put(&mut e, "assets/timelines/orbit.json", r#"{"schema": "specula.timeline.v1", "duration": 2, "tracks": [
+          {"kind": "camera", "name": "orbit", "rail": {"points": [[6, 2, 0], [0, 2, 6], [-6, 2, 0]]},
+           "move": [{"t": 0, "at": 0}, {"t": 2, "at": 1}], "look": {"entity": "/pillar"}}]}"#);
+        let caller = session("ee000001");
+        e.swarm.hello(&caller, "viewer".into(), "builder".into(), None, std::slice::from_ref(&caller)).unwrap();
+        let mut job = PreviewJob::new(&mut e, "assets/timelines/orbit.json", 6, 256, 160, None, None, None, &caller, 7).expect("preview starts");
+        let (reply, rx) = crate::jobs::channel();
+        let (mut waits, mut handed) = (0, false);
+        for _ in 0..100_000 {
+            let flying = job.flying.is_some();
+            match job.step(&mut e, &reply) {
+                Step::More if flying && job.flying.is_some() => panic!("a step found its tile still on the GPU and asked to be stepped again at once"),
+                // Just submitted: stepped again at once, as a pass goes round a lone job.
+                Step::More => {}
+                Step::Wait => {
+                    assert!(job.on_gpu(), "it waits only for its tile");
+                    waits += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Step::Handed => {
+                    handed = true;
+                    break;
+                }
+                Step::Done(out) => panic!("a preview failed: {:?}", out.content),
+            }
+            assert_eq!(job.on_gpu(), job.flying.is_some());
+        }
+        assert!(handed, "every tile landed");
+        e.workers_drain(std::time::Duration::from_secs(60));
+        let out = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("answered");
+        assert!(!out.is_error, "{:?}", out.content);
+        let packet = out.content.iter().find_map(|c| match c {
+            Content::Text(t) => Json::parse(t).ok(),
+            _ => None,
+        });
+        assert_eq!(packet.as_ref().and_then(|p| p.get("frames")).and_then(Json::as_array).map_or(0, |f| f.len()), 6);
+        // (How many looks found a tile still in flight is the GPU's speed: not asserted.)
+        let _ = waits;
+    }
+
     /// Lead review R2, major 1 (probe6): each submit lands the tile before it, and a shared map
     /// kept only the newest 8, so with more than about 9 previews at once the oldest jobs' tiles
     /// were evicted and they failed with "the preview's tile was lost in flight". Every job owns
@@ -1323,7 +1382,10 @@ mod tests {
                 break;
             }
             for (job, reply, _, done) in jobs.iter_mut().filter(|j| j.3.is_none()) {
+                let flying = job.flying.is_some();
                 match job.step(&mut e, reply) {
+                    // (Light review 4: a tile still on the GPU waits; `More` spun on the fence.)
+                    Step::More if flying && job.flying.is_some() => panic!("a step found its tile still on the GPU and asked to be stepped again at once"),
                     Step::More | Step::Wait => {}
                     Step::Handed => *done = Some(true),
                     Step::Done(out) => {

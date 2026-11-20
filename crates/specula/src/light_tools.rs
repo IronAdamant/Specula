@@ -742,6 +742,10 @@ impl StepJob for LightJob {
         "perf_light"
     }
 
+    fn on_gpu(&self) -> bool {
+        self.flying
+    }
+
     fn step(&mut self, e: &mut Engine, _reply: &crate::jobs::Reply) -> Step {
         if self.flying {
             return match self.land(e) {
@@ -750,7 +754,8 @@ impl StepJob for LightJob {
                 // when every job there is waiting, so it is looked at again a pass later (the
                 // third review: answering `More` here asked to be stepped again at once, and a
                 // job alone spun on the GPU's fence for its whole step credit, up to 12 ms a
-                // pass).
+                // pass). With a window, a pass comes about every millisecond while it does
+                // (`on_gpu`; the fourth review: once a frame, one render landed a frame).
                 Ok(false) => Step::Wait,
                 Err(out) => Step::Done(out),
             };

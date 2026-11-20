@@ -76,7 +76,7 @@ is the answer.)
 | `features` | one row for each of `shadows`, `ssao`, `bloom`, `fxaa`, `fog`, `sky`, `grading`, `gi`, `point_lights`, the costliest first: `on`; and when it is on, `cost_ms` (the middle of the differences between the view as it is and the view without it, frame by frame of the same round), `share` of the frame, `without_ms` (that variant's median), `noise_ms`, `told_from_noise`, and `to_change` (the call that switches it off or turns it down) |
 | `passes` | the view's dearest passes as it is, by name (`shadow`, `scene`, `ssao`, `post_bloom`, ...) |
 | `to_hold_budget` | only when the budget is not held. `advised: true`: which features to `give_up`, costliest first, the `estimate_ms` that leaves, whether that is `enough`, and a `note`. `advised: false`: no advice, `why` (`too_few_frames`: fewer than five rounds counted; `busy`: the frames were too uneven to advise on) and a `note` |
-| `load` | whether the machine was `steady` while it was measured: how many of all the `frames` were `late_frames` (more than a twentieth over the mean of their own variant's quickest third), and `what` that means |
+| `load` | whether the machine was `steady` while it was measured: how many of all the `frames` were `late_frames` (more than a twentieth over the mean of their own variant's quickest third, and never of fewer than its quickest two: at five frames, its quickest two), and `what` that means |
 | `waited` | why the wait for what the view was loading ended: `not_needed`, `ready`, `limit` (ten seconds) or `call_time` |
 | `partial` | only when the call's time ran short: `rounds_counted`, `rounds_asked`, `why` |
 | `settings` | what the features are set to (shadow resolution and cascades, ssao samples, bloom levels, the GI's tier, the lights in view) |
@@ -532,8 +532,10 @@ are at the end). On a busy machine; nothing here rests on a time.
    | even, 3% | middle shuffled | 0.9 (58.9) 1.1/2.3/12.4/45.2 r 4.4 | 0.4 (91.7) 0.7/2.4/17.3/69.3 r 2.4 | 0.0 (98.7) 0.1/1.4/23.2/91.0 r 0.0 |
    | even, 3% | all shuffled | 0.9 (57.7) 1.2/2.8/12.6/43.8 r 4.8 | 0.4 (91.7) 0.5/2.2/18.1/69.4 r 2.4 | 0.1 (98.6) 0.2/1.6/23.0/90.0 r 2.4 |
 
-   **Read row by row.** On a load in step with the rounds the order taken tells costless
-   features as costs in 1.1% to 4.2% of cases where the second round's order told 30% to 36%,
+   **Read row by row.** (The rows of a load in step with the rounds are means over the load's
+   phase. The order is the same in every report, so a load locked to the rounds at one phase
+   hits the same feature each time: "What remains" below.) On a load in step with the rounds
+   the order taken tells costless features as costs in 1.1% to 4.2% of cases where the second round's order told 30% to 36%,
    and steady reports that tell one went from about 40% to 4% to 17%; with the period a
    twentieth off a round's length, from 14% to 21% at five and nine frames to 1.5% to 4.3%; with a
    period of two rounds, from 20% to 28% to 0% to 3%. **It is worse at a period of 1.2
@@ -597,9 +599,11 @@ are at the end). On a busy machine; nothing here rests on a time.
    that step a whole report failed (the seeded fault below). Now it answers `Step::Wait`: it goes to the back, the jobs behind
    it get their slices, and the pass ends once every queued job waits; it looks again a pass
    later. Headless, passes go back to back while step jobs are queued, so a report is not
-   slower; with a window, at most one render lands a pass where spinning could land two in
-   the same credit. `timeline_preview`'s job (`timeline_tools.rs`) has the same pattern and is
-   not changed here.
+   slower. **With a window this was wrong** (the fourth review): a pass is once a frame, so
+   exactly one render landed a frame, where the spin had landed nearly four a frame at 20
+   frames a second (this sentence said "could land two"), and a report with a slow window took
+   3.7 times as long. Mended in the fourth round, below. `timeline_preview`'s job
+   (`timeline_tools.rs`) has the same pattern and was not changed in this round.
 8. **Not checked by the review, checked now.** *A session that closes while the job waits for
    a view still loading*: the job is queued, waiting, and is dropped with `session_closed`
    when its session is seen gone (`Engine::drop_closed_steps`, the part of `pump_steps` that
@@ -617,15 +621,22 @@ was caught.
 
 **What remains.** A load in step with the rounds still tells a costless feature a cost 1% to
 4% of the time per feature, and 4% to 17% of steady reports name one; at a period of 1.2
-rounds it is now about 3% where it was none. A slow drift is told one time in a thousand at
+rounds it is now about 3% where it was none. Those are means over the load's phase (where in
+a round it starts). **The order is the same in every report**, so a load locked to the rounds
+at one phase would fall on the same places, and so on the same feature, report after report:
+the fourth review simulated one (+4% over half of each round, nine frames, the phase held)
+and at some phases one costless feature was told in three reports of four, and at others none.
+Such a load would have to keep step with the report's own rounds; none was found (in about
+2,300 raw frames an adapter no render's time depended on its place or on the render before
+it). The order is not changed for it. A slow drift is told one time in a thousand at
 five and seven frames. A machine that is merely uneven is still not advised on. Not run: an
 engine with a window, and a release build.
 
 ## Its fourth review
 
 A fourth model (2026-11-20) reviewed the third round's mends alone, with engines running
-with and without a window on both adapters, and said **not to merge them, for one finding.
-It is not mended yet.**
+with and without a window on both adapters, and said **not to merge them, for one finding**
+(mended: "What was mended, fourth round", below).
 
 1. **Major: with a slow window, a report takes about 3.7 times as long as it did.** With a
    window, step jobs are stepped once a frame. A job whose render is still on the graphics
@@ -656,3 +667,97 @@ dropped at its call's deadline; the warnings are `sight_frame`'s word for word; 
 seeded fault was caught; no validation message. A note it left: the timeline's preview job
 still spins as this one did (on this job's copy of that code the engine thread polled for
 four fifths of a headless report's time).
+
+## What was mended, fourth round
+
+A builder that wrote none of it (2026-11-20). On a busy machine (other agents compiling and
+running GPU tests: in many runs the window could not keep its rate even before a report);
+nothing here rests on one time.
+
+1. **A job whose render is on the GPU is looked at within the frame, not once a frame.** The
+   cause was in the window's schedule: `run_windowed` pumps the step jobs once a frame, and
+   a job that waits for its render was looked at again only by the next frame's pump. Now a
+   job says when it has a render on the GPU (`StepJob::on_gpu`: `perf_light`'s and
+   `timeline_preview`'s), and while any queued job does, the window's serve wait *pulses*
+   (`Schedule::serve_with`): between calls it runs the step pump about every millisecond, in
+   its own whole-millisecond waits (the engine thread sleeps between looks; a call still wakes
+   it at once). A pulse starts only while what pulses cost lately (a decaying maximum, as a
+   call's estimate, about 0.8 to 1.2 ms in these runs) still fits before the frame's deadline,
+   so frames are no later for it; it stops as soon as no job has a render on the GPU; with
+   none, a window makes no wake it would not have made. The step credit is the same (a pulse
+   earns what the time since the last pump earns), so step jobs keep their quarter of the
+   time and the calls theirs; under a swarm the frame floor is the schedule's as before. At
+   the display's own rate (about 144 Hz here) this busy machine's serve window was its least,
+   1 ms, so no pulse fitted (`perf_frame`'s `serve.step_pulses` 0, `step_pulses_left_out`
+   about 600 to 730 a run): there it behaves as before. Headless nothing changed (the loop
+   goes round at once while a step job is queued). *Tests* (`schedule.rs`, a simulated clock;
+   they count looks and wakes, and time nothing real): in one window of a 20 fps frame a job
+   with 3 ms renders lands every render that has room, each by the first look after it lands,
+   at most one look a whole millisecond of its flight and one more, and no look ends past where
+   a window's own waits may end; a render that never lands costs at most a look a millisecond
+   (46 in a 45 ms window); with no job waiting the waits and the calls are exactly a plain
+   window's, and a job found landed at its first look is the last pulse; a sequential agent
+   and a waiting job share a window (at least seven tenths of the agent's calls, six renders);
+   over whole runs at 60 Hz, at 240 Hz under an eight-agent swarm (the 60 fps floor held) and
+   at a 20 fps cap, frames are on time and renders land several a frame.
+   `only_a_job_with_a_render_on_the_gpu_asks_for_pulses` (`steps.rs`): a job waiting for a
+   worker asks for none, a job with a render on the GPU does, and once it lands no more.
+2. **`timeline_preview`'s job waits for its tile** (`Ok(false) => Step::Wait`, where it
+   answered `More` and spun on the fence). *Test*: `a_preview_tile_still_on_the_gpu_waits`
+   steps a preview as a pass steps a job alone (after a submit, again at once) and fails if a
+   step that found its tile still on the GPU answers `More`; its six tiles are all there. Its
+   own tests pass as before, and its sheets are the same bytes: two previews (six tiles of 256,
+   twelve of 320) from this commit and the one before, headless, compared byte for byte.
+3. The three corrections the review asked for: the order is the same in every report ("What
+   remains" in the third round, and beside the orders' table); a late frame's line is never
+   from fewer than two frames (the `load` row); "could land two" corrected (the third round,
+   item 7).
+
+**What a report costs with a window now.** Debug builds; the third review's scene; this
+commit and the one before alternating in the same sitting, two to four runs a cell, both
+adapters; seconds for nine frames a variant at 1280x720 (80 renders), sixteen (136), and
+sixteen at 2048 square (136). "Before the third round" is the fourth review's measure of the
+spin (its 60 fps runs do not say which adapter). Windowed cells are the median of four
+runs, with the runs on a quiet stretch (the window held its rate in the 120 frames before
+the report: p95 under 1.3 times the period) in brackets; display cells are one run each;
+headless cells are the range of the quiet runs.
+
+| Window | Adapter | Before the third round (spin) | After the third round | After this one |
+|---|---|---|---|---|
+| 20 fps | integrated | 1.1, 1.7 to 2.1, - | 4.2, 7.0, 9.1 (3.9, 6.7, 6.8 to 8.2) | 1.9, 2.8, 3.8 (0.6 to 1.5, 1.1 to 2.4, 2.0) |
+| 20 fps | discrete | 1.5 to 1.6, 2.4 to 2.8, - | 4.9, 9.0, 7.3 (4.0, 6.8, 6.8) | 1.6, 2.9, 2.8 (1.2, 1.8 to 2.5, 1.6 to 1.8) |
+| 60 fps | (not said) | 1.3, 2.3 to 2.5, 2.7 to 3.0 | | |
+| 60 fps | integrated | | 2.7, 3.5, 5.4 (none quiet) | 1.5, 1.8, 5.5 (0.8 to 1.7, 1.3 to 1.5, 1.8 to 2.9) |
+| 60 fps | discrete | | 1.8, 2.3, 2.8 (1.3 to 1.7, 2.2 to 2.3, 2.3 to 2.7) | 2.9, 3.5, 2.9 (0.7 to 1.3, 1.5 to 3.0, 2.0 to 2.7) |
+| display (~144 Hz) | integrated | | 1.0, 1.8, 2.3 | 1.2, 1.8, 2.4 (no pulse fitted) |
+| display (~144 Hz) | discrete | | 1.5, 2.9, 3.1 | 2.3, 3.6, 4.1 (no pulse fitted; the window was less even before the report) |
+| headless | integrated | 0.35 to 0.42, 0.65 to 0.68, 1.6 to 1.7 | 0.31 to 0.55, 0.66 to 0.78, 1.5 to 2.0 | 0.33 to 0.47, 0.59 to 0.79, 1.6 to 1.7 |
+| headless | discrete | | 0.29 to 0.47, 0.48 to 0.79, 0.78 to 0.95 | 0.29 to 0.40, 0.67 to 0.69, 0.88 to 1.08 |
+
+The 20 fps rows are the finding's: the quietest pair on the integrated GPU went from 3.95 to
+0.57 s, 6.71 to 1.09 s and 6.82 to 1.97 s, now as quick as the spin was or quicker. Medians
+over busy runs say less: on this machine the renders themselves took several times their
+quiet time when another process was on the GPU, in both builds. The 60 fps discrete medians
+are worse after because two of its four runs fell in busy stretches (the window was already
+uneven before the report, p95 76 and 88 ms); on its quiet runs it is as quick or quicker.
+Headless the code did not change; the first headless runs of this commit came out slower
+(up to 14 s for the 2048-square report, the adapter's own timestamps showing renders slowed
+by another process), always run second; run first, on quiet stretches, they came out the same
+(integrated 0.33, 0.59, 1.60 s against 0.31, 0.66, 1.47 s; discrete in the row above). **The
+window's frames**: on quiet runs at 20 fps the frames around the reports had p95 51 to 54 ms
+and at most 52 to 60 ms in both builds (late presents over the three reports 14 after, 36
+before, in the quietest pair); at 60 fps p95 18.5 to 21.5 ms and at most 20 to 25 ms in both
+builds, but for one report each (after: the 2048-square one, integrated, p95 29.5 and one
+68 ms frame; before: the first, discrete, p95 30.7 and one 52 ms frame). Pulses that had no
+room before a frame were left out (25 to 33 a run at 20 fps, 118 to 158 at 60), as designed.
+
+*Faults seeded back, each once, and what caught it*: the pulse's wake taken out (three
+schedule tests); the pulse never stopping (`with_no_job_waiting_a_window_makes_no_extra_wake`);
+`More` for a render in flight in `perf_light` (the three GPU tests that step whole reports, at
+`step_once`); `More` in the preview (`a_preview_tile_still_on_the_gpu_waits`; the older test of
+sixteen previews, given the same check, did not catch it: with sixteen jobs in turn each tile
+had landed by its next look).
+
+**Not done.** No release build was measured, nor a 60 Hz display without a cap, nor a
+minimized window (its serve window is 16 ms and pulses there too). A report at the display's
+rate on a busy machine still lands one render a frame, since no pulse fits a 1 ms window.
