@@ -1358,6 +1358,46 @@ at once.
   the scope talk moves a rung. **The report is built** (2026-11-19, `perf_light`:
   [design/LIGHT.md](design/LIGHT.md)): a view is drawn with each light feature left out in turn, and what
   each costs on this adapter is answered against a budget, with what the engine's light has and has not.
+- [ ] ➕ **A library of shapes, by name, in 2D, 2.5D and 3D** (owner, 2026-11-19: "it may be worth building
+  a library of shapes in 2D and 3D in this phase and save them as skeleton library alongside the human
+  figures. All in Rust. Must be scalable"; and 2026-11-20, on what it is for: "so you can easily get them
+  and sculpt the shapes accordingly, to the needed models ... This will reduce the amount of time and
+  tokens needing to keep generating new code every time"). A crate, `specula-formae`: named shapes as a
+  table, each described once as its exact pieces, from which its count, its build, its measures and its
+  error at a detail all follow. Built on the branch `m6-formae`, a stage a builder, each stage reviewed by
+  a probe of the lead's own; where each stands is in HANDOFF.md. **Not merged into the working branch
+  yet.**
+  - [x] *1a, plane figures and curves* (65 and 12, with aliases).
+  - [x] *1b, solids* (82, flat and curved; a prism, a pyramid or a turned solid of any plane figure).
+  - [x] *1c, 2.5D*: a figure raised five ways; a solid drawn flat in a named view with hidden surfaces
+    removed; a solid cut into layers.
+  - [x] *2, the modeller takes them*: an outline, a solid or a raised figure by name in a recipe.
+  - [x] *3, the engine takes them*: `shape2d` items by name; the catalogue tools `formae_list` and
+    `formae_get`; `docs/design/FORMAE.md`.
+  - [x] *3b, a path by which an agent finds it cheaply*: a first answer of about 3 KB, a form in about
+    1 KB, pointers where a cold agent looks, the nearest name for a wrong one.
+  - [ ] *The measured comparison*: the same props by a cold agent without the library, with it found by
+    the engine's own pointers, and with it named in the brief (`evals/leverage-props/`; the harness takes
+    its arms as data). The small job is running (2026-11-20); the dozen-props job after the owner has seen
+    it.
+  - [x] *5a, every form's distance field*, in the library's own crate: exact or a bound on each side, said
+    by the field, with its box and its cost by count.
+  - [ ] *5b, the forms as sculpt primitives*: a form as a node of the sculpt tree (the same recipe, no new
+    format), blended with its neighbours by the blend the tree has; its box by the modeller's reach, its
+    work weighed against the plain primitives, a ceiling on what a sample may cost; soft defaults, worked
+    examples in the catalogue's answer, each pictured in clay and curvature and checked by a model that
+    did not take the pictures. The contract is [design/DISTANCE_FIELDS.md](design/DISTANCE_FIELDS.md),
+    section 6. **Waits for the sculpt's box to be mended and reviewed**
+    ([design/PROCEDURAL_MODELLING.md](design/PROCEDURAL_MODELLING.md), tier 3).
+  - [ ] *4, further families* (what the first table left out), with the catalogue's first answer holding
+    whatever is added.
+  - [ ] *The whole*: merged into the working branch; every shape pictured large in the engine, in more
+    than one view, and checked by a model that did not take the pictures; the full gate and the live
+    checks.
+  - [ ] *Saved models and recipes found by the next agent* (2026-11-20, not designed): the library is
+    found through the engine's pointers; a project's own saved recipes and models are not yet pointed at
+    the same way (the brief at an agent's first call, the project's notes, one catalogue call that lists
+    what the project already has with a line each). Measured with the comparison's harness when built.
 - [ ] ➕ **A library of sample assets, for any game** (owner, 2026-11-16, at the start of M6: "I'm actually
   thinking on this. But add 1 more part here"): "Build up the assets of animals, fantasy creatures like
   dragons, undead, and both tech and living assets, and tech like robots. Set up animation. Keep them as
