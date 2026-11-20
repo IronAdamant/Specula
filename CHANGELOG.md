@@ -470,7 +470,10 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       off the built mesh, normals carried by the map's inverse transpose; advice names a
       count only after measuring the shape again at it; the reviewer's kind of truth is a
       permanent test (`tests/facet_truth.rs`, 400 random chains); the greatest width is
-      exact; every shape not measured is said at once. Not reviewed yet.
+      exact; every shape not measured is said at once. Its review found the ring's measure
+      sound and said not to merge for the advice: a count can be named that the build
+      refuses; and a sloped band's rim shows more from above than its faces turn (FORM.md,
+      "Its third review").
     - **The light report** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)): `perf_light`
       measures what each light feature of a view costs on the machine the engine runs on, at
       the size asked, by the GPU's own timestamps: the view as the world has it, each feature

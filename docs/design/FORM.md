@@ -695,6 +695,47 @@ cylinder in 1. The greatest width grew by more than a ten-thousandth on 10 props
 1.436 m, `wreath_stand`, `rune_obelisk`, `chest_tomb`), changing no verdict. (The before is the
 old ring figure, 360° over the count, and the old width, both recomputed on the same build.)
 
+#### Its third review
+
+**A third model said not to merge the second round, for one finding in the advice; the
+measure of a ring itself it found sound** (2026-11-20, of `08406a9c`). Its own truth (the true
+band sampled densely over each face, and the turn over every edge two faces share) agrees
+with the record over 160 chains of cones of four slopes, flared cylinders, a sloped lathe,
+tori, capsules and cylinders under turns, uneven scales, mirrors and leans, to two parts in
+a hundred thousand and 0.0003°. The permanent truth test shares no code with what it
+checks, and fails for each of five faults seeded one at a time (the map in place of its
+inverse transpose; the ring's own plane; a band's rims swapped; the stand-in from the
+nominal radius; the chord's factor dropped). **The 39 leant capsules the second review's
+probe still flags are that probe's**: it counted a capsule's walls and not its end faces
+round the axis; the record is right. **None of what follows is mended yet.**
+
+1. **Major: the fix can name a count that the build refuses.** The search for a count that
+   holds the limit goes up to the count's range and does not know the limit on a part's
+   triangles. A lathe of a 300-row profile and 8 segments, scaled unevenly, held to 1.2°: the
+   fix says to give it 162 segments, "measured as this was", and building that is refused (a
+   part of 97,848 triangles; at most 65,536). At 2° it names 98, which builds. None of
+   Sepulcra's props reaches it.
+2. *Minor, and a choice now made:* **a sloped band is held to the turn between its faces,
+   which is not what its outline shows from above.** A cone of 8 sides, radius 1 and height
+   0.2 records 9.3° and 16 mm in, where its rim from above turns 45° and stands 76 mm in; a
+   round tower of 32 sides under a shallow cone of 8 passes a limit of 20° at 12.3°, though
+   its roof from above is a plain octagon. Two sentences above are false for sloped bands
+   (that the stand-in is "what is seen in a silhouette"; "a pixel of the studio's
+   silhouettes"). In Sepulcra 7 records differ by a quarter or more and no verdict flips at
+   20°, 30° or 45°. **The lead's decision: a ring is held to the greater of the two, the
+   turn between its faces and the turn of its widest rim seen down its axis**, since the
+   check is about facets that show and a rim shows from above.
+3. *Minor:* a `weld` wide enough to merge a ring's own points leaves the record as it was and
+   wrong (a cylinder of 64 sides and radius 0.5 welded by 0.15 turns 19.7° and still records
+   5.6°). It needs a weld near the length of a side; Sepulcra uses none.
+4. *Minor:* past 512 shapes made, round shapes are dropped with nothing said (of 4,098
+   cylinders the facts count 512), where the text above says 4,096 and "said".
+5. *Minor:* "at a radius of" gives the record's largest radius, not that of the band that
+   turns (a torus with a three-sided tube).
+
+Not settled: whether an ordinary recipe can drive one advice search to its work limit.
+Not checked: booleans; the full run of 400 chains; sculpts.
+
 **Not built:** pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so
 `seam_m` does not see them: the form views do).

@@ -964,8 +964,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       discs). **A side effect to know:** a sloped band turns less than a wall, so
       Sepulcra's four-sided cones read 87° to 89° where they read 90°, and its median
       is 87.5°; no verdict at 20° moved. A sculpt's figure is said to be an estimate
-      (its mesh turns 1.06 to 1.5 times it). **Not reviewed yet: a third review is
-      running. Give no style a `max_facet_deg` until a reviewer says merge.** The recipe measure's three small findings were mended with it (the
+      (its mesh turns 1.06 to 1.5 times it). **Its reviewer found the measure of a ring
+      sound and said not to merge for one finding in the advice** (2026-11-20; FORM.md,
+      "Its third review"): by a truth of its own over 160 chains the record agrees to two
+      parts in a hundred thousand; the truth test shares no code with what it checks and
+      fails for each of five seeded faults; the 39 capsules the second review's probe
+      still flagged were that probe's mistake. What it found: **the fix can name a count
+      the build then refuses** (it does not know the limit on a part's triangles: 162
+      segments named for a lathe that may have 98); a sloped band is held to the turn
+      between its faces, which is less than what its rim shows from above (**Claude's
+      decision: a ring is held to the greater of the two**); a weld that merges a ring's
+      own points is not seen; past 512 shapes round ones are dropped unsaid. **A fresh
+      agent is mending those. Give no style a `max_facet_deg` until a reviewer says
+      merge.** The recipe measure's three small findings were mended with it (the
       snap held by a test; the wobbling rod's limit stated and held: up to 1.8% of the
       width a long rod is cut and reads square, past it it is pressed and reads rounder;
       the two weak tests made exact).
