@@ -358,7 +358,11 @@ fn procgen_assets_build_in_budget_and_pinned() {
 // that each looks as it did; their grids follow the right bounds now, so their meshes differ
 // by a few triangles: `grave_rock` 720 to 716, `ruined_wall` 3,658 to 3,666, sizes within a
 // millimetre.)
-const PROCGEN_PINNED: &str = "1838e106960c492b";
+// (And on 2026-11-20: the sculpt mesher gives each sheet through a cell a vertex of its own, so
+// that no edge is shared by four triangles. `grave_rock`'s sculpt had one such edge: its mesh
+// keeps its 716 triangles, ten of them new or moved, and is now a closed surface; the graveyard
+// plot, which places it, moves with it. Nothing else here changed.)
+const PROCGEN_PINNED: &str = "3d5aeece224043ae";
 
 /// Foliage (M5): alpha-cutout cards swaying in the wind, with their budgets. A tuft is three
 /// upright quads (review R1: 4 mm boxes were 12 triangles a card, both broad faces shaded).
@@ -456,4 +460,8 @@ fn m4_exit_props_build_in_budget_and_pinned() {
 // with a turned distance-field node changed, by a few triangles.)
 // (And again that day, at the owner's word: `pediment_fallen`'s three rubble blocks are written
 // out one by one, two of them lowered to rest in the ground; nothing else of the 33 changed.)
-const M4_PINNED: &str = "9573f835579ba7fd";
+// (And on 2026-11-20, with `PROCGEN_PINNED`: the two statues' sculpts had edges four triangles
+// shared (the angel 3, the mourner 2) and are now closed surfaces, each sheet through a cell on
+// a vertex of its own: the angel 976 to 984 triangles (38 new or moved), the mourner 1,124 (23
+// new or moved). Nothing else of the 33 changed.)
+const M4_PINNED: &str = "f34f29767541f2ba";
