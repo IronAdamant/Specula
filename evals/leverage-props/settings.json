@@ -49,7 +49,7 @@
   },
   "judge": {"token_cap": 150000, "wall_s": 1800},
   "token_weights": {"input": 1.0, "cache_write": 1.25, "cache_read": 0.1, "output": 5.0},
-  "ports": [7680, 7699],
+  "ports": [7681, 7699],
   "runner": {
     "note": "As evals/leverage/settings.json's: Claude Code, with six tools and no MCP servers.",
     "command": ["claude", "-p", "{prompt}", "--model", "{model}", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--tools", "Bash,Read,Write,Edit,Glob,Grep", "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep", "--no-session-persistence"]
