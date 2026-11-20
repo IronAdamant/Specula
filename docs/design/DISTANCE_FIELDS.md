@@ -2,7 +2,8 @@
 
 The sculpt modeller builds shapes from distance fields
 ([PROCEDURAL_MODELLING.md](PROCEDURAL_MODELLING.md), tier 3), and the shape library's forms are
-to become nodes of its tree ([FORMAE.md](FORMAE.md)). This page states each fact that work
+to become nodes of its tree (the library's own page, `FORMAE.md`, comes with its branch). This
+page states each fact that work
 leans on and proves it here, from first principles, in the engine's own words.
 
 **Why it is written here.** The facts are standard, but several of the papers that hold them
