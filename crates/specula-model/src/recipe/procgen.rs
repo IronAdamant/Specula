@@ -429,6 +429,10 @@ impl Ctx<'_> {
         // The leaves were counted as they were built: the result replaces them.
         self.tally.grow(&n.path, leaf_tris, shape.triangle_count())?;
         self.tally.charged(&shape.owners, 1, shape.triangle_count(), Some(crate::facet::BOOLEAN_ESTIMATE));
+        // (Its own work goes with its operands' triangles: the round shapes in it are charged
+        // it whole, and their most is estimated.)
+        self.tally.procedural.set(true);
+        self.tally.worked(&shape.owners, budget.work);
         let mut j = vec![
             ("op", Json::from(n.op.as_str())),
             ("input_triangles", Json::from(st.input_triangles)),
@@ -771,6 +775,7 @@ impl Ctx<'_> {
             out
         })?;
         self.spend(st.work);
+        self.tally.procedural.set(true);
         self.tally.grow(&n.path, 0, shape.triangle_count())?;
         // What it is built of: its primitives' own outlines (a figure's are a body's limbs and
         // trunk, read the same way), each weighed by the surface its triangles have in the
@@ -810,6 +815,8 @@ impl Ctx<'_> {
             let a = self.tally.ask_owners(&tree, opts.seed, &shape);
             let views = if cutting { Vec::new() } else { crate::made::of_sculpt(&tree) };
             self.tally.made_sculpt(&n.path, what, views, rounds, &a.of, &mut shape);
+            // (Its own meshing goes with its resolution: its round primitives are charged it.)
+            self.tally.worked(&shape.owners, st.work);
             asked = Some((a.asked, a.work, a.of.iter().filter(|&&o| o == crate::shape::NO_OWNER).count()));
         }
         let mut j = vec![
@@ -1371,11 +1378,15 @@ fn build_include(asset: &str, vals: &[(String, f64)], seed: u64, params: &BuildP
 // ---------------------------------------------------------------------------------------------
 // Textures
 
+/// Texture sets by material key.
+pub(super) type Baked = Vec<(String, Arc<TextureSet>)>;
+
 /// Bakes the texture set of every textured material key LOD 0 uses (`preset+texture`), each
 /// texture once.
 /// `spent`: the build's work so far; the bakes get what is left of [`MAX_BUILD_WORK`], and all
-/// the sets together at most [`texgraph::MAX_MODEL_GPU_BYTES`].
-pub(super) fn bake_textures(recipe: &Recipe, params: &BuildParams, lod0: &MeshData, extra: &[String], spent: u64) -> Result<Vec<(String, Arc<TextureSet>)>, RecipeError> {
+/// the sets together at most [`texgraph::MAX_MODEL_GPU_BYTES`]. With the sets, the build's
+/// work with the bakes'. (A bake's work is its graph's: what LOD 0 is made of does not change it.)
+pub(super) fn bake_textures(recipe: &Recipe, params: &BuildParams, lod0: &MeshData, extra: &[String], spent: u64) -> Result<(Baked, u64), RecipeError> {
     let mut baked: std::collections::BTreeMap<String, Arc<TextureSet>> = std::collections::BTreeMap::new();
     let mut out = Vec::new();
     let threads = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(1, 4);
@@ -1420,7 +1431,7 @@ pub(super) fn bake_textures(recipe: &Recipe, params: &BuildParams, lod0: &MeshDa
         };
         out.push((key.clone(), set));
     }
-    Ok(out)
+    Ok((out, work))
 }
 
 /// A bounded summary of the extras for reports.

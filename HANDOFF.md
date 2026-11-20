@@ -1133,8 +1133,25 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       limits held, and work grows with the count (a lathe with a 512-pixel texture
       and two far levels is told 108 segments and refused at 108). None of Sepulcra's
       props is such a recipe. And three of its rules (the budget, the model's room, a
-      scatter's copies) are held by no default test. **A fresh agent is mending
-      those. Give no style a `max_facet_deg` until a reviewer says merge.** The recipe measure's three small findings were mended with it (the
+      scatter's copies) are held by no default test. **A fresh agent mended
+      those** (2026-11-20, merged; FORM.md, "What was mended, fourth round"). **The
+      most a count can be now holds the build's work limit too**: it read where every
+      unit of work is charged and how each grows with one round shape's count
+      (operations on a piece, paint, assembly, each far level's simplification, the
+      collider, a far level's coarse rebuild; texture baking does not grow), and
+      bounds the work at another count by an inequality a test holds on 150 drawn
+      recipes (every count named builds; the bound is 1.12 times the real work at the
+      median and 1.96 at worst). The review's textured lathe is told 82 and builds
+      there. **The bound is low on purpose**: the most said is 10% to 26% under the
+      most that builds, so a fix may say "none holds" a little early and never names
+      a count that is refused. Still an estimate, and said so: a sculpt's resolution,
+      a shape inside a boolean, and a recipe with far levels and a boolean, sculpt or
+      generator (53 of 54 drawn estimates build; one sculpt was 2% over a part's
+      limit). The three untested rules each have a row now, shown to fail on its
+      seeded fault. Two counts on one piece each build at their most alone and not
+      together: the fix says "it builds with every other count as it is now".
+      Sepulcra's counts did not move. **Its review is queued. Give no style a
+      `max_facet_deg` until a reviewer says merge.** The recipe measure's three small findings were mended with it (the
       snap held by a test; the wobbling rod's limit stated and held: up to 1.8% of the
       width a long rod is cut and reads square, past it it is pressed and reads rounder;
       the two weak tests made exact).
