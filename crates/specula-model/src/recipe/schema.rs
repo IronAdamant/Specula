@@ -13,7 +13,7 @@ use super::procgen::{GENERATORS, SDF_NODES, SDF_SHARED};
 use super::{Field, Kind, OPS, OUTLINE, SHAPES};
 
 /// The most the first answer may be, as compact JSON (held by a test).
-pub const SCHEMA_FIRST_BYTES: usize = 6 * 1024;
+pub const SCHEMA_FIRST_BYTES: usize = 8 * 1024;
 
 /// A whole recipe that builds under any style that has a material called `metal`: a token with a
 /// hole through it, standing upright on the ground. (A test builds it, so it cannot rot.)
@@ -102,6 +102,32 @@ const PART_ABOUT: &[(&str, &str)] = &[
     ("note", "a line for whoever reads the recipe (not built)"),
 ];
 
+/// What each operation does, in a line (every name of [`OPS`], held by a test): a name and its
+/// fields do not say which way a bend bends. (Found by making a dozen props by hand,
+/// 2026-11-21: a "slightly curved" shield came out flat.)
+const OPS_ABOUT: &[(&str, &str)] = &[
+    ("move", "moves it, in metres"),
+    ("rotate", "turns it by degrees about X, then Y, then Z, about the origin or `pivot`"),
+    ("scale", "scales it about the origin or `pivot`"),
+    ("mirror", "mirrors it across the plane where `axis` (x unless given) is 0, keeping both halves unless `keep` is false"),
+    ("array", "`count` copies, each `offset` further along"),
+    ("radial", "`count` copies round `axis` through the origin (Y unless given), spread over `angle` degrees (360: evenly round)"),
+    ("subdivide", "splits every triangle into four, `levels` times: a flat-sided shape needs it before a bend, a twist or a displacement has anything to move"),
+    ("displace", "moves the surface along its normals by up to `amount` metres of noise, `scale` metres across"),
+    ("taper", "scales the two other coordinates along `axis` (Y unless given): by `from` at its lowest point, `to` at its highest"),
+    ("twist", "turns it about Y by `deg_per_m` degrees for each metre of height"),
+    ("lean", "shears it: `x` and `z` metres sideways for each metre of height"),
+    ("bend", "curves an upright shape toward +X, about the Z axis, by `deg_per_m` degrees for each metre of height (subdivide first)"),
+    ("weld", "merges vertices nearer than `eps` and drops the triangles that collapse"),
+    ("color", "paints it one colour: a palette name of the style or \"#rrggbb\""),
+    ("gradient", "a colour running `from` one `to` another along `axis`"),
+    ("bands", "bands of `colors`, each `width` metres thick, along `axis`"),
+    ("noise_tint", "lighter and darker patches, by `amount`, `scale` metres across"),
+    ("ao", "darkens hollows and creases, by `amount`"),
+    ("ground_shade", "darkens toward the ground, by `amount`, fading out by `height` metres up"),
+    ("bevel_tint", "the colour the bevels made on this part take"),
+];
+
 /// What a field takes, in a word or two (a plain number says nothing).
 fn takes(kind: Kind) -> String {
     match kind {
@@ -159,13 +185,14 @@ pub fn schema(of: Option<&str>) -> Result<Json, String> {
                     "A model recipe is one JSON file under the project's assets (assets/models/NAME.json); model_build {\"recipe\": \"models/NAME.json\"} builds it and says its \
                      triangles, its bounds and whether it is closed; studio_sheet pictures it. Metres, +Y up. A mesh shape stands on y = 0, centred on the Y axis; a named form \
                      (shape `form`, outline `form`: formae_list names them) lies flat in the ground plane, so a raised figure is stood up with \
-                     {\"op\": \"rotate\", \"deg\": [90, 0, 0]} and moved up by half its height. Any number may be an expression in a string (\"2 * k\").",
+                     {\"op\": \"rotate\", \"deg\": [90, 0, 0]} and moved up by half its height. A form's `detail` is its segments in a full turn: 64 unless given, which is \
+                     thousands of triangles for a round solid, so give a small prop 12 to 24. Any number may be an expression in a string (\"2 * k\").",
                 ),
             ),
             ("fields", about(TOP_ABOUT)),
             ("part", about(PART_ABOUT)),
             ("shapes", lines(SHAPES)),
-            ("ops", lines(OPS)),
+            ("ops", Json::arr(OPS.iter().map(|(n, f)| Json::from(format!("{}. It {}", line(n, f), OPS_ABOUT.iter().find(|(a, _)| a == n).map_or("", |(_, what)| *what)))))),
             ("generators", lines(GENERATORS)),
             ("outline", Json::from(format!("an outline is one object with one way of saying it, of: {}", OUTLINE.iter().map(|f| f.name).collect::<Vec<_>>().join(", ")))),
             ("example", example),
@@ -212,6 +239,7 @@ mod tests {
         }
         assert_eq!(said(TOP_ABOUT), TOP_FIELDS, "a recipe's fields and what is said of them have drifted apart");
         assert_eq!(said(PART_ABOUT), PART_FIELDS, "a part's fields and what is said of them have drifted apart");
+        assert_eq!(said(OPS_ABOUT), crate::recipe::op_names(), "the operations and what is said of them have drifted apart");
     }
 
     #[test]
@@ -227,7 +255,10 @@ mod tests {
         }
         // What a shape needs is said before what it may take.
         assert!(text.contains("box: size ([x, y, z]); may take bevel"), "{text}");
-        assert!(text.contains("rotate: deg ([x, y, z]); may take pivot"), "{text}");
+        assert!(text.contains("rotate: deg ([x, y, z]); may take pivot. It turns it by degrees about X, then Y, then Z"), "{text}");
+        // Which way a bend bends, and what it needs first; and that a form's detail is its cost.
+        assert!(text.contains("bend: deg_per_m. It curves an upright shape toward +X, about the Z axis") && text.contains("subdivide first"), "{text}");
+        assert!(text.contains("give a small prop 12 to 24"), "{text}");
     }
 
     #[test]
@@ -241,6 +272,23 @@ mod tests {
         assert!(b.min[1].abs() < 0.005, "it does not stand on the ground: {b:?}");
         // And it has its hole: more triangles than a plain disc of 32 sides (124).
         assert!(model.lods[0].triangle_count() > 150, "{} triangles: no hole", model.lods[0].triangle_count());
+    }
+
+    /// What is said of an operation is what it does: a bend curves an upright shape toward +X,
+    /// and a twist turns it about Y.
+    #[test]
+    fn a_bend_and_a_twist_do_what_is_said_of_them() {
+        let style = Style::parse(r##"{ "style": "t", "palette": { "ink": "#202020" }, "materials": { "metal": { "color": "#9aa3ad", "roughness": 0.4 } } }"##).unwrap();
+        let post = |ops: &str| {
+            let text = format!(r#"{{ "name": "post", "parts": [ {{ "name": "p", "material": "metal", "shape": {{ "op": "box", "size": [0.1, 2, 0.1] }}, "ops": [ {{ "op": "subdivide", "levels": 3 }}{ops} ] }} ] }}"#);
+            build(&text, &BuildParams::new(&style)).unwrap_or_else(|e| panic!("{ops}: {e:?}")).bounds
+        };
+        let (straight, bent) = (post(""), post(r#", { "op": "bend", "deg_per_m": 30 }"#));
+        assert!(straight.max[0] < 0.06 && bent.max[0] > 0.5 && bent.min[0] > -0.08, "a post 2 m tall bent 30 degrees a metre leans toward +X: {bent:?}");
+        assert!((bent.max[2] - straight.max[2]).abs() < 1e-3 && bent.max[1] < straight.max[1], "about the Z axis: its depth is kept and its top comes down: {bent:?}");
+        // A twist of a quarter turn over its height: the top's square is turned, so the post is wider than its side.
+        let twisted = post(r#", { "op": "twist", "deg_per_m": 22.5 }"#);
+        assert!(twisted.max[0] > straight.max[0] + 0.01 && (twisted.max[1] - straight.max[1]).abs() < 1e-4, "{twisted:?}");
     }
 
     #[test]

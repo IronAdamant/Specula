@@ -518,7 +518,8 @@ large front view: `"views": ["front"], "tile": 512`. For several models in one i
 - **Shapes by name**: `specula call formae_list '{}'` names the library and `formae_get
   {"name": "gear"}` gives the snippet to paste. A named plane figure lies flat in the ground
   plane: raise it (`"raise": {"as": "slab", "thickness": 0.05}`) and stand it up with the
-  rotate above.
+  rotate above. A round solid by name is thousands of triangles unless told: `"detail": 16`
+  for a small prop.
 - **A soft edge** on a raised figure: `"raise": {"as": "bevelled", "thickness": T, "width":
   W}` or `{"as": "pillow", "thickness": T, "rise": R, "inset": I}`. A figure that narrows to a
   point or has a sharp notch (a heart, a crescent) takes almost no inset (the refusal says how
