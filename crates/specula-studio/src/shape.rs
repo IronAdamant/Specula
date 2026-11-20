@@ -1005,12 +1005,15 @@ const SPANS: [usize; 5] = [15, 20, 20, 24, 27];
 /// - **The corners**: the peaks of `net`, the turn within the smoothing's own reach about each
 ///   step, from [`KINK_DEG`]'s first angle; two peaks of one sign are one corner unless the turn
 ///   between them falls to under half the less of them.
-/// - Two **outward** corners that follow each other round the outline, no closer than the
-///   smoothing spreads either (`blur`: closer, it cannot tell them apart), each **square at its
-///   own scale**: its turn within half the distance to its nearer neighbour each way, by
-///   [`ROUND_DEG`] (`s`, the less square of the two). A jog (an outward corner a few pixels
-///   from an inward one) and the two 45-degree kinks of a corner cut off flat are not square at
-///   that scale, and stay as they were.
+/// - Two corners that follow each other round the outline, no closer than the smoothing spreads
+///   either (`blur`: closer, it cannot tell them apart), each **square at its own scale**: its
+///   outward turn within half the distance to its nearer neighbour each way, by [`ROUND_DEG`]
+///   (`s`, the less square of the two). So both are **outward**: an inward corner's own turn is
+///   less than nothing, and its `s` is 0. (A separate test of the corners' sign stood here
+///   until its seventh version was held; seeded away, it changed no reading of 548 shapes, since
+///   this one already decides it.) A jog (an outward corner a few pixels from an inward one) and
+///   the two 45-degree kinks of a corner cut off flat are not square at that scale, and stay as
+///   they were.
 /// - Every step between them is read, beside its own window, in one cut short of the farther
 ///   corner (its longest window, `SPANS`, stops before it), and its angle and weight are those
 ///   of the whole window moved toward the cut one's by `s` (`read`). Never a window of a length
@@ -1059,7 +1062,7 @@ fn apart(net: &[f32], sum: &[f64], way: f32, half: &[usize], blur: &[usize], wor
             corners.pop();
         }
     }
-    let corners: Vec<(usize, bool)> = corners.into_iter().map(|j| (j, net[j] * way > 0.0)).collect();
+    // (Whether each turns outward is not asked here: the own turn below asks it.)
     let n = corners.len();
     if n < 2 {
         return cut;
@@ -1067,17 +1070,17 @@ fn apart(net: &[f32], sum: &[f64], way: f32, half: &[usize], blur: &[usize], wor
     let turn = |a: usize, b: usize| ((sum[b] - sum[a]) as f32 * way).to_degrees();
     let longest = SPANS[SPANS.len() - 1];
     for c in 0..n {
-        let ((a, oa), (b, ob)) = (corners[c], corners[(c + 1) % n]);
+        let (a, b) = (corners[c], corners[(c + 1) % n]);
         let d = (b + count - a) % count;
         // (Two corners closer than the smoothing spreads either, as far as it reaches each way,
         // are not told apart by it: a stalk a few pixels wide judged at its rim's scale.)
-        if !(oa && ob) || d < blur[a].max(blur[b]) {
+        if d < blur[a].max(blur[b]) {
             continue;
         }
         // (Each corner's own turn: within half the distance to its nearer neighbour each way,
         // so that a jog, an outward corner a few pixels from an inward one, is not square at
         // its own scale where the smoothing spreads it over more than that.)
-        let (before, after) = (corners[(c + n - 1) % n].0, corners[(c + 2) % n].0);
+        let (before, after) = (corners[(c + n - 1) % n], corners[(c + 2) % n]);
         let (ra, rb) = (((a + count - before) % count).min(d) / 2, ((after + count - b) % count).min(d) / 2);
         let own = turn(a + count - ra, a + count + ra).min(turn(b + count - rb, b + count + rb));
         let s = smoothstep(ROUND_DEG.0, ROUND_DEG.1, own);

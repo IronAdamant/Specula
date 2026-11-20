@@ -1736,3 +1736,68 @@ fn a_blades_tip_is_kept_at_every_degree() {
         assert!(s.lo[P] >= 0.4 && s.hi[S] <= 0.6, "{name}: {s:?}");
     }
 }
+
+/// **The rules whose fault moves few readings, each held by the reading it moves most** (its
+/// seventh version, when every rule was seeded one at a time against the default tests: these
+/// faults passed every other test). Every fifteen degrees, plain, mirrored and shifted (this
+/// test's own sweep: what it holds does not depend on another test's step). Each bound lies
+/// between the reading and the reading under the fault, which is named beside it.
+#[test]
+fn rules_that_move_few_readings_are_held_by_the_one_they_move_most() {
+    let fam = families();
+    let corpus = corpus();
+    let get = |n: &str| -> &F { fam.iter().find(|f| f.0 == n).map(|f| &f.1).or_else(|| corpus.iter().find(|f| f.0 == n).map(|f| &f.2)).unwrap_or_else(|| panic!("no shape {n}")) };
+    let mut failed: Vec<String> = Vec::new();
+    let mut hold = |name: &str, ok: &dyn Fn(&Sweep) -> bool, rule: &str| {
+        let s = sweep(&**get(name), 15);
+        if !ok(&s) {
+            failed.push(format!("{name} ({rule}): {s:?}"));
+        }
+    };
+    // The cut window's weight (`apart`, the turn counted in the cut window by `s`): a lantern
+    // reads 0.49 to 0.51 round, 0.42 to 0.43 without it; a lighthouse 0.24 to 0.25, 0.18 to 0.19.
+    hold("lantern", &|s| s.lo[R] >= 0.46, "the weight read in the cut window");
+    hold("lighthouse", &|s| s.lo[R] >= 0.215, "the weight read in the cut window");
+    // A part's level may rise by a tenth ([`PLATEAU_RISE`]; a fifth reads 0.64) and is read from
+    // four pixels ([`MIN_THICK`]; from three, 0.63): a grass tuft's blades are 0.74 pointed.
+    hold("grass tuft", &|s| s.mean[P] >= 0.69, "PLATEAU_RISE 0.1 and MIN_THICK 4");
+    // A run is straightened from a tenth of the size ([`STRAIGHT_RUN`]; from 0.15 a star of
+    // sixteen shallow points reads up to 0.33 round): at most 0.20.
+    hold("star 16 inner 0.4", &|s| s.hi[R] <= 0.26, "STRAIGHT_RUN 0.1");
+    // The sides of a corner bend from three degrees ([`CURVING_DEG`]; from two, a lens with tips
+    // of 90 degrees reads 0.05 square on the mean): 0.08.
+    hold("lens tip 90", &|s| s.mean[S] >= 0.065, "CURVING_DEG (3, 7)");
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// **A piece thinner than [`MIN_THICK`] is not read; one a little thicker is** (its seventh
+/// version: no test held the floor). A bar 400 pixels long and 5 wide (its largest disc 3 pixels
+/// across the middle) is not read at any angle; one 9 wide is.
+#[test]
+fn a_piece_under_the_least_thickness_is_not_read() {
+    for deg in [0.0f32, 20.0, 45.0] {
+        let bar = |w: f32| move |x: f32, y: f32| x.abs() < 0.39 && y.abs() < w / 1024.0;
+        assert!(of_mask(&render(512, &bar(5.0), deg, false, (0.37, 0.71))).is_none(), "a bar 5 pixels wide is read at {deg}");
+        assert!(of_mask(&render(512, &bar(9.0), deg, false, (0.37, 0.71))).is_some(), "a bar 9 pixels wide is not read at {deg}");
+    }
+}
+
+/// **A corner is counted from [`CORNER_DEG`]** (its seventh version: no test held it): a box has
+/// four, an L five, a pentagon (corners of 72 degrees) five, an octagon (45) none, at any angle.
+#[test]
+fn corners_are_counted_from_sixty_degrees() {
+    let pentagon = regpoly(5, 0.4);
+    let octagon = regpoly(8, 0.4);
+    let shapes: Vec<(&str, F, f32)> = vec![
+        ("box", Box::new(|x: f32, y: f32| x.abs() < 0.35 && y.abs() < 0.25), 4.0),
+        ("L", Box::new(|x: f32, y: f32| (x.abs() < 0.3 && (0.1..0.3).contains(&y)) || ((-0.3..-0.1).contains(&x) && y.abs() < 0.3)), 5.0),
+        ("pentagon", Box::new(move |x, y| within(&pentagon, x, y)), 5.0),
+        ("octagon", Box::new(move |x, y| within(&octagon, x, y)), 0.0),
+    ];
+    for (name, f, corners) in &shapes {
+        for deg in [0.0f32, 17.0, 33.0] {
+            let a = of_mask(&render(512, &**f, deg, false, (0.37, 0.71))).unwrap();
+            assert_eq!(a.corners, *corners, "a {name} at {deg} degrees: {a:?}");
+        }
+    }
+}
