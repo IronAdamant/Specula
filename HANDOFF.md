@@ -363,6 +363,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       the mends and the library are not told apart; two runs a cell; one small job. What
       the judges saw: the sculpted heart has a crease down its middle and a ragged seam,
       and thousands of triangles.
+    - **What the measurement does not show is to be set up before part 4 goes on** (the
+      owner, 2026-11-21, of the three limits said with the result: "Worth setting up
+      before we continue with Part 4, library + recipes + templates, before we work on
+      other parts"): (a) **the mends told apart from the library**: a build of the engine
+      with the mends and without the library, so the no-library arm can be measured
+      again; (b) **more than two runs a cell and more than one small job**; (c) **a job
+      that needs what the engine has** (3D, physics, sound), measured.
+    - **The owner's answers on the three things not fixed** (2026-11-21): soft edges on a
+      figure with a point or a notch: **both** routes (the raise itself, past where an
+      inset first closes an edge; and rounding through the sculpt, from the plane
+      figures' distance fields). One call that builds every recipe: "Do that and measure."
+      Compact answers from the shell: "At your discretion" (done: compact through a pipe,
+      indented for a person at a terminal).
     - **Three things not fixed, which the owner has put before any more library work**
       ("These will need to be reviewed first before we continue with library work"): the
       library's raise cannot put a soft edge on a figure with a point or a notch (a heart,
