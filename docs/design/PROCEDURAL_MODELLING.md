@@ -160,11 +160,14 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   the level and the join's width (two parts) or nine quarters of it (more: proved in the
   code's comment); a meeting or a cut asks for the level itself. An ellipsoid's and a column's
   fields read short far from them and are answered exactly for what they read (an ellipsoid:
-  the greatest of a quadratic's roots; a column: its halves times `1 + level / cap`). A twist
-  or a bend keeps a point's distance from its axis and turns it by at most its rate times the
-  coordinate it goes by. **The mesher takes the old box and moves a side out only where this
-  reaches more than a quarter of a cell past it** (the grid samples half a cell past its box,
-  so nothing within a quarter is lost): every mesh that was right is the same mesh.
+  the greatest of a quadratic's roots; a column: since the second round, piece by piece of the
+  curve between its sections, below). A twist or a bend keeps a point's distance from its axis
+  and turns it by at most its rate times the coordinate it goes by. **The mesher takes the old
+  box and moves a side out only where this reaches more than a quarter of a cell past it** (the
+  grid samples half a cell past its box, so nothing within a quarter is lost). Every mesh that
+  was right is the same mesh only where the reach is as tight as the old box: it was not, for
+  ordinary sculpts (its review, below); since the second round it is for nearly all of them,
+  and those it is not for are named.
   - **How it is held** (`sdf.rs` tests): each case below reaches its whole surface, closed
     (two needles joined, a needle rounded, shelled, and a group's swelling over one, two groups
     of four needles, a flat box twisted, a box bent; each failed before); the recipe of two
@@ -187,13 +190,9 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     coordinate); now it does. A rotated meeting of several boxes joined smoothly does not
     escape the old box (a meeting's field is never below any operand's, and the box was widened
     by a cube of the join's width, not a ball): run, 2 to 6 copies, widths 0.1 to 0.3.
-  - **Still a limit**: the reach is a bound, sometimes more generous than the solid. A figure
-    melted four to eight times more than the default (`smooth` 0.1 to 0.2) with its arms out
-    gets a whole-figure box up to a third deeper than before (its limbs' columns read short
-    across their broad side, and a join that wide is answered for where it could reach, not
-    where it does), so its cells are a few percent coarser; no solid was found outside either
-    box. A sliver thinner than the sampling of the truth test could pass it unseen. The union's
-    tighter answer asks every child three times: past 16,384 asks in a tree it asks once.
+  - **Still a limit**: the reach is a bound, sometimes more generous than the solid (since the
+    second round, the figure's and the ordinary sculpts' remainders are below). A sliver thinner
+    than the sampling of the truth test could pass it unseen.
 
 - **The fault as found** (2026-11-20, by holding the modeller against
   [DISTANCE_FIELDS.md](DISTANCE_FIELDS.md): each case meshed inside the automatic box and inside
@@ -236,7 +235,67 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     smaller. Also: two caps no test holds (16 notes a build; 16,384 asks a tree, a budget
     that a chain of two-child smooth unions 16 deep already spends); and at `smooth` 0.1
     and 0.2 two builds of the figure's `body` change too, where only the whole figure was
-    named. **A fresh agent is mending it.**
+    named.
+  - **What was mended after it** (2026-11-20, second round, by an agent that wrote none of
+    the first). The causes were counted on the reviewer's 300 trees (a box "grows" where the
+    mesher's box is not `bounds`'s: 34 at resolution 24 and 36 at 64 at the merge), and each
+    rule was tightened while it stayed a bound of every point where the field is at most the
+    level asked:
+    - **A reach keeps its ball.** Each answer is two, both sound, met at the end: a box with
+      a ball round it, and a box. A turn turns the first's box and leaves its ball, as
+      `bounds` turns a box and widens it after; a join's dip is the ball. A union's second,
+      tighter answer is kept as the box. A meeting of parts whose levels do not meet is
+      nothing (a union leaves it out), not a point at the meeting's origin that its
+      modifiers carry. (The five balls in a row now keep the old box at every resolution.)
+    - **A column piece by piece.** Its sizes between two sections are a cubic curve, so each
+      half there is a weighted mean of four control points, and their ratio never beyond the
+      controls' greatest ratio; the curve is cut into eight pieces, and for each the reach
+      along each axis of the frame is the section's support there (an ellipse's, or a squarer
+      section's by the dual exponent) times `1 + level / cap`, with the piece's own stretch of
+      the axis; past each end, the end section and its cap as one shape. Before, the greater
+      half of two sections was grown by the level over the least half of either, every way at
+      once.
+    - **An ellipsoid or a column turned in its own node is worked out in the parent's frame**
+      (an ellipsoid: its support along each axis and a ball of the level times `(rho + 1 /
+      rho) / 2`, Kantorovich's bound on how far its field reads short, met with its exact reach
+      along its own axes; a column: its points and halves moved there), so its box's corners
+      do not swing out.
+    - **A union asks for its second answer only on its first answer's own path**: its plain
+      and paired asks get its children's first answers, so a tree is asked about its size
+      times its depth, not three times more at each level (a chain of 63 two-child smooth
+      unions, the most nodes allow: under 8,400 asks; a chain of pairs 16 deep had spent the
+      16,384). Past the budget, which a tree of 128 nodes no longer reaches, a union gives its
+      first answer, which is sound and keeps its ball.
+    - A rounded cylinder is round about Y with its first half as its radius, whatever its third
+      says (a recipe writes `[r, h, r]`; a drawn tree written otherwise was held only by
+      `bounds`).
+    **What still grows, by count** (`an_ordinary_sculpt_is_meshed_in_the_old_box`: the
+    reviewer's 300 trees and 300 of the crate's own sequence with every primitive, the
+    half-space, every combination and every modifier but stretch, twist and bend, at 24 and
+    64): of the reviewer's 600 boxes, **3** (it was 70): one tree by 0.54 cells at 64 (an
+    ellipsoid 3.7 to 1, turned in a turned group under a join: its ball is twice the dip),
+    and one whose solid is empty at both (a meeting that does not meet; refused for no
+    surface in every box). Of the crate's own 600, 27, each named with the build that shows
+    why: **4 where the old box cut the solid off** (a flat ellipsoid swollen; a flat
+    one-section column swollen: their fields read short across the broad side, so the
+    swelling reaches further than `bounds` widens, by 9 and 19 cells at 64: a second fault of
+    the old box, besides a stretch), 2 of an empty solid, and 21 where the reach is looser and
+    nothing was cut off, by 0.3 to 23 cells (flat ellipsoids and columns at a level above
+    nothing with a turn above them, and meetings swollen, shelled or noised and then turned:
+    a meeting keeps no ball). The review's three small cases (the balls, two tapering columns
+    near-joined at 0.088, an ellipsoid, a rounded box and a column near-joined at 0.081) keep
+    the old box at 24, 48, 64 and 160. The figure at `smooth` 0.1 and 0.2 (it stretches its
+    eggs, so it is not an ordinary sculpt) still grows: of 476 part builds (both sexes, three
+    statures, three builds, four shapings with the limbs at 35/7 and 60/45 degrees), every
+    `whole` (0.4 to 0.8 cells at 0.1, 1.7 to 3.7 at 0.2) and six `body` builds at 0.2 (0.4
+    to 2.5 cells); the other parts do not; no solid was found past the old box. The tests
+    the first round wrote all pass, and no repository sculpt's or figure part's box moves at
+    the shapings they hold.
+    **Also**: the 16 notes a build keeps and the ask budget are held by tests
+    (`a_build_keeps_at_most_sixteen_notes`, `reach_asks_a_bounded_number_of_times`,
+    `past_the_ask_budget_the_reach_is_still_sound`); a thin part's place (`thin_at`, and the
+    note) is in the sculpt's own frame, before any operation on it or its part, and the note
+    now says so; the quarter cell is held by a sweep (`the_box_moves_only_past_a_quarter_cell_and_loses_nothing_within_it`).
 - **A part thinner than a cell meshes with edges that four triangles share** (looked into on
   2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
   It is not the join and not the box: **one crescent** (`{"op": "difference", "of": [{"op":

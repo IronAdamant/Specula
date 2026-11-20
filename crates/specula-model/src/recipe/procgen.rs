@@ -844,7 +844,7 @@ impl Ctx<'_> {
             j.push(("thin_at", Json::arr([at(lo), at(hi)])));
             if !self.coarse {
                 self.tally.note(format!(
-                    "{}: {} edges are shared by more than two triangles, between {:?} and {:?}: something there is thinner than a cell ({:.4} m), so the mesh is not a surface there; raise \"resolution\" or thicken it",
+                    "{}: {} edges are shared by more than two triangles, between {:?} and {:?} (in the sculpt's own frame, before any operation on it or its part): something there is thinner than a cell ({:.4} m), so the mesh is not a surface there; raise \"resolution\" or thicken it",
                     n.path, st.thin_edges, lo, hi, st.cell
                 ));
             }
