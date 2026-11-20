@@ -227,41 +227,41 @@ pub struct SdfStats {
     pub rounded_samples: u64,
     /// The most powers taken between two charges: what ran before it was paid for.
     pub rounded_most_between: u64,
-    /// Edges of the mesh that more than two triangles share ([`thin_edges`]): where a part
-    /// thinner than a cell has its two sides in one cell. The mesh is closed (every edge is
-    /// met as often each way) and not a surface there.
-    pub thin_edges: u64,
-    /// The box round those edges, when there are any.
+    /// Cells of the grid where something is thinner than a cell: those that hold more than
+    /// one sheet of the surface, or a face whose four corners go inside, outside, inside,
+    /// outside in turn. Each sheet there has a vertex of its own, so the mesh is a surface;
+    /// a coarse one (a sheet as thin as that is a cell's vertices apart, at best).
+    pub thin_cells: u64,
+    /// The box round those cells, when there are any.
     pub thin_at: Option<(V3, V3)>,
+    /// Faces of the grid that a thread thinner than a cell passes through, each given a
+    /// vertex on the face for each side of it (in [`mesh`]).
+    pub threads: u64,
+    /// Cells whose crossings were grouped into sheets (six crossings or more: [`SHEETS_WORK`]
+    /// each), and faces of four crossings whose middle was asked of the field (once from each
+    /// cell beside it, at an evaluation each).
+    pub sheet_cells: u64,
+    pub faces_asked: u64,
+    /// Edges of triangles under the least area tested before they were closed (a scan of
+    /// the triangles each, charged a unit a triangle: [`closes_to_a_surface`]), and whether a
+    /// sliver was left that no edge could close (the weld then drops it).
+    pub closings_tested: u64,
+    pub sliver_left: bool,
+    /// The work all of that was charged: [`SHEETS_WORK`] a cell grouped, a face's tree's cost
+    /// a face asked, a unit a triangle a sliver's edge tested, an eighth a vertex for finding
+    /// vertices at one place and a unit a triangle when some are.
+    pub sheets_work: u64,
+    /// Edges of the mesh shared by other than two triangles ([`tangled_edges`]): none, by
+    /// construction; counted after the last weld, so that a fault would be said.
+    pub tangled_edges: u64,
 }
 
-/// Edges more than two triangles share, and the box round them.
-///
-/// Dual contouring puts one vertex in each cell the surface crosses and a quad across each
-/// edge of the grid whose ends differ in sign. Where a sheet is thinner than a cell, a face of
-/// the grid can have its four corners inside, outside, inside, outside in turn (the two sides
-/// of the sheet pass between them): all four of its edges cross, and their four quads share
-/// the one mesh edge between the two cells on either side of that face. The mesh stays closed
-/// (two of the quads go one way and two the other) and is not a surface there: a check that
-/// asks for every edge to be shared by two triangles fails it (a level of detail then keeps no
-/// volume for it), and a crescent's rim, a shell thinner than a cell and a fin seen edge on do
-/// it at every resolution a recipe can ask for. Said here and in the build's report, so that
-/// it is not met without a word; meshing each sheet on its own vertices is not done yet
-/// (docs/design/PROCEDURAL_MODELLING.md, tier 3). Sorted, not hashed (F2).
-fn thin_edges(shape: &Shape) -> (u64, Option<(V3, V3)>) {
+/// Edges shared by other than two triangles (by index, after the mesher's weld). Sorted, not
+/// hashed (F2).
+fn tangled_edges(shape: &Shape) -> u64 {
     let mut edges: Vec<(u32, u32)> = shape.tris.iter().flat_map(|t| [0, 1, 2].map(|k| (t[k].min(t[(k + 1) % 3]), t[k].max(t[(k + 1) % 3])))).collect();
     edges.sort_unstable();
-    let (mut count, mut lo, mut hi) = (0u64, [f32::MAX; 3], [f32::MIN; 3]);
-    for run in edges.chunk_by(|a, b| a == b) {
-        if run.len() > 2 {
-            count += 1;
-            for v in [run[0].0, run[0].1] {
-                let p = shape.positions[v as usize];
-                (lo, hi) = (math3::vmin(lo, p), math3::vmax(hi, p));
-            }
-        }
-    }
-    (count, (count > 0).then_some((lo, hi)))
+    edges.chunk_by(|a, b| a == b).filter(|run| run.len() != 2).count() as u64
 }
 
 /// The least radius each primitive of the tree turns at, in the tree's own metres, one entry
@@ -2384,6 +2384,118 @@ fn turned_reach(lo: V3, hi: V3, r: f32, twist: f32, bend: f32) -> (V3, V3) {
     (lo, hi)
 }
 
+/// A cell's edge between two of its corners (each corner three bits: 1 for +x, 2 for +y, 4
+/// for +z; the two differ in one). Edge `axis · 4 + o1 + 2 · o2`, where `o1` and `o2` are its
+/// start's offsets along the next axis and the one after.
+const fn edge_between(a: usize, b: usize) -> usize {
+    let axis = (a ^ b).trailing_zeros() as usize;
+    let start = a & b;
+    axis * 4 + ((start >> ((axis + 1) % 3)) & 1) + 2 * ((start >> ((axis + 2) % 3)) & 1)
+}
+
+/// The two corners of a cell's edge `e` ([`edge_between`]'s numbering), its start first.
+const fn edge_ends(e: usize) -> (usize, usize) {
+    let axis = e / 4;
+    let start = ((e & 1) << ((axis + 1) % 3)) | (((e >> 1) & 1) << ((axis + 2) % 3));
+    (start, start | 1 << axis)
+}
+
+/// The four cells round an edge of the grid along each axis, as offsets from the cell whose
+/// lowest corner is the edge's start, in turn round the edge (counter-clockwise seen from
+/// +axis): each two in turn share a face.
+const AROUND: [[(isize, isize, isize); 4]; 3] = [
+    [(0, -1, -1), (0, 0, -1), (0, 0, 0), (0, -1, 0)],
+    [(-1, 0, -1), (-1, 0, 0), (0, 0, 0), (0, 0, -1)],
+    [(-1, -1, 0), (0, -1, 0), (0, 0, 0), (-1, 0, 0)],
+];
+
+/// Work units for grouping one cell's crossings into sheets ([`sheets`]: six faces, at most
+/// twelve unions of twelve edges), charged for each cell with six crossings or more.
+const SHEETS_WORK: u64 = 40;
+
+/// A face of a cell (`n` its normal's axis, `side` 0 or 1): its four corners in turn round it,
+/// and its four edges, edge `q` from corner `q` to corner `q + 1`.
+const fn face_ring(n: usize, side: usize) -> ([usize; 4], [usize; 4]) {
+    let (u, v) = ((n + 1) % 3, (n + 2) % 3);
+    let base = side << n;
+    let c = [base, base | 1 << u, base | 1 << u | 1 << v, base | 1 << v];
+    (c, [edge_between(c[0], c[1]), edge_between(c[1], c[2]), edge_between(c[2], c[3]), edge_between(c[3], c[0])])
+}
+
+/// No sheet: an edge of the cell the surface does not cross.
+const NO_SHEET: u8 = u8::MAX;
+
+/// **The sheets that pass through a cell.** `inside` is each corner's side (bit `c` for corner
+/// `c`); `joined(n, side)` is asked only of a face whose four corners go inside, outside,
+/// inside, outside in turn, and says whether its two inside corners are joined across its
+/// middle (the field there is inside). Returns how many sheets, and for each of the twelve
+/// edges the sheet it belongs to ([`NO_SHEET`] where it does not cross).
+///
+/// On each face the crossings are paired as the surface leaves them on that face: two
+/// crossings are one stretch of the surface's trace on the face; four are two stretches, each
+/// cutting off one of the two corners the middle does not join. Each crossing lies on two
+/// faces, so the stretches chain the crossings into loops round the cell: one loop is one
+/// sheet, the edge of a disc of surface inside the cell. A face's pairing is the face's own
+/// (its corners and `joined`), so the two cells either side of it pair alike. Sheets are
+/// numbered by their first edge.
+fn sheets(inside: u8, mut joined: impl FnMut(usize, usize) -> bool) -> (u8, [u8; 12]) {
+    let side = |c: usize| inside >> c & 1 == 1;
+    let crossing = |e: usize| {
+        let (a, b) = edge_ends(e);
+        side(a) != side(b)
+    };
+    // (Twelve edges; a union of two takes at most twelve steps up.)
+    let mut up: [u8; 12] = std::array::from_fn(|e| e as u8);
+    let root = |up: &[u8; 12], mut e: usize| {
+        while up[e] as usize != e {
+            e = up[e] as usize;
+        }
+        e
+    };
+    let join = |up: &mut [u8; 12], a: usize, b: usize| {
+        let (ra, rb) = (root(up, a), root(up, b));
+        up[ra.max(rb)] = ra.min(rb) as u8;
+    };
+    for n in 0..3 {
+        for s in 0..2 {
+            let (c, r) = face_ring(n, s);
+            let cross: [bool; 4] = r.map(crossing);
+            match cross.iter().filter(|&&x| x).count() {
+                2 => {
+                    let mut it = (0..4).filter(|&q| cross[q]);
+                    let (a, b) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
+                    join(&mut up, r[a], r[b]);
+                }
+                4 => {
+                    // Corner 0 is cut off when the middle joins the other side's corners.
+                    if side(c[0]) != joined(n, s) {
+                        join(&mut up, r[3], r[0]);
+                        join(&mut up, r[1], r[2]);
+                    } else {
+                        join(&mut up, r[0], r[1]);
+                        join(&mut up, r[2], r[3]);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut of = [NO_SHEET; 12];
+    let mut count = 0u8;
+    for e in 0..12 {
+        if !crossing(e) {
+            continue;
+        }
+        let r = root(&up, e);
+        if of[r] == NO_SHEET {
+            of[r] = count;
+            count += 1;
+        }
+        of[e] = of[r];
+    }
+    (count, of)
+}
+
 /// Options for [`mesh`].
 #[derive(Clone, Copy, Debug)]
 pub struct MeshOptions {
@@ -2454,6 +2566,16 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
             return Err(SdfError::limit(crate::work::CANCELLED, *work as f64, opt.max_work as f64));
         }
         Ok(())
+    };
+    // What keeping sheets apart charges (cells grouped, faces asked, places shared, slivers
+    // tested): all of it, in [`SdfStats::sheets_work`] too. (Tests can leave it out, to see
+    // that the work is that much less.)
+    let sheets_part = |n: u64| -> u64 {
+        #[cfg(test)]
+        if FREE_SHEETS.with(|f| f.get()) {
+            return 0;
+        }
+        n
     };
     let at = |i: usize, j: usize, k: usize| -> V3 { [origin[0] + i as f32 * cell, origin[1] + j as f32 * cell, origin[2] + k as f32 * cell] };
     let idx = |i: usize, j: usize, k: usize| (k * dims[1] + j) * dims[0] + i;
@@ -2610,6 +2732,21 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
         ];
         math3::normalize(g)
     };
+    // Where the surface crosses the edge of the grid from sample (i, j, k) along `axis`
+    // (linear in its two samples).
+    let crossing_point = |i: usize, j: usize, k: usize, axis: usize| -> V3 {
+        let (i2, j2, k2) = (i + usize::from(axis == 0), j + usize::from(axis == 1), k + usize::from(axis == 2));
+        let (d0, d1) = (field[idx(i, j, k)], field[idx(i2, j2, k2)]);
+        let t = if d0 == d1 { 0.5 } else { (d0 / (d0 - d1)).clamp(0.0, 1.0) };
+        math3::lerp(at(i, j, k), at(i2, j2, k2), t)
+    };
+    // The tree that holds what begins at sample (i, j, k) and its cost: the quarter block it
+    // begins in holds the whole of an edge or a face of the grid from there (when it was
+    // sampled: one in a block that was filled by its sign asks the whole tree).
+    let tree_at = |i: usize, j: usize, k: usize| -> (&Prepared, u64) {
+        let slot = near_at[((k / FINE) * fine[1] + j / FINE) * fine[0] + i / FINE];
+        near.get(slot as usize).map_or((&prepared, cost), |(t, c)| (t, *c))
+    };
     // Per cell: accumulated QEF (Aáµ€A, Aáµ€b as f64), mass point, count.
     let cells = [dims[0] - 1, dims[1] - 1, dims[2] - 1];
     let cidx = |i: usize, j: usize, k: usize| (k * cells[1] + j) * cells[0] + i;
@@ -2620,14 +2757,7 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
         mass: [f64; 3],
         n: u32,
     }
-    let mut qef: Vec<Qef> = Vec::new();
-    let mut cell_slot = vec![u32::MAX; cells[0] * cells[1] * cells[2]];
-    let mut add = |qef: &mut Vec<Qef>, ci: usize, p: V3, n: V3| {
-        if cell_slot[ci] == u32::MAX {
-            qef.push(Qef::default());
-            cell_slot[ci] = (qef.len() - 1) as u32;
-        }
-        let q = &mut qef[cell_slot[ci] as usize];
+    let add = |q: &mut Qef, p: V3, n: V3| {
         let (n, p) = (n.map(|v| v as f64), p.map(|v| v as f64));
         let d = n[0] * p[0] + n[1] * p[1] + n[2] * p[2];
         q.ata[0] += n[0] * n[0];
@@ -2642,13 +2772,17 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
         }
         q.n += 1;
     };
-    // Edges (sample, axis), in grid order.
-    let mut edges: Vec<(usize, usize, usize, usize, bool)> = Vec::with_capacity(crossings);
+    // Edges (sample, axis), in grid order, with their crossing's point and normal; and which
+    // cells the surface passes through (every cell round a crossing).
+    let ncells = cells[0] * cells[1] * cells[2];
+    let mut first = vec![u32::MAX; ncells];
+    let in_grid = |c: (isize, isize, isize)| c.0 >= 0 && c.1 >= 0 && c.2 >= 0 && (c.0 as usize) < cells[0] && (c.1 as usize) < cells[1] && (c.2 as usize) < cells[2];
+    let mut edges: Vec<(usize, usize, usize, usize, bool, V3, V3)> = Vec::with_capacity(crossings);
     for k in 0..dims[2] {
         for j in 0..dims[1] {
             for i in 0..dims[0] {
                 let s = idx(i, j, k);
-                for axis in 0..3 {
+                for (axis, round) in AROUND.iter().enumerate() {
                     let (i2, j2, k2) = match axis {
                         0 => (i + 1, j, k),
                         1 => (i, j + 1, k),
@@ -2657,84 +2791,296 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
                     if i2 >= dims[0] || j2 >= dims[1] || k2 >= dims[2] {
                         continue;
                     }
-                    let s2 = idx(i2, j2, k2);
-                    if inside(s) == inside(s2) {
+                    if inside(s) == inside(idx(i2, j2, k2)) {
                         continue;
                     }
-                    let (d0, d1) = (field[s], field[s2]);
-                    let t = if d0 == d1 { 0.5 } else { (d0 / (d0 - d1)).clamp(0.0, 1.0) };
-                    let (a, b) = (at(i, j, k), at(i2, j2, k2));
-                    let p = math3::lerp(a, b, t);
-                    // The quarter block this edge begins in holds the whole of it (when it was
-                    // sampled: an edge of a block that was filled by its sign asks the whole tree).
-                    let slot = near_at[((k / FINE) * fine[1] + j / FINE) * fine[0] + i / FINE];
-                    let (tree_here, cost_here) = near.get(slot as usize).map_or((&prepared, cost), |(t, c)| (t, *c));
+                    let p = crossing_point(i, j, k, axis);
+                    let (tree_here, cost_here) = tree_at(i, j, k);
                     charge(&mut work, 6 * cost_here)?;
                     let n = grad(tree_here, p);
-                    // The four cells around this edge.
-                    let around: [(isize, isize, isize); 4] = match axis {
-                        0 => [(0, -1, -1), (0, 0, -1), (0, 0, 0), (0, -1, 0)],
-                        1 => [(-1, 0, -1), (-1, 0, 0), (0, 0, 0), (0, 0, -1)],
-                        _ => [(-1, -1, 0), (0, -1, 0), (0, 0, 0), (-1, 0, 0)],
-                    };
-                    for (di, dj, dk) in around {
-                        let (ci, cj, ck) = (i as isize + di, j as isize + dj, k as isize + dk);
-                        if ci >= 0 && cj >= 0 && ck >= 0 && (ci as usize) < cells[0] && (cj as usize) < cells[1] && (ck as usize) < cells[2] {
-                            add(&mut qef, cidx(ci as usize, cj as usize, ck as usize), p, n);
+                    for &(di, dj, dk) in round {
+                        let c = (i as isize + di, j as isize + dj, k as isize + dk);
+                        if in_grid(c) {
+                            first[cidx(c.0 as usize, c.1 as usize, c.2 as usize)] = 0;
                         }
                     }
-                    edges.push((i, j, k, axis, inside(s)));
+                    edges.push((i, j, k, axis, inside(s), p, n));
                 }
             }
         }
     }
-    // A vertex per surface cell: the QEF's minimiser, pulled towards the mass point, kept in the
-    // cell.
-    let mut shape = Shape::default();
-    let mut vid = vec![u32::MAX; cell_slot.len()];
+    // **The sheets through each surface cell** ([`sheets`]): one vertex each. A cell with fewer
+    // than six crossings has one sheet and no face of four crossings (one sheet's loop crosses
+    // at least three edges, and a face of four makes at least seven), as every cell had before;
+    // the others are grouped, at [`SHEETS_WORK`] each, and a face of four crossings is decided
+    // by the field at its middle, asked of the tree that holds the face (whichever cell asks,
+    // the same tree, the same point, the same answer).
+    let mut slots = 0u32;
+    let mut labels: Vec<[u8; 12]> = Vec::new();
+    let mut many = vec![u32::MAX; ncells];
+    // Faces of four crossings, each once (from the cell below it along its axis), with the
+    // answer at its middle.
+    let mut fours: Vec<(usize, usize, bool)> = Vec::new();
+    let (mut thin_lo, mut thin_hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for k in 0..cells[2] {
         for j in 0..cells[1] {
             for i in 0..cells[0] {
                 let ci = cidx(i, j, k);
-                if cell_slot[ci] == u32::MAX {
+                if first[ci] == u32::MAX {
                     continue;
                 }
-                let q = qef[cell_slot[ci] as usize];
-                let n = q.n as f64;
-                let mass = q.mass.map(|v| v / n);
-                let x = solve_qef(&q.ata, &q.atb, mass, 0.05 * n);
-                let lo = at(i, j, k);
-                let p: V3 = [0, 1, 2].map(|c| (x[c] as f32).clamp(lo[c], lo[c] + cell));
-                vid[ci] = shape.positions.len() as u32;
-                shape.positions.push(p);
+                let mut bits = 0u8;
+                for c in 0..8 {
+                    bits |= u8::from(inside(idx(i + (c & 1), j + (c >> 1 & 1), k + (c >> 2)))) << c;
+                }
+                let crossed = (0..12).filter(|&e| {
+                    let (a, b) = edge_ends(e);
+                    (bits >> a & 1) != (bits >> b & 1)
+                });
+                let (count, of) = if crossed.count() < 6 {
+                    (1, [0; 12])
+                } else {
+                    charge(&mut work, sheets_part(SHEETS_WORK))?;
+                    stats.sheets_work += SHEETS_WORK;
+                    stats.sheet_cells += 1;
+                    let mut joined = [false; 6];
+                    let mut four = false;
+                    for n in 0..3 {
+                        for s in 0..2 {
+                            let (c, _) = face_ring(n, s);
+                            let side = c.map(|c| bits >> c & 1);
+                            if side[0] == side[2] && side[1] == side[3] && side[0] != side[1] {
+                                // The face's own lowest sample, and its middle.
+                                let (fi, fj, fk) = (i + usize::from(s == 1 && n == 0), j + usize::from(s == 1 && n == 1), k + usize::from(s == 1 && n == 2));
+                                let mut mid = at(fi, fj, fk);
+                                mid[(n + 1) % 3] += 0.5 * cell;
+                                mid[(n + 2) % 3] += 0.5 * cell;
+                                let (tree_here, cost_here) = tree_at(fi, fj, fk);
+                                charge(&mut work, sheets_part(cost_here))?;
+                                stats.sheets_work += cost_here;
+                                stats.faces_asked += 1;
+                                joined[2 * n + s] = eval(tree_here, mid) < 0.0;
+                                four = true;
+                                if s == 1 {
+                                    fours.push((ci, n, joined[2 * n + s]));
+                                }
+                            }
+                        }
+                    }
+                    let (count, of) = sheets(bits, |n, s| joined[2 * n + s]);                    if four || count > 1 {
+                        stats.thin_cells += 1;
+                        let lo = at(i, j, k);
+                        (thin_lo, thin_hi) = (math3::vmin(thin_lo, lo), math3::vmax(thin_hi, math3::add(lo, [cell; 3])));
+                    }
+                    (count, of)
+                };
+                first[ci] = slots;
+                slots += u32::from(count);
+                if count > 1 {
+                    many[ci] = labels.len() as u32;
+                    labels.push(of);
+                }
             }
         }
     }
-    for &(i, j, k, axis, inside_low) in &edges {
-        let around: [(isize, isize, isize); 4] = match axis {
-            0 => [(0, -1, -1), (0, 0, -1), (0, 0, 0), (0, -1, 0)],
-            1 => [(-1, 0, -1), (-1, 0, 0), (0, 0, 0), (0, 0, -1)],
-            _ => [(-1, -1, 0), (0, -1, 0), (0, 0, 0), (-1, 0, 0)],
-        };
-        let mut quad = [0u32; 4];
-        for (q, (di, dj, dk)) in quad.iter_mut().zip(around) {
-            let (ci, cj, ck) = ((i as isize + di) as usize, (j as isize + dj) as usize, (k as isize + dk) as usize);
-            *q = vid[cidx(ci, cj, ck)];
+    stats.thin_at = (stats.thin_cells > 0).then_some((thin_lo, thin_hi));
+    // The sheet an edge of the grid belongs to in a cell round it.
+    let sheet_in = |c: (usize, usize, usize), i: usize, j: usize, k: usize, axis: usize| -> u32 {
+        let m = many[cidx(c.0, c.1, c.2)];
+        if m == u32::MAX {
+            return 0;
         }
+        let start = (i - c.0) | (j - c.1) << 1 | (k - c.2) << 2;
+        u32::from(labels[m as usize][edge_between(start, start | 1 << axis)])
+    };
+    // **A thread thinner than a cell through a face.** Where one sheet of each cell either side
+    // of a face of four crossings takes both of its stretches, the two cells' vertices would be
+    // joined twice, once round each side of what passes between the face's two cut corners: the
+    // thread's section a two-sided polygon. Each stretch then gets a vertex of its own on the
+    // face (its two crossings' middle, an eighth of the way to the corner it cuts off), set
+    // between the two cells' vertices in the quads of its two crossings: a section of four.
+    let mut threads: Vec<(usize, usize, [u32; 4])> = Vec::new();
+    let mut on_faces: Vec<V3> = Vec::new();
+    for &(ci, n, joined) in &fours {
+        let (i, j, k) = (ci % cells[0], (ci / cells[0]) % cells[1], ci / (cells[0] * cells[1]));
+        let up = (i + usize::from(n == 0), j + usize::from(n == 1), k + usize::from(n == 2));
+        let (c, r) = face_ring(n, 1);
+        let one = |cell: (usize, usize, usize), s: usize| {
+            let m = many[cidx(cell.0, cell.1, cell.2)];
+            m == u32::MAX || {
+                let (_, r) = face_ring(n, s);
+                r.iter().all(|&e| labels[m as usize][e] == labels[m as usize][r[0]])
+            }
+        };
+        if !(up.0 < cells[0] && up.1 < cells[1] && up.2 < cells[2] && one((i, j, k), 1) && one(up, 0)) {
+            continue;
+        }
+        // Corner 0 is cut off when the middle joins the other side's corners ([`sheets`]).
+        let cut0 = (inside(idx(i + (c[0] & 1), j + (c[0] >> 1 & 1), k + (c[0] >> 2)))) != joined;
+        let pairs: [(usize, usize, usize); 2] = if cut0 { [(3, 0, 0), (1, 2, 2)] } else { [(0, 1, 1), (2, 3, 3)] };
+        let mut verts = [u32::MAX; 4];
+        for (a, b, corner) in pairs {
+            let point = |q: usize| {
+                let (s, e) = edge_ends(r[q]);
+                let lo = s.min(e);
+                crossing_point(i + (lo & 1), j + (lo >> 1 & 1), k + (lo >> 2), r[q] / 4)
+            };
+            let mid = math3::lerp(point(a), point(b), 0.5);
+            let cc = c[corner];
+            let id = slots + on_faces.len() as u32;
+            on_faces.push(math3::lerp(mid, at(i + (cc & 1), j + (cc >> 1 & 1), k + (cc >> 2)), 0.125));
+            (verts[a], verts[b]) = (id, id);
+        }
+        threads.push((ci, n, verts));
+    }
+    stats.threads = threads.len() as u64;
+    // (Each thread puts a vertex in four quads: a triangle more each.)
+    let triangles = 2 * crossings + 4 * threads.len();
+    if triangles > opt.max_triangles {
+        return Err(SdfError::limit(format!("the sdf would mesh to {triangles} triangles; at most {} (lower the resolution)", opt.max_triangles), triangles as f64, opt.max_triangles as f64));
+    }
+    // Each sheet's QEF, from its own crossings, added in the grid's order.
+    let mut qef = vec![Qef::default(); slots as usize];
+    for &(i, j, k, axis, _, p, n) in &edges {
+        for (di, dj, dk) in AROUND[axis] {
+            let c = (i as isize + di, j as isize + dj, k as isize + dk);
+            if in_grid(c) {
+                let c = (c.0 as usize, c.1 as usize, c.2 as usize);
+                add(&mut qef[(first[cidx(c.0, c.1, c.2)] + sheet_in(c, i, j, k, axis)) as usize], p, n);
+            }
+        }
+    }
+    // A vertex per sheet: the QEF's minimiser, pulled towards the mass point, kept in the cell.
+    // (Numbered as the QEFs are: a cell's sheets in turn, cells in the grid's order.)
+    let mut shape = Shape::default();
+    let mut masses: Vec<V3> = Vec::with_capacity(slots as usize);
+    for k in 0..cells[2] {
+        for j in 0..cells[1] {
+            for i in 0..cells[0] {
+                let ci = cidx(i, j, k);
+                if first[ci] == u32::MAX {
+                    continue;
+                }
+                let next = if many[ci] == u32::MAX { first[ci] + 1 } else { first[ci] + 1 + u32::from(*labels[many[ci] as usize].iter().filter(|&&s| s != NO_SHEET).max().unwrap_or(&0)) };
+                for slot in first[ci]..next {
+                    let q = qef[slot as usize];
+                    let n = q.n as f64;
+                    let mass = q.mass.map(|v| v / n);
+                    let x = solve_qef(&q.ata, &q.atb, mass, 0.05 * n);
+                    let lo = at(i, j, k);
+                    shape.positions.push([0, 1, 2].map(|c| (x[c] as f32).clamp(lo[c], lo[c] + cell)));
+                    masses.push(mass.map(|v| v as f32));
+                }
+            }
+        }
+    }
+    shape.positions.extend_from_slice(&on_faces);
+    for &(i, j, k, axis, inside_low, _, _) in &edges {
+        let round = AROUND[axis].map(|(di, dj, dk)| ((i as isize + di) as usize, (j as isize + dj) as usize, (k as isize + dk) as usize));
+        // The polygon round this edge: a vertex a cell, and one on a face between two of them
+        // where a thread passes it.
+        let mut poly = [0u32; 8];
+        let (mut len, mut on_face) = (0, usize::MAX);
+        for q in 0..4 {
+            let c = round[q];
+            poly[len] = first[cidx(c.0, c.1, c.2)] + sheet_in(c, i, j, k, axis);
+            len += 1;
+            if threads.is_empty() {
+                continue;
+            }
+            let d = round[(q + 1) % 4];
+            let low = (c.0.min(d.0), c.1.min(d.1), c.2.min(d.2));
+            let n = if c.0 != d.0 { 0 } else if c.1 != d.1 { 1 } else { 2 };
+            if let Ok(t) = threads.binary_search_by_key(&(cidx(low.0, low.1, low.2), n), |&(ci, n, _)| (ci, n)) {
+                let start = (i - low.0) | (j - low.1) << 1 | (k - low.2) << 2;
+                let e = edge_between(start, start | 1 << axis);
+                let (_, r) = face_ring(n, 1);
+                if let Some(q) = r.iter().position(|&x| x == e) {
+                    poly[len] = threads[t].2[q];
+                    on_face = on_face.min(len);
+                    len += 1;
+                }
+            }
+        }
+        let poly = &mut poly[..len];
         // Counter-clockwise seen from +axis when the low end is inside (the surface faces +axis).
         if !inside_low {
-            quad.reverse();
+            poly.reverse();
+            if on_face != usize::MAX {
+                on_face = len - 1 - on_face;
+            }
         }
-        let p: Vec<V3> = quad.iter().map(|&v| shape.positions[v as usize]).collect();
-        // Split along the shorter diagonal.
-        let d02 = math3::length(math3::sub(p[2], p[0]));
-        let d13 = math3::length(math3::sub(p[3], p[1]));
-        if d02 <= d13 {
-            shape.tris.push([quad[0], quad[1], quad[2]]);
-            shape.tris.push([quad[0], quad[2], quad[3]]);
+        if len == 4 {
+            let quad = &*poly;
+            let p: Vec<V3> = quad.iter().map(|&v| shape.positions[v as usize]).collect();
+            // Split along the shorter diagonal.
+            let d02 = math3::length(math3::sub(p[2], p[0]));
+            let d13 = math3::length(math3::sub(p[3], p[1]));
+            if d02 <= d13 {
+                shape.tris.push([quad[0], quad[1], quad[2]]);
+                shape.tris.push([quad[0], quad[2], quad[3]]);
+            } else {
+                shape.tris.push([quad[0], quad[1], quad[3]]);
+                shape.tris.push([quad[1], quad[2], quad[3]]);
+            }
         } else {
-            shape.tris.push([quad[0], quad[1], quad[3]]);
-            shape.tris.push([quad[1], quad[2], quad[3]]);
+            // A fan from a vertex on a face: its chords join it to vertices of this polygon
+            // alone (that vertex is in one other polygon, whose cells differ), never two cells'
+            // vertices across the face it stands on.
+            poly.rotate_left(on_face);
+            for w in 1..len - 1 {
+                shape.tris.push([poly[0], poly[w], poly[w + 1]]);
+            }
+        }
+    }
+    // **Vertices kept apart where joining them leaves no surface.** Two cells' (or two
+    // sheets') vertices can be held at one place by their cells' bounds (a corner or an edge
+    // both cells share); the weld below joins them. Where the two are not an edge of the mesh,
+    // or are one whose ends have a neighbour in common but the far corners of its two
+    // triangles, that join would put four triangles on an edge or two fans on a point: each
+    // is moved a sixteenth of the way to its own crossings' middle. (Rare; a scan of the
+    // triangles, charged a unit a triangle, only when two vertices share a place.)
+    charge(&mut work, sheets_part(shape.positions.len() as u64 / 8))?;
+    stats.sheets_work += shape.positions.len() as u64 / 8;
+    let mut by_place: Vec<(u32, [u32; 3])> = (0..slots).map(|v| (v, shape.positions[v as usize].map(|x| (x + 0.0).to_bits()))).collect();
+    by_place.sort_unstable_by_key(|&(v, k)| (k, v));
+    let shared: Vec<Vec<u32>> = by_place.chunk_by(|a, b| a.1 == b.1).filter(|run| run.len() > 1).map(|run| run.iter().map(|&(v, _)| v).collect()).collect();
+    if !shared.is_empty() {
+        charge(&mut work, sheets_part(shape.tris.len() as u64))?;
+        stats.sheets_work += shape.tris.len() as u64;
+        let mut near: std::collections::BTreeMap<u32, Vec<u32>> = shared.iter().flatten().map(|&v| (v, Vec::new())).collect();
+        let mut far: std::collections::BTreeMap<(u32, u32), Vec<u32>> = std::collections::BTreeMap::new();
+        for t in &shape.tris {
+            for k in 0..3 {
+                let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+                if let Some(n) = near.get_mut(&a) {
+                    n.extend([b, c]);
+                }
+                if near.contains_key(&a) && near.contains_key(&b) {
+                    far.entry((a.min(b), a.max(b))).or_default().push(c);
+                }
+            }
+        }
+        for n in near.values_mut() {
+            n.sort_unstable();
+            n.dedup();
+        }
+        for group in &shared {
+            let joins = group.iter().enumerate().all(|(x, &a)| {
+                group[x + 1..].iter().all(|&b| {
+                    let Some(mut f) = far.get(&(a.min(b), a.max(b))).cloned() else { return false };
+                    f.sort_unstable();
+                    f.dedup();
+                    let common: Vec<u32> = near[&a].iter().copied().filter(|v| *v != b && near[&b].binary_search(v).is_ok()).collect();
+                    common == f
+                })
+            });
+            if !joins {
+                for &v in group {
+                    let p = shape.positions[v as usize];
+                    shape.positions[v as usize] = math3::lerp(p, masses[v as usize], 0.0625);
+                }
+            }
         }
     }
     shape.tags = vec![TAG_FACE; shape.tris.len()];
@@ -2760,8 +3106,15 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     // its corners, such a triangle went and its three neighbours stayed: a pinhole a few
     // micrometres across between two fingers, on some hands at some resolutions. Found by the
     // second review of part 4's slice 2.)
+    // **An edge is closed only where that leaves a surface**: where its two ends have a
+    // neighbour in common other than the far corners of the two triangles on it, moving one
+    // onto the other would put four triangles on one edge (a needle at a cone's tip, two cells'
+    // vertices kept a hair apart on the line their cells share). Such a triangle's next edge is
+    // tried. (Each test scans the triangles once, charged a unit a triangle.)
+    let mut stuck = false;
     for _ in 0..4 {
         let mut moved = false;
+        stuck = false;
         for t in 0..shape.tris.len() {
             let [a, b, c] = shape.tris[t].map(|v| v as usize);
             let p = [shape.positions[a], shape.positions[b], shape.positions[c]];
@@ -2773,28 +3126,41 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
                 continue;
             }
             let edges = [(a, b), (b, c), (c, a)];
-            let shortest = (0..3).min_by(|&x, &y| {
-                let len = |e: (usize, usize)| math3::length(math3::sub(shape.positions[e.0], shape.positions[e.1]));
-                len(edges[x]).total_cmp(&len(edges[y]))
-            });
-            if let Some(e) = shortest {
+            let len = |e: (usize, usize)| math3::length(math3::sub(shape.positions[e.0], shape.positions[e.1]));
+            let mut order = [0, 1, 2];
+            // (The shortest first, as it always was: a stable sort keeps the first of equals.)
+            order.sort_by(|&x, &y| len(edges[x]).total_cmp(&len(edges[y])));
+            let mut closed = false;
+            for e in order {
                 let (keep, go) = edges[e];
+                charge(&mut work, sheets_part(shape.tris.len() as u64))?;
+                stats.sheets_work += shape.tris.len() as u64;
+                stats.closings_tested += 1;
+                if !closes_to_a_surface(&shape, shape.positions[keep], shape.positions[go]) {
+                    continue;
+                }
                 let at = shape.positions[keep];
                 // Every vertex at the place that goes: the mesh is not welded yet.
                 let gone = shape.positions[go];
                 for q in shape.positions.iter_mut().filter(|q| **q == gone) {
                     *q = at;
                 }
-                moved = true;
+                (moved, closed) = (true, true);
+                break;
             }
+            stuck |= !closed;
         }
         if !moved {
             break;
         }
     }
+    // (A sliver no edge could close in the last pass is left to the weld, which drops it; the
+    // hole is counted in `tangled_edges` and said. None was met in 857 drawn trees meshed by
+    // hand while this was made, nor in any case or recipe the tests mesh.)
+    stats.sliver_left = stuck;
     // Triangles collapsed by vertices clamped or moved onto each other.
     shape.weld_exact();
-    (stats.thin_edges, stats.thin_at) = thin_edges(&shape);
+    stats.tangled_edges = tangled_edges(&shape);
     // (The last samples' powers past their weight.)
     charge(&mut work, 0)?;
     let bill = bill.into_inner();
@@ -2802,7 +3168,74 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     stats.work = work;
     stats.trees_kept = near.len();
     stats.triangles = shape.tris.len();
+    #[cfg(test)]
+    MESHED.with(|m| {
+        if let Some(all) = m.borrow_mut().as_mut() {
+            all.push((shape.clone(), stats));
+        }
+    });
     Ok((shape, stats))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// (Tests only) every mesh made on this thread while a test keeps the list, with what
+    /// meshing it did: how a build's sculpts are reached (a build meshes each at its detail
+    /// and, where it needs one, coarsely).
+    static MESHED: std::cell::RefCell<Option<Vec<(Shape, SdfStats)>>> = const { std::cell::RefCell::new(None) };
+    /// (Tests only) leave what keeping sheets apart costs out of the work.
+    static FREE_SHEETS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// (Tests only) every byte of a mesh, as one hash: its positions, triangles and colours.
+#[cfg(test)]
+fn mesh_hash(shape: &Shape) -> u64 {
+    let mut h = specula_core::hash::StableHasher::new();
+    for p in &shape.positions {
+        p.iter().for_each(|x| h.write_u32(x.to_bits()));
+    }
+    for t in &shape.tris {
+        t.iter().for_each(|x| h.write_u32(*x));
+    }
+    for c in &shape.colors {
+        c.iter().for_each(|x| h.write_u32(x.to_bits()));
+    }
+    h.finish()
+}
+
+/// Whether moving every vertex at `q` onto `p` leaves a surface (the link condition): the
+/// places that neighbour both, through triangles with three places, are only the far corners
+/// of the triangles that hold both. One scan of the triangles.
+fn closes_to_a_surface(shape: &Shape, p: V3, q: V3) -> bool {
+    let key = |v: V3| v.map(|x| (x + 0.0).to_bits());
+    let (kp, kq) = (key(p), key(q));
+    let (mut by_p, mut by_q, mut far) = (Vec::new(), Vec::new(), Vec::new());
+    for t in &shape.tris {
+        let k = t.map(|v| key(shape.positions[v as usize]));
+        if k[0] == k[1] || k[1] == k[2] || k[2] == k[0] {
+            continue;
+        }
+        let (hp, hq) = (k.contains(&kp), k.contains(&kq));
+        for &x in &k {
+            if x != kp && x != kq {
+                if hp {
+                    by_p.push(x);
+                }
+                if hq {
+                    by_q.push(x);
+                }
+                if hp && hq {
+                    far.push(x);
+                }
+            }
+        }
+    }
+    for v in [&mut by_p, &mut by_q, &mut far] {
+        v.sort_unstable();
+        v.dedup();
+    }
+    let common: Vec<[u32; 3]> = by_p.into_iter().filter(|x| by_q.binary_search(x).is_ok()).collect();
+    common == far
 }
 
 /// Minimises |A x - b|Â² + w |x - mass|Â² (the normal equations, a 3Ã—3 symmetric solve).
@@ -5068,11 +5501,9 @@ mod tests {
         assert!(compared > 90_000, "{compared}");
     }
 
-    /// A part thinner than a cell is meshed with edges four triangles share (a face of the grid
-    /// whose corners go inside, outside, inside, outside): a crescent's rim, at every resolution
-    /// from 24 to 120, joined to itself or not (the bounds investigation's "two crescents
-    /// meshed open"). The mesh is closed both ways and not a surface there, and the build says
-    /// so and where, in its report and its notes; a plain ball has none.
+    /// A part thinner than a cell (a crescent's rim) is meshed as a surface, each of its sides
+    /// on vertices of its own, and the build says where it is thinner than a cell, in its
+    /// report and its notes; a plain ball has no such cell.
     #[test]
     fn a_part_thinner_than_a_cell_is_said_where_it_is() {
         let ball = |x: f32| {
@@ -5083,20 +5514,23 @@ mod tests {
         let crescent = group(Combine::Difference, vec![ball(0.0), ball(0.05)], 0.0);
         let (shape, st) = mesh(&crescent, &opts(48)).unwrap();
         assert_eq!(unbalanced(&shape), 0);
-        assert!(st.thin_edges > 100 && shape.open_edge_count() > 0, "{} thin edges", st.thin_edges);
+        assert!(st.thin_cells > 100 && st.tangled_edges == 0 && shape.open_edge_count() == 0, "{} thin cells, {} tangled edges", st.thin_cells, st.tangled_edges);
         // (Toward the rim, where the two balls' surfaces cross on the plane x = 0.025 at radius
-        // 0.4994, the sheet between them is thinner than a cell: x from about -0.24 to -0.04.)
+        // 0.4994, the sheet between them is thinner than a cell: x from about -0.24 to -0.04;
+        // the box is of whole cells, 0.0208 m each.)
         let (lo, hi) = st.thin_at.unwrap();
-        assert!(lo[0] > -0.3 && hi[0] < 0.03 && hi[1] > 0.4 && lo[1] < -0.4, "{lo:?}..{hi:?}");
+        assert!(lo[0] > -0.35 && hi[0] < 0.03 && hi[1] > 0.4 && lo[1] < -0.4, "{lo:?}..{hi:?}");
         let (whole, st) = mesh(&ball(0.0), &opts(48)).unwrap();
-        assert!(st.thin_edges == 0 && st.thin_at.is_none() && whole.open_edge_count() == 0);
+        assert!(st.thin_cells == 0 && st.tangled_edges == 0 && st.thin_at.is_none() && whole.open_edge_count() == 0);
         // Through a recipe: the report and the notes.
         let style = crate::Style::parse(r##"{ "style": "t", "palette": {}, "materials": { "stone": { "color": "#8c96a3" } } }"##).unwrap();
         let text = r#"{ "name": "crescent", "parts": [ { "name": "c", "material": "stone", "shape": { "op": "sdf", "tree": { "op": "difference", "of": [
             { "op": "sphere", "radius": 0.5 }, { "op": "sphere", "radius": 0.5, "at": [0.05, 0, 0] } ] } } } ] }"#;
         let m = crate::build(text, &crate::BuildParams::new(&style)).unwrap();
-        assert!(m.notes.iter().any(|n| n.contains("shared by more than two triangles") && n.contains("thinner than a cell")), "{:?}", m.notes);
-        assert!(m.extras.stats.iter().any(|(_, j)| j.get("thin_edges").and_then(|v| v.as_f64()).is_some_and(|c| c > 0.0)), "{:?}", m.extras.stats);
+        assert!(m.notes.iter().any(|n| n.contains("closed surface there") && n.contains("thinner than a cell")), "{:?}", m.notes);
+        assert!(!m.notes.iter().any(|n| n.contains("fault of the mesher")), "{:?}", m.notes);
+        assert!(m.extras.stats.iter().any(|(_, j)| j.get("thin_cells").and_then(|v| v.as_f64()).is_some_and(|c| c > 0.0)), "{:?}", m.extras.stats);
+        assert!(m.lods[0].open_edge_count() == 0, "the model's mesh is closed");
     }
 
     /// No sculpt in the repository's recipes, and no figure at the limits of its body and
@@ -5150,5 +5584,389 @@ mod tests {
             }
         }
         assert!(figures > 300, "{figures}");
+    }
+
+    /// **Every sculpt is a closed surface** ([`not_a_surface`], from positions and indices
+    /// alone): every sculpt of the repository's recipes, at its detail and coarsely; the cases
+    /// thinner than a cell ([`thin_cases`]) at resolutions from 8 to 157; and trees drawn from
+    /// a fixed sequence at resolutions from 8 to 160. Each sheet through a cell has a vertex of
+    /// its own, a face of four crossings is paired by the face alone, and a thread through a
+    /// face has vertices on it; take any of the three away and this fails.
+    #[test]
+    fn every_sculpt_is_a_closed_surface() {
+        let mut checked = 0;
+        for (name, meshes) in repository_sculpts() {
+            for (i, (s, st)) in meshes.iter().enumerate() {
+                assert_eq!(not_a_surface(s), None, "{name}, mesh {i}");
+                assert_eq!(st.tangled_edges, 0, "{name}, mesh {i}");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 40, "{checked} repository meshes");
+        let (mut thin, mut threads) = (0, 0);
+        for (name, tree, res) in thin_cases() {
+            // (A part thinner than a cell can fall between the samples: nothing to mesh.)
+            let (s, st) = match mesh(&tree, &MeshOptions { max_triangles: 4_000_000, ..opts(res) }) {
+                Err(e) if !e.limit && e.message.contains("no surface") => continue,
+                got => got.unwrap_or_else(|e| panic!("{name} at {res}: {e:?}")),
+            };
+            assert_eq!(not_a_surface(&s), None, "{name} at resolution {res}");
+            assert_eq!(st.tangled_edges, 0, "{name} at resolution {res}");
+            thin += usize::from(st.thin_cells > 0);
+            threads += usize::from(st.threads > 0);
+        }
+        // (The cases are thin where they mean to be, and threads are met.)
+        assert!(thin > 35 && threads > 15, "{thin} cases with thin cells, {threads} with threads");
+        let mut d = Draw(0x51ed_270b_27d1_9a3f);
+        let (mut meshed, mut drawn_thin) = (0, 0);
+        const RES: [u32; 10] = [8, 11, 16, 24, 33, 48, 64, 90, 120, 160];
+        for t in 0..100 {
+            let tree = drawn_tree(&mut d, 0);
+            if count_nodes(&tree) > MAX_NODES || bounds(&tree).is_none() {
+                continue;
+            }
+            for res in [RES[t % 10], RES[(t + 3) % 5]] {
+                let Ok((s, st)) = mesh(&tree, &MeshOptions { max_triangles: 4_000_000, ..opts(res) }) else { continue };
+                assert_eq!(not_a_surface(&s), None, "drawn tree {t} at resolution {res}\n{tree:?}");
+                meshed += 1;
+                drawn_thin += usize::from(st.thin_cells > 0);
+            }
+        }
+        assert!(meshed > 100 && drawn_thin > 30, "{meshed} drawn meshes, {drawn_thin} thin");
+        // (Two trees a wider run found: the 999th of another sequence at resolution 11, two
+        // cells' vertices held at one corner by their cells' bounds and joined by the weld,
+        // with no sheet anywhere; and its 1,415th at 90, the same among sheets.)
+        let mut d = Draw(0x1234_5678_9abc_def1);
+        for t in 0..1415 {
+            let tree = drawn_tree(&mut d, 0);
+            if t == 998 || t == 1414 {
+                let (s, _) = mesh(&tree, &MeshOptions { max_triangles: 4_000_000, ..opts(if t == 998 { 11 } else { 90 }) }).unwrap();
+                assert_eq!(not_a_surface(&s), None, "the wider run's tree {t}");
+            }
+        }
+    }
+
+    /// The meshes of the repository's recipes that had no cell with more than one sheet (and
+    /// no face of four crossings), as the mesher made them before each sheet had a vertex of
+    /// its own: (recipe, which of its build's meshes, every byte's hash, [`mesh_hash`]).
+    const ONE_SHEET_RECIPES: [(&str, usize, &str); 30] = [
+        ("grave_rock", 1, "b3425e9306f46ef9"), ("ruined_wall", 0, "936dbc9feea1e333"), ("ruined_wall", 1, "5bcbb49f5122b839"), ("statue_angel", 1, "ae067237c67a5a9f"),
+        ("statue_mourner", 1, "8a5d975be0360bc2"), ("runestone_t3", 0, "5b13aaed48ed668d"), ("runestone_t3", 1, "c49e9c661bd58480"), ("runestone_t3", 2, "6472fc1385d5ae03"),
+        ("runestone_t3", 4, "55c11bbff83bdb1d"), ("runestone_t3", 6, "f70a1394252a25e2"), ("runestone_t3", 7, "248553abb9c1dcab"), ("skeleton_warrior_t3", 1, "ec550b6191c9989a"),
+        ("skeleton_warrior_t3", 2, "8f45668f4dfad2e6"), ("skeleton_warrior_t3", 4, "a68a6006a1e3de38"), ("skeleton_warrior_t3", 5, "7a9dc9c187b77b84"), ("skeleton_warrior_t3", 6, "d363b2fcf8d336be"),
+        ("skeleton_warrior_t3", 7, "f0ff0425eb7095ee"), ("skeleton_warrior_t3", 8, "762416c432bf99db"), ("skeleton_warrior_t3", 9, "fa1fd2d70aec8cff"), ("skeleton_warrior_t3", 10, "3991361069e4897d"),
+        ("skeleton_warrior_t3", 12, "a1a3921ddd32d4dc"), ("skeleton_warrior_t3", 13, "aa6233f6e9c363a0"), ("skeleton_warrior_t3", 15, "0a12156eadb1ab7d"), ("skeleton_warrior_t3", 16, "1d825141abf06d9b"),
+        ("skeleton_warrior_t3", 17, "7912d6fa9c3ea8c7"), ("skeleton_warrior_t3", 18, "373be0fedf113e1b"), ("skeleton_warrior_t3", 19, "75fe5519dd514cf9"), ("skeleton_warrior_t3", 20, "b804ee5e8dc2512a"),
+        ("skeleton_warrior_t3", 21, "d77f46649acda6e5"), ("tree_t3", 1, "395873a1a209c88d"),
+    ];
+
+    /// The figure's parts for each body and shaping given, meshed at each part's resolution.
+    fn figure_meshes(bodies: &[(specula_corpus::Sex, usize)], shapings: &[(f64, f64, f32)]) -> Vec<(Shape, SdfStats)> {
+        let mut out = Vec::new();
+        for &(sex, which) in bodies {
+            let [short, tall] = specula_corpus::ansur::statures(sex).map(|mm| mm / 1000.0);
+            let stature = [short, 0.5 * (short + tall), tall][which];
+            let body = specula_corpus::Body::with_build(sex, stature, 0.0).unwrap();
+            for &(arms, legs, smooth) in shapings {
+                let shaping = crate::figure::Shaping { arms, legs, smooth };
+                for name in crate::figure::Part::NAMES {
+                    let part = crate::figure::Part::parse(name).unwrap();
+                    let tree = crate::figure::tree(&body, &shaping, part);
+                    out.extend(mesh(&tree, &MeshOptions { max_triangles: 2_000_000, ..opts(part.resolution()) }));
+                }
+            }
+        }
+        out
+    }
+
+    /// Trees drawn from a fixed sequence, each at five resolutions from 8 to 90.
+    fn drawn_meshes() -> Vec<(Shape, SdfStats)> {
+        let mut d = Draw(0x51ed_270b_27d1_9a3f);
+        let mut out = Vec::new();
+        for _ in 0..60 {
+            let tree = drawn_tree(&mut d, 0);
+            if count_nodes(&tree) > MAX_NODES || bounds(&tree).is_none() {
+                continue;
+            }
+            for res in [8, 13, 24, 48, 90] {
+                out.extend(mesh(&tree, &MeshOptions { max_triangles: 2_000_000, ..opts(res) }));
+            }
+        }
+        out
+    }
+
+    /// The meshes with one sheet a cell, as one hash, and how many.
+    fn one_sheet(meshes: &[(Shape, SdfStats)]) -> (String, usize) {
+        let mut h = specula_core::hash::StableHasher::new();
+        let mut n = 0;
+        for (s, _) in meshes.iter().filter(|(_, st)| st.thin_cells == 0) {
+            h.write_u64(mesh_hash(s));
+            n += 1;
+        }
+        (format!("{:016x}", h.finish()), n)
+    }
+
+    /// **Where no cell has more than one sheet, nothing changes by a byte.** Every mesh of the
+    /// repository's recipes without such a cell is the mesh the mesher made before
+    /// ([`ONE_SHEET_RECIPES`]), and the twelve with one are the ones that had edges four
+    /// triangles shared; the figure's parts and the drawn trees without one hash as they did
+    /// (each hash was taken from the mesher before the change, mesh by mesh: the lead's notes
+    /// for the mend). The full set of figures is
+    /// `the_figures_with_one_sheet_a_cell_are_as_they_were`.
+    #[test]
+    fn a_mesh_with_one_sheet_a_cell_is_as_it_was() {
+        let mut thin = Vec::new();
+        let mut same = 0;
+        for (name, meshes) in repository_sculpts() {
+            for (i, (s, st)) in meshes.iter().enumerate() {
+                if st.thin_cells > 0 {
+                    thin.push(format!("{name} {i}"));
+                    continue;
+                }
+                let before = ONE_SHEET_RECIPES.iter().find(|(n, j, _)| *n == name && *j == i).unwrap_or_else(|| panic!("{name}, mesh {i}: not one of the meshes with one sheet a cell before"));
+                assert_eq!(format!("{:016x}", mesh_hash(s)), before.2, "{name}, mesh {i} changed");
+                same += 1;
+            }
+        }
+        assert_eq!(same, ONE_SHEET_RECIPES.len());
+        // (Each of these had edges that four triangles shared: a detail and, where a build
+        // needs one, its coarse mesh.)
+        assert_eq!(thin.join(", "), "grave_rock 0, statue_angel 0, statue_mourner 0, runestone_t3 3, runestone_t3 5, skeleton_warrior_t3 0, skeleton_warrior_t3 3, skeleton_warrior_t3 11, skeleton_warrior_t3 14, tree_t3 0, tree_t3 2, tree_t3 3");
+        use specula_corpus::Sex;
+        let figures = figure_meshes(&[(Sex::Female, 1), (Sex::Male, 1)], &[(35.0, 7.0, 0.025)]);
+        assert_eq!(one_sheet(&figures), (ONE_SHEET_FIGURES.into(), 7));
+        assert_eq!(one_sheet(&drawn_meshes()), (ONE_SHEET_DRAWN.into(), 74));
+        // Hands whose meshes close slivers (the closing tried in the order it always was,
+        // shortest edge first), as they were.
+        for (sex, res, before) in [(Sex::Female, 44, "6af6fcd32dc319e1"), (Sex::Male, 108, "84faf7f67535aaac"), (Sex::Male, 152, "f03d6d2b54bd4fc0")] {
+            let [short, tall] = specula_corpus::ansur::statures(sex).map(|mm| mm / 1000.0);
+            let body = specula_corpus::Body::with_build(sex, 0.5 * (short + tall), 0.0).unwrap();
+            let tree = crate::figure::tree(&body, &crate::figure::Shaping { arms: 35.0, legs: 7.0, smooth: 0.025 }, crate::figure::Part::parse("hand_l").unwrap());
+            let (s, st) = mesh(&tree, &MeshOptions { max_triangles: 2_000_000, ..opts(res) }).unwrap();
+            assert!(st.closings_tested > 0 && st.thin_cells == 0, "{sex:?} hand at {res}: {st:?}");
+            assert_eq!(format!("{:016x}", mesh_hash(&s)), before, "{sex:?} hand at {res}");
+        }
+    }
+
+    // (Taken from the mesher before each sheet had a vertex of its own: the hashes of the
+    // meshes with one sheet a cell, in this order.)
+    const ONE_SHEET_FIGURES: &str = "74bcb25b940c52b3";
+    const ONE_SHEET_DRAWN: &str = "1dd16d551cd36554";
+    const ONE_SHEET_FIGURES_ALL: &str = "a7df68f7523d352a";
+
+    /// The same for the figure at both sexes' shortest, middle and tallest statures and three
+    /// shapings (default, none, the limbs at their limits): 126 parts, 61 with one sheet a cell.
+    #[test]
+    #[ignore = "the full set of figures (about a minute in a release build): run by hand"]
+    fn the_figures_with_one_sheet_a_cell_are_as_they_were() {
+        use specula_corpus::Sex;
+        let bodies: Vec<(Sex, usize)> = [Sex::Female, Sex::Male].into_iter().flat_map(|s| (0..3).map(move |w| (s, w))).collect();
+        let figures = figure_meshes(&bodies, &[(35.0, 7.0, 0.025), (0.0, 0.0, 0.0), (60.0, 45.0, 0.025)]);
+        assert_eq!(one_sheet(&figures), (ONE_SHEET_FIGURES_ALL.into(), 61));
+    }
+
+    /// **What keeping sheets apart costs is charged, all of it.** Grouping a cell's crossings
+    /// ([`SHEETS_WORK`] a cell), asking a face's middle (its tree's cost), finding vertices at
+    /// one place (an eighth a vertex, a unit a triangle when some are) and testing a sliver's
+    /// edge before closing it (a unit a triangle): the build's work with them is the work
+    /// without them and [`SdfStats::sheets_work`] exactly, and that is at least its parts;
+    /// on a crescent (sheets and faces), a cone's tip (slivers), and the wider run's tree that
+    /// has vertices at one place. The work a limit refuses is the same work.
+    #[test]
+    fn what_keeping_sheets_apart_costs_is_charged() {
+        let ball = |x: f32| {
+            let mut s = prim(Prim::Sphere { radius: 0.5 });
+            s.m.at = [x, 0.0, 0.0];
+            s
+        };
+        let crescent = group(Combine::Difference, vec![ball(0.0), ball(0.05)], 0.0);
+        let tip = prim(Prim::Cylinder { radius: 0.3, radius_top: 0.0, half_height: 0.5, round: 0.0 });
+        let mut d = Draw(0x1234_5678_9abc_def1);
+        let shared = (0..999).map(|_| drawn_tree(&mut d, 0)).last().unwrap();
+        for (tree, res) in [(&crescent, 48), (&tip, 24), (&shared, 11)] {
+            let (s, st) = mesh(tree, &opts(res)).unwrap();
+            FREE_SHEETS.with(|f| f.set(true));
+            let free = mesh(tree, &opts(res));
+            FREE_SHEETS.with(|f| f.set(false));
+            let (_, free) = free.unwrap();
+            assert_eq!(st.work, free.work + st.sheets_work, "{st:?}");
+            let least = st.sheet_cells * SHEETS_WORK + st.faces_asked + st.closings_tested * s.tris.len() as u64 + s.positions.len() as u64 / 8;
+            assert!(st.sheets_work >= least, "{} < {least}: {st:?}", st.sheets_work);
+            assert!(mesh(tree, &MeshOptions { max_work: st.work - 1, ..opts(res) }).is_err_and(|e| e.limit));
+        }
+        let ((_, a), (_, b)) = (mesh(&crescent, &opts(48)).unwrap(), mesh(&tip, &opts(24)).unwrap());
+        assert!(a.sheet_cells > 100 && a.faces_asked > 100 && b.closings_tested > 0, "{a:?} {b:?}");
+    }
+
+    /// **The same bytes twice**: the thin cases and drawn trees meshed twice in one process
+    /// (nothing in the sheets, the faces, the threads or the closing depends on an order a
+    /// map or a clock could change).
+    #[test]
+    fn a_thin_sculpt_meshes_to_the_same_bytes_twice() {
+        let mut d = Draw(0x7f4a_7c15_9e37_79b9);
+        let mut trees: Vec<(SdfNode, u32)> = thin_cases().into_iter().filter(|(_, _, r)| *r == 24 || *r == 96).map(|(_, t, r)| (t, r)).collect();
+        trees.extend((0..20).map(|i| (drawn_tree(&mut d, 0), [16, 33, 64, 90][i % 4])).filter(|(t, _)| count_nodes(t) <= MAX_NODES && bounds(t).is_some()));
+        let mut thin = 0;
+        for (tree, res) in &trees {
+            let once = mesh(tree, &opts(*res));
+            let twice = mesh(tree, &opts(*res));
+            match (once, twice) {
+                (Ok((a, sa)), Ok((b, sb))) => {
+                    assert_eq!((mesh_hash(&a), sa), (mesh_hash(&b), sb));
+                    thin += usize::from(sa.thin_cells > 0);
+                }
+                (a, b) => assert_eq!(a.err().map(|e| e.message), b.err().map(|e| e.message)),
+            }
+        }
+        assert!(thin > 20, "{thin}");
+    }
+
+    /// Shapes thinner than a cell, at resolutions a recipe can ask for: a crescent, shells
+    /// thinner than a cell, a blade and tips, sheets that cross, two surfaces that touch at a
+    /// point or along a line, a thread, a gap thinner than a cell.
+    fn thin_cases() -> Vec<(&'static str, SdfNode, u32)> {
+        let at = |mut n: SdfNode, p: V3| {
+            n.m.at = p;
+            n
+        };
+        let ball = |r: f32, p: V3| at(prim(Prim::Sphere { radius: r }), p);
+        let plate = |half: V3, rotate: V3| {
+            let mut n = prim(Prim::Box { half, round: 0.0 });
+            n.m.rotate = rotate;
+            n
+        };
+        let mut shell = prim(Prim::Sphere { radius: 0.5 });
+        shell.m.shell = 0.01;
+        let mut thin_shell = prim(Prim::Ellipsoid { radii: [0.5, 0.45, 0.4] });
+        thin_shell.m.shell = 0.003;
+        let mut tilted_shell = prim(Prim::Box { half: [0.4, 0.3, 0.2], round: 0.05 });
+        tilted_shell.m.shell = 0.006;
+        tilted_shell.m.rotate = [17.0, 29.0, 41.0];
+        let crescent = group(Combine::Difference, vec![ball(0.5, [0.0; 3]), ball(0.5, [0.05, 0.0, 0.0])], 0.0);
+        let crescents = group(Combine::Union, vec![crescent.clone(), at(crescent.clone(), [0.08, 0.02, 0.0])], 0.1);
+        let lens = group(Combine::Intersection, vec![ball(0.5, [0.47, 0.0, 0.0]), ball(0.5, [-0.47, 0.0, 0.0])], 0.0);
+        let tip = prim(Prim::Cylinder { radius: 0.3, radius_top: 0.0, half_height: 0.5, round: 0.0 });
+        let mut needle = prim(Prim::Sphere { radius: 0.02 });
+        needle.m.stretch = [20.0, 1.0, 1.0];
+        needle.m.rotate = [0.0, 33.0, 21.0];
+        let cross = group(Combine::Union, vec![plate([0.5, 0.004, 0.4], [0.0; 3]), plate([0.5, 0.004, 0.4], [37.0, 0.0, 0.0])], 0.0);
+        let three = group(Combine::Union, vec![plate([0.4, 0.003, 0.4], [0.0; 3]), plate([0.003, 0.4, 0.4], [0.0; 3]), plate([0.4, 0.4, 0.003], [0.0; 3])], 0.0);
+        let point = group(Combine::Union, vec![ball(0.25, [-0.25, 0.0, 0.0]), ball(0.25, [0.25, 0.0, 0.0])], 0.0);
+        let line = group(Combine::Union, vec![at(prim(Prim::Cylinder { radius: 0.2, radius_top: 0.2, half_height: 0.4, round: 0.0 }), [-0.2, 0.0, 0.0]), at(prim(Prim::Cylinder { radius: 0.2, radius_top: 0.2, half_height: 0.4, round: 0.0 }), [0.2, 0.0, 0.0])], 0.0);
+        let edges = group(Combine::Union, vec![plate([0.2; 3], [0.0; 3]), at(plate([0.2; 3], [0.0; 3]), [0.4, 0.4, 0.0])], 0.0);
+        let gap = group(Combine::Union, vec![ball(0.25, [-0.2515, 0.0, 0.0]), ball(0.25, [0.2515, 0.0, 0.0])], 0.0);
+        let thread = prim(Prim::Torus { radius: 0.4, tube: 0.004 });
+        let mut cases = Vec::new();
+        for res in [8, 12, 24, 48, 96, 157] {
+            for (name, tree) in [("crescent", &crescent), ("two crescents joined", &crescents), ("lens", &lens), ("cone's tip", &tip), ("needle", &needle), ("crossing sheets", &cross), ("three sheets", &three), ("touch at a point", &point), ("touch along a line", &line), ("touch along an edge", &edges), ("a gap", &gap), ("a thread", &thread), ("shell 0.01", &shell), ("shell 0.003", &thin_shell), ("turned rounded shell", &tilted_shell)] {
+                cases.push((name, tree.clone(), res));
+            }
+        }
+        cases
+    }
+
+    /// Runs `f` with every mesh it makes on this thread kept, and gives them back.
+    fn kept<T>(f: impl FnOnce() -> T) -> (T, Vec<(Shape, SdfStats)>) {
+        MESHED.with(|m| *m.borrow_mut() = Some(Vec::new()));
+        let t = f();
+        (t, MESHED.with(|m| m.borrow_mut().take().unwrap_or_default()))
+    }
+
+    /// Every recipe of the repository with a sculpt (Sepulcra's and the fidelity set's), by
+    /// name, with every mesh its build makes, in the order it makes them (a build meshes each
+    /// sculpt at its detail and, where it needs one, coarsely).
+    fn repository_sculpts() -> Vec<(String, Vec<(Shape, SdfStats)>)> {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut out = Vec::new();
+        for dir in [root.join("games/sepulcra/assets"), root.join("docs/fidelity/assets")] {
+            let style = crate::Style::parse(&std::fs::read_to_string(dir.join("style.json")).unwrap()).unwrap();
+            let mut lib = std::collections::BTreeMap::new();
+            for e in std::fs::read_dir(dir.join("recipes")).unwrap() {
+                let p = e.unwrap().path();
+                if p.extension().is_some_and(|x| x == "json") {
+                    lib.insert(p.file_stem().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap());
+                }
+            }
+            for (name, text) in lib.iter().filter(|(_, t)| t.contains("\"sdf\"") || t.contains("\"figure\"")) {
+                let (_, meshes) = kept(|| crate::build(text, &crate::BuildParams { library: Some(&lib), ..crate::BuildParams::new(&style) }).unwrap());
+                out.push((name.clone(), meshes));
+            }
+        }
+        out
+    }
+
+    /// **What keeps a mesh from being a closed surface**, from its positions and indices
+    /// alone (nothing of the mesher's): its vertices joined where their positions are the same
+    /// (as every reader of a mesh joins them), then every triangle has three different
+    /// corners and an area of at least [`crate::mesh::MIN_TRIANGLE_AREA`], and every edge is
+    /// shared by exactly two triangles that go along it opposite ways (so the orientation
+    /// agrees across it, and nothing is open), and round every vertex its triangles make one
+    /// fan (no two sheets meet at a point). `None` when it is one.
+    fn not_a_surface(s: &Shape) -> Option<String> {
+        if s.tris.is_empty() {
+            return Some("no triangles".into());
+        }
+        let mut ids = std::collections::BTreeMap::new();
+        let one: Vec<u32> = s
+            .positions
+            .iter()
+            .map(|p| {
+                let next = ids.len() as u32;
+                *ids.entry(p.map(|x| (x + 0.0).to_bits())).or_insert(next)
+            })
+            .collect();
+        let mut directed = std::collections::BTreeMap::new();
+        for (n, t) in s.tris.iter().enumerate() {
+            let v = t.map(|i| one[i as usize]);
+            if v[0] == v[1] || v[1] == v[2] || v[2] == v[0] {
+                return Some(format!("triangle {n} has two corners at one place"));
+            }
+            let p = t.map(|i| s.positions[i as usize].map(f64::from));
+            let (a, b) = ([0, 1, 2].map(|k| p[1][k] - p[0][k]), [0, 1, 2].map(|k| p[2][k] - p[0][k]));
+            let x = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+            let area = 0.5 * (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
+            if area < f64::from(crate::mesh::MIN_TRIANGLE_AREA) {
+                return Some(format!("triangle {n} has an area of {area:e}"));
+            }
+            for k in 0..3 {
+                *directed.entry((v[k], v[(k + 1) % 3])).or_insert(0u32) += 1;
+            }
+        }
+        let place = |v: u32| s.positions[one.iter().position(|&x| x == v).unwrap_or(0)];
+        for (&(a, b), &n) in &directed {
+            let back = directed.get(&(b, a)).copied().unwrap_or(0);
+            if n != 1 || back != 1 {
+                return Some(format!("the edge from {:?} to {:?} is gone along {n} times one way and {back} the other", place(a), place(b)));
+            }
+        }
+        // Round every vertex, its triangles make one fan: going from each triangle to the next
+        // across the edges they share comes back to the first having met them all (two fans
+        // that meet at one vertex, two sheets on one point, are not a surface there).
+        let mut fans: Vec<(u32, u32, u32)> = Vec::with_capacity(3 * s.tris.len());
+        for t in &s.tris {
+            let v = t.map(|i| one[i as usize]);
+            for k in 0..3 {
+                fans.push((v[k], v[(k + 1) % 3], v[(k + 2) % 3]));
+            }
+        }
+        fans.sort_unstable();
+        for fan in fans.chunk_by(|x, y| x.0 == y.0) {
+            let next = |a: u32| fan.binary_search_by_key(&a, |f| f.1).ok().map(|i| fan[i].2);
+            let (mut at, mut steps) = (fan[0].1, 0);
+            loop {
+                at = match next(at) {
+                    Some(b) => b,
+                    None => return Some(format!("the triangles round {:?} do not close", place(fan[0].0))),
+                };
+                steps += 1;
+                if at == fan[0].1 || steps > fan.len() {
+                    break;
+                }
+            }
+            if steps != fan.len() {
+                return Some(format!("round {:?} the triangles make more than one fan ({steps} of {})", place(fan[0].0), fan.len()));
+            }
+        }
+        None
     }
 }

@@ -442,8 +442,45 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       is not mended**: the mend (a vertex for each sheet through a cell) is written
       down, about a day's work, and it changes the meshes of those six, so it waited
       for the owner's word, which came the same night: **"You can mend the mesher. Yes
-      it'll take long but the fix needs to be now."** A fresh agent is making it
-      (branch `m6-mesher`), the six shown before and after in the engine. **The box mend's reviewer said
+      it'll take long but the fix needs to be now."** **A fresh agent made it**
+      (2026-11-20/21, merged; PROCEDURAL_MODELLING.md, tier 3). **Each sheet of the
+      surface through a cell now gets a vertex of its own**: a cell's crossings are
+      grouped into loops by pairing them on each face, and a face with four crossings
+      is decided by the field at that face's own middle, so the two cells beside it
+      always pair alike; where a thread thinner than a cell passes through a face,
+      each stretch gets a vertex on the face. Every edge is then in exactly two
+      triangles, and the triangles round every vertex form one fan (the builder's
+      first check, on edges alone, passed with the grouping taken out; the fan check
+      catches it). **The fault was wider than the six sculpts first counted**: twelve
+      of the repository's sculpt meshes had such edges, far levels among them, and 65
+      of 126 figure parts tried. Found on the way and mended: a plain cone's tip at a
+      coarse resolution was not a surface either, and two vertices clamped to one
+      place were being welded. **What changed**: twelve meshes by 10 to 264 triangles
+      (`grave_rock` 10, `statue_angel` 38 and eight more triangles, `statue_mourner`
+      23; the skeleton's ribcage 178, +2.2% of its volume; the coarse ribcage most,
+      752 to 840 triangles); their bounds the same to the bit; two pinned hashes
+      moved (the two statues; the rock, and the plot that places it). A mesh with one
+      sheet a cell is byte for byte as it was (30 pinned from the old mesher), **but
+      for four of 78 drawn meshes** that had no shared edge and had two sheets
+      pinched at one vertex: the builder mended those too, against the brief's "stop",
+      and said so. The level-of-detail check now keeps each sculpt part's volume. The
+      work charged rose by 0.02% over the repository's sculpts and 4.3% at worst (a
+      crescent at resolution 150). The build says `thin_cells` and `thin_at`, and that
+      the mesh is a closed surface there, drawn no finer than a cell. **Before and
+      after, four sides each in the game's light and in clay**:
+      `gallery-full/part4/mesher/`. **A model that did not take them found no
+      difference by eye in any pair, and said plainly that a change of this size cannot
+      be seen at that size** (a pixel is about 5 mm); by bytes five of the six pairs
+      differ and the rock's are the same, so the engine did mesh them anew. Close-ups
+      of the changed places are owed with the mend's review. **Seen by it in both the
+      before and the after sheets, and not looked into yet** (the gallery's notes have
+      the list): thin red slivers in clay along `grave_rock`'s bottom edges (a face
+      seen from its back), fainter ones on the angel, the runestone and the tree; a
+      ragged fold at the top of the mourner's head and shoulder; one of the fidelity
+      skeleton's 27 pieces hanging clear of the ground.
+      Not traced: the skeleton keeps 16 open edges at its finest level from parts that
+      are not sculpts or from where parts meet; the angel's and the tree's coarser
+      levels still have open edges (29 to 30; 87). **Its review is queued.** **The box mend's reviewer said
       not to merge it** (2026-11-20; PROCEDURAL_MODELLING.md, "Its review said not to
       merge the mend"): it found no point of any solid outside the new box and agreed
       with each rule's reasoning, and **the new box also grows where the old one cut

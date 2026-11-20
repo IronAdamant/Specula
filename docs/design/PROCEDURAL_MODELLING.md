@@ -250,24 +250,83 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   mesh is closed (two of the quads run one way, two the other), so the modeller's own checks
   passed it, and it is not a surface there: `open_edge_count` counts each such edge twice, a
   level of detail keeps no volume for that part, and the studio's form facts read it as
-  `tangled_edge_m`. **Most sculpts in the repository have a few** (one to eighteen a part:
+  `tangled_edge_m`. **Most sculpts in the repository had a few** (one to eighteen a part:
   `grave_rock`, `statue_angel`, `statue_mourner`, `runestone_t3`, `skeleton_warrior_t3`,
-  `tree_t3`); their meshes are unchanged.
-  - **What is mended: it is said, and where.** The mesher counts the edges more than two
-    triangles share and the box round them (`SdfStats::thin_edges`, `thin_at`); the build's
-    report gives them for the sculpt (`thin_edges`, `thin_at`), and the model's `notes` say it
-    in a sentence with the part, the box, the cell and what to do (raise `resolution`, or
-    thicken it). Before, nothing was said anywhere an agent looks after `model_build`.
-  - **What is not mended: meshing each sheet on its own vertices.** The mend is manifold dual
-    contouring, done face by face: in each cell, the crossing edges of the grid are grouped
-    into the sheets that pass through the cell, two crossings on a face of the cell belong to
-    one sheet, and on a face with four the pairing is decided by the face alone (the sign of
-    the mean of its four corners, or of the field at its middle), so that the two cells either
-    side of it agree; each group gets its own vertex (its own QEF), and each quad takes, in
-    each of its four cells, the vertex of the group its grid edge belongs to. Every mesh edge
-    is then shared by exactly two quads. About a day's work with its tests, and it changes the
-    meshes of every sculpt above that has such edges, so their pinned hashes move and the
-    approved props would be looked at again: not started, and the owner's to order.
+  `tree_t3`), and so did 65 of 126 parts of the measured figure tried (hands, feet, body).
+- **Mended (2026-11-20, at the owner's word: "the fix needs to be now"): every edge of a
+  sculpt is shared by two triangles.** In `sdf.rs`'s `mesh`:
+  - **Each sheet through a cell has a vertex of its own.** A cell's crossings are grouped
+    (`sheets`): on each face of the cell two crossings are one stretch of the surface's trace
+    on that face; four crossings (corners inside, outside, inside, outside in turn) are two
+    stretches, each cutting off one of the two corners the face's middle does not join, and
+    **which two is asked of the field at the face's middle**, of the tree that holds the face,
+    so the two cells beside it pair alike. The stretches chain the crossings into loops round
+    the cell: a loop is a sheet, and each gets its own QEF and vertex. A cell with fewer than
+    six crossings has one sheet and no face of four (a loop crosses at least three edges, and a
+    face of four makes at least seven), and is not grouped at all.
+  - **A thread thinner than a cell through a face** (one sheet of each cell beside a face of
+    four takes both of its stretches: two cells' vertices would be joined twice, the thread's
+    section a polygon of two sides) gets a vertex on the face for each stretch, between the
+    two cells' vertices in the quads of the stretch's crossings; such a polygon is fanned from
+    that vertex.
+  - **A sliver is closed only where that leaves a surface.** The triangles under the least
+    area were closed by moving one end of their shortest edge onto the other; that is done
+    now only when the two ends have no neighbour in common but the far corners of the two
+    triangles on the edge (the link condition), else the next edge is tried; a sliver no edge
+    can close is left to the weld, which drops it, and the hole is said (none was met). This
+    one is not about sheets: **a plain cone's tip at resolution 24 was not a surface** (two
+    cells' vertices held a hundred-millionth of a metre apart on the line their cells share,
+    the quad split along them, and the closing put four triangles on one edge).
+  - **Vertices at one place are kept apart where joining them leaves no surface.** Two cells'
+    vertices can be held at the same point by their cells' bounds (a corner or an edge both
+    share), and the weld joins them; where they are not an edge of the mesh, or are one that
+    fails the link condition, each is moved a sixteenth of the way to its own crossings'
+    middle. Also not about sheets: a drawn tree at resolution 11 was not a surface for it.
+  - **Why two triangles an edge**: an edge of the mesh is either a stretch on a face, joining
+    the vertex of its sheet in each cell beside the face, and the stretch's two crossings are
+    in that sheet in both cells (the pairing is the face's), so it is in the quads of those two
+    crossings and no others (another stretch on the face gives another pair, or is a thread,
+    which has vertices of its own); or it is a quad's diagonal or a fan's chord, between
+    vertices of cells that meet only along that quad's grid edge, or from a vertex on a face
+    that one other quad holds, whose cells differ. Round every vertex the triangles make one
+    fan: a sheet is a disc in its cell.
+  - **Where nothing is thinner than a cell, nothing changed by a byte**: every sculpt mesh of
+    the repository without such a cell (30 of 42 a build makes, detail and coarse), 61 of 126
+    figure parts and 74 of 174 drawn meshes hash as before. What changed is the twelve meshes
+    that had shared edges (the six sculpts' seven detailed parts, and five coarse meshes the
+    builds make for their levels of detail), the figure parts that had them, and **four drawn
+    meshes with no such edge**: each had a cell where two sheets met at one vertex (two
+    corners of the cell opposite each other, no face of four), which is now two vertices.
+  - **The six**: `grave_rock` 716 triangles (10 new or moved), `statue_angel` 976 to 984
+    (38), `statue_mourner` 1,124 (23), `runestone_t3`'s moss on top 1,088 (11), the
+    skeleton's skull 1,276 (24) and ribcage 2,976 (178), `tree_t3`'s trunk 2,908 (44); bounds
+    the same to the bit; volumes within 0.2% but the ribcage (+2.2%: its thin ribs were
+    pinched to lines before). Of the coarse meshes, the runestone's slab 3,192 (24), the
+    skull 340 (14), the ribcage 752 to 840 (264; +35% volume, of 0.4 litres), the trunk 796
+    to 824 (140; +2.3%) and the crown 1,524 (12). Each is now closed
+    as a surface, so a level of detail keeps its volume; the studio's `tangled_edge_m` fell to
+    0 for five of the six models (the skeleton keeps 0.098 m, from where parts that are not
+    sculpts meet); the colliders are unchanged. Pictures before and after in the engine are in
+    the gallery's originals (`part4/mesher/`).
+  - **What it says**: `SdfStats::thin_cells` (cells that hold more than one sheet or a face of
+    four) and `thin_at` (the box round them), `threads`, and in the build's report
+    `thin_cells` and `thin_at`; the model's `notes` say where, that the mesh is a closed
+    surface there but drawn by the cells' vertices alone (no finer than a cell), and to raise
+    `resolution` or thicken it. `tangled_edges` (edges shared by other than two triangles) is
+    0 by construction and is said, in the report and the notes, if a fault ever makes one.
+  - **What it costs**: [`SHEETS_WORK`] (40 units) for each cell with six crossings or more, an
+    evaluation for each face of four (asked from each cell beside it), a unit a triangle for
+    each sliver's edge tested, an eighth of a unit a vertex for finding vertices at one place
+    and a unit a triangle when there are any; all charged. Over
+    the repository's 42 sculpt meshes, 542.13 M to 542.24 M work units (+0.02%); a crescent at
+    48, 21.90 M to 22.06 M; an ellipsoid's shell of 4 mm at resolution 160 (40,138 thin
+    cells, 3,572 threads), 199.96 M to 205.72 M (+2.9%), 363,124 to 377,412 triangles; the
+    dearest found, a crescent at 150, 235.97 M to 246.21 M (+4.3%: its slivers, each tested by
+    a scan of 200,000 triangles). The samples taken are the same.
+  - **Still a limit**: a sheet thinner than a cell is a surface now, and a coarse one: its
+    two sides are a cell's vertices apart at most and may be closer than its true thickness,
+    or cross where the field says they do not; a thread's section is four vertices. Raise
+    `resolution` where it matters.
 - **Roundness as one number** (M6 part 4, 2026-11-18): `roundness`, 0 to 1, on a `box` and a
   `cylinder` here, and on a `rect` outline (the profile of an extrusion, a loft or a sweep). 0 is the
   hard shape, 1 its fully round form (the ellipsoid as wide, as tall and as deep; the ellipse), and
