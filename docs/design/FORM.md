@@ -513,7 +513,10 @@ the finest level's).
 of a torus's tube, a capsule's ends or a sculpt stretched unevenly; a sculpt's facets beyond
 its cell against its tightest curve (a node's twist, bend, displacement and repetition are not
 counted, and a primitive whose triangles were not asked within the record's limit is not
-seen); whether a shape is hidden inside another part; and a sculpt primitive past the 16,384
+seen); whether a shape, or any part of it, is hidden inside another part (a ring is held to
+its widest rim whether or not that rim can be seen: a cone whose base is sunk in a wider part
+is held to its rim all the same, and the fix's way out for such an asset is to exempt it by
+name in `[form.allow]`, which its words say); and a sculpt primitive past the 16,384
 triangles asked whose every asked triangle went to its neighbours.
 
 **Sepulcra again** (its 56 recipes, as before): 41 name something round, and in **39** (was 36)
@@ -890,6 +893,140 @@ build on a busy machine) keeps inside the gate's time under sixteen threads; wha
 says at the advice's work bound on a real recipe. Not checked: booleans and sculpts at their
 most, two round shapes that share a piece, an include with a budget of its own, the full
 run of 400 chains, clippy.
+
+#### What was mended, fourth round
+
+(2026-11-20, by a model that wrote none of it; each finding seen first with the reviewer's
+probes, each mend held by a test that fails on the code before it, and faults seeded back once
+each. Not reviewed yet.)
+
+1. **The most a count can be holds the build's work limit too** (`most_by`: "the build's work
+   limit (1,500 million units)", and the fix says "past it the build's work limit would be
+   exceeded"). Read where every unit is charged (`work.rs`, `recipe.rs`), a build's work is,
+   charge by charge:
+   - an operation on a piece (`ao`, `weld`, a displacement, a tint, a move: by the piece's
+     vertices; a copy and a subdivision: by the triangles they make and the vertices);
+   - the paint strokes (each the vertices of every untextured part), the assembly (every
+     part's vertices) and each far level's simplification (every part's triangles);
+   - the collider (its points: the finest level's vertices as assembled, split where faces
+     turn past the smooth angle and at a texture's seams);
+   - a coarse rebuild of the recipe, when a far level is one (the parts again with sides,
+     segments and rings halved, no subdivision or displacement, and their assembly);
+   - a boolean's, a sculpt's and a generator's own work, and a texture's bake, which is its
+     graph's alone and does not depend on the model.
+
+   With `n` the count built and `k` another, **`W(k) ≤ W(n) + (ρ(k) − 1)·S + P(k)`**, where
+   `ρ(k)` is the most any count of the shape's own elements grows by from `n` to `k` (the
+   greater of its triangles' growth as the triangle limits already bound it and `k/n`, which
+   bounds a ring's vertices, rims, seams and edges, each a line in its count with nothing
+   taken away; a sphere's are all `4^(k−n)`); `S` is every charge at `n` whose elements include the shape's:
+   each operation on a piece holding its triangles, whole, and the paint, assembly and every
+   far level's simplification of the parts holding them (charged at `n` or not); and `P(k)` is
+   what may be charged at `k` and was not: the collider's points of those parts at three a
+   triangle (the most there can be: how many a smooth angle splits moves either way with a
+   count, and a turn at the angle itself splits by the rounding), less what they had; a far
+   level's simplification where a coarse rebuild stood in at `n`; and the coarse rebuild,
+   taken as the rest of it as it cost at `n` (or, where it was not made at `n`, as the parts
+   and their assembly cost there) with what holds the shape at its coarse count grown whole.
+   Each charge is by a count of elements, its elements other than the shape's do not change
+   with its count, and a charge whose elements include the shape's grows by no more than
+   `ρ(k)` times; so the inequality holds as long as every count of the shape's elements a
+   charge sees grows by no more than `ρ(k)`: for every ring's builder, as built, subdivided and
+   welded, at every pair of counts of a sweep, by `a_rings_vertices_grow_no_faster_than_its_count`;
+   and against real builds by the drawn test below. **The most is the
+   greatest `k` with `W(k)` at most 1,500 million**, safe and low: on every kind where work
+   binds, the most said is 10% to 26% below the most that builds (a cylinder 132 against
+   157, a cone 116 against 156, a lathe 87 against 97, a torus's segments 77 against 93 and
+   its tube 28 against 33, a capsule's segments 75 against 92 and its ends 13 against 17, a
+   sphere 4 against 4), most of it the coarse rebuild, which may be made at another count.
+   **An estimate, and said** ("at another count its far level may be rebuilt coarse, and
+   what a boolean, a sculpt or a generator costs there is known only once it is built"):
+   where the recipe has far levels, no coarse rebuild was made whole at `n`, and a boolean, a
+   sculpt or a generator was built (its coarse cost is not known before it is made); and, as
+   before, a sculpt's resolution (its meshing's work is taken to grow as the cube of it) and a
+   shape through a boolean (its work taken to grow as the shape's do). The bound is kept with
+   each record (`Round::work_at`), and the build's own work is now in the model
+   (`ModelExtras::work`).
+
+   **Held** by `facet_work.rs`: `the_reviews_assets_are_told_counts_that_build` (the review's
+   lathe with a 512-pixel graph of two noises: told 82, which builds; with a 256-pixel graph of
+   ten noises: 73; with no texture, four far levels, hard shading and eight `ao`: 60; each
+   built at its most within its bound, and the fix followed builds and holds);
+   `every_kind_where_work_binds_is_told_counts_that_build` (the nine kinds stacked in one
+   place under fourteen `ao` and four far levels: the most by work, built, the fix followed
+   and built); and `the_work_bound_holds_on_drawn_recipes` (150 recipes from a fixed sequence,
+   every kind, with operations, far levels, colliders, small textures, paint and a second part
+   of a box, a column or a boolean mixed: at 443 counts from the one built to the most, every
+   count builds and its work is within the bound; the bound is at the median 1.12 times the
+   work and at the worst 1.96). Where the most is by work the test holds that it builds and
+   not that one more is refused: the bound is low on purpose (`how_low_the_work_bound_is`,
+   ignored, finds the most that builds by halving).
+2. **The three rules no test held are held**: `every_kind_is_told_only_counts_that_build` has
+   a row for the recipe's budget beside a second part, for the model's room after two more
+   parts and for a scatter's copies (the review's recipes); each builds at its most, is refused
+   one past it for the limit named, and the advice either side of what its most turns is
+   followed and built.
+3. **The slow test is cheap by what it builds**: each kind's row is under a budget that bites
+   at a few thousand triangles (each kind's growth through the budget's branch) and one
+   cylinder's copies hold the part's limit; the rows at a part's limit for every kind are
+   `every_kind_is_told_only_counts_that_build_at_a_parts_limit`, ignored. Counted in
+   triangles built: 1,378,436 before; 1,154,106 now, of which the nine kinds are 130,664
+   and the review's row at the model's room (131,072 triangles a build) 678,250. In a debug
+   build on a busy machine `facet_advice.rs` now runs in 32 s and `facet_work.rs` in 44 s
+   (most of it the builds at the work limit, about 1.5 s of one core each by the limit's
+   own calibration).
+4. **A rim that cannot be seen is held all the same**, said in "What it cannot know" above and
+   in the fix of a ring ("or if its rim is hidden (a ring is held to its widest rim whether or
+   not it can be seen, as a cone's base sunk in a wider part)").
+
+**Faults seeded back**, one at a time, each caught: the work limit's check taken out
+(`every_kind_where_work_binds_is_told_counts_that_build` and the review's assets: the most
+went back to the part's limit); the operations' work not charged to the shapes in their piece
+(all three of `facet_work.rs`); the collider's points held to the counts' growth and not to
+three a triangle (the drawn test: a torus of 12 sides at a smooth angle of 30° splits by the
+rounding, and spent 3,721,520 where that bound said 3,706,040); the texture's bake left out of
+the work at the count built (the drawn test and the review's textured lathe); the coarse
+rebuild that was not made at the count built taken as nothing (the drawn test: a recipe whose
+far level is rebuilt coarse at 7 and not at the count it was built with); `k/n` left out of
+`ρ` (`the_growth_takes_the_counts_ratio`: no recipe drawn needs it, since every ring's
+triangles grow at least as fast as its count does where its vertices grow faster, but the
+rule is the code's); the budget's branch, the model's room and a scatter's copies each taken
+out (`every_kind_is_told_only_counts_that_build`: the most went past the limit the row names).
+
+**What the review did not check, checked** (probes, release builds):
+
+- *A boolean and a sculpt at their most*, which the fix says are estimates: of 54 drawn (a
+  column cut by a box, a lathe joined to a box with far levels, a sculpt's ball, a sculpt's
+  ball and slab with far levels, each copied up to 60 times), 53 build at their most; one
+  sculpt (said 19) is refused for a part of 66,804 triangles, 2% over: its triangles grew
+  faster than the square of its resolution. That is what "estimated" says.
+- *Two round shapes that share a piece*: each count's most is with every other count as it
+  is. A torus copied eight times builds at 512 segments with its 8 sides, and at 64 sides
+  with its 12 segments, and not at both. The fix names one count at a time, and now says so
+  ("it builds with every other count as it is now"); the check on the rebuilt asset names
+  the next. Two columns in two parts, each told 82 by its own part's limit, build together.
+- *An include with a budget of its own*: an included recipe's budget is not checked by the
+  build (a gem of 100 triangles' budget, included, builds at 156), so it holds nothing and
+  the most is its range; as the build, so the advice.
+- *The full run of 400 chains* (`facet_truth`, ignored): passes (release, 2.7 s).
+- *What the check says at the advice's work bound*: on no recipe could the bound be reached.
+  The search stops at the most a part can be built with, and a part's triangles bound its
+  maps times its count times its profile: the review's heavy torus (21 maps, a count that
+  builds to 512) at limits of 0.05° to 0.9° measures 53,760 faces and rim corners and says
+  "cannot hold the limit: at its most (512) it still turns 2.5°", and Sepulcra's most is
+  54,400 against the bound of 8 million. What it says past the bound ("could not be measured
+  here, so no count is named") is held by the check's unit test.
+
+**Sepulcra again** (its 56 recipes): as before. 41 name something round, 39 are held over 20°,
+none is not measured, the median is 90.00°, 12 are held by their rims (the same twelve), and
+the check fails 39 at 20°, 36 at 45° and 39 at 5°. None of them is near the work limit.
+
+**Limits that remain:** the most by work is low by design, by 10% to 26% where work binds,
+mostly for a coarse far level that may be rebuilt at another count; it is an estimate where a
+recipe with far levels, a boolean, a sculpt or a generator made no coarse rebuild at its
+count; the collider's points are taken at three a triangle; a sculpt's resolution and a
+shape through a boolean remain estimates, and a sculpt can be 2% past its part's limit at its
+most; two counts of one piece are each held with the other as it is.
 
 **Not built:** pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so

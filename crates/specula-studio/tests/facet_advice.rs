@@ -149,51 +149,153 @@ fn the_reviews_lathe_is_told_only_what_builds() {
     assert!(failed && k <= 108 && builds(&lathe(k)) && !verdict(&facts(&lathe(k)), 6.0).0, "told {k}: {fix}");
 }
 
-/// Every kind where its part can be built with fewer than its range allows (copies stacked in
-/// one place, so that the asset stays small and its facets show): the most it can be built
-/// with builds and one more does not (but for a sculpt, whose most is estimated), and at a
-/// limit just above and just below what that most turns, the advice names a count that builds
-/// and holds, or says that the most does not hold.
-#[test]
-fn every_kind_is_told_only_counts_that_build() {
+thread_local! {
+    /// Triangles built by this test thread's builds (what a test of builds costs, counted).
+    static BUILT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `text` built, or the reason it is refused; its triangles counted in [`BUILT`].
+fn try_build(text: &str) -> Result<specula_model::Model, String> {
+    let s = Style::parse(STYLE).unwrap();
+    let m = build(text, &BuildParams::new(&s)).map_err(|e| e.to_string())?;
+    BUILT.with(|b| b.set(b.get() + m.lods.iter().map(|l| l.triangle_count() as u64).sum::<u64>()));
+    Ok(m)
+}
+
+/// One row of [`counts_that_build`]: what it is, the recipe at a count, the count's name, the
+/// count it is built with first, and the limit that must stop its most.
+type Row = (&'static str, Box<dyn Fn(u32) -> String>, &'static str, u32, &'static str);
+
+/// Each row: the most it can be built with is stopped by the limit the row names, builds, and
+/// one more is refused (but for a sculpt, whose most is estimated); and at a limit just above
+/// and just below what that most turns, the advice names a count that builds and holds, or
+/// says that the most does not hold. Returns how many advices were followed.
+fn counts_that_build(rows: Vec<Row>) -> usize {
     let mut followed = 0;
-    for (shape, count, ops, first) in [
-        (r#"{"op":"cylinder","radius":0.5,"height":1,"sides":{N}}"#, "sides", r#"{"op":"array","count":128,"offset":[0,0,0]}"#, 6),
-        (r#"{"op":"cone","radius":0.5,"height":0.4,"sides":{N}}"#, "sides", r#"{"op":"array","count":200,"offset":[0,0,0]},{"op":"scale","by":[1,1,2]}"#, 5),
-        (r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":{N},"sides":64}"#, "segments", r#"{"op":"array","count":2,"offset":[0,0,0]}"#, 7),
-        (r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":512,"sides":{N}}"#, "sides", r#"{"op":"array","count":4,"offset":[0,0,0]}"#, 3),
-        (r#"{"op":"capsule","radius":0.3,"height":1.5,"segments":{N},"rings":32}"#, "segments", r#"{"op":"array","count":4,"offset":[0,0,0]}"#, 5),
-        (r#"{"op":"capsule","radius":0.3,"height":1.5,"segments":256,"rings":{N}}"#, "rings", r#"{"op":"array","count":4,"offset":[0,0,0]}"#, 1),
-        (r#"{"op":"lathe","segments":{N},"profile":[[0,0],[0.5,0],[0.42,0.15],[0.2,0.5],[0.06,1],[0,1.05]]}"#, "segments", r#"{"op":"array","count":200,"offset":[0,0,0]},{"op":"lean","z":0.5}"#, 6),
-        (r#"{"op":"sphere","radius":0.5,"subdivisions":{N}}"#, "subdivisions", r#"{"op":"array","count":4,"offset":[0,0,0]}"#, 0),
-        (r#"{"op":"sdf","resolution":{N},"tree":{"op":"sphere","radius":0.5}}"#, "resolution", r#"{"op":"array","count":24,"offset":[0,0,0]}"#, 8),
-    ] {
-        let at = |n: u32| one(&shape.replace("{N}", &n.to_string()), ops);
-        let start = facts(&at(first));
-        let r = start.round.iter().find(|r| r.count == count && r.count_value == first).unwrap_or_else(|| panic!("{shape}: {:?}", start.round));
+    for (label, at, count, first, by) in rows {
+        println!("{label}: from {} triangles built", BUILT.with(std::cell::Cell::get));
+        let m = try_build(&at(first)).unwrap_or_else(|e| panic!("{label}: {e}"));
+        let start = AssetFacts::from_model(&m, RecipeInfo::parse(&at(first)).as_ref(), Some("t"), &[], 0);
+        let r = start.round.iter().find(|r| r.count == count && r.count_value == first).unwrap_or_else(|| panic!("{label}: {:?}", start.round));
         let most = r.most;
-        assert!(r.most_by != "its range" && builds(&at(most)), "{shape} [{ops}]: {r:?}");
+        assert!(r.most_by == by, "{label}: the most is stopped by {:?}, not {by:?}: {r:?}", r.most_by);
+        assert!(try_build(&at(most)).is_ok(), "{label}: refused at its most {most}");
         if r.most_estimated.is_none() {
-            assert!(!builds(&at(most + 1)), "{shape} [{ops}]: {} builds, past the most it is said to build with", most + 1);
+            let past = try_build(&at(most + 1));
+            assert!(past.is_err(), "{label}: {} builds, past the most it is said to build with", most + 1);
+            let why = past.err().unwrap_or_default();
+            let names = match by {
+                "the recipe's budget.max_triangles" => why.contains("budget"),
+                "the triangles the model may have" => why.contains("the model"),
+                "the triangles one part may have" => why.contains("a part of"),
+                _ => true,
+            };
+            assert!(names, "{label}: one past the most is refused for another reason than {by}: {why}");
         }
         // (About what it turns at its most: the limits are put either side of it, and what each
         // advice says is then built and checked.)
         let t = r.turn_at(most).unwrap();
         for limit in [t * 1.0005 + 0.002, t * 0.9995 - 0.002] {
             let (failed, fix) = verdict(&start, limit);
-            assert!(failed, "{shape} [{ops}] at {limit}°: it passes as it is");
+            assert!(failed, "{label} at {limit}°: it passes as it is");
             match named(&fix) {
                 Some(k) => {
-                    assert!(k <= most && builds(&at(k)), "{shape} [{ops}] at {limit}°: told {k}, past {most}: {fix}");
-                    let (still, again) = verdict(&facts(&at(k)), limit);
-                    assert!(!still, "{shape} [{ops}] at {limit}°: told {k} ({fix}), which fails: {again}");
+                    let mk = try_build(&at(k)).unwrap_or_else(|e| panic!("{label} at {limit}°: told {k} ({fix}), refused: {e}"));
+                    assert!(k <= most, "{label} at {limit}°: told {k}, past {most}: {fix}");
+                    let fk = AssetFacts::from_model(&mk, RecipeInfo::parse(&at(k)).as_ref(), Some("t"), &[], 0);
+                    let rk = fk.round.iter().find(|x| x.count == count && x.count_value == k).unwrap();
+                    assert!(rk.turn_at(k).unwrap() <= limit, "{label} at {limit}°: told {k} ({fix}), which turns {:?}", rk.turn_at(k));
                     followed += 1;
                 }
-                None => assert!(limit < t && fix.contains(&format!("at the most{} it can be built with ({most};", if count == "subdivisions" { " \"subdivisions\"" } else { "" })), "{shape} [{ops}] at {limit}°: {fix}"),
+                None => assert!(limit < t && fix.contains(&format!("at the most{} it can be built with ({most};", if count == "subdivisions" { " \"subdivisions\"" } else { "" })), "{label} at {limit}°: {fix}"),
             }
         }
     }
+    followed
+}
+
+/// A recipe of one part, `shape` with `{N}` for its count, moved by `ops`, under a budget of
+/// `budget` triangles.
+fn budgeted(shape: &'static str, ops: &'static str, budget: u32) -> Box<dyn Fn(u32) -> String> {
+    Box::new(move |n: u32| format!(r#"{{ "name": "t", "budget": {{"max_triangles": {budget}}}, "parts": [ {{ "name": "p", "material": "stone", "shape": {}, "ops": [{ops}] }} ] }}"#, shape.replace("{N}", &n.to_string())))
+}
+
+fn plain(shape: &'static str, ops: &'static str) -> Box<dyn Fn(u32) -> String> {
+    Box::new(move |n: u32| one(&shape.replace("{N}", &n.to_string()), ops))
+}
+
+const BUDGET: &str = "the recipe's budget.max_triangles";
+const PART: &str = "the triangles one part may have";
+const MODEL: &str = "the triangles the model may have";
+
+/// **Every kind, and every limit the most holds a count to, is told only counts that build.**
+/// Each kind with copies stacked in one place (so that it stays small and its facets show)
+/// under a budget that bites at a small size (each kind's own growth, through the budget's
+/// branch); a cylinder's copies at a part's limit; the fourth review's three: a recipe's
+/// budget beside a second part, the model's room after two more parts, and a scatter's copies
+/// (the second finding: no default test held these). The work limit is held in
+/// `facet_work.rs`.
+#[test]
+fn every_kind_is_told_only_counts_that_build() {
+    BUILT.with(|b| b.set(0));
+    let rows: Vec<Row> = vec![
+        ("cylinder", budgeted(r#"{"op":"cylinder","radius":0.5,"height":1,"sides":{N}}"#, r#"{"op":"array","count":4,"offset":[0,0,0]}"#, 3000), "sides", 6, BUDGET),
+        ("cone", budgeted(r#"{"op":"cone","radius":0.5,"height":0.4,"sides":{N}}"#, r#"{"op":"array","count":4,"offset":[0,0,0]},{"op":"scale","by":[1,1,2]}"#, 1200), "sides", 5, BUDGET),
+        ("torus segments", budgeted(r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":{N},"sides":64}"#, r#"{"op":"array","count":2,"offset":[0,0,0]}"#, 6000), "segments", 7, BUDGET),
+        ("torus sides", budgeted(r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":64,"sides":{N}}"#, r#"{"op":"array","count":2,"offset":[0,0,0]}"#, 3000), "sides", 3, BUDGET),
+        ("capsule segments", budgeted(r#"{"op":"capsule","radius":0.3,"height":1.5,"segments":{N},"rings":32}"#, r#"{"op":"array","count":2,"offset":[0,0,0]}"#, 4000), "segments", 5, BUDGET),
+        ("capsule rings", budgeted(r#"{"op":"capsule","radius":0.3,"height":1.5,"segments":256,"rings":{N}}"#, "", 10000), "rings", 1, BUDGET),
+        ("lathe", budgeted(r#"{"op":"lathe","segments":{N},"profile":[[0,0],[0.5,0],[0.42,0.15],[0.2,0.5],[0.06,1],[0,1.05]]}"#, r#"{"op":"array","count":4,"offset":[0,0,0]},{"op":"lean","z":0.5}"#, 3000), "segments", 6, BUDGET),
+        ("sphere", budgeted(r#"{"op":"sphere","radius":0.5,"subdivisions":{N}}"#, r#"{"op":"array","count":4,"offset":[0,0,0]}"#, 6000), "subdivisions", 0, BUDGET),
+        ("sculpt", budgeted(r#"{"op":"sdf","resolution":{N},"tree":{"op":"sphere","radius":0.5}}"#, r#"{"op":"array","count":2,"offset":[0,0,0]}"#, 6000), "resolution", 8, BUDGET),
+        ("cylinder at a part's limit", plain(r#"{"op":"cylinder","radius":0.5,"height":1,"sides":{N}}"#, r#"{"op":"array","count":128,"offset":[0,0,0]}"#), "sides", 6, PART),
+        (
+            "a budget beside another part (review 4)",
+            Box::new(|n: u32| format!(r#"{{ "name": "t", "budget": {{"max_triangles": 600}}, "parts": [ {{ "name": "p", "material": "stone", "shape": {{"op":"cylinder","radius":0.5,"height":1,"sides":{n}}} }}, {{ "name": "q", "material": "stone", "shape": {{"op":"cylinder","radius":0.05,"height":1,"sides":64}}, "ops": [{{"op":"move","by":[2,0,0]}}] }} ] }}"#)),
+            "sides",
+            6,
+            BUDGET,
+        ),
+        (
+            "the model's room after two more parts (review 4)",
+            Box::new(|n: u32| format!(r#"{{ "name": "t", "parts": [ {{ "name": "p", "material": "stone", "shape": {{"op":"cylinder","radius":0.5,"height":1,"sides":{n}}}, "ops": [{{"op":"array","count":128,"offset":[0,0,0]}}] }}, {{ "name": "q", "material": "stone", "shape": {{"op":"sphere","radius":0.3,"subdivisions":5}}, "ops": [{{"op":"array","count":3,"offset":[3,0,0]}}] }}, {{ "name": "r", "material": "stone", "shape": {{"op":"sphere","radius":0.3,"subdivisions":5}}, "ops": [{{"op":"array","count":3,"offset":[0,3,0]}}] }} ] }}"#)),
+            "sides",
+            6,
+            MODEL,
+        ),
+        (
+            "a scatter's copies (review 4)",
+            Box::new(|n: u32| format!(r#"{{ "name": "sc", "seed": 3, "parts": [ {{ "name": "things", "material": "stone", "generate": {{ "op": "scatter", "area": {{ "rect": [40, 40] }}, "min_distance": 0.8, "count": 400, "items": [ {{ "shape": {{ "op": "cylinder", "radius": 1.5, "height": 0.4, "sides": {n} }} }} ] }} }} ] }}"#)),
+            "sides",
+            6,
+            PART,
+        ),
+    ];
+    let followed = counts_that_build(rows);
     assert!(followed >= 9, "{followed} followed");
+    println!("every_kind_is_told_only_counts_that_build: {} triangles built", BUILT.with(std::cell::Cell::get));
+}
+
+/// The same with each kind at a part's limit (copies enough to fill a part: about 65,000
+/// triangles a build): what this test was before the fourth review, kept for its figures.
+#[test]
+#[ignore = "slow: parts of about 65,000 triangles, some 60 builds (about 90 s in a debug build); every rule it holds is held by every_kind_is_told_only_counts_that_build"]
+fn every_kind_is_told_only_counts_that_build_at_a_parts_limit() {
+    BUILT.with(|b| b.set(0));
+    let rows: Vec<Row> = vec![
+        ("cylinder", plain(r#"{"op":"cylinder","radius":0.5,"height":1,"sides":{N}}"#, r#"{"op":"array","count":128,"offset":[0,0,0]}"#), "sides", 6, PART),
+        ("cone", plain(r#"{"op":"cone","radius":0.5,"height":0.4,"sides":{N}}"#, r#"{"op":"array","count":200,"offset":[0,0,0]},{"op":"scale","by":[1,1,2]}"#), "sides", 5, PART),
+        ("torus segments", plain(r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":{N},"sides":64}"#, r#"{"op":"array","count":2,"offset":[0,0,0]}"#), "segments", 7, PART),
+        ("torus sides", plain(r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":512,"sides":{N}}"#, r#"{"op":"array","count":4,"offset":[0,0,0]}"#), "sides", 3, PART),
+        ("capsule segments", plain(r#"{"op":"capsule","radius":0.3,"height":1.5,"segments":{N},"rings":32}"#, r#"{"op":"array","count":4,"offset":[0,0,0]}"#), "segments", 5, PART),
+        ("capsule rings", plain(r#"{"op":"capsule","radius":0.3,"height":1.5,"segments":256,"rings":{N}}"#, r#"{"op":"array","count":4,"offset":[0,0,0]}"#), "rings", 1, PART),
+        ("lathe", plain(r#"{"op":"lathe","segments":{N},"profile":[[0,0],[0.5,0],[0.42,0.15],[0.2,0.5],[0.06,1],[0,1.05]]}"#, r#"{"op":"array","count":200,"offset":[0,0,0]},{"op":"lean","z":0.5}"#), "segments", 6, PART),
+        ("sphere", plain(r#"{"op":"sphere","radius":0.5,"subdivisions":{N}}"#, r#"{"op":"array","count":4,"offset":[0,0,0]}"#), "subdivisions", 0, PART),
+        ("sculpt", plain(r#"{"op":"sdf","resolution":{N},"tree":{"op":"sphere","radius":0.5}}"#, r#"{"op":"array","count":24,"offset":[0,0,0]}"#), "resolution", 8, PART),
+    ];
+    let followed = counts_that_build(rows);
+    assert!(followed >= 9, "{followed} followed");
+    println!("every_kind_is_told_only_counts_that_build_at_a_parts_limit: {} triangles built", BUILT.with(std::cell::Cell::get));
 }
 
 /// **The whole check's advice work is bounded** ([`MOST_ADVICE_WORK`] faces and rim corners

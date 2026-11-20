@@ -1183,6 +1183,9 @@ pub struct ModelExtras {
     /// sculpt's half spaces and its triangles not asked within
     /// [`crate::sdf::MAX_OWNER_BUILD_WORK`], and the shapes past the ones kept.
     pub made_rest_m2: f32,
+    /// The work the build spent, in work units ([`crate::work`]), its textures' bakes
+    /// included: at most [`crate::work::MAX_BUILD`].
+    pub work: u64,
 }
 
 pub use crate::facet::Round;
@@ -1308,6 +1311,8 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let mut stack = vec![recipe.name.clone()];
     let tally = Tally::default();
     let (mut built, vars) = build_parts(recipe, params.values, seed, params, &mut stack, &tally, false)?;
+    // (What the parts took: a coarse rebuild of them takes no more, where nothing is procedural.)
+    let parts_work = tally.work.get();
     apply_paint(&recipe.edits, &mut built, params.style, &tally)?;
     let mut notes = Vec::new();
     let rig = match &recipe.rig {
@@ -1331,7 +1336,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     };
     let skin = rig.as_ref().map(|(r, _)| (r, &bindings[..]));
     charge(&tally, "parts", built.iter().map(|b| b.shape.positions.len() as u64).sum::<u64>() * crate::work::ASSEMBLE_VERTEX)?;
-    let lod0 = assemble(&built.iter().map(|b| (&b.shape, b)).collect::<Vec<_>>(), skin);
+    let (lod0, assembled) = assemble_counted(&built.iter().map(|b| (&b.shape, b)).collect::<Vec<_>>(), skin);
     lod0.validate().map_err(|er| e("parts", ErrorCode::InvalidMesh, er.to_string()))?;
     if lod0.triangle_count() == 0 {
         return Err(e("parts", ErrorCode::Geometry, "the model has no triangles (every part switched off?)"));
@@ -1398,6 +1403,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
             }
         }
         charge(&tally, &format!("lods[{i}]"), inputs.iter().map(|p| p.shape.triangle_count() as u64).sum::<u64>() * crate::work::SIMPLIFY_TRIANGLE)?;
+        tally.simplified.set(tally.simplified.get() + 1);
         let simplified = match lod::simplify(&inputs, ratio, bounds.min, extent) {
             None => Err("no simplification keeps every part within tolerance"),
             Some((shapes, _cell)) => {
@@ -1443,7 +1449,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     // The terrain renderer's layer textures bake with the parts' (keys `terrain+<graph>`).
     let terrain_keys: Vec<String> =
         tally.terrain.borrow().as_ref().and_then(|t| t.render.as_ref()).map(|r| r.layers.iter().filter_map(|l| l.texture.clone()).collect()).unwrap_or_default();
-    let textures = procgen::bake_textures(recipe, params, &lods[0], &terrain_keys, tally.work.get())?;
+    let (textures, all_work) = procgen::bake_textures(recipe, params, &lods[0], &terrain_keys, tally.work.get())?;
     let mut h = StableHasher::new();
     for m in &lods {
         h.write_u64(m.content_hash());
@@ -1484,7 +1490,28 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let (round, round_total, round_not_measured, round_not_recorded) = {
         let paths: Vec<String> = tally.made.borrow().iter().map(|r| r.path.clone()).collect();
         let budget = max_t.map(|m| (u64::from(m), lods[0].triangle_count() as u64));
-        let (round, total, not_measured) = crate::facet::finish(&tally.rounds.borrow(), &paths, &finished, &tally.totals.borrow(), budget);
+        let levels = recipe.lod_ratios.len() as u64;
+        let vertices: u64 = built.iter().map(|b| b.shape.positions.len() as u64).sum();
+        let spent = crate::facet::Spent {
+            total: all_work,
+            levels,
+            unsimplified: levels.saturating_sub(tally.simplified.get()),
+            triangles: lods[0].triangle_count() as u64,
+            parts: built
+                .iter()
+                .zip(&assembled)
+                .map(|(b, &a)| crate::facet::PartSpent { triangles: b.shape.triangle_count() as u64, vertices: b.shape.positions.len() as u64, assembled: a as u64, painted: b.uv_scale.is_none() })
+                .collect(),
+            strokes: recipe.edits.len() as u64,
+            per_point,
+            coarse: match (levels, tally.coarse.get(), tally.procedural.get()) {
+                (0, _, _) => crate::facet::Coarse::Never,
+                (_, 1, _) => crate::facet::Coarse::Built,
+                (_, 0, false) => crate::facet::Coarse::Could { parts: parts_work, vertices },
+                _ => crate::facet::Coarse::Unknown { parts: parts_work, vertices },
+            },
+        };
+        let (round, total, not_measured) = crate::facet::finish(&tally.rounds.borrow(), &paths, &finished, &tally.totals.borrow(), budget, &spent);
         // (Round shapes past what one build records are counted with the rest, and said.)
         let dropped = tally.rounds_dropped.get();
         (round, total + dropped, not_measured, dropped)
@@ -1503,7 +1530,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         budget: (min_t, max_t),
         notes,
         rig: rig.map(|(r, _)| r),
-        extras: ModelExtras { textures, terrain, terrain_transform, stats, round, round_total, round_not_measured, round_not_recorded, made, made_rest_m2 },
+        extras: ModelExtras { textures, terrain, terrain_transform, stats, round, round_total, round_not_measured, round_not_recorded, made, made_rest_m2, work: all_work },
         wind,
     })
 }
@@ -1646,6 +1673,13 @@ struct Tally {
     making: std::cell::RefCell<Option<(&'static str, made::Views)>>,
     /// How deep the build is in what a boolean takes away: nothing there is recorded.
     cutting: std::cell::Cell<u32>,
+    /// Whether a boolean, a sculpt or a generator was built (here or in an include): what a
+    /// coarse rebuild of it costs is not known before it is made.
+    procedural: std::cell::Cell<bool>,
+    /// Far levels charged a simplification.
+    simplified: std::cell::Cell<u64>,
+    /// The coarse rebuild: 0 not made, 1 made whole, 2 stopped part way.
+    coarse: std::cell::Cell<u8>,
 }
 
 impl Tally {
@@ -1688,7 +1722,7 @@ impl Tally {
         let mut recs = self.rounds.borrow_mut();
         if recs.len() < crate::facet::MAX_RECS {
             let since = self.totals.borrow().len();
-            recs.push(crate::facet::Rec { note, record, slot, ring, maps: vec![crate::facet::IDENTITY], many: None, displaced: 0.0, unknown: None, made, since, tight: None, share_max: made, estimate });
+            recs.push(crate::facet::Rec { note, record, slot, ring, maps: vec![crate::facet::IDENTITY], many: None, displaced: 0.0, unknown: None, made, since, tight: None, share_max: made, estimate, work: 0 });
         } else {
             self.rounds_dropped.set(self.rounds_dropped.get() + 1);
         }
@@ -1744,6 +1778,20 @@ impl Tally {
             }
             let share = if r.note.grows == crate::facet::Grows::Square { all } else { own };
             r.charge(share.saturating_mul(times), checked as u64, estimate);
+        }
+    }
+
+    /// An operation on a piece whose triangles are `owners` was charged `units` of work (by
+    /// the piece's vertices or triangles): each round shape among them is charged the whole,
+    /// which its own share of them is at most.
+    fn worked(&self, owners: &[u32], units: u64) {
+        let mut recs = self.rounds.borrow_mut();
+        if recs.is_empty() || owners.is_empty() || units == 0 {
+            return;
+        }
+        let here = crate::facet::slots_in(owners);
+        for r in recs.iter_mut().filter(|r| here.binary_search(&r.slot).is_ok()) {
+            r.work = r.work.saturating_add(units);
         }
     }
 
@@ -1917,6 +1965,7 @@ fn coarse_level(recipe: &Recipe, params: &BuildParams, seed: u64, built: &[Built
     tally.work.set(main.work.get());
     let rebuilt = build_parts(recipe, params.values, seed, params, &mut stack, &tally, true);
     main.work.set(tally.work.get());
+    main.coarse.set(if rebuilt.is_ok() { 1 } else { 2 });
     // A cancelled build stops here rather than going on without its coarse level.
     charge(main, "lods", 0)?;
     let Ok((coarse, _)) = rebuilt else {
@@ -1961,7 +2010,14 @@ struct BuiltPart {
 /// Meshes every part and merges them by material. With a rig, each part's vertices are bound
 /// to its bones (`skin.1[k]` belongs to `parts[k]`).
 fn assemble(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Binding])>) -> MeshData {
+    assemble_counted(parts, skin).0
+}
+
+/// [`assemble`], with each part's vertices as assembled (split where its faces turn past its
+/// smooth angle and at its texture's seams).
+fn assemble_counted(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Binding])>) -> (MeshData, Vec<usize>) {
     let mut mesh = MeshData::default();
+    let mut counts = Vec::with_capacity(parts.len());
     for (k, (shape, info)) in parts.iter().enumerate() {
         let mut m = shape.finalize_with_uvs(info.smooth_angle, &info.material, info.uv_scale);
         if let Some((rig, binds)) = skin {
@@ -1973,10 +2029,11 @@ fn assemble(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Binding])>) ->
             m.joints = j;
             m.weights = w;
         }
+        counts.push(m.positions.len());
         mesh.merge(&m);
     }
     mesh.group_by_material();
-    mesh
+    (mesh, counts)
 }
 
 fn stream_seed(seed: u64, stream: &str) -> u64 {
@@ -2071,6 +2128,7 @@ fn build_parts(
                 built
             }
             Source::Generate(node) => {
+                tally.procedural.set(true);
                 let smooth = match &part.smooth_angle {
                     Some(x) => smooth_of(x, &format!("{}.smooth_angle", part.path))?,
                     None => default_smooth,
@@ -2794,6 +2852,7 @@ impl Ctx<'_> {
             _ => v * crate::work::TIER1_POINT,
         };
         charge(self.tally, &n.path, units)?;
+        self.tally.worked(&s.owners, units);
         use crate::facet::{linear, Moved};
         let mut mv: Option<Moved> = None;
         match n.op.as_str() {

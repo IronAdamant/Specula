@@ -50,7 +50,13 @@ fn facet_said(r: &specula_model::Round, by: By) -> String {
 /// another count is what is held now: the faces' turn if its faces are seen (`faces`), the
 /// rim's if its rim is (`rim`). `work`: what the whole check has spent on advice so far.
 fn facet_fix(r: &specula_model::Round, max: f32, faces: bool, rim: bool, work: &mut u64) -> String {
-    let allow = "; or exempt the asset in [form.allow] if the facets are its look";
+    // (A ring is held to its widest rim whether or not the rim can be seen: a cone's base sunk
+    // in a wider part is one such, and is let by so.)
+    let allow = if r.rim.is_some() {
+        "; or exempt the asset in [form.allow] if the facets are its look, or if its rim is hidden (a ring is held to its widest rim whether or not it can be seen, as a cone's base sunk in a wider part)"
+    } else {
+        "; or exempt the asset in [form.allow] if the facets are its look"
+    };
     let flat = "; a shape meant to have flat sides is an extruded outline of that many sides, which nothing calls round";
     let part = match (r.what, r.count) {
         ("capsule", "rings") => "its ends: ",
@@ -63,9 +69,9 @@ fn facet_fix(r: &specula_model::Round, max: f32, faces: bool, rim: bool, work: &
     let estimated = r.most_estimated.map_or(String::new(), |why| format!(" (the most it can be built with is estimated: {why})"));
     match holding_count(r, max, faces, rim, r.least.max(has.saturating_add(1)), most, work) {
         Holds::At(k, t) => match count {
-            "subdivisions" => format!("give the sphere {k} \"subdivisions\" (it has {has}; at {k} it turns {t:.1}° a face, measured as this was){estimated}{allow}"),
+            "subdivisions" => format!("give the sphere {k} \"subdivisions\" (it has {has}; at {k} it turns {t:.1}° a face, measured as this was; it builds with every other count as it is now){estimated}{allow}"),
             "resolution" => format!("raise the sculpt's \"resolution\" to {k} (it is {has}; at {k} its cells turn the surface {t:.1}° round this primitive's radius of {:.3} m){estimated}, or give the primitive more radius; a shape meant to have flat sides is an extruded outline, not a sculpt of balls", r.radius_m),
-            _ => format!("{part}give the {what} {k} \"{count}\" (it has {has}; at {k} it turns {t:.1}°, measured as this was){estimated}{flat}{allow}"),
+            _ => format!("{part}give the {what} {k} \"{count}\" (it has {has}; at {k} it turns {t:.1}°, measured as this was; it builds with every other count as it is now){estimated}{flat}{allow}"),
         },
         Holds::Never(t) => match count {
             "subdivisions" => format!("{} a sphere still turns {t:.1}° a face: build it as a sculpt (\"sdf\") fine enough{estimated}{allow}", at_most(" \"subdivisions\"")),
