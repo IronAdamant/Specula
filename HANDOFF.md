@@ -414,12 +414,26 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       - Written again from the page alone in a fresh project, the game counts its bounces
         from the events, plays the bounce louder for a harder landing, says what the ball
         is on, and puts the ball back when it falls.
-      - **Not reviewed by another model** (no subagents), and **not gated**: on its base
-        every suite passes but `reply_wait_guard`, which fails there as before this work
-        and is mended on the working branch. Not merged anywhere.
+      - **Not reviewed by another model** (no subagents).
+      - **The three lines are one, and it is gated** (2026-11-21): the working branch
+        (the mesher's mend, the sculpt's box, the light and faceting rounds), the shape
+        library through its distance fields (`m6-formae`, stage 5a) and `m6-usus` merged
+        with no conflict into `m6-una` (`C:/sf-una`), and the working branch moved up to
+        it. **The full gate passed on `2da88f08`**: 3,584 tests, the five repeats, the
+        slow-worker run, the 38 speed budgets, clippy for both targets, both builds. It is
+        the first gate since `bec48409`, so it is also the first of the mesher's mend, the
+        box mend, the light report's and faceting's later rounds, the seventh silhouette
+        version and the library, together. **Owed still: the live checks** (the window's
+        loop changed), and every review listed above as queued.
+      - **A build can fail here for memory, with words about something else.** The first
+        builds of the merged line failed with "crate `specula` required to be available in
+        rlib format", missing methods and internal compiler errors; the cause was in one
+        line of the second try: "The paging file is too small for this operation to
+        complete" (the machine's page file is 4.7 GB, and other programs held all but 3 GB
+        of what could be promised). `CARGO_BUILD_JOBS=6`, or fewer programs open, and it
+        builds. Read for os error 1455 before reading the code.
       - Still to do by hand, in order: the mends carried onto the engine without the
-        library (so that arm can be measured again), the branches brought into one line
-        (`m6-usus`, the library's 5a, the working branch), then both soft-edge routes.
+        library (so that arm can be measured again), then both soft-edge routes.
   - **The shape library's comparison, the small job: found, and not cheaper** (2026-11-20,
     at the owner's "go for it. And save the comparison where needed";
     [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Results (2026-11-20: the shape
@@ -1149,7 +1163,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       GI, studio, procgen, `form_sheet_check`); the same had passed on `ea95a90d`,
       `a80b3cf4` and `466e262b` before. The fourth shape-language measure and the measure
       from the recipe are committed after it (`6e9c490b`, `5781cc53`) and wait for a gate;
-      each was reviewed and neither is to be merged as it stands.
+      each was reviewed and neither is to be merged as it stands. **(2026-11-21: the full gate passed on `2da88f08`, the three lines merged: see "By hand only, and lean" above.)**
       **Owed:** the mends of both shape-language measures and their reviews; and reviews,
       by models that did not write them, of faceting from the recipe, the light report's
       mends and the levelled weights (the two reviewers started for them were stopped by
@@ -1280,7 +1294,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       Stage 3 is the engine's 2D item with two read-only tools and
       `docs/design/FORMAE.md`; then further families. Each stage is reviewed by Claude, who
       did not write it; the whole is pictured in the engine and gated before it is merged.
-      **Nothing of it is merged yet.**
+      **Merged into the working branch on 2026-11-21** (stages 1a to 5a, with the fixes of `m6-usus`; the full gate passed on `2da88f08`); the orientation builder's stopped work is still uncommitted in `C:/sf-formae`.
     - **Faceting, from what a recipe names round: built** (2026-11-19, evening; FORM.md,
       "Faceting, from what the recipe names round"). The modeller records, for every shape
       a recipe names round (cylinder, cone, sphere, torus, capsule, lathe, a sculpt), the
