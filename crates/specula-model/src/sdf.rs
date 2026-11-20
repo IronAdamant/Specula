@@ -10,7 +10,7 @@
 //! blends mix colours as they mix distances.
 //!
 //! **Mesh:** a grid over the tree's bounds (`resolution` cells along the longest side, at most
-//! [`MAX_RESOLUTION`]; at most [`MAX_SAMPLES`] samples), the field sampled sparsely (8³-cell
+//! [`MAX_RESOLUTION`]; at most [`MAX_SAMPLES`] samples), the field sampled sparsely (8Â³-cell
 //! blocks whose centre is farther from the surface than their reach are filled by sign, using a
 //! conservative Lipschitz bound of the tree), then one vertex per surface cell placed by a
 //! regularised QEF of the edge crossings' planes (dual contouring: flat faces stay flat, creases
@@ -30,7 +30,7 @@ pub const MAX_RESOLUTION: u32 = 160;
 pub const MAX_SAMPLES: usize = 1 << 22;
 /// Most nodes in one tree.
 pub const MAX_NODES: usize = 128;
-/// Most work units one sculpt may spend on its own ([`crate::work`]: samples × [`eval_cost`],
+/// Most work units one sculpt may spend on its own ([`crate::work`]: samples Ã— [`eval_cost`],
 /// crossings' normals and colours included); a recipe's sculpt gets what is left of its build.
 pub const MAX_WORK: u64 = crate::work::MAX_BUILD;
 /// Most repetitions of one `repeat` (all axes together).
@@ -57,7 +57,7 @@ pub enum Prim {
     /// at 2, where it is the ellipsoid of those radii (a superquadric). A recipe gives the
     /// roundness, 0 to 1, and the power is 2 over it. Its field is a lower bound of the distance.
     Rounded { half: V3, power: f32, disc: bool },
-    /// The half-space below the plane `normal · p = offset` (unbounded: give the sdf bounds).
+    /// The half-space below the plane `normal Â· p = offset` (unbounded: give the sdf bounds).
     HalfSpace { normal: V3, offset: f32 },
     /// A round cone: every ball between one of radius `ra` at `a` and one of radius `rb` at
     /// `b` (a limb, a finger, a horn, one link of a chain). Unlike the other primitives it is
@@ -225,6 +225,8 @@ pub struct SdfStats {
     /// weight is the powers past an allowance a sample, at a weight a power.
     pub rounded_powers: u64,
     pub rounded_samples: u64,
+    /// The most powers taken between two charges: what ran before it was paid for.
+    pub rounded_most_between: u64,
 }
 
 /// The least radius each primitive of the tree turns at, in the tree's own metres, one entry
@@ -332,30 +334,35 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
 /// displacement keeps every child, as its distances no longer bound each other), and a child
 /// with any of those anywhere under it is never dropped.
 fn prune(n: &Prepared, c: V3, reach: f32) -> Prepared {
+    pruned(n, c, reach, &valued(n, c))
+}
+
+/// [`prune`], with every node's distance at the ball's middle already taken ([`valued`]).
+fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued) -> Prepared {
     let keep_all = |kind: PKind| Prepared { kind, m: n.m.clone(), inv_rot: n.inv_rot, rotated: n.rotated, seed: n.seed, lip: n.lip, slack: n.slack, steady: n.steady, wander: n.wander, least: n.least };
     let PKind::Group { op, kids, smooth } = &n.kind else { return n.clone() };
     let m = &n.m;
-    let plain = m.repeat.is_none() && m.elongate == [0.0; 3] && m.twist == 0.0 && m.bend == 0.0 && m.shell <= 0.0 && m.displace.is_none();
-    if !plain {
+    if !plain(m) || at.kids.len() != kids.len() {
         return n.clone();
     }
     let q = local(n, c);
     let r = reach / (m.scale * m.stretch[0].min(m.stretch[1]).min(m.stretch[2]));
     // A cut or an intersection keeps every child, each pruned for the same ball.
     if !matches!(op, Combine::Union | Combine::Near) {
-        return keep_all(PKind::Group { op: *op, kids: kids.iter().map(|kid| prune(kid, q, r)).collect(), smooth: *smooth });
+        return keep_all(PKind::Group { op: *op, kids: kids.iter().zip(&at.kids).map(|(kid, v)| pruned(kid, q, r, v)).collect(), smooth: *smooth });
     }
     // A smooth plain union with a child that is not steady keeps every child: such a child
     // stays whatever it says, and blending in turn it could carry the pull of a child that
     // went (three spheres, the middle one twisted: the pruned tree differed in the fifth place).
     if *op == Combine::Union && *smooth > 0.0 && kids.iter().any(|k| !k.steady) {
-        return keep_all(PKind::Group { op: *op, kids: kids.iter().map(|kid| prune(kid, q, r)).collect(), smooth: *smooth });
+        return keep_all(PKind::Group { op: *op, kids: kids.iter().zip(&at.kids).map(|(kid, v)| pruned(kid, q, r, v)).collect(), smooth: *smooth });
     }
     // Each child's least and greatest distance anywhere in the ball.
     let span: Vec<(f32, f32)> = kids
         .iter()
-        .map(|k| {
-            let d = eval(k, q);
+        .zip(&at.kids)
+        .map(|(k, v)| {
+            let d = v.d;
             if k.wander == 0.0 {
                 let spread = k.lip * r + k.slack;
                 return (d - spread, d + spread);
@@ -406,7 +413,7 @@ fn prune(n: &Prepared, c: V3, reach: f32) -> Prepared {
             break;
         }
     }
-    let kids = kids.iter().zip(&keep).filter(|(_, k)| **k).map(|(kid, _)| prune(kid, q, r)).collect();
+    let kids = kids.iter().zip(&keep).zip(&at.kids).filter(|((_, k), _)| **k).map(|((kid, _), v)| pruned(kid, q, r, v)).collect();
     keep_all(PKind::Group { op: *op, kids, smooth: *smooth })
 }
 
@@ -419,7 +426,16 @@ fn len2(x: f32, y: f32) -> f32 {
     (x * x + y * y).sqrt()
 }
 
+#[cfg(test)]
+thread_local! {
+    /// (Tests only) the weights of every primitive evaluated on this thread: what the work
+    /// charged has to cover.
+    static PRIM_WEIGHED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn prim_distance(p: &Prim, q: V3) -> f32 {
+    #[cfg(test)]
+    PRIM_WEIGHED.with(|w| w.set(w.get() + prim_cost(p)));
     match *p {
         Prim::Sphere { radius } => math3::length(q) - radius,
         Prim::Rounded { half, power, disc } => rounded(q, half, power, disc),
@@ -557,34 +573,28 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
 /// sampled**: no recipe takes more than one power for each [`ROUNDED_POWER`] units it is
 /// charged.
 ///
-/// Measured by count (2026-11-20, every power counted in real builds, resolution 48): a 2 m
-/// box with a cube of roundness 0.3 cut out of it (the calibrated case) takes 16.3 powers a
-/// rounded sample and 9.5 for every thousand units charged; over 1,188 builds (a box and a
-/// disc, 1 m to 50 m, 1:1 to a hundred-millionth as thin, eleven roundnesses, cut at the
-/// middle, beside an edge and past a corner) the dearest takes 10.9, 1.14 times as many (a
-/// 2 m sheet a millionth as thick cut through the middle at roundness 0.67, 37 powers a
-/// sample, charged for what it takes past the weight). Over 3.9 million samples outside
-/// shapes of every kind, thinness and roundness, from a tenth of a millimetre to ten times
-/// their size away, the first steps arrive for all but 0.04% and no sample takes more than
-/// 177 powers; shapes a metre across cut from the middle of the 2 m box take 17.7 to
-/// 18.5 powers a sample at the worst roundness for each thinness, from 1:1 to a
-/// hundred-millionth: the weight is one for every thinness. (Two weights graded by
-/// thinness, set by time on a quiet machine on 2026-11-19, stood for the extra steps a thin
-/// shape's samples took; an eighth review found that a large thin cutter past a corner
-/// still cost four times its charge, and that the levelling held only at the roundnesses it
-/// was timed at. The cause was where the first steps started ([`rounded_solve`]); with it
-/// mended a thin shape's samples take what a cube's do, and what any sample takes past the
-/// weight is charged.)
+/// The weight is one for every thinness. (Two weights graded by thinness, set by time on a
+/// quiet machine on 2026-11-19, stood for the extra steps a thin shape's samples took; an
+/// eighth review found that a large thin cutter past a corner still cost four times its
+/// charge; what any sample takes past the weight is charged since.) Every evaluation a build
+/// makes is charged (a ninth review found pruning's were not, under nested unions:
+/// [`valued`]), so the bound holds for any recipe. What the samples take, by count, is in
+/// `docs/design/PROCEDURAL_MODELLING.md` (tier 3, "Roundness as one number"), each figure
+/// said with the samples it is for.
 const ROUNDED_COST: [u64; 2] = [300, 1450];
 
 /// The work a build is charged for each power its rounded shapes' samples take past
 /// [`ROUNDED_ALLOW`] a sample, over the build (one sample's spare powers pay for another's).
-/// It is set so that no build can take more powers for its work than five quarters of the
-/// calibrated case does ([`ROUNDED_COST`]): a test holds it. (A power alone was timed at
-/// about 48 units of a plain cut's work, on a busy machine, by the eighth review.)
+/// No build can take more than one power for each of these units it is charged: 11.9 a
+/// thousand, where the calibrated case ([`ROUNDED_COST`]) takes 10.9 (at a resolution of 48,
+/// 2026-11-20, by count); a test holds every case it builds to five quarters of the
+/// calibrated case. (A power alone was timed at about 48 units of a plain cut's work, on a
+/// busy machine, by the eighth review.)
 const ROUNDED_POWER: u64 = 84;
 /// The powers a sample's weight pays for: the weight over [`ROUNDED_POWER`], rounded down.
 const ROUNDED_ALLOW: u64 = ROUNDED_COST[1] / ROUNDED_POWER;
+/// The same at a power of 2, whose first steps take no power (only its sure way does).
+const ROUNDED_ALLOW_2: u64 = ROUNDED_COST[0] / ROUNDED_POWER;
 
 /// A rounded box's or cylinder's field ([`Prim::Rounded`]), in metres.
 ///
@@ -592,7 +602,7 @@ const ROUNDED_ALLOW: u64 = ROUNDED_COST[1] / ROUNDED_POWER;
 /// is convex.
 ///
 /// **Outside it the field is the distance itself**, to the nearest point of the surface
-/// ([`rounded_solve`]): so a swelling (`round`), a shell or a blend of any size is measured
+/// ([`rounded_first`], [`rounded_sure`]): so a swelling (`round`), a shell or a blend of any size is measured
 /// from the rounded surface, on every side. (It was first `k - 1` times a size, then the
 /// distance to one touching plane, then to three: each was right along the axes and wrong
 /// beside a thin shape's edge, where a swelling by a centimetre came out up to five, and three
@@ -611,56 +621,116 @@ const ROUNDED_ALLOW: u64 = ROUNDED_COST[1] / ROUNDED_POWER;
 fn rounded(q: V3, half: V3, power: f32, disc: bool) -> f32 {
     let (f, powers, _) = rounded_counted(q, half, power, disc);
     debug_assert!(powers <= ROUNDED_MOST, "{powers} powers");
-    if power != 2.0 {
-        // (What the build is charged past the weight: [`rounded_taken`].)
-        ROUNDED_TAKEN.with(|t| {
-            let [taken, samples] = t.get();
-            t.set([taken + u64::from(powers), samples + 1]);
-        });
-    }
+    // (What the build is charged past the weight: [`RoundedBill`].)
+    let allowed = if power == 2.0 { ROUNDED_ALLOW_2 } else { ROUNDED_ALLOW };
+    ROUNDED_TAKEN.with(|t| {
+        let [taken, samples, allowance] = t.get();
+        t.set([taken + u64::from(powers), samples + 1, allowance + allowed]);
+    });
     f
 }
 
 thread_local! {
-    /// The powers rounded shapes' samples took on this thread, and how many samples, since
-    /// [`rounded_taken`] last read them. (A count, never a time: the same recipe takes the
-    /// same powers on every machine. A build evaluates on one thread.)
-    static ROUNDED_TAKEN: std::cell::Cell<[u64; 2]> = const { std::cell::Cell::new([0, 0]) };
+    /// The powers rounded shapes' samples took on this thread, how many samples, and how many
+    /// powers their weights pay for, since [`rounded_taken`] last read them. (A count, never a
+    /// time: the same recipe takes the same powers on every machine. A build evaluates on one
+    /// thread.)
+    static ROUNDED_TAKEN: std::cell::Cell<[u64; 3]> = const { std::cell::Cell::new([0, 0, 0]) };
 }
 
-/// The powers rounded shapes' samples (of a power other than 2) took on this thread, and how
-/// many samples, since it was last called; it starts both again.
-fn rounded_taken() -> [u64; 2] {
-    ROUNDED_TAKEN.with(|t| t.replace([0, 0]))
+/// The powers rounded shapes' samples took on this thread, how many samples, and the powers
+/// their weights pay for, since it was last called; it starts all three again.
+fn rounded_taken() -> [u64; 3] {
+    ROUNDED_TAKEN.with(|t| t.replace([0, 0, 0]))
 }
 
-/// [`rounded`], how many powers it took (each an exponential of a logarithm: what a sample
-/// of a rounded shape costs, which its build is charged for past [`ROUNDED_ALLOW`]), and
-/// whether the nearest point was left to the sure way. Never more than [`ROUNDED_MOST`]
-/// powers.
+/// What is charged for rounded shapes' powers past what their samples' weights pay for
+/// ([`ROUNDED_POWER`] units a power), over a build or a run of questions: the powers taken
+/// less the allowance of the samples so far, each power past it charged once (what was paid is
+/// kept, so an allowance that grows and is then used up again is never charged twice). Started
+/// empty, with this thread's tally emptied: whatever the thread evaluated before is not this
+/// bill's.
+struct RoundedBill {
+    taken: u64,
+    samples: u64,
+    allowed: u64,
+    paid: u64,
+    /// The most powers taken between two bills: what ran before it was charged.
+    most_between: u64,
+}
+
+impl RoundedBill {
+    fn start() -> RoundedBill {
+        rounded_taken();
+        RoundedBill { taken: 0, samples: 0, allowed: 0, paid: 0, most_between: 0 }
+    }
+
+    /// Takes this thread's tally into the bill: the work due for it now.
+    fn due(&mut self) -> u64 {
+        let [taken, samples, allowed] = rounded_taken();
+        self.most_between = self.most_between.max(taken);
+        (self.taken, self.samples, self.allowed) = (self.taken + taken, self.samples + samples, self.allowed + allowed);
+        let over = self.taken.saturating_sub(self.allowed);
+        let due = over - self.paid.min(over);
+        self.paid = self.paid.max(over);
+        due * ROUNDED_POWER
+    }
+}
+
+/// [`rounded`], how many powers it took (what a sample of a rounded shape costs, which its
+/// build is charged for past [`ROUNDED_ALLOW`]), and whether the nearest point was left to
+/// the sure way. Never more than [`ROUNDED_MOST`] powers.
+///
+/// **What is counted**: every exponential and every logarithm, as a power (an exponential of a
+/// logarithm, the first steps' unit, is one), and every square root as a quarter of one (a
+/// price stated, not timed: a square root is one instruction, a power a few dozen), rounded up
+/// to a whole power a sample. Nothing else the solve does repeats: its other arithmetic is a
+/// few dozen operations a step, and a step takes at least a power.
 fn rounded_counted(q: V3, half: V3, power: f32, disc: bool) -> (f32, u32, bool) {
+    // (In quarters of a power: [`POWER`] and [`ROOT`].)
     let taken = std::cell::Cell::new(0u32);
+    let powers = || taken.get().div_ceil(POWER);
     // A cylinder is the same in two: out from its axis, and along it.
     let (p, h, n) = if disc { ([len2(q[0], q[2]), q[1].abs(), 0.0], [half[0], half[1], 1.0], 2) } else { ([q[0].abs(), q[1].abs(), q[2].abs()], half, 3) };
     // The hard shape's own distance (a box's, or a cylinder's).
     let d = [p[0] - h[0], p[1] - h[1], if n == 3 { p[2] - h[2] } else { f32::MIN }];
     let hard = math3::length([d[0].max(0.0), d[1].max(0.0), d[2].max(0.0)]) + d[0].max(d[1]).max(d[2]).min(0.0);
+    taken.set(ROOT * (1 + u32::from(disc)));
     // (One over each half size, taken once: the steps below multiply by them.)
     let inv = [1.0 / h[0], 1.0 / h[1], if n == 3 { 1.0 / h[2] } else { 0.0 }];
+    // The sure way, when no start's first steps have arrived ([`rounded_sure`]).
+    let sure = |lower: f32, start: f64| ((rounded_sure(p, h, inv, power, f64::from(lower), start, &taken) as f32).max(lower), powers(), true);
     if hard > 0.0 {
-        // Past the hard shape, which holds the rounded one: outside it, and the way out of
-        // the hard shape is where the nearest point is first looked for.
+        // Past the hard shape, which holds the rounded one: outside it. The nearest point is
+        // looked for first along the way out of the hard shape from its nearest point (right
+        // past a corner or an edge, and over a face away from its rim); then, if that has not
+        // arrived, from the touching plane at the sample, as inside the hard shape (right just
+        // past a thin face beside its rim, where the way out is the face's and the nearest
+        // point is on the rim: ninth review); then the sure way.
         let out = [d[0].max(0.0), d[1].max(0.0), if n == 3 { d[2].max(0.0) } else { 0.0 }];
-        let (f, sure) = rounded_solve(p, h, inv, power, Start::Past(out), hard, &taken);
-        return (f, taken.get(), sure);
+        let start = match rounded_first(p, h, inv, power, Start::Past(out), hard, &taken) {
+            Ok(f) => return (f, powers(), false),
+            Err(start) => start,
+        };
+        let Some((g, len)) = rounded_gradient(p, inv, power, &taken) else { return sure(hard, start) };
+        let plane = (math3::dot(g, p) - 1.0) / len;
+        if !(plane > 0.0 && plane.is_finite()) {
+            return sure(hard, start);
+        }
+        return match rounded_first(p, h, inv, power, Start::Foot(g, len, plane), plane.max(hard), &taken) {
+            Ok(f) => (f, powers(), false),
+            Err(_) => sure(plane.max(hard), start),
+        };
     }
     // The first touching plane: the one whose normal is the gradient where the point is.
-    let Some((g, len)) = rounded_gradient(p, inv, power, &taken) else { return (hard, taken.get(), false) };
+    let Some((g, len)) = rounded_gradient(p, inv, power, &taken) else { return (hard, powers(), false) };
     let mut plane = (math3::dot(g, p) - 1.0) / len;
     if plane > 0.0 {
         // Outside (`grad k . p` is `k`): the distance, which both bounds are below.
-        let (f, sure) = rounded_solve(p, h, inv, power, Start::Foot(g, len, plane), plane.max(hard), &taken);
-        return (f, taken.get(), sure);
+        return match rounded_first(p, h, inv, power, Start::Foot(g, len, plane), plane.max(hard), &taken) {
+            Ok(f) => (f, powers(), false),
+            Err(start) => sure(plane.max(hard), start),
+        };
     }
     // Inside, steps toward the nearest point: the plane touching where the last plane's foot
     // lies. Each is a touching plane of a convex shape, so each is still never less than the
@@ -679,17 +749,33 @@ fn rounded_counted(q: V3, half: V3, power: f32, disc: bool) -> (f32, u32, bool) 
         }
         plane = at;
     }
-    (plane.max(hard).min(0.0), taken.get(), false)
+    (plane.max(hard).min(0.0), powers(), false)
 }
 
 /// The most powers one sample of a rounded shape can take ([`rounded_counted`]), counted from
-/// the code: two gradients of four and the start's four (inside, three gradients); the first
-/// steps (a start for each share, then ten steps of a power a share and at most a start
-/// again: 3 + 10 * 6); the shares the sure way starts from (3); and the sure way (twelve steps
-/// on `mu`, each at most twelve powers a share: 432).
-const ROUNDED_MOST: u32 = 12 + 3 + 10 * 6 + 3 + 12 * 12 * 3;
+/// the code: the gradient at the sample (four); two goes at the first steps ([`FIRST_MOST`]
+/// each); the sure way ([`SURE_MOST`]); and its square roots at a quarter of a power each
+/// ([`ROOTS_MOST`]). (Inside the hard shape: one go, from the gradient. Inside the rounded
+/// shape: three gradients and no solve.)
+const ROUNDED_MOST: u32 = 4 + 2 * FIRST_MOST + SURE_MOST + ROOTS_MOST.div_ceil(POWER);
+/// The square roots one sample can take: two for the hard shape's distance (a cylinder's
+/// radius, and the distance), three in each of up to three gradients, fifteen in each of two
+/// goes at the first steps (a support's and a direction's, one a step of twelve at a power of 2,
+/// and the distance's), and three in the sure way.
+const ROOTS_MOST: u32 = 2 + 3 * 3 + 2 * 15 + 3;
+/// What [`rounded_counted`] counts in: a power is four, a square root one.
+const POWER: u32 = 4;
+const ROOT: u32 = 1;
+/// One go at the first steps ([`rounded_first`]): the gradient at the touching plane's foot
+/// (four), the start's support (four), a start for each share (three), and ten steps of a power
+/// a share and at most a start again (6 each).
+const FIRST_MOST: u32 = 4 + 4 + 3 + 10 * 6;
+/// The sure way ([`rounded_sure`]): eleven exponentials and logarithms before its steps (its
+/// bounds, each coordinate's constants, the start), and at each step two for each step on each
+/// of three shares, three for the sum and two for a step on `mu`.
+const SURE_MOST: u32 = 11 + SURE_STEPS * (3 * 2 * SURE_SHARE_STEPS + 3 + 2);
 
-/// Where a rounded shape's nearest point is first looked for ([`rounded_solve`]).
+/// Where a rounded shape's nearest point is first looked for ([`rounded_first`]).
 #[derive(Clone, Copy)]
 enum Start {
     /// The sample is inside the hard shape: from the touching plane whose normal is the
@@ -701,21 +787,20 @@ enum Start {
     Past(V3),
 }
 
-/// How far `p` (outside, its coordinates made positive) is from a rounded shape: the distance
-/// to the nearest point of its surface, to within a few parts in ten thousand of it (short of
-/// it far more often than over, and over by no more than the stopping rule lets a step land
-/// past the answer); and whether the sure way was taken. Every power it takes is counted in
-/// `taken`.
+/// How far `p` (outside, its coordinates made positive) is from a rounded shape, by the first
+/// steps from one start: the distance to the nearest point of its surface when they have
+/// arrived there, or else (`Err`) the `mu` they started from, for the sure way
+/// ([`rounded_sure`]). Every power it takes is counted in `taken`.
 ///
 /// The nearest point `x` is where the line to `p` leaves the surface squarely: `p - x = mu *
 /// grad k(x)` with `k(x) = 1`. For each `mu` every coordinate has one answer, `u + c *
-/// u^(power-1) = p / half` in shares of its half size (`c = mu / half^2`), found by Newton's
-/// steps, which close in from either side because that is a rising convex curve; and the sum
-/// of the shares to the power, less one, falls as `mu` grows along a convex curve too, so
-/// Newton's steps on `mu` come up from below without passing the answer (a first step from
-/// above lands below). They are never let below `floor`, what a known lower bound of the
-/// distance makes of `mu`. An answer from below is a point a little outside the surface, so
-/// its distance is a little short, never long.
+/// u^(power-1) = p / half` in shares of its half size (`c = mu / half^2`), and the sum of the
+/// shares to the power falls as `mu` grows: **there is one nearest point, and the steps that
+/// arrive have found it**, whatever they started from. Arriving is checked, not assumed:
+/// every coordinate on its equation to a ten-millionth and the point on the surface to a
+/// millionth of the power. So a start only sets how soon they arrive; one that does not
+/// arrive costs its steps and hands on to the next start or the sure way, and never gives an
+/// answer.
 ///
 /// **Where it starts.** `mu` is the distance times how far the shape reaches along the
 /// normal at the nearest point (`grad k . x` is 1 there, so one over the gradient's length is
@@ -734,7 +819,7 @@ enum Start {
 /// face's, `mu` began three hundred thousand to five million times too small, the first steps
 /// went the wrong way, and 98% of the samples took the sure way: a cutter past the corner of
 /// what it cut cost four times its charge. Eighth review.)
-fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, from: Start, lower: f32, taken: &std::cell::Cell<u32>) -> (f32, bool) {
+fn rounded_first(p: V3, h: V3, inv: V3, power: f32, from: Start, lower: f32, taken: &std::cell::Cell<u32>) -> Result<f32, f64> {
     let (g, len, plane) = match from {
         Start::Foot(g, len, plane) => (g, len, plane),
         Start::Past(_) => ([0.0; 3], 1.0, 1.0),
@@ -745,17 +830,21 @@ fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, from: Start, lower: f32, tak
     // out as nothing and the solve stopped the build with a panic: a recipe nested in seven
     // scales of a thousandth does it. Sixth review.)
     if !(lower.is_finite() && len.is_finite() && plane.is_finite() && p.iter().all(|x| x.is_finite())) {
-        return (lower, false);
+        return Ok(lower);
     }
     let n = if inv[2] == 0.0 { 2 } else { 3 };
     let least = if n == 3 { h[0].min(h[1]).min(h[2]) } else { h[0].min(h[1]) };
     // (`mu` is the distance over the length of the gradient at the nearest point, which is no
     // more than one over the least half size.)
-    let floor = lower.max(0.0) * least;
-    let (e, quartic) = (power - 1.0, power == 4.0);
+    let floor = surely_under(lower, p) * least;
+    let e = power - 1.0;
     let pw = |x: f32, y: f32| {
-        taken.set(taken.get() + 1);
+        taken.set(taken.get() + POWER);
         power_of(x, y)
+    };
+    let root = |x: f32| {
+        taken.set(taken.get() + ROOT);
+        x.sqrt()
     };
     // The point of the surface that reaches furthest along `dir` (a unit, its coordinates
     // positive): `mu` if the nearest point were there, and its shares to the power less one.
@@ -767,12 +856,12 @@ fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, from: Start, lower: f32, tak
         if !(sum > 0.0 && sum.is_finite()) {
             return None;
         }
-        let reach = if power == 2.0 { sum.sqrt() } else { pw(sum, 1.0 / q) };
+        let reach = if power == 2.0 { root(sum) } else { pw(sum, 1.0 / q) };
         let ahead = dir[0] * p[0] + dir[1] * p[1] + dir[2] * p[2] - reach;
         Some(((ahead * reach).max(floor), toward.map(|x| x.max(0.0) / reach)))
     };
     let unit = |x: V3| {
-        let size = math3::length(x);
+        let size = root(math3::dot(x, x));
         (size > 0.0 && size.is_finite()).then(|| [x[0] / size, x[1] / size, x[2] / size])
     };
     let way = match from {
@@ -793,16 +882,19 @@ fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, from: Start, lower: f32, tak
     // the steps (fourth review: a cut by a rounded plate cost five times its weight).
     let (power, e) = (f64::from(power), f64::from(e));
     let to = |x: f64, y: f64| {
-        taken.set(taken.get() + 1);
+        taken.set(taken.get() + POWER);
         crate::dmath::exp_f64(y * crate::dmath::ln_f64(x))
+    };
+    let root64 = |x: f64| {
+        taken.set(taken.get() + ROOT);
+        x.sqrt()
     };
     let inv2 = [f64::from(inv[0]) * f64::from(inv[0]), f64::from(inv[1]) * f64::from(inv[1]), f64::from(inv[2]) * f64::from(inv[2])];
     let big = [f64::from(p[0]) * f64::from(inv[0]), f64::from(p[1]) * f64::from(inv[1]), f64::from(p[2]) * f64::from(inv[2])];
     let (floor, mut mu) = (f64::from(floor), f64::from(mu));
-    // Each coordinate's share and its power less two, at the last `mu`.
+    let start = mu;
+    // Each coordinate's share at the last `mu`.
     let mut u = [0.0f64; 3];
-    let mut w = [1.0f64; 3];
-    let mut began_again = false;
     // First, Newton's steps on everything together: one power a coordinate a step, and the
     // error squared each time from a start as near as these. (Each `mu`'s shares solved for
     // in full, as below, took three times the powers.) The unknowns are `mu` and each share
@@ -817,7 +909,6 @@ fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, from: Start, lower: f32, tak
     // where `mu` started.
     let mut arrived = false;
     if power != 2.0 {
-        let first_mu = mu;
         // The most a coordinate's own equation allows at a `mu`, which its answer is under:
         // the lesser of what the straight term alone allows (`p / half` over `c`) and what the
         // root alone does (`p / half` to the power, where that is under one). A step that
@@ -870,11 +961,11 @@ fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, from: Start, lower: f32, tak
             if !(value.is_finite() && pull.is_finite() && give.is_finite() && give > 0.0) {
                 break;
             }
-            if value.abs() <= 1e-6 * power && worst <= 1e-7 {
+            let next = (mu + (value - pull) / give).max(floor);
+            if value.abs() <= ARRIVED * power && worst <= ARRIVED && (next - mu).abs() <= ARRIVED_STEP * mu {
                 arrived = true;
                 break;
             }
-            let next = (mu + (value - pull) / give).max(floor);
             for i in 0..n {
                 if big[i] > 0.0 {
                     let stepped = v[i] - (off[i] + lean[i] * (next - mu)) / stiff[i];
@@ -884,83 +975,234 @@ fn rounded_solve(p: V3, h: V3, inv: V3, power: f32, from: Start, lower: f32, tak
             }
             mu = next;
         }
-        if !arrived {
-            // The sure way starts where the first steps did, from the start's own shares.
-            mu = first_mu;
-            u = [0, 1, 2].map(|i| if i < n && began[i] > 0.0 { to(f64::from(began[i]), 1.0 / e) } else { 0.0 });
-        }
-    }
-    for step in 0..12 {
-        if arrived {
-            break;
-        }
-        let (mut value, mut slope) = (-1.0f64, 0.0f64);
-        for i in 0..n {
-            let (c, want) = (mu * inv2[i], big[i]);
-            if want <= 0.0 {
-                (u[i], w[i]) = (0.0, 0.0);
-                continue;
+    } else {
+        // At a power of 2 (an ellipsoid) each share has its answer at once, `p / half / (1 +
+        // c)`, and Newton's steps are taken on `mu` alone: on one over the root of the sum of
+        // the shares squared, less one. Each share's own one over it rises in a straight line
+        // with `mu`, so that rises along a concave curve, nearly straight (straight for a
+        // ball, or wherever one coordinate leads): from either side a step lands at or below
+        // the answer and the next come up to it without passing it. (On the sum itself the
+        // steps gain less than half again a step where it falls as a power of `mu`.)
+        for _ in 0..12 {
+            let (mut sum, mut slope) = (0.0f64, 0.0f64);
+            for i in 0..n {
+                let (c, want) = (mu * inv2[i], big[i]);
+                u[i] = if want > 0.0 { want / (1.0 + c) } else { 0.0 };
+                sum += u[i] * u[i];
+                slope -= 2.0 * u[i] * u[i] * inv2[i] / (1.0 + c);
             }
-            if power == 2.0 {
-                (u[i], w[i]) = (want / (1.0 + c), 1.0);
-            } else {
-                // From the last answer (at first, from the start above): a step from the right
-                // of the answer comes down toward it; one from the left lands to its right,
-                // and is never let past the lesser of what each term alone allows, which the
-                // answer is under (so no step throws a share out to where its power
-                // overflows: fourth review).
-                let most_x = |want: f64, c: f64| if c > 0.0 { want.min(to(want / c, 1.0 / e)) } else { want };
-                let mut over = f64::INFINITY;
-                let mut x = if u[i] > 0.0 {
-                    u[i]
-                } else {
-                    over = most_x(want, c);
-                    over
-                };
-                let mut xw = 1.0;
-                for _ in 0..10 {
-                    xw = if quartic { x * x } else { to(x, power - 2.0) };
-                    let off = x + c * xw * x - want;
-                    let mut next = (x - off / (1.0 + c * e * xw)).max(0.0);
-                    if off < 0.0 {
-                        if over.is_infinite() {
-                            over = most_x(want, c);
-                        }
-                        next = next.min(over);
-                    }
-                    // (A step that moves it by under a ten-millionth is the last.)
-                    if (x - next).abs() <= 1e-7 * x {
-                        break;
-                    }
-                    x = next;
-                }
-                (u[i], w[i]) = (x, xw);
-            }
-            let share = w[i] * u[i];
-            value += share * u[i];
-            slope -= power * share * share * inv2[i] / (1.0 + c * e * w[i]);
-        }
-        if !(value.is_finite() && slope.is_finite()) {
-            // (Past what the numbers hold: once more from the floor, which is below the
-            // answer, so the steps come up to it; then as it stands.)
-            if began_again || mu <= floor {
+            if !(sum > 0.0 && sum.is_finite() && slope < 0.0 && slope.is_finite()) {
                 break;
             }
-            (mu, began_again, u) = (floor, true, [0.0; 3]);
-            continue;
+            let root = root64(sum);
+            let value = 1.0 / root - 1.0;
+            let rise = -0.5 * slope / (sum * root);
+            let next = (mu - value / rise).max(floor);
+            if value.abs() <= ARRIVED && (next - mu).abs() <= ARRIVED_STEP * mu {
+                arrived = true;
+                break;
+            }
+            mu = next;
         }
-        // (On the surface to a millionth of the power: a share is then right to a millionth.)
-        if value.abs() <= 1e-6 * power || slope >= 0.0 || step == 11 {
-            break;
-        }
-        let next = (mu - value / slope).max(floor);
-        if (next - mu).abs() <= 1e-7 * mu {
-            break;
-        }
-        mu = next;
     }
-    let off = [f64::from(p[0]) - u[0] * f64::from(h[0]), f64::from(p[1]) - u[1] * f64::from(h[1]), if n == 3 { f64::from(p[2]) - u[2] * f64::from(h[2]) } else { 0.0 }];
-    (((off[0] * off[0] + off[1] * off[1] + off[2] * off[2]).sqrt() as f32).max(lower), !arrived && power != 2.0)
+    if arrived {
+        let off = [f64::from(p[0]) - u[0] * f64::from(h[0]), f64::from(p[1]) - u[1] * f64::from(h[1]), if n == 3 { f64::from(p[2]) - u[2] * f64::from(h[2]) } else { 0.0 }];
+        return Ok((root64(off[0] * off[0] + off[1] * off[1] + off[2] * off[2]) as f32).max(lower));
+    }
+    Err(start)
+}
+
+/// A lower bound of the distance from `p`, worked out in single precision (the hard shape's
+/// distance, or a touching plane's: `(grad k . p - 1) / |grad k|`, a difference of two
+/// numbers near one close to the surface), made sure to be under the distance: less what the
+/// rounding of `p`'s coordinates can have added (a few of their last places), and never less
+/// than a thousandth of itself (where that much is all it is, the sample is on the surface to
+/// within its own rounding). Where the bound is the distance itself (a ball's touching plane,
+/// the middle of a face) its rounding can put it over the answer, and a floor over the answer
+/// held the first steps away from it: 5.5% of the samples outside a ball of roundness 1, on a
+/// build's grid at a resolution of 96, took the sure way for it.
+fn surely_under(lower: f32, p: V3) -> f32 {
+    let rounding = 8.0 * f32::EPSILON * (p[0].abs() + p[1].abs() + p[2].abs());
+    (lower - rounding).max(lower * 1e-3).max(0.0)
+}
+
+/// How near the first steps must come to be believed: every coordinate on its equation to this
+/// share of it, and the sum of the shares to the power within this much of one (times the
+/// power); and the next step on `mu` under [`ARRIVED_STEP`] of it, which is what says how near
+/// `mu` is (close to the surface the sum is nearly level in `mu`; the distance is out by about
+/// the share `mu` is). (With the rule a sum within a millionth and nothing of the step, a
+/// sample a hundredth of a millimetre past a rod's end at a roundness of 0.2 came out at the
+/// hard shape's distance, 4% short, beside samples that were right: the step scan found it.)
+const ARRIVED: f64 = 1e-9;
+const ARRIVED_STEP: f64 = 1e-7;
+
+/// The most steps the sure way takes on `mu` ([`rounded_sure`]), and on a coordinate's share
+/// at each of them.
+const SURE_STEPS: u32 = 64;
+const SURE_SHARE_STEPS: u32 = 10;
+
+/// The sure way to a rounded shape's nearest point from `p` (outside, coordinates made
+/// positive), when the first steps have not arrived: the distance, with every exponential and
+/// every logarithm it takes counted in `taken` as a power. **It cannot fail to arrive**:
+///
+/// For each `mu` a coordinate's share has one answer (its equation `u + c u^(power-1) = p /
+/// half`, `c = mu / half^2`, rises in `u`), and the sum of the shares to the power falls as `mu`
+/// grows, so the nearest point is the one `mu` where that sum is one. That `mu` lies between two
+/// bounds known before a step is taken: the distance times the shape's least half size (the
+/// shape holds the ball of that radius, so it reaches at least that far along any normal) and
+/// a bound on the distance (`upper`: past the hard shape its distance and the most the hard
+/// shape's surface is from the rounded one, [`rounded_slack`]) times the half sizes' length (it
+/// reaches no further). The steps are taken on the logarithm of `mu`, on the logarithm of the
+/// sum (on a thin shape the sum falls as a power of `mu` over many decades, which in these is a
+/// straight line: a step on `mu` itself gained less than a doubling there, which is why the
+/// sure way before this one stopped short, 56 times short at a plank's rim; ninth review), each
+/// kept inside the bounds, which close in at every step; a step that would leave them, or that
+/// has not halved them in two steps, is a halving of them instead. So they come to the answer
+/// whatever the start, and the start only sets how soon.
+///
+/// Each share is solved for in logarithms too: `s = ln(u / big)` from the lesser of what each
+/// term alone allows (where the sum `e^s + C e^((power-1) s) - 1` is never below nothing and at
+/// most one, and is convex), by Newton's steps, which come down to the answer without passing
+/// it. The distance is `|p| * share of the line term` per coordinate, taken without
+/// cancelling.
+fn rounded_sure(p: V3, h: V3, inv: V3, power: f32, lower: f64, start: f64, taken: &std::cell::Cell<u32>) -> f64 {
+    let count = |k: u32| taken.set(taken.get() + k);
+    let exp = |x: f64| {
+        count(POWER);
+        crate::dmath::exp_f64(x)
+    };
+    let ln = |x: f64| {
+        count(POWER);
+        crate::dmath::ln_f64(x)
+    };
+    let root = |x: f64| {
+        count(ROOT);
+        x.sqrt()
+    };
+    let n = if inv[2] == 0.0 { 2 } else { 3 };
+    let (power, e) = (f64::from(power), f64::from(power) - 1.0);
+    let half = [0, 1, 2].map(|i| if i < n { f64::from(h[i]) } else { 0.0 });
+    let big = [0, 1, 2].map(|i| f64::from(p[i]) * f64::from(inv[i]));
+    let least = if n == 3 { half[0].min(half[1]).min(half[2]) } else { half[0].min(half[1]) };
+    let reach = root(half[0] * half[0] + half[1] * half[1] + half[2] * half[2]);
+    // Past the hard shape by its distance (none inside it), and the most its surface is from
+    // the rounded one: a bound on the distance.
+    let hard = {
+        let d = [0, 1, 2].map(|i| (f64::from(p[i]) - half[i]).max(0.0));
+        root(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+    };
+    let upper = hard + reach * (1.0 - exp(-ln(n as f64) / power));
+    // (The lower bound made sure, as for the first steps' floor: [`surely_under`].)
+    let (mut lo, mut hi) = (ln(f64::from(surely_under(lower as f32, p)).max(f64::MIN_POSITIVE) * least), ln(upper * reach));
+    if !(lo.is_finite() && hi.is_finite() && hi > lo) {
+        return lower;
+    }
+    // Each coordinate's `ln(c / mu)` and the logarithm of how far out it is.
+    let mut kappa = [0.0f64; 3];
+    let mut log_big = [0.0f64; 3];
+    for i in 0..n {
+        if big[i] > 0.0 {
+            log_big[i] = ln(big[i]);
+            kappa[i] = (e - 1.0) * log_big[i] - 2.0 * ln(half[i]);
+        }
+    }
+    // At a `mu` (its logarithm): the logarithm of the sum of the shares to the power, its slope
+    // in the logarithm of `mu`, and each coordinate's share of its line term (`c u^(power-1) /
+    // big`, which is one less the share over `big`).
+    let mut last_s = [0.0f64; 3];
+    let mut last_at = f64::NEG_INFINITY;
+    let at = |lm: f64, last_s: &mut [f64; 3], last_at: &mut f64| -> (f64, f64, [f64; 3]) {
+        let mut weight = [f64::NEG_INFINITY; 3];
+        let mut lean = [0.0f64; 3];
+        let mut line = [0.0f64; 3];
+        for i in 0..n {
+            if big[i] <= 0.0 {
+                continue;
+            }
+            let lc = lm + kappa[i];
+            let (s, t) = if e == 1.0 {
+                // (An ellipsoid's share: `1 / (1 + C)`, at once.)
+                let small = exp(-lc.abs());
+                let t = if lc > 0.0 { 1.0 / (1.0 + small) } else { small / (1.0 + small) };
+                (-(lc.max(0.0) + ln(1.0 + small)), t)
+            } else {
+                // From the last answer, or the first time from the lesser of what each term
+                // allows (`top`, which the answer is under). A step from below the answer lands
+                // above it (the sum is convex in `s`), and none is let past `top`; from above
+                // they come down to it without passing it.
+                let top = (-lc / e).min(0.0);
+                let mut s = if last_at.is_finite() { last_s[i].min(top) } else { top };
+                let mut t = 0.0;
+                for _ in 0..SURE_SHARE_STEPS {
+                    let a = exp(s);
+                    t = exp(e * s + lc);
+                    let step = (a + t - 1.0) / (a + e * t);
+                    // (Done when the step is down to the last places of `s`, where rounding
+                    // alone moves the sum.)
+                    if step.abs() <= 1e-14 * (1.0 + s.abs()) {
+                        break;
+                    }
+                    s = (s - step).min(top);
+                }
+                (s, t)
+            };
+            last_s[i] = s;
+            line[i] = t;
+            weight[i] = power * (log_big[i] + s);
+            lean[i] = -power * t / ((1.0 - t) + e * t);
+        }
+        *last_at = lm;
+        let top = weight.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let mut sum = 0.0;
+        let mut slope = 0.0;
+        for i in 0..n {
+            if weight[i] > f64::NEG_INFINITY {
+                let w = if weight[i] == top { 1.0 } else { exp(weight[i] - top) };
+                sum += w;
+                slope += w * lean[i];
+            }
+        }
+        (top + ln(sum), slope / sum, line)
+    };
+    let mut lm = if start > 0.0 && start.is_finite() { ln(start).clamp(lo, hi) } else { 0.5 * (lo + hi) };
+    let mut line = [0.0f64; 3];
+    // (The last two steps' sizes and the bounds' widths after them.)
+    let mut steps = [f64::INFINITY; 2];
+    let mut widths = [f64::INFINITY; 2];
+    for _ in 0..SURE_STEPS {
+        let (value, slope, now) = at(lm, &mut last_s, &mut last_at);
+        line = now;
+        if !value.is_finite() {
+            break;
+        }
+        if value > 0.0 {
+            lo = lm;
+        } else {
+            hi = lm;
+        }
+        let mut newton = lm - value / slope;
+        if !(newton > lo && newton < hi) && value > 0.0 {
+            // Short of the answer, where a step in the logarithms would leave the bounds (where
+            // the sum is nearly level in them, close to the surface): a step of Newton's on
+            // `mu` itself, which comes up toward the answer without passing it (the sum falls
+            // along a convex curve in `mu`).
+            newton = lm + ln(1.0 - (1.0 - exp(-value)) / slope);
+        }
+        // A step of Newton's is taken when it stays inside the bounds and either it is under
+        // half the step before last or the bounds are under half what they were two steps ago;
+        // otherwise the bounds are halved.
+        let shrinking = (newton - lm).abs() <= 0.5 * steps[0] || hi - lo <= 0.5 * widths[0];
+        let next = if newton > lo && newton < hi && shrinking { newton } else { 0.5 * (lo + hi) };
+        let tol = 1e-13 * (1.0 + lm.abs());
+        if value == 0.0 || (next - lm).abs() <= tol || hi - lo <= tol {
+            break;
+        }
+        steps = [steps[1], (next - lm).abs()];
+        widths = [widths[1], hi - lo];
+        lm = next;
+    }
+    let off = [0, 1, 2].map(|i| f64::from(p[i]) * line[i]);
+    root(off[0] * off[0] + off[1] * off[1] + off[2] * off[2])
 }
 
 /// `x` (more than nothing) to the power `y`, for a rounded shape's shares: the exponential of
@@ -974,7 +1216,8 @@ fn power_of(x: f32, y: f32) -> f32 {
 /// coordinates), and its length: the normal of the plane that touches the shape along the
 /// line from the middle through `x`, which lies `1 / length` from the middle. `None` at the
 /// middle itself. Each share is taken of the largest, so no power overflows or underflows.
-/// Every power it takes is counted in `taken` (at most one a coordinate, and one more).
+/// Every power and square root it takes is counted in `taken` (at most a power a coordinate and
+/// one more, and three square roots).
 fn rounded_gradient(x: V3, inv: V3, power: f32, taken: &std::cell::Cell<u32>) -> Option<(V3, f32)> {
     // (`inv` is one over each half size, and nothing for a cylinder's third.)
     let u = [x[0].abs() * inv[0], x[1].abs() * inv[1], x[2].abs() * inv[2]];
@@ -990,15 +1233,17 @@ fn rounded_gradient(x: V3, inv: V3, power: f32, taken: &std::cell::Cell<u32>) ->
     if power == 2.0 {
         t = r;
         sum = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+        taken.set(taken.get() + ROOT);
         root = sum.sqrt();
     } else if power == 4.0 {
         t = [r[0] * r[0] * r[0], r[1] * r[1] * r[1], r[2] * r[2] * r[2]];
         sum = t[0] * r[0] + t[1] * r[1] + t[2] * r[2];
+        taken.set(taken.get() + 2 * ROOT);
         root = sum.sqrt().sqrt();
     } else {
         let e = power - 1.0;
         let pw = |x: f32, y: f32| {
-            taken.set(taken.get() + 1);
+            taken.set(taken.get() + POWER);
             power_of(x, y)
         };
         // (The largest share is 1 and a share of nothing is nothing: no power to take.)
@@ -1011,6 +1256,7 @@ fn rounded_gradient(x: V3, inv: V3, power: f32, taken: &std::cell::Cell<u32>) ->
     let scale = root / sum;
     let side = |i: usize| if x[i] < 0.0 { -scale } else { scale };
     let g = [side(0) * t[0] * inv[0], side(1) * t[1] * inv[1], side(2) * t[2] * inv[2]];
+    taken.set(taken.get() + ROOT);
     let len = math3::length(g);
     if len > 0.0 && len.is_finite() {
         Some((g, len))
@@ -1190,17 +1436,22 @@ fn finish(n: &Prepared, mut d: f32, q: V3) -> f32 {
 /// A [`Combine::Near`] group at a point: every child's distance (and colour), then the
 /// children within the smoothing of the nearest, blended in their order.
 fn near(kids: &[Prepared], smooth: f32, of: impl Fn(&Prepared) -> (f32, Rgba)) -> (f32, Rgba) {
+    near_of(kids.len(), smooth, |i| of(&kids[i]))
+}
+
+/// [`near`] over `count` children whose distances (and colours) `of` gives by their place.
+fn near_of(count: usize, smooth: f32, mut of: impl FnMut(usize) -> (f32, Rgba)) -> (f32, Rgba) {
     let mut few = [(0.0f32, [0.0f32; 4]); 16];
     let mut many = Vec::new();
-    let found: &mut [(f32, Rgba)] = if kids.len() <= few.len() {
-        &mut few[..kids.len()]
+    let found: &mut [(f32, Rgba)] = if count <= few.len() {
+        &mut few[..count]
     } else {
-        many.resize(kids.len(), (0.0, [0.0; 4]));
+        many.resize(count, (0.0, [0.0; 4]));
         &mut many
     };
     let mut nearest = f32::MAX;
-    for (slot, kid) in found.iter_mut().zip(kids) {
-        *slot = of(kid);
+    for (i, slot) in found.iter_mut().enumerate() {
+        *slot = of(i);
         nearest = nearest.min(slot.0);
     }
     let reach = nearest + smooth.max(0.0);
@@ -1218,22 +1469,57 @@ fn eval(n: &Prepared, p: V3) -> f32 {
     let q = local(n, p);
     let d = match &n.kind {
         PKind::Prim(pr) => prim_distance(pr, q),
-        PKind::Group { op: Combine::Near, kids, smooth } => near(kids, *smooth, |k| (eval(k, q), [0.0; 4])).0,
-        PKind::Group { op, kids, smooth } => {
-            let mut it = kids.iter();
-            let mut acc = it.next().map_or(f32::MAX, |k| eval(k, q));
-            for k in it {
-                let b = eval(k, q);
-                acc = match op {
-                    Combine::Union | Combine::Near => smin(acc, b, *smooth).0,
-                    Combine::Intersection => -smin(-acc, -b, *smooth).0,
-                    Combine::Difference => -smin(-acc, b, *smooth).0,
-                };
-            }
-            acc
-        }
+        PKind::Group { op, kids, smooth } => combine(*op, *smooth, kids.len(), |i| eval(&kids[i], q)),
     };
     finish(n, d, q)
+}
+
+/// A group's distance from its `count` children's, which `of` gives by their place (each
+/// asked once, in order): what [`eval`] does with them, step for step.
+fn combine(op: Combine, smooth: f32, count: usize, mut of: impl FnMut(usize) -> f32) -> f32 {
+    if op == Combine::Near {
+        return near_of(count, smooth, |i| (of(i), [0.0; 4])).0;
+    }
+    let mut acc = if count > 0 { of(0) } else { f32::MAX };
+    for i in 1..count {
+        let b = of(i);
+        acc = match op {
+            Combine::Union | Combine::Near => smin(acc, b, smooth).0,
+            Combine::Intersection => -smin(-acc, -b, smooth).0,
+            Combine::Difference => -smin(-acc, b, smooth).0,
+        };
+    }
+    acc
+}
+
+/// A node's distance at a point (in its parent's frame) and, for a group [`prune`] looks
+/// into, each child's at the same point (in the group's own frame): **every node is evaluated
+/// once**, so finding what is near a ball costs one evaluation of the tree, which is what it
+/// is charged. (`prune` evaluated each child to decide, then pruned the ones it kept, which
+/// evaluated their own children again: a primitive under a hundred and twenty plain unions was
+/// evaluated about a hundred and twenty times for each time it was charged. Ninth review.) The
+/// distance is [`eval`]'s, bit for bit: the same steps in the same order.
+struct Valued {
+    d: f32,
+    kids: Vec<Valued>,
+}
+
+fn valued(n: &Prepared, p: V3) -> Valued {
+    match &n.kind {
+        PKind::Group { op, kids, smooth } if plain(&n.m) => {
+            let q = local(n, p);
+            let kids: Vec<Valued> = kids.iter().map(|k| valued(k, q)).collect();
+            let d = combine(*op, *smooth, kids.len(), |i| kids[i].d);
+            Valued { d: finish(n, d, q), kids }
+        }
+        _ => Valued { d: eval(n, p), kids: Vec::new() },
+    }
+}
+
+/// No modifier that keeps [`prune`] out of a group (a repeat, an elongation, a twist, a bend,
+/// a shell or a displacement: its children's distances no longer bound each other).
+fn plain(m: &Modifiers) -> bool {
+    m.repeat.is_none() && m.elongate == [0.0; 3] && m.twist == 0.0 && m.bend == 0.0 && m.shell <= 0.0 && m.displace.is_none()
 }
 
 /// Distance and colour (`inherit`: the colour of an uncoloured node).
@@ -1280,7 +1566,7 @@ fn eval_color(n: &Prepared, p: V3, inherit: Rgba) -> (f32, Rgba) {
     (finish(n, d, q), c)
 }
 
-/// Work units ([`crate::work`], ≈ ns) of one evaluation of a node and everything under it,
+/// Work units ([`crate::work`], â‰ˆ ns) of one evaluation of a node and everything under it,
 /// weighed by the `calibrate_sdf` test: noise octaves and trigonometry cost far more than a
 /// sphere.
 pub fn eval_cost(n: &SdfNode) -> u64 {
@@ -1333,6 +1619,8 @@ pub fn primitive_of_triangles(tree: &SdfNode, seed: u64, shape: &crate::shape::S
     let stride = shape.tris.len().div_ceil(max_asked.max(1)).max(1);
     let p = |i: u32| shape.positions.get(i as usize).copied().unwrap_or([0.0; 3]);
     let mut last = none;
+    // (Rounded shapes' powers past their weight are charged as a build's are: [`RoundedBill`].)
+    let mut bill = RoundedBill::start();
     for (i, t) in shape.tris.iter().enumerate() {
         if i % stride == 0 {
             // (A cancelled build stops asking: it fails at its next charge.)
@@ -1342,6 +1630,7 @@ pub fn primitive_of_triangles(tree: &SdfNode, seed: u64, shape: &crate::shape::S
             let mid = math3::scale(math3::add(math3::add(p(t[0]), p(t[1])), p(t[2])), 1.0 / 3.0);
             let mut cost = 0u64;
             let who = counts.owner(mid, 0, &mut cost);
+            cost = cost.saturating_add(bill.due());
             // (A question past the limit is not counted, nor its answer kept: the limit holds.)
             if asked.work.saturating_add(cost) > max_work {
                 break;
@@ -1352,6 +1641,8 @@ pub fn primitive_of_triangles(tree: &SdfNode, seed: u64, shape: &crate::shape::S
         }
         asked.of[i] = last;
     }
+    // (Nothing of these questions is left in this thread's tally.)
+    rounded_taken();
     asked
 }
 
@@ -1692,7 +1983,7 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     // Every node's Lipschitz factor and slack, bounded or not (an unbounded displaced cutter
     // moves the surface as much as a bounded one).
     let (lip, slack) = lip_slack(tree);
-    // Work units per evaluation (≈ ns: noise octaves weigh what they cost).
+    // Work units per evaluation (â‰ˆ ns: noise octaves weigh what they cost).
     let cost = eval_cost(tree);
     let (lo, hi) = opt.bounds.unwrap_or((auto_lo, auto_hi));
     let size = math3::sub(hi, lo);
@@ -1720,15 +2011,9 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     // work bounds the powers whatever a sample takes, and a sample takes at most
     // [`ROUNDED_MOST`]: between two charges no more than a batch's samples' worth runs
     // unpaid. (Whatever this thread evaluated before the build is not the build's.)
-    rounded_taken();
-    let rounded_spent = std::cell::Cell::new([0u64; 3]);
+    let bill = std::cell::RefCell::new(RoundedBill::start());
     let charge = |work: &mut u64, n: u64| -> Result<(), SdfError> {
-        let [taken, samples] = rounded_taken();
-        let [all, count, paid] = rounded_spent.get();
-        let (all, count) = (all + taken, count + samples);
-        let over = all.saturating_sub(count * ROUNDED_ALLOW);
-        *work += n + (over - paid.min(over)) * ROUNDED_POWER;
-        rounded_spent.set([all, count, paid.max(over)]);
+        *work += n + bill.borrow_mut().due();
         if *work > opt.max_work {
             return Err(SdfError::limit(format!("the sdf needs more than {} work units ({cost} per sample: noise octaves and twists weigh most); lower the resolution or simplify the tree", opt.max_work), *work as f64, opt.max_work as f64));
         }
@@ -1892,7 +2177,7 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
         ];
         math3::normalize(g)
     };
-    // Per cell: accumulated QEF (AᵀA, Aᵀb as f64), mass point, count.
+    // Per cell: accumulated QEF (Aáµ€A, Aáµ€b as f64), mass point, count.
     let cells = [dims[0] - 1, dims[1] - 1, dims[2] - 1];
     let cidx = |i: usize, j: usize, k: usize| (k * cells[1] + j) * cells[0] + i;
     #[derive(Clone, Copy, Default)]
@@ -2078,14 +2363,15 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     shape.weld_exact();
     // (The last samples' powers past their weight.)
     charge(&mut work, 0)?;
-    [stats.rounded_powers, stats.rounded_samples, _] = rounded_spent.get();
+    let bill = bill.into_inner();
+    (stats.rounded_powers, stats.rounded_samples, stats.rounded_most_between) = (bill.taken, bill.samples, bill.most_between);
     stats.work = work;
     stats.trees_kept = near.len();
     stats.triangles = shape.tris.len();
     Ok((shape, stats))
 }
 
-/// Minimises |A x - b|² + w |x - mass|² (the normal equations, a 3×3 symmetric solve).
+/// Minimises |A x - b|Â² + w |x - mass|Â² (the normal equations, a 3Ã—3 symmetric solve).
 fn solve_qef(ata: &[f64; 6], atb: &[f64; 3], mass: [f64; 3], w: f64) -> [f64; 3] {
     let m = [[ata[0] + w, ata[1], ata[2]], [ata[1], ata[3] + w, ata[4]], [ata[2], ata[4], ata[5] + w]];
     let r = [atb[0] + w * mass[0], atb[1] + w * mass[1], atb[2] + w * mass[2]];
@@ -2704,12 +2990,14 @@ mod tests {
                 for far in [2.0e19f32, 1.0e20, 1.0e30, f32::MAX, f32::INFINITY] {
                     for q in [[far, 0.0, 0.0], [0.0, -far, 0.0], [far, far, far]] {
                         let (f, steps, _) = rounded_counted(q, [0.5; 3], power, disc);
-                        assert!(f > 1.0e18 && steps == 0, "power {power}, disc {disc}, at {q:?}: {f} in {steps} steps");
+                        // (Nothing solved for: the hard shape's distance alone, its square
+                        // roots a quarter of a power each.)
+                        assert!(f > 1.0e18 && steps <= 1, "power {power}, disc {disc}, at {q:?}: {f} in {steps} steps");
                     }
                 }
                 // (Not a number in: nothing is solved for, and nothing stops. What comes out is
                 // not held: no sample of a grid is not a number.)
-                assert_eq!(rounded_counted([f32::NAN, 0.0, 0.0], [0.5; 3], power, disc).1, 0, "power {power}");
+                assert!(rounded_counted([f32::NAN, 0.0, 0.0], [0.5; 3], power, disc).1 <= 1, "power {power}");
                 // Far, and still a number: the distance, solved.
                 let (f, _, _) = rounded_counted([1.0e12, 0.0, 0.0], [0.5; 3], power, disc);
                 assert!((f - 1.0e12).abs() < 1.0e6, "power {power} at a billion kilometres: {f}");
@@ -2890,8 +3178,10 @@ mod tests {
     /// set near the surface; solved one way only, a far sample took as many steps as the
     /// dearest near one, and a box cut by a rounded plate ran 3.8 s on a little over half of
     /// the work limit): round thin and thick shapes alike, the samples of a 2 m box take
-    /// under twenty powers each on average, at every roundness, and the sure way is next to
-    /// never taken.
+    /// under 22 powers each on average, at every roundness, and the sure way is next to never
+    /// taken. (Under twenty until the first steps were held to arrive to a ten-millionth of
+    /// `mu`, after the ninth review: 1.4 to 1.7 powers a sample more, 20.4 the most, for a foil
+    /// at a roundness of 0.8.)
     ///
     /// And it is the distance there too, with no step in it: at the points the review named
     /// (a first guess above the answer threw a share out to where its power overflowed, the
@@ -2935,7 +3225,7 @@ mod tests {
                 }
                 let (near_mean, far_mean) = (near.0 as f64 / near.1.max(1) as f64, far.0 as f64 / far.1 as f64);
                 let what = format!("{name}, power {power}: {far_mean:.1} powers a sample in a 2 m box, {near_mean:.1} near the surface, {sure} of {} to the sure way, the most {most}", far.1 + near.1);
-                assert!(far_mean < 20.0 && near_mean < 30.0 && sure * 200 <= far.1 + near.1 && most <= ROUNDED_MOST, "{what}");
+                assert!(far_mean < 22.0 && near_mean < 30.0 && sure * 200 <= far.1 + near.1 && most <= ROUNDED_MOST, "{what}");
             }
         }
 
@@ -2996,7 +3286,7 @@ mod tests {
             let (_, s) = mesh(tree, &MeshOptions { max_work: u64::MAX, max_triangles: 2_000_000, ..opts(32) }).unwrap();
             assert!(s.rounded_samples > 0, "{s:?}");
             // (Every power the build took was charged: none is left over for the next.)
-            assert_eq!(rounded_taken(), [0, 0], "{s:?}");
+            assert_eq!(rounded_taken(), [0, 0, 0], "{s:?}");
             (s.rounded_powers as f64 / s.work as f64, s.rounded_powers as f64 / s.rounded_samples as f64)
         };
         let calibrated = take(&cut(rounded([0.3; 3], 6.67, false)));
@@ -3046,6 +3336,90 @@ mod tests {
             assert!(rate <= 1.25 * calibrated.0, "{name}: {:.2} powers a thousand units, the calibrated case {:.2}", rate * 1e3, calibrated.0 * 1e3);
             assert!(each <= 2.5 * calibrated.1, "{name}: {each:.1} powers a sample, the calibrated case {:.1}", calibrated.1);
         }
+    }
+
+    /// Every evaluation a build makes is charged (ninth review: finding what is near a block
+    /// evaluated a subtree again at each level of plain unions above it, and was charged once,
+    /// so a rounded cube under 120 nested unions took 6.2 times the powers a unit of work that
+    /// the calibrated case takes). Counted, not timed: the weights of every primitive evaluated
+    /// are held against the work charged, and the powers and rounded samples a unit of work
+    /// against the calibrated case, for a rounded cube under 10, 40 and 120 nested unions and
+    /// under 60 unions each with a speck beside it.
+    #[test]
+    fn a_build_is_charged_for_every_evaluation() {
+        let cube = || prim(Prim::Rounded { half: [0.3; 3], power: 6.67, disc: false });
+        let union = |kids: Vec<SdfNode>| SdfNode { kind: Kind::Group { op: Combine::Union, kids, smooth: 0.0 }, m: Modifiers::default() };
+        let cut = |cutter: SdfNode| SdfNode { kind: Kind::Group { op: Combine::Difference, kids: vec![prim(Prim::Box { half: [1.0; 3], round: 0.0 }), cutter], smooth: 0.0 }, m: Modifiers::default() };
+        let chain = |depth: usize| (0..depth).fold(cube(), |t, _| union(vec![t]));
+        let specks = (0..60).fold(cube(), |t, i| union(vec![t, SdfNode { kind: Kind::Prim(Prim::Sphere { radius: 0.01 }), m: Modifiers { at: [0.0, 0.0, 0.001 * i as f32], ..Modifiers::default() } }]));
+        // Weights evaluated against the work charged; powers and rounded samples a unit.
+        let take = |tree: &SdfNode| -> (f64, f64) {
+            PRIM_WEIGHED.with(|w| w.set(0));
+            let (_, s) = mesh(tree, &MeshOptions { max_work: u64::MAX, ..opts(32) }).unwrap();
+            let weighed = PRIM_WEIGHED.with(|w| w.get());
+            assert!(weighed <= s.work, "primitives weighing {weighed} were evaluated for {} work", s.work);
+            (s.rounded_powers as f64 / s.work as f64, s.rounded_samples as f64 / s.work as f64)
+        };
+        let calibrated = take(&cut(cube()));
+        for (name, tree) in [("under 10 unions", cut(chain(10))), ("under 40 unions", cut(chain(40))), ("under 120 unions", cut(chain(120))), ("under 60 unions with a speck each", cut(specks))] {
+            let (powers, samples) = take(&tree);
+            assert!(powers <= calibrated.0 * 1.05 && powers * ROUNDED_POWER as f64 <= 1.0, "{name}: {:.2} powers a thousand units, the calibrated case {:.2}", powers * 1e3, calibrated.0 * 1e3);
+            assert!(samples <= calibrated.1 * 1.05, "{name}: {:.3} rounded samples a thousand units, the calibrated case {:.3}", samples * 1e3, calibrated.1 * 1e3);
+        }
+    }
+
+    /// Asking which primitive made each triangle is charged for the powers its rounded shapes
+    /// take past their weight (ninth review: it ran at up to 5.9 times the calibrated powers
+    /// a unit), inside its own limit; and whatever this thread evaluated before a build is not
+    /// the build's, what was paid is kept, and the colours are charged as they go.
+    #[test]
+    fn a_rounded_shape_is_charged_wherever_it_is_asked() {
+        let cut = |cutter: SdfNode| SdfNode { kind: Kind::Group { op: Combine::Difference, kids: vec![prim(Prim::Box { half: [1.0; 3], round: 0.0 }), cutter], smooth: 0.0 }, m: Modifiers::default() };
+        let mut any_over = false;
+        for half in [[0.3f32; 3], [1.0, 1e-6, 1.0]] {
+            for power in [3.0f32, 6.67, 40.0] {
+                let tree = cut(prim(Prim::Rounded { half, power, disc: false }));
+                let (shape, _) = mesh(&tree, &opts(32)).unwrap();
+                assert!(shape.tris.len() <= MAX_OWNER_ASKED, "every triangle is asked");
+                let asked = primitive_of_triangles(&tree, 1, &shape, MAX_OWNER_ASKED, MAX_OWNER_BUILD_WORK);
+                assert_eq!(rounded_taken(), [0, 0, 0], "nothing of the questions is left in the tally");
+                // The same questions asked again outside it: their weights, and the powers they
+                // took past what those pay for.
+                let prepared = prepare(&tree, 1, &mut 0);
+                let counts = Counted::of(&prepared);
+                let mut weights = 0u64;
+                for t in shape.tris.iter().take(asked.asked) {
+                    let mid = math3::scale(math3::add(math3::add(shape.positions[t[0] as usize], shape.positions[t[1] as usize]), shape.positions[t[2] as usize]), 1.0 / 3.0);
+                    counts.owner(mid, 0, &mut weights);
+                }
+                let [powers, _, allowed] = rounded_taken();
+                let over = powers.saturating_sub(allowed);
+                any_over |= over > 0;
+                assert!(asked.work >= weights + over * ROUNDED_POWER && asked.work <= weights + powers * ROUNDED_POWER, "half {half:?} power {power}: {powers} powers ({allowed} paid for by {weights} of weights) charged {}", asked.work);
+            }
+        }
+        assert!(any_over, "some case takes more powers than its weights pay for");
+        // Whatever the thread evaluated before a build is not the build's.
+        let tree = cut(prim(Prim::Rounded { half: [1.0, 1e-6, 1.0], power: 3.0, disc: false }));
+        let alone = mesh(&tree, &opts(24)).unwrap().1;
+        for i in 0..1000 {
+            rounded([1.0 + 0.001 * i as f32, 0.2, 1.3], [1.0, 1e-6, 1.0], 3.0, false);
+        }
+        assert_eq!(mesh(&tree, &opts(24)).unwrap().1, alone, "a build after other evaluations on its thread");
+        // What was paid is kept: powers past the allowance, then samples that take none (the
+        // allowance grows past what was taken), then powers again: each power past it once.
+        let mut bill = RoundedBill::start();
+        let mut charged = 0;
+        for (powers, samples) in [(100u64, 1u64), (0, 10), (100, 0), (300, 0)] {
+            ROUNDED_TAKEN.with(|t| t.set([powers, samples, samples * ROUNDED_ALLOW]));
+            charged += bill.due();
+        }
+        assert_eq!(charged, (500 - 11 * ROUNDED_ALLOW) * ROUNDED_POWER);
+        // The colours are charged as they go: no more than 64 vertices' powers run unpaid.
+        let mut coloured = prim(Prim::Rounded { half: [0.5, 0.05, 0.4], power: 6.67, disc: false });
+        coloured.m.color = Some([0.8, 0.2, 0.2, 1.0]);
+        let (shape, stats) = mesh(&coloured, &opts(48)).unwrap();
+        assert!(shape.positions.len() > 640 && stats.rounded_most_between <= 64 * u64::from(ROUNDED_MOST) && stats.rounded_most_between * 10 <= stats.rounded_powers, "{} vertices, {stats:?}", shape.positions.len());
     }
 
     /// Where the solve fell back most (an eighth review counted its cost there and did not
@@ -3106,6 +3480,403 @@ mod tests {
         }
     }
 
+    /// The support of a rounded shape of half sizes `a` along a unit `n` (its coordinates not
+    /// negative): how far it reaches that way, and the point that reaches it. (From the ninth
+    /// review's probe.)
+    #[allow(clippy::disallowed_methods, reason = "a test's own reference, in f64, apart from the code it checks")]
+    fn support_of(a: &[f64], n: &[f64], power: f64) -> (f64, Vec<f64>) {
+        let q = power / (power - 1.0);
+        let t: Vec<f64> = a.iter().zip(n).map(|(a, n)| a * n).collect();
+        let m = t.iter().copied().fold(0.0, f64::max);
+        if m <= 0.0 {
+            return (0.0, vec![0.0; a.len()]);
+        }
+        let s: f64 = t.iter().map(|x| (x / m).powf(q)).sum();
+        let h = m * s.powf(1.0 / q);
+        (h, a.iter().zip(&t).map(|(a, t)| a * (t / h).powf(q - 1.0)).collect())
+    }
+
+    /// The most of `f` over 0 to 1: a grid, then golden sections about its best (the ninth
+    /// review's probe).
+    #[allow(clippy::disallowed_methods, reason = "a test's own reference, in f64, apart from the code it checks")]
+    fn maximise(f: &dyn Fn(f64) -> f64) -> (f64, f64) {
+        let mut grid = vec![0.0];
+        grid.extend((2..=14).rev().map(|e| 10f64.powi(-e)));
+        grid.extend((1..24).map(|k| k as f64 / 24.0));
+        grid.extend((2..=14).map(|e| 1.0 - 10f64.powi(-e)));
+        grid.push(1.0);
+        let values: Vec<f64> = grid.iter().map(|&t| f(t)).collect();
+        let best = (0..grid.len()).fold(0, |b, i| if values[i] > values[b] { i } else { b });
+        let (mut a, mut b) = (grid[best.saturating_sub(1)], grid[(best + 1).min(grid.len() - 1)]);
+        let g = 0.5 * (5f64.sqrt() - 1.0);
+        let (mut c, mut d) = (b - g * (b - a), a + g * (b - a));
+        let (mut fc, mut fd) = (f(c), f(d));
+        for _ in 0..75 {
+            if fc >= fd {
+                (b, d, fd) = (d, c, fc);
+                c = b - g * (b - a);
+                fc = f(c);
+            } else {
+                (a, c, fc) = (c, d, fd);
+                d = a + g * (b - a);
+                fd = f(d);
+            }
+        }
+        let mut found = if fc >= fd { (c, fc) } else { (d, fd) };
+        for t in [a, b] {
+            if f(t) > found.1 {
+                found = (t, f(t));
+            }
+        }
+        if found.1 >= values[best] { found } else { (grid[best], values[best]) }
+    }
+
+    /// A certified bracket on the distance from `q` to a rounded shape, or `None` when `q` is
+    /// inside it. Its bounds hold whatever found them: any unit `n` gives a lower one, `n . p -
+    /// h(n)`, `h` the support (a convex shape lies behind each of its touching planes), and any
+    /// point of the surface an upper one. Both are taken at a nearest point found by halving
+    /// alone (no start, no step of Newton's: nothing of the field's solve), brought onto the
+    /// surface along the line from the middle, and with the normal there; when they are not
+    /// within a ten-millionth of each other the ninth review's search over directions (a grid
+    /// and golden sections, about three poles) is taken too, and the tighter of each kept.
+    #[allow(clippy::disallowed_methods, reason = "a test's own reference, in f64, apart from the code it checks")]
+    fn rounded_bracket(q: [f64; 3], half: V3, power: f32, disc: bool) -> Option<(f64, f64)> {
+        let pw = f64::from(power);
+        let e = pw - 1.0;
+        let (p, a): (Vec<f64>, Vec<f64>) = if disc { (vec![(q[0] * q[0] + q[2] * q[2]).sqrt(), q[1].abs()], vec![f64::from(half[0]), f64::from(half[1])]) } else { (q.iter().map(|x| x.abs()).collect(), half.iter().map(|&x| f64::from(x)).collect()) };
+        let measure = |x: &[f64]| {
+            let u: Vec<f64> = x.iter().zip(&a).map(|(x, a)| x / a).collect();
+            let m = u.iter().copied().fold(0.0, f64::max);
+            if m == 0.0 { 0.0 } else { m * u.iter().map(|v| (v / m).powf(pw)).sum::<f64>().powf(1.0 / pw) }
+        };
+        if measure(&p) <= 1.0 {
+            return None;
+        }
+        // Each share for a `mu` (its logarithm), halving `s = ln(u / big)` between where the
+        // two terms of its equation each allow (`s0 - ln 2` and `s0`).
+        let big: Vec<f64> = p.iter().zip(&a).map(|(p, a)| p / a).collect();
+        let shares = |lm: f64| -> Vec<f64> {
+            big.iter()
+                .zip(&a)
+                .map(|(&b, &a)| {
+                    if b <= 0.0 {
+                        return 0.0;
+                    }
+                    let lc = lm - 2.0 * a.ln() + (e - 1.0) * b.ln();
+                    let top = (-lc / e).min(0.0);
+                    let (mut lo, mut hi) = (top - std::f64::consts::LN_2, top);
+                    for _ in 0..60 {
+                        let mid = 0.5 * (lo + hi);
+                        if mid.exp() + (e * mid + lc).exp() > 1.0 {
+                            hi = mid;
+                        } else {
+                            lo = mid;
+                        }
+                    }
+                    b * (0.5 * (lo + hi)).exp()
+                })
+                .collect()
+        };
+        let (mut lo, mut hi) = (-700.0f64, 700.0f64);
+        for _ in 0..64 {
+            let mid = 0.5 * (lo + hi);
+            let sum: f64 = shares(mid).iter().map(|u| u.powf(pw)).sum();
+            if sum > 1.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let u = shares(0.5 * (lo + hi));
+        let x: Vec<f64> = u.iter().zip(&a).map(|(u, a)| u * a).collect();
+        let k = measure(&x);
+        let on: Vec<f64> = x.iter().map(|x| x / k).collect();
+        let upper = on.iter().zip(&p).map(|(o, p)| (p - o) * (p - o)).sum::<f64>().sqrt();
+        let normal: Vec<f64> = on.iter().zip(&a).map(|(o, a)| (o / a).powf(e) / a).collect();
+        let size = normal.iter().map(|g| g * g).sum::<f64>().sqrt();
+        let n: Vec<f64> = normal.iter().map(|g| g / size).collect();
+        let lower = n.iter().zip(&p).map(|(n, p)| n * p).sum::<f64>() - support_of(&a, &n, pw).0;
+        let mut bracket = (lower, upper);
+        if upper - lower > 1e-7 * upper || upper.is_nan() || lower.is_nan() {
+            // The review's search over directions.
+            let right = std::f64::consts::FRAC_PI_2;
+            if disc {
+                let ahead = |t: f64| {
+                    let n = [(t * right).cos(), (t * right).sin()];
+                    n[0] * p[0] + n[1] * p[1] - support_of(&a, &n, pw).0
+                };
+                let (t, lo) = maximise(&ahead);
+                let n = [(t * right).cos(), (t * right).sin()];
+                let x = support_of(&a, &n, pw).1;
+                bracket = (bracket.0.max(lo), bracket.1.min(((p[0] - x[0]).powi(2) + (p[1] - x[1]).powi(2)).sqrt()));
+            } else {
+                for pole in 0..3 {
+                    let (b, c) = ((pole + 1) % 3, (pole + 2) % 3);
+                    let unit = |th: f64, ph: f64| {
+                        let mut n = [0.0; 3];
+                        n[pole] = (th * right).cos();
+                        n[b] = (th * right).sin() * (ph * right).cos();
+                        n[c] = (th * right).sin() * (ph * right).sin();
+                        n
+                    };
+                    let ahead = |th: f64, ph: f64| {
+                        let n = unit(th, ph);
+                        n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - support_of(&a, &n, pw).0
+                    };
+                    let inner = |ph: f64| maximise(&|th| ahead(th, ph));
+                    let (ph, _) = maximise(&|ph| inner(ph).1);
+                    let (th, lo) = inner(ph);
+                    let x = support_of(&a, &unit(th, ph), pw).1;
+                    let up = ((p[0] - x[0]).powi(2) + (p[1] - x[1]).powi(2) + (p[2] - x[2]).powi(2)).sqrt();
+                    bracket = (bracket.0.max(lo), bracket.1.min(up));
+                }
+            }
+        }
+        Some(bracket)
+    }
+
+    /// The roundnesses the field is held at, as powers (2 / roundness): ten from 0.02 to
+    /// 0.99, and 1.
+    const BRACKET_POWERS: [f32; 11] = [100.0, 40.0, 20.0, 10.0, 6.666_666_5, 4.0, 2.985_074_6, 2.5, 2.222_222_3, 2.020_202, 2.0];
+
+    /// The shapes the field is held on: a box thin along each axis in turn and a cylinder thin
+    /// along its height or across it, from 1:1 to a hundred-millionth (half sizes; the
+    /// cylinder's are its radius and half height).
+    fn bracket_shapes() -> Vec<(String, V3, bool)> {
+        let mut shapes = Vec::new();
+        for thin in [1.0f32, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8] {
+            for axis in 0..3 {
+                let mut half = [1.0f32, 1.0, 1.0];
+                half[(axis + 2) % 3] = 0.6;
+                half[axis] = thin;
+                shapes.push((format!("a box {thin} thin along {}", ["x", "y", "z"][axis]), half, false));
+            }
+            shapes.push((format!("a disc {thin} thick"), [1.0, thin, 0.0], true));
+            shapes.push((format!("a rod {thin} across"), [thin, 1.0, 0.0], true));
+        }
+        shapes
+    }
+
+    /// The samples about a shape (half sizes `half`; a cylinder's are its radius and half
+    /// height), by region, at distances from a millionth of the thickness to a hundred sizes:
+    /// over the thin face, beside its rim and at the rim's corner; beside the rim at
+    /// mid-thickness; past each kind of edge and past a corner; a hair inside and a hair
+    /// outside each hard face. Each with its region's name; a cylinder's made 3D, and the
+    /// signs set by the sample's place.
+    fn bracket_samples(half: V3, disc: bool) -> Vec<(String, [f64; 3])> {
+        let n = if disc { 2 } else { 3 };
+        let a: Vec<f64> = (0..n).map(|i| f64::from(half[i])).collect();
+        let thin = (0..n).fold(0, |t, i| if a[i] < a[t] { i } else { t });
+        let (j, k) = ((thin + 1) % n, (thin + 2) % n);
+        let size = a.iter().copied().fold(0.0, f64::max);
+        let mut out = Vec::new();
+        let mut distances: Vec<f64> = [1e-6, 1e-4, 1e-2, 1.0].iter().map(|s| s * a[thin]).collect();
+        for s in [1e-3, 0.1, 1.0, 10.0, 100.0] {
+            if distances.iter().all(|d| (d / (s * size) - 1.0).abs() > 0.05) {
+                distances.push(s * size);
+            }
+        }
+        for &d in &distances {
+            let at = |v: &[(usize, f64)]| -> Vec<f64> {
+                let mut c = vec![0.0; n];
+                for &(i, x) in v {
+                    c[i] = x;
+                }
+                c
+            };
+            let mut put = |name: &str, c: Vec<f64>| out.push((format!("{name} at {d:e}"), c));
+            if n == 3 {
+                put("over the thin face", at(&[(thin, a[thin] + d), (j, 0.3 * a[j]), (k, 0.2 * a[k])]));
+                put("over the thin face beside the rim", at(&[(thin, a[thin] + d), (j, 0.999 * a[j]), (k, 0.25 * a[k])]));
+                put("over the thin face at the rim's corner", at(&[(thin, a[thin] + d), (j, (1.0 - 1e-5) * a[j]), (k, 0.999 * a[k])]));
+                put("beside the rim at mid-thickness", at(&[(thin, 0.5 * a[thin]), (j, a[j] + d), (k, 0.3 * a[k])]));
+                put("outside the other long face", at(&[(thin, 0.5 * a[thin]), (j, 0.3 * a[j]), (k, a[k] + d)]));
+                put("past the edge of the thin face", at(&[(thin, a[thin] + 0.7 * d), (j, a[j] + 0.7 * d), (k, 0.3 * a[k])]));
+                put("past the edge of the long faces", at(&[(thin, 0.3 * a[thin]), (j, a[j] + 0.7 * d), (k, a[k] + 0.7 * d)]));
+                put("past a corner", at(&[(thin, a[thin] + 0.58 * d), (j, a[j] + 0.58 * d), (k, a[k] + 0.58 * d)]));
+                if d < 0.5 * a[thin] {
+                    put("a hair inside the thin face beside the rim", at(&[(thin, a[thin] - d), (j, 0.999 * a[j]), (k, 0.25 * a[k])]));
+                }
+                if d < 0.5 * a[j] {
+                    put("a hair inside a long face", at(&[(thin, 0.999 * a[thin]), (j, a[j] - d), (k, 0.999 * a[k])]));
+                }
+                if d < 0.5 * a[k] {
+                    put("a hair inside the other long face", at(&[(thin, 0.5 * a[thin]), (j, 0.999 * a[j]), (k, a[k] - d)]));
+                }
+            } else {
+                put("over the thin face", at(&[(thin, a[thin] + d), (j, 0.3 * a[j])]));
+                put("over the thin face beside the rim", at(&[(thin, a[thin] + d), (j, 0.999 * a[j])]));
+                put("beside the rim at mid-thickness", at(&[(thin, 0.5 * a[thin]), (j, a[j] + d)]));
+                put("past the edge", at(&[(thin, a[thin] + 0.7 * d), (j, a[j] + 0.7 * d)]));
+                if d < 0.5 * a[thin] {
+                    put("a hair inside the thin face beside the rim", at(&[(thin, a[thin] - d), (j, 0.999 * a[j])]));
+                }
+                if d < 0.5 * a[j] {
+                    put("a hair inside the other face", at(&[(thin, 0.999 * a[thin]), (j, a[j] - d)]));
+                }
+            }
+        }
+        let (cos, sin) = (0.825_335_614_909_678_3, 0.564_642_473_395_035_4);
+        out.into_iter()
+            .enumerate()
+            .map(|(i, (name, c))| {
+                let sign = |b: usize| if (i >> b) & 1 == 1 { -1.0 } else { 1.0 };
+                let point = if n == 3 { [sign(0) * c[0], sign(1) * c[1], sign(2) * c[2]] } else { [sign(0) * c[0] * cos, sign(1) * c[1], sign(0) * c[0] * sin] };
+                (name, point)
+            })
+            .collect()
+    }
+
+    /// The field outside a rounded shape against [`rounded_bracket`] at every `every`th sample
+    /// of [`bracket_samples`] about every shape of [`bracket_shapes`] at every roundness, and at
+    /// the samples the eighth and ninth reviews named; inside, the field says inside. The worst
+    /// margin past the bracket, as a share of the distance.
+    fn rounded_field_in_bracket(every: usize) -> f64 {
+        let check = |what: &str, q: [f32; 3], half: V3, power: f32, disc: bool, worst: &mut f64| {
+            let f = f64::from(prim_distance(&Prim::Rounded { half, power, disc }, q));
+            let qd = q.map(f64::from);
+            // (What the coordinates' own rounding to `f32` may move the answer by, and the
+            // answer's.)
+            let slop = 2.0 * f64::from(f32::EPSILON) * (qd[0].abs() + qd[1].abs() + qd[2].abs() + f.abs());
+            match rounded_bracket(qd, half, power, disc) {
+                None => assert!(f <= slop, "{what}: inside, and the field says {f} outside"),
+                Some((lo, hi)) => {
+                    assert!(hi - lo <= 1e-6 * hi + slop, "{what}: the reference could not pin the distance: [{lo:e}, {hi:e}]");
+                    let past = ((lo - f).max(f - hi) - slop).max(0.0) / lo;
+                    *worst = worst.max(past);
+                    assert!(past <= 1e-5, "{what}: the field is {f:e}, the distance is in [{lo:e}, {hi:e}]");
+                }
+            }
+        };
+        let mut worst = 0.0f64;
+        // The ninth review's plank, beside the rim of its thin face (56 times short there), and
+        // the eighth's foil, past its corner.
+        for z in [9.99e-6f32, 1.0e-5, 1.00009e-5, 1.001e-5, 1.01e-5, 1.1e-5, 2e-5, 1e-4, 1e-3] {
+            check(&format!("the ninth review's plank at z {z:e}"), [0.999, 0.25, z], [1.0, 0.5, 1e-5], 6.666_666_5, false, &mut worst);
+        }
+        check("the eighth review's foil past its corner", [51.5, 0.3, 51.2], [50.0, 5e-5, 50.0], 10.0, false, &mut worst);
+        let mut i = 0usize;
+        for (name, half, disc) in bracket_shapes() {
+            for power in BRACKET_POWERS {
+                for (place, q) in bracket_samples(half, disc) {
+                    i += 1;
+                    if i.is_multiple_of(every) {
+                        check(&format!("{name} at power {power}, {place}"), q.map(|x| x as f32), half, power, disc, &mut worst);
+                    }
+                }
+            }
+        }
+        worst
+    }
+
+    /// Outside a rounded shape the field is the distance, wherever the sample is (eighth and
+    /// ninth reviews: a start of the solve that was right past a thin sheet's corner was 56
+    /// times short just past a thin face beside its rim, and the start before it the other way
+    /// round). Held against a bracket that shares nothing with the solve, over every region
+    /// about shapes thin along each axis, from 1:1 to a hundred-millionth, at ten roundnesses,
+    /// box and cylinder: a share of them here, all of them in the run below.
+    #[test]
+    fn a_rounded_field_is_the_distance_in_every_region() {
+        let worst = rounded_field_in_bracket(29);
+        assert!(worst <= 1e-5, "{worst:e}");
+    }
+
+    #[test]
+    #[ignore = "every sample of the bracket test, each with its reference: run it in release (`--release -- --ignored`)"]
+    fn a_rounded_field_is_the_distance_in_every_region_all() {
+        let worst = rounded_field_in_bracket(1);
+        assert!(worst <= 1e-5, "{worst:e}");
+    }
+
+    /// Along lines through every region of [`bracket_samples`] (across the thin face beside
+    /// its rim, over its middle and at the rim's corner; across a long face, an edge and the
+    /// corner; from a thousandth of the thickness inside to ten sizes out, finest at the hard
+    /// surface), the field outside changes no faster than the distance moved: no step (the
+    /// ninth review's was a factor of 56 over 3e-8 m). Every `every`th line.
+    fn rounded_field_has_no_step(every: usize) {
+        let mut line = 0usize;
+        for (name, half, disc) in bracket_shapes() {
+            let n = if disc { 2 } else { 3 };
+            let a: Vec<f64> = (0..n).map(|i| f64::from(half[i])).collect();
+            let thin = (0..n).fold(0, |t, i| if a[i] < a[t] { i } else { t });
+            let size = a.iter().copied().fold(0.0, f64::max);
+            let unit = |v: Vec<f64>| {
+                let l = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+                v.iter().map(|x| x / l).collect::<Vec<f64>>()
+            };
+            // (A point of the hard surface, and the way out across it.)
+            let mut lines: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
+            for along in [0.999f64, 0.3, 1.0 - 1e-5] {
+                let mut at: Vec<f64> = a.iter().map(|x| x * 0.25).collect();
+                at[thin] = a[thin];
+                at[(thin + 1) % n] = along * a[(thin + 1) % n];
+                let mut way = vec![0.0; n];
+                way[thin] = 1.0;
+                lines.push((at, way));
+            }
+            for dims in [vec![(thin + 1) % n], vec![thin, (thin + 1) % n], (0..n).collect::<Vec<_>>()] {
+                let mut at: Vec<f64> = a.iter().map(|x| x * 0.3).collect();
+                let mut way = vec![0.0; n];
+                for (m, &d) in dims.iter().enumerate() {
+                    at[d] = a[d];
+                    way[d] = 1.0 + 0.1 * m as f64;
+                }
+                lines.push((at, unit(way)));
+            }
+            // (From a thousandth of the thickness inside to a billionth, by tenths of a decade;
+            // the surface; from a billionth outside to the thickness, by thirteenths; then on to
+            // ten sizes.)
+            let mut ts: Vec<f64> = Vec::new();
+            let mut t = -a[thin] * 1e-3;
+            for _ in 0..=60 {
+                ts.push(t);
+                t /= 1.258_925_411_794_167_2;
+            }
+            ts.push(0.0);
+            let mut t = a[thin] * 1e-9;
+            for _ in 0..=117 {
+                ts.push(t);
+                t *= 1.193_776_641_714_437_3;
+            }
+            ts.extend((1..=60).map(|k| a[thin] + 10.0 * size * k as f64 / 60.0));
+            for power in BRACKET_POWERS {
+                for (at, way) in &lines {
+                    line += 1;
+                    if !line.is_multiple_of(every) {
+                        continue;
+                    }
+                    let mut last: Option<([f64; 3], f64)> = None;
+                    for &t in &ts {
+                        let c: Vec<f64> = at.iter().zip(way).map(|(x, w)| x + t * w).collect();
+                        let q = if disc { [c[0] as f32, c[1] as f32, 0.0] } else { [c[0] as f32, c[1] as f32, c[2] as f32] };
+                        let f = f64::from(prim_distance(&Prim::Rounded { half, power, disc }, q));
+                        let qd = q.map(f64::from);
+                        if let Some((before, fb)) = last {
+                            let d = [qd[0] - before[0], qd[1] - before[1], qd[2] - before[2]];
+                            let moved = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                            if f > 0.0 && fb > 0.0 {
+                                let slop = 4.0 * f64::from(f32::EPSILON) * (qd[0].abs() + qd[1].abs() + qd[2].abs() + f.abs());
+                                assert!((f - fb).abs() <= moved * (1.0 + 1e-5) + 1e-5 * f.max(fb) + slop, "{name} at power {power}, from {before:?} to {qd:?}: the field goes from {fb:e} to {f:e} over {moved:e}");
+                            }
+                        }
+                        last = Some((qd, f));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_rounded_field_has_no_step_in_any_region() {
+        rounded_field_has_no_step(7);
+    }
+
+    #[test]
+    #[ignore = "every line of the step scan: run it in release (`--release -- --ignored`)"]
+    fn a_rounded_field_has_no_step_in_any_region_all() {
+        rounded_field_has_no_step(1);
+    }
+
     /// The volume a rounded box of a power holds, as a share of its hard box's (in `f64`, by
     /// the midpoint rule over a quarter of its middle section).
     #[allow(clippy::disallowed_methods, reason = "a test's own reference, in f64, apart from the code it checks")]
@@ -3152,7 +3923,7 @@ mod tests {
         let bb = shape.bounds();
         for k in 0..3 {
             let (want, slack) = (half[k] + 0.01, 0.6 * stats.cell);
-            assert!((bb.max[k] - want).abs() < slack && (bb.min[k] + want).abs() < slack, "axis {k}: {} to {}, for ±{want}", bb.min[k], bb.max[k]);
+            assert!((bb.max[k] - want).abs() < slack && (bb.min[k] + want).abs() < slack, "axis {k}: {} to {}, for Â±{want}", bb.min[k], bb.max[k]);
         }
         // And a centimetre from the rounded surface everywhere, not only along the axes: at a
         // thin board's plan corners one touching plane put the swollen surface up to 4.8 cm
@@ -3245,7 +4016,7 @@ mod tests {
         // A section of squareness 8 and half sizes of 0.2 reaches 0.2 x 2^(1/2 - 1/8) at its corners.
         let corner = 0.2 * crate::dmath::pow(2.0, 0.5 - 0.125);
         let bb = turned.bounds();
-        assert!((bb.max[0] - corner).abs() < stats.cell && (bb.min[2] + corner).abs() < stats.cell, "{:?} to {:?}, corners at ±{corner}", bb.min, bb.max);
+        assert!((bb.max[0] - corner).abs() < stats.cell && (bb.min[2] + corner).abs() < stats.cell, "{:?} to {:?}, corners at Â±{corner}", bb.min, bb.max);
         let (lo, hi, _, _) = bounds(&column([1.0, 0.0, 1.0])).unwrap();
         assert!(lo[0] <= -corner && hi[0] >= corner && lo[2] <= -corner && hi[2] >= corner, "{lo:?} {hi:?}");
     }
