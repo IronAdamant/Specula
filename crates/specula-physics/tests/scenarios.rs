@@ -845,3 +845,40 @@ fn hashes_survive_random_edits() {
         }
     }
 }
+
+/// A landing's begin event says how fast the two closed, not what the solver left of it at
+/// the step they touch (it said 0.4 m/s for a ball that fell half a metre: found when the
+/// rules of a game were first told of a touch, 2026-11-21). And a run restored from a snapshot
+/// taken at any step of the fall says the same speed to the bit (the rules hear it).
+#[test]
+fn a_begin_says_how_fast_the_two_closed_and_a_restored_run_says_the_same() {
+    use specula_core::bytes::{ByteReader, ByteWriter};
+    let scene = || {
+        let mut s = Space::default();
+        ground(&mut s);
+        dynamic(&mut s, 2, Shape::sphere(0.5), v3(0.0, 1.0, 0.0));
+        s
+    };
+    let begin = |s: &mut Space, steps: usize| -> Option<(usize, f32)> {
+        (0..steps).find_map(|i| s.step(DT).events.iter().find(|e| e.kind == EventKind::ContactBegin).map(|e| (i, e.speed)))
+    };
+    let mut a = scene();
+    let (at, speed) = begin(&mut a, 120).expect("it lands");
+    // Half a metre of free fall: the square root of 2 x 9.81 x 0.5 is 3.13 m/s.
+    assert!((2.8..=3.3).contains(&speed), "a ball that fell 0.5 m began its contact at {speed} m/s");
+    for taken in 0..=at {
+        let mut b = scene();
+        for _ in 0..taken {
+            assert!(b.step(DT).events.iter().all(|e| e.kind != EventKind::ContactBegin));
+        }
+        let mut w = ByteWriter::new();
+        b.save_state(&mut w);
+        let bytes = w.into_bytes();
+        let mut c = scene();
+        let mut r = ByteReader::new(&bytes);
+        c.restore_state(&mut r).unwrap();
+        r.finish().unwrap();
+        let (later, again) = begin(&mut c, 120).expect("the restored one lands");
+        assert_eq!((taken + later, again.to_bits()), (at, speed.to_bits()), "restored after {taken} steps");
+    }
+}

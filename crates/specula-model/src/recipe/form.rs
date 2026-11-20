@@ -118,6 +118,17 @@ fn refused(path: &str, er: formae::Error) -> RecipeError {
         formae::Error::UnknownParam { .. } | formae::Error::FixedByAlias { .. } | formae::Error::DuplicateParam { .. } => e(path, ErrorCode::UnknownField, er.to_string()),
         formae::Error::UnknownForm { .. } | formae::Error::Ambiguous { .. } => e(path, ErrorCode::UnknownName, er.to_string()),
         formae::Error::DetailOutOfRange { .. } => e(path, ErrorCode::OutOfRange, er.to_string()),
+        // A raise that cannot go as deep as asked: say the way out. (A measured comparison's
+        // builder spent nine builds finding that a heart takes no soft edge, then asked for a
+        // tenth of a millimetre and called the square edge rounded.)
+        formae::Error::Constraint { rule, .. } if *rule == "inset_too_deep" => e(
+            path,
+            ErrorCode::Geometry,
+            format!(
+                "{er}. What to do: a figure that narrows to a point or has a sharp notch (a heart, a crescent, a thin tooth) takes no deeper inset than the one named, so it cannot be \
+                 given a soft edge this way; for a soft edge on such a figure, sculpt it (model_schema {{\"of\": \"sdf\"}} has a soft heart to start from), or raise it as a slab"
+            ),
+        ),
         _ => e(path, ErrorCode::Geometry, er.to_string()),
     }
 }

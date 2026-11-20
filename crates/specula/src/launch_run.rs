@@ -1089,6 +1089,16 @@ fn log_line(line: &Json) -> String {
     format!("specula run: {} logged at {when}: {}", word("module"), word("message"))
 }
 
+/// A command's answer as text: indented for a person at a terminal, compact (one line, no
+/// spaces between its parts) for a reader through a pipe. The same JSON either way.
+fn answer_text(json: &Json, for_a_person: bool) -> String {
+    if for_a_person {
+        json.to_pretty()
+    } else {
+        json.to_string()
+    }
+}
+
 /// A line of a command's answer, on its standard output. That it could not be written (its
 /// reader has gone) is nothing this command can say to anyone.
 fn put(line: &str) {
@@ -1187,7 +1197,11 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
         return code;
     }
     // (`help` is words for a person: printed as text.)
-    let text = json.get("help").and_then(Json::as_str).map_or_else(|| json.to_pretty(), str::to_owned);
+    // An answer is indented for a person at a terminal and compact for whoever reads it through
+    // a pipe: an agent pays for every space, and a measured comparison's builders stripped them
+    // by hand and read refusals as "isnotafieldof" (2026-11-21). The JSON is the same.
+    let for_a_person = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let text = json.get("help").and_then(Json::as_str).map_or_else(|| answer_text(&json, for_a_person), str::to_owned);
     if code == 2 {
         eprintln!("{text}");
     } else {
@@ -1199,6 +1213,17 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An answer through a pipe is one line with no spaces between its parts, and the same
+    /// JSON as a person at a terminal is shown.
+    #[test]
+    fn an_answer_is_compact_through_a_pipe_and_indented_for_a_person() {
+        let answer = Json::obj([("message", Json::from("'ops' is not a field of 'extrude'")), ("lods", Json::arr([Json::obj([("triangles", Json::from(288.0))])])), ("closed", Json::Bool(true))]);
+        let (piped, shown) = (answer_text(&answer, false), answer_text(&answer, true));
+        assert_eq!(piped, r#"{"message":"'ops' is not a field of 'extrude'","lods":[{"triangles":288}],"closed":true}"#, "compact, and the words inside a string keep their spaces");
+        assert!(!piped.contains('\n') && shown.contains('\n') && shown.len() > piped.len());
+        assert_eq!(Json::parse(&piped).unwrap(), Json::parse(&shown).unwrap());
+    }
 
     fn scratch(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("specula-launch-run-{test}-{}", std::process::id()));

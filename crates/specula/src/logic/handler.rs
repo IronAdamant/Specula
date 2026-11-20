@@ -23,7 +23,7 @@ pub const MAX_STATE_BYTES: usize = 1 << 20;
 /// Longest log line kept (longer ones are cut).
 const MAX_LOG_CHARS: usize = 400;
 
-const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, rng_restart, move_character, emit, log, trace, sound";
+const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, rng_restart, move_character, touching, emit, log, trace, sound";
 /// Most sounds one module call may ask for (the SDK's number, so modules can budget for it).
 pub const MAX_SOUNDS_PER_CALL: usize = specula_sdk::MAX_SOUNDS_PER_CALL;
 /// Tagged entities one `query {tag, near}` looks at, at most (the tag index's entries, never the
@@ -265,6 +265,17 @@ impl ModuleHandler<'_> {
                 let motion = req.get("motion").and_then(Value::as_vec3).ok_or_else(|| refuse("invalid_field", "'motion' must be [x, y, z]"))?;
                 let m = self.mover.move_character(self.world, id, motion, self.agent).map_err(|e| error_value(&e))?;
                 Ok(Value::map().with("position", m.position).with("grounded", m.grounded).with("blocked", m.blocked))
+            }
+            // What touches an entity now, tagged or not (docs/design/MODULES.md, "What physics
+            // tells a module"): its ids, at most MAX_TOUCHING, and how many more there are.
+            "touching" => {
+                let id = id_arg(req)?;
+                if self.world.get(id).is_none() {
+                    return Err(refuse("not_found", format!("no entity with id {id}")));
+                }
+                let all = self.mover.touching(id).ok_or_else(|| refuse("no_physics", "there is no physics here to ask what touches a thing"))?;
+                let most = crate::physics_told::MAX_TOUCHING;
+                Ok(Value::map().with("ids", all.iter().take(most).map(|k| Value::from(*k)).collect::<Vec<Value>>()).with("more", all.len().saturating_sub(most)))
             }
             "emit" => {
                 let name = str_arg(req, "name")?;

@@ -134,7 +134,7 @@ fn arms_as_data_are_read_and_refused_saying_what_and_where() {
     assert!(said.contains("arms[2] (none): the name none is arms[0]'s too"), "{said}");
     // A baseline that is not an arm, and none at all.
     let said = problems(&props_with(|s| s.set("baseline", Json::Str("plain".to_owned()))));
-    assert!(said.contains("baseline names no arm (\"plain\"; the arms are none, found, told)"), "{said}");
+    assert!(said.contains("baseline names no arm (\"plain\"; the arms are none, found, told, guided)"), "{said}");
     let said = problems(&props_with(|s| {
         lev::take(s, "baseline");
     }));
@@ -183,7 +183,7 @@ fn an_engine_arm_with_no_executable_resolved_is_refused_and_nothing_is_made() {
     assert!(refused(&a).contains("is not a file"));
     // An arm the data has not.
     a.arm = "engine".into();
-    assert!(refused(&a).contains("arm must be one of [\"none\", \"found\", \"told\"]"));
+    assert!(refused(&a).contains("arm must be one of [\"none\", \"found\", \"told\", \"guided\"]"));
     assert!(!out.exists() || std::fs::read_dir(&out).unwrap().next().is_none(), "a refused prepare makes no run");
     // The default data's engine arm still asks for --exe as it did.
     let d = lev::Prepare { job: "small".into(), arm: "engine".into(), n: 1, out: out.clone(), exe: Exes::default(), port: None, from: None, build: None, data: None };
@@ -219,7 +219,11 @@ fn the_shape_librarys_three_arms() {
     let s = lev::settings_in(&data).unwrap();
     let all = arms::arms_of(&s).unwrap();
     let names: Vec<(&str, Kind, &str)> = all.iter().map(|a| (a.name.as_str(), a.kind, a.exe.as_str())).collect();
-    assert_eq!(names, [("none", Kind::Engine, "base"), ("found", Kind::Engine, "library"), ("told", Kind::Engine, "library")]);
+    // (`guided`, 2026-11-21: after the engine was given a page on models in a new project's
+    // notes, an arm whose brief points at that page and no longer at a design document.)
+    assert_eq!(names, [("none", Kind::Engine, "base"), ("found", Kind::Engine, "library"), ("told", Kind::Engine, "library"), ("guided", Kind::Engine, "library")]);
+    let guided = all[3].text.as_ref().unwrap();
+    assert!(guided.iter().any(|l| l.contains("notes/models.md")) && !guided.iter().any(|l| l.contains("PROCEDURAL_MODELLING") || l.contains("formae") || l.contains("librar")), "{guided:?}");
     assert_eq!(arms::baseline_of(&s), "none");
     assert_eq!(s.get("runs_per_cell").and_then(Json::as_f64), Some(2.0));
     let (none, found, told) = (&all[0], &all[1], &all[2]);

@@ -43,6 +43,14 @@ pub const MAX_WAITING: usize = 8;
 const STALE: Duration = Duration::from_millis(500);
 /// A name that failed is retried after this long (an agent may have written the recipe since).
 const RETRY_FAILED: Duration = Duration::from_secs(5);
+/// The sounds whose asking is remembered ([`ModuleSounds::asked`]); the ones past it are counted.
+pub const MAX_ASKED: usize = 32;
+
+/// A sound the rules asked for: how often, and the files it is looked for in, in order.
+struct Asked {
+    times: u64,
+    paths: Vec<PathBuf>,
+}
 
 enum Entry {
     Loading { waiting: Vec<(SoundCue, Instant)> },
@@ -63,11 +71,16 @@ pub struct ModuleSounds {
     clock: u64,
     pub played: u64,
     pub skipped: u64,
+    /// Every sound a module asked for, by `<module>/<name>`, whether or not there is audio: a
+    /// run with no window plays nothing and looks for no recipe, so a sound that does not
+    /// exist would go unsaid (a headless run reads this and says so: `script_run`).
+    asked: BTreeMap<String, Asked>,
+    asked_more: u64,
 }
 
 impl ModuleSounds {
     pub fn new(assets: &Path) -> ModuleSounds {
-        ModuleSounds { audio: None, assets: assets.to_owned(), cache: BTreeMap::new(), samples: 0, loading: 0, failed: 0, clock: 0, played: 0, skipped: 0 }
+        ModuleSounds { audio: None, assets: assets.to_owned(), cache: BTreeMap::new(), samples: 0, loading: 0, failed: 0, clock: 0, played: 0, skipped: 0, asked: BTreeMap::new(), asked_more: 0 }
     }
 
     pub fn set_audio(&mut self, audio: Arc<crate::audio_service::AudioService>) {
@@ -148,6 +161,13 @@ impl ModuleSounds {
         Json::obj([
             ("played", Json::from(self.played)),
             ("skipped", Json::from(self.skipped)),
+            (
+                "asked",
+                Json::arr(self.asked.iter().map(|(k, a)| {
+                    Json::obj([("sound", Json::from(k.as_str())), ("times", Json::from(a.times)), ("looked_in", Json::arr(a.paths.iter().map(|p| Json::from(p.display().to_string()))))])
+                })),
+            ),
+            ("asked_more", Json::from(self.asked_more)),
             ("cached", Json::from(self.cache.len().saturating_sub(self.loading + self.failed))),
             ("loading", Json::from(self.loading())),
             ("failed_names", Json::from(self.failed)),
@@ -202,6 +222,21 @@ fn render(paths: &[PathBuf]) -> Result<Sound, String> {
 }
 
 impl Engine {
+    /// Remembers that a module asked for a sound, and where that sound is looked for (paths
+    /// are put together here; nothing is read).
+    fn note_asked(&mut self, cue: &SoundCue) {
+        let key = format!("{}/{}", cue.module, cue.name);
+        if let Some(a) = self.module_sounds.asked.get_mut(&key) {
+            a.times += 1;
+        } else if self.module_sounds.asked.len() < MAX_ASKED {
+            let dir = self.logic.origin(&cue.module).and_then(|o| o.dir.clone());
+            let paths = candidates(dir.as_deref(), &self.module_sounds.assets, &cue.name);
+            self.module_sounds.asked.insert(key, Asked { times: 1, paths });
+        } else {
+            self.module_sounds.asked_more += 1;
+        }
+    }
+
     /// Plays (or starts rendering) the sounds committed module calls asked for. Called once per
     /// frame after the ticks; cheap when there are none.
     pub(crate) fn play_module_sounds(&mut self) {
@@ -211,6 +246,7 @@ impl Engine {
         }
         let now = Instant::now();
         for cue in cues {
+            self.note_asked(&cue);
             if !self.module_sounds.enabled() {
                 self.module_sounds.skip(&cue, "audio_off");
                 continue;

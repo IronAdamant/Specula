@@ -132,6 +132,13 @@ const OUTLINE: &[Field] = &[
 ];
 const JITTER: &[Field] = &[o("offset", Vec3), o("rotate", Vec3), o("scale", Num)];
 
+/// A recipe's own fields (the parser refuses any other; [`schema`] says what each is).
+const TOP_FIELDS: &[&str] =
+    &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures", "wind", "edits"];
+/// A part's fields (likewise).
+const PART_FIELDS: &[&str] =
+    &["name", "material", "color", "when", "shape", "include", "generate", "params", "ops", "smooth_angle", "lod_detail", "bones", "blend", "texture", "uv_scale", "note"];
+
 /// Shape generators (a part's `shape`).
 const SHAPES: &[(&str, &[Field])] = &[
     ("box", &[r("size", Vec3), o("bevel", Num)]),
@@ -881,8 +888,7 @@ impl Recipe {
         if obj.iter().any(|(k, _)| k == "texgraph") {
             return Err(e("texgraph", ErrorCode::WrongType, "this file is a texture graph, not a recipe: use it from a recipe's \"textures\" (\"textures\": {\"stone\": \"<this file's name>\"}) and a part's \"texture\""));
         }
-        const TOP: &[&str] =
-            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures", "wind", "edits"];
+        const TOP: &[&str] = TOP_FIELDS;
         for (k, _) in obj {
             if !TOP.contains(&k.as_str()) {
                 return Err(e(k, ErrorCode::UnknownField, format!("'{k}' is not a field of a recipe; it accepts: {}", TOP.join(", "))));
@@ -1033,8 +1039,7 @@ impl Recipe {
         for (i, pj) in items.iter().enumerate() {
             let path = format!("parts[{i}]");
             let po = pj.as_object().ok_or_else(|| type_err(&path, "a part object"))?;
-            const PART: &[&str] =
-                &["name", "material", "color", "when", "shape", "include", "generate", "params", "ops", "smooth_angle", "lod_detail", "bones", "blend", "texture", "uv_scale", "note"];
+            const PART: &[&str] = PART_FIELDS;
             for (k, _) in po {
                 if !PART.contains(&k.as_str()) {
                     return Err(e(&format!("{path}.{k}"), ErrorCode::UnknownField, format!("'{k}' is not a field of a part; it accepts: {}", PART.join(", "))));
@@ -1183,6 +1188,11 @@ pub struct Model {
     /// Every material preset `lods[0].parts` uses, resolved from the style.
     pub materials: Vec<(String, MaterialPreset)>,
     pub bounds: Bounds,
+    /// Edges of the finest level that are not shared by exactly two triangles, after welding
+    /// equal positions ([`MeshData::open_edge_count`]): 0 for a closed (watertight) mesh. Counted
+    /// once, when the model is built, so that every answer about a model can say whether it is
+    /// closed without anyone exporting it to find out.
+    pub open_edges: usize,
     /// Stable hash of every LOD and the collider (same recipe + params + seed ⇒ same hash on
     /// every platform).
     pub hash: u64,
@@ -1301,6 +1311,10 @@ impl Model {
                 })),
             ),
             ("bounds", Json::obj([("min", v3(b.min)), ("max", v3(b.max))])),
+            // Whether the finest level is a closed (watertight) mesh, and how many of its edges
+            // are not shared by exactly two triangles when it is not.
+            ("closed", Json::Bool(self.open_edges == 0)),
+            ("open_edges", Json::Num(self.open_edges as f64)),
             ("materials", Json::arr(self.materials.iter().map(|(n, _)| Json::Str(n.clone())))),
             (
                 "collider",
@@ -1584,6 +1598,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     Ok(Model {
         name: recipe.name.clone(),
         bounds: lods[0].bounds(),
+        open_edges: lods[0].open_edge_count(),
         lods,
         lod_ratios: ratios,
         collider,
@@ -3136,6 +3151,8 @@ fn smooth_path(path: &[V3], scales: &[f32], smooth: u32, closed: bool) -> (Vec<V
 
 mod form;
 mod procgen;
+mod schema;
+pub use schema::{schema, SCHEMA_EXAMPLE, SCHEMA_FIRST_BYTES};
 pub use procgen::{generator_names, sdf_names};
 
 #[cfg(test)]

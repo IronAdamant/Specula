@@ -589,6 +589,11 @@ impl LogicHost {
     /// rules read (`setting`), the run's end (`outcome`); docs/design/FIRST_HOUR.md. `false`:
     /// not taken (no module is loaded to hear it, the name is not an event's, or
     /// [`MAX_PENDING_EVENTS`] are already waiting).
+    /// How many events wait for the next tick.
+    pub fn pending_events(&self) -> usize {
+        self.pending_events.len()
+    }
+
     pub fn push_engine_event(&mut self, name: &str, data: Value, tick: u64) -> bool {
         if self.slots.is_empty() || !specula_sdk::valid_name(name, 64) || self.pending_events.len() >= MAX_PENDING_EVENTS {
             return false;

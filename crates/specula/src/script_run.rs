@@ -282,6 +282,8 @@ struct Stand {
     state: Json,
     /// The last lines the modules logged (`cx.log`), each with its tick.
     log: Vec<Json>,
+    /// What a screen shows as written because nothing fills it ([`unfilled_texts`]).
+    unfilled: Vec<String>,
 }
 
 struct Run<'t> {
@@ -508,13 +510,14 @@ impl Run<'_> {
             }
             states.set(name, module.get("state").cloned().unwrap_or(Json::Null));
         }
+        let unfilled = unfilled_texts(&ui);
         let report = if game.report.is_empty() {
             Json::obj([("tick", Json::from(tick)), ("game", state.clone()), ("ui", ui), ("state", states)])
         } else {
             Json::Obj(game.report.iter().map(|(name, key)| (name.clone(), value_of(key, tick, seed, &state, &ui, &states))).collect())
         };
         log_in_order(&mut log);
-        Ok(Stand { report, state, log })
+        Ok(Stand { report, state, log, unfilled })
     }
 
     /// A failure or a log line of a module, with the script's tick it happened at
@@ -732,7 +735,7 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
         }
         followed = Some(steps);
     }
-    let Stand { report, state, log } = stand;
+    let Stand { report, state, log, unfilled } = stand;
     if let Some(frame) = &spec.frame {
         let mut args = Json::obj([("width", Json::from(u64::from(spec.size.0))), ("height", Json::from(u64::from(spec.size.1))), ("include_ui", Json::Bool(true))]);
         match game.view {
@@ -757,11 +760,108 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     if !log.is_empty() {
         answer.set("log", Json::Arr(log));
     }
-    // What the game says is wrong with its own files rides beside the report, never inside it.
-    if let Some(problems) = state.get("problems").filter(|p| p.as_array().is_some_and(|p| !p.is_empty())) {
-        answer.set("problems", problems.clone());
+    // What the game says is wrong with its own files rides beside the report, never inside it;
+    // and with it what a run can see and a player would: a screen showing a key nothing
+    // fills, a sound the rules asked for that no file makes. (Neither changes the game's
+    // state, so neither fails the run: a builder making 3D with physics and sound by hand,
+    // 2026-11-21, shipped a mute game under a screen that read "Taps: {marble.taps}", and
+    // the run said nothing.)
+    let mut problems: Vec<Json> = state.get("problems").and_then(Json::as_array).map(<[Json]>::to_vec).unwrap_or_default();
+    problems.extend(unfilled.into_iter().map(Json::from));
+    problems.extend(run.silent_sounds()?.into_iter().map(Json::from));
+    problems.extend(run.lost_bodies()?.into_iter().map(Json::from));
+    if !problems.is_empty() {
+        answer.set("problems", Json::Arr(problems));
     }
     Ok(answer)
+}
+
+/// The most problems of one kind a run says (the rest are counted in the last line).
+const MAX_SAID: usize = 6;
+
+/// What a screen shows as written because nothing fills it: a text with `{name.key}` left in
+/// it. (A binding the state has is replaced before a text is shown, so what is left is
+/// unfilled.) One line a key, with the text it shows in.
+fn unfilled_texts(ui: &Json) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for text in ui.get("texts").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str) {
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            let Some(len) = rest[open..].find('}') else { break };
+            let key = &rest[open + 1..open + len];
+            rest = &rest[open + len + 1..];
+            let is_key = key.contains('.') && key.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+            if !is_key || seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            if out.len() < MAX_SAID {
+                let shown: String = text.chars().take(80).collect();
+                out.push(format!("a screen shows \"{shown}\": nothing keeps \"{key}\" (a module keeps it with cx.set_state(\"{}\", ..), or the screen's text is changed)", key.split_once('.').map_or(key, |(_, k)| k)));
+            }
+        }
+    }
+    if seen.len() > MAX_SAID {
+        out.push(format!("and {} more keys that nothing fills", seen.len() - MAX_SAID));
+    }
+    out
+}
+
+impl Run<'_> {
+    /// The bodies that are out of the world as the run ends: fallen beyond everything they
+    /// could land on (`physics_info`'s `out_of_world`).
+    fn lost_bodies(&self) -> Result<Vec<String>, Json> {
+        let info = self.call("physics_info", Json::obj::<&str>([]))?;
+        let Some(out) = info.get("out_of_world") else { return Ok(Vec::new()) };
+        let bodies = out.get("bodies").and_then(Json::as_array).unwrap_or(&[]);
+        let mut said: Vec<String> = bodies
+            .iter()
+            .take(MAX_SAID)
+            .map(|b| {
+                format!(
+                    "{} has fallen out of the world: it is {} m beyond everything it could land on, and still falling (the rules hear the event \"fell\" when it happens: put it back or delete it; notes/world.md)",
+                    b.get("path").and_then(Json::as_str).unwrap_or("?"),
+                    b.get("beyond_m").and_then(Json::as_f64).unwrap_or(0.0)
+                )
+            })
+            .collect();
+        let total = out.get("total").and_then(Json::as_u64).unwrap_or(0) as usize;
+        if total > said.len() {
+            said.push(format!("and {} more bodies out of the world", total - said.len()));
+        }
+        Ok(said)
+    }
+
+    /// The sounds the rules asked for in this engine's life that no file makes: the engine
+    /// says which were asked for and where each is looked for, and the files are looked for
+    /// here, on the script's own thread.
+    fn silent_sounds(&self) -> Result<Vec<String>, Json> {
+        // (The long form: the short one leaves the sounds out.)
+        let info = self.call("engine_info", Json::obj([("response_format", Json::from("detailed"))]))?;
+        let Some(sounds) = info.get("module_sounds") else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        let mut silent = 0usize;
+        for asked in sounds.get("asked").and_then(Json::as_array).unwrap_or(&[]) {
+            let paths: Vec<&str> = asked.get("looked_in").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).collect();
+            if paths.iter().any(|p| Path::new(p).is_file()) {
+                continue;
+            }
+            silent += 1;
+            if out.len() < MAX_SAID {
+                let name = asked.get("sound").and_then(Json::as_str).unwrap_or("?");
+                let (module, sound) = name.split_once('/').unwrap_or(("", name));
+                out.push(format!(
+                    "the rules of {module} asked for the sound \"{sound}\" {} time(s) and no file makes it, so nothing plays: write assets/sounds/{sound}.json (notes/world.md says what a sound is; audio_preview measures one)",
+                    asked.get("times").and_then(Json::as_u64).unwrap_or(0)
+                ));
+            }
+        }
+        if silent > MAX_SAID {
+            out.push(format!("and {} more sounds that no file makes", silent - MAX_SAID));
+        }
+        Ok(out)
+    }
 }
 
 /// One line of a followed run: the game's state (or what was wrong with a step), for whoever
@@ -959,5 +1059,22 @@ mod tests {
         let failed = answer_of(Err(refusal("build_failed", "modules/gate did not build")));
         assert_eq!(failed.get("ok").and_then(Json::as_bool), Some(false));
         assert_eq!(failed.get("error").and_then(|e| e.get("error")).and_then(Json::as_str), Some("build_failed"));
+    }
+
+    /// A text with a key left in it is said once a key, with the text; words in braces that
+    /// are no key, and texts that were filled, are not.
+    #[test]
+    fn a_screen_text_nothing_fills_is_said() {
+        let ui = Json::parse(r#"{"texts": ["Taps: {marble.taps}", "Time: {marble.left}", "Taps: {marble.taps}", "Score: 40", "Press {A} to start", "{} and {a.} and {.b}"]}"#).unwrap();
+        let said = unfilled_texts(&ui);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[0].contains("\"Taps: {marble.taps}\"") && said[0].contains("nothing keeps \"marble.taps\"") && said[0].contains("cx.set_state(\"taps\""), "{}", said[0]);
+        assert!(said[1].contains("marble.left"), "{}", said[1]);
+        // Bounded: the keys past the most said are counted in one line.
+        let many = Json::obj([("texts", Json::arr((0..20).map(|i| Json::from(format!("{{m.k{i}}}")))))]);
+        let said = unfilled_texts(&many);
+        assert_eq!(said.len(), MAX_SAID + 1);
+        assert!(said[MAX_SAID].contains("14 more"), "{}", said[MAX_SAID]);
+        assert!(unfilled_texts(&Json::Null).is_empty());
     }
 }

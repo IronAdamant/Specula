@@ -70,6 +70,7 @@ mod scaffold;
 mod safe_path;
 pub mod savegame;
 pub mod physics;
+pub mod physics_told;
 mod physics_tools;
 mod joint_tools;
 mod ragdoll_tools;
@@ -1870,6 +1871,9 @@ impl Engine {
             self.nav_tick();
             // Physics steps on the same fixed tick, after the game moved what it moves.
             self.physics_tick();
+            // What physics has to tell the rules (a touch, a body out of the world): heard at
+            // the next tick, as every event from the engine is.
+            self.tell_modules_of_physics();
             // World-space effects' tracks (cosmetic: read only), as of the tick's end.
             let tick_end = self.world.world_time() + 1.0 / f64::from(self.clock.hz());
             self.vfx.tick(&self.world, self.world_generation, tick_end);

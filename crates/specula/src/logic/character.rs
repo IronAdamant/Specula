@@ -29,6 +29,12 @@ pub trait CharacterMover {
     /// position, attributing the change to `by`.
     fn move_character(&mut self, world: &mut dyn WorldWrite, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError>;
 
+    /// What touches entity `id` as of the last physics step (for a trigger: what is in it),
+    /// as entity ids in increasing order. `None`: there is no physics here to ask.
+    fn touching(&self, _id: u64) -> Option<Vec<u64>> {
+        None
+    }
+
     /// For the engine to reach its own controller's state (e.g. lend it the physics space).
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }

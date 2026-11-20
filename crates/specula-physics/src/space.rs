@@ -303,6 +303,10 @@ struct Contact {
     sat: SatCache,
     /// A cosmetic body is in it (its own cap; not hashed).
     cosmetic: bool,
+    /// The fastest the two closed while this contact formed and did not touch yet, m/s (what
+    /// its begin event says; not hashed: it follows from the bodies' own motion, and nothing
+    /// in a step reads it).
+    approach: f32,
 }
 
 /// What happened during a step.
@@ -1280,6 +1284,7 @@ impl Space {
                 restitution,
                 sat: SatCache::default(),
                 cosmetic,
+                approach: 0.0,
             };
             if cosmetic {
                 self.cosmetic_pairs += 1;
@@ -1479,19 +1484,26 @@ impl Space {
             if c.len > 0 && deepest.is_none_or(|(d, _, _)| min_sep < d) {
                 deepest = Some((min_sep, ka, kb));
             }
-            if c.touching && !was {
-                let p = c.points[..c.len].iter().fold(c.points[0], |d, p| if p.separation < d.separation { *p } else { d });
-                let rel = (b.desc.velocity + b.desc.angular_velocity.cross(p.point - b.center))
-                    - (a.desc.velocity + a.desc.angular_velocity.cross(p.point - a.center));
+            // How fast the two close at their nearest point, as this step begins. While a
+            // contact forms (its points are there, inside the margin, and it does not touch
+            // yet) the solver already takes the approach out of the bodies, so at the step
+            // they touch little of it is left: a ball that landed at 3 m/s began its contact
+            // at 0.4. The fastest they closed while it formed is what a begin says.
+            let nearest = (c.len > 0).then(|| c.points[..c.len].iter().fold(c.points[0], |d, p| if p.separation < d.separation { *p } else { d }));
+            if !was {
+                c.approach = match nearest {
+                    Some(p) => {
+                        let rel = (b.desc.velocity + b.desc.angular_velocity.cross(p.point - b.center))
+                            - (a.desc.velocity + a.desc.angular_velocity.cross(p.point - a.center));
+                        c.approach.max(-rel.dot(p.normal))
+                    }
+                    None => 0.0,
+                };
+            }
+            if let (true, false, Some(p)) = (c.touching, was, nearest) {
                 let normal = oriented(p.normal, a.key, ka);
-                events.push(Event {
-                    kind: EventKind::ContactBegin,
-                    a: ka,
-                    b: kb,
-                    point: p.point,
-                    normal,
-                    speed: (-rel.dot(p.normal)).max(0.0),
-                });
+                events.push(Event { kind: EventKind::ContactBegin, a: ka, b: kb, point: p.point, normal, speed: c.approach.max(0.0) });
+                c.approach = 0.0;
             } else if !c.touching && was {
                 events.push(end_event(c, ka, kb));
             }

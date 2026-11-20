@@ -683,7 +683,12 @@ impl crate::Engine {
             }
             PhysicsCall::Joint(j) => self.joint_call(j, w, tick),
             PhysicsCall::Ragdoll(r) => self.ragdoll_call(r, w, tick),
-            PhysicsCall::Info => ToolOutput::text(self.physics.summary_json(&self.world.env().physics).to_pretty()),
+            PhysicsCall::Info => {
+                let mut info = self.physics.summary_json(&self.world.env().physics);
+                // Bodies that fell beyond everything they could land on (physics_told).
+                info.set("out_of_world", self.out_of_world_json());
+                ToolOutput::text(info.to_pretty())
+            }
             PhysicsCall::Explain { entity } => match self.world.resolve(&entity) {
                 Ok(id) => ToolOutput::text(self.explain(id).to_pretty()),
                 Err(e) => world_error(&e),
