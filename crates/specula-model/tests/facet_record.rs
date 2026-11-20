@@ -234,6 +234,47 @@ fn the_answer_is_kept_however_many_shapes_are_answers() {
     assert!(m.extras.round.len() == n && m.extras.round_total == n, "{} kept of {}", m.extras.round.len(), m.extras.round_total);
 }
 
+/// **Past what one build records, round shapes are counted and said** (the third review's
+/// fourth finding): nine includes of 64 columns each and a tapered column after them are 577
+/// round shapes, of which one build records 512; the 65 past them (the tapered one among them)
+/// are in the total and said not recorded, never dropped without a word.
+#[test]
+fn round_shapes_past_the_records_are_counted() {
+    let cols: Vec<String> = (0..64).map(|i| part(&format!("c{i}"), r#"{"op":"cylinder","radius":0.1,"height":1,"sides":5}"#, &format!(r#"{{"op":"move","by":[{},0,0]}}"#, f64::from(i) * 0.3))).collect();
+    let mut lib = BTreeMap::new();
+    lib.insert("row".to_string(), format!(r#"{{ "name": "row", "parts": [{}] }}"#, cols.join(", ")));
+    let mut list: Vec<String> = (0..9).map(|i| format!(r#"{{ "name": "r{i}", "include": "row", "ops": [{{"op":"move","by":[0,0,{}]}}] }}"#, f64::from(i) * 0.3)).collect();
+    list.push(part("last", r#"{"op":"cylinder","radius":0.1,"height":1,"sides":5}"#, r#"{"op":"taper","from":1,"to":0.5}"#));
+    let m = make_with(&format!(r#"{{ "name": "t", "parts": [{}] }}"#, list.join(", ")), &lib);
+    assert!(m.extras.round_total == 577 && m.extras.round_not_recorded == 65 && m.extras.round_not_measured == 0, "total {}, not recorded {}, not measured {}", m.extras.round_total, m.extras.round_not_recorded, m.extras.round_not_measured);
+}
+
+/// **A weld that merges a ring's own points leaves it not measured** (the third review's third
+/// finding): a column of 64 sides of radius 0.5 (a side 49 mm long) welded by a millimetre is
+/// the ring it was, measured; welded by 6 or 15 cm (past a side) the mesh no longer has the
+/// ring its count made, and the record says so.
+#[test]
+fn a_weld_that_merges_a_rings_points_is_said() {
+    let col = r#"{"op":"cylinder","radius":0.5,"height":1,"sides":64}"#;
+    let plain = the(&one(col, ""), "parts[0].shape");
+    let fine = the(&one(col, r#"{"op":"weld","eps":0.001}"#), "parts[0].shape");
+    assert!(fine.measured() && fine.turn_deg == plain.turn_deg && fine.sag == plain.sag, "{fine:?}");
+    for eps in [0.06, 0.15] {
+        let r = the(&one(col, &format!(r#"{{"op":"weld","eps":{eps}}}"#)), "parts[0].shape");
+        assert!(!r.measured() && r.unmeasured.is_some_and(|w| w.contains("weld")), "weld {eps}: {r:?}");
+    }
+}
+
+/// **The radius said is the radius of the band that turns** (the third review's fifth finding):
+/// a torus of radius 0.6 with a three-sided tube turns most round its axis at its inner wall,
+/// 0.5 from the axis, though it reaches 0.8; seen from above its rim is the 0.8.
+#[test]
+fn the_radius_said_is_the_bands_that_turns() {
+    let r = one(r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":12,"sides":3}"#, "").extras.round.iter().find(|r| r.count == "segments").cloned().unwrap();
+    let rim = r.rim.unwrap();
+    assert!(near(r.turn_radius_m, 0.5, 1e-5) && near(r.radius_m, 0.8, 1e-5) && near(rim.radius_m, 0.8, 1e-5) && near(r.turn_deg, 30.0, 1e-4) && near(rim.turn_deg, 30.0, 1e-4), "{r:?}");
+}
+
 /// A scatter's round items are measured as each was placed: the largest placement speaks.
 #[test]
 fn a_scatter_measures_its_round_items() {

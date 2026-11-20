@@ -280,10 +280,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       said with the measure wherever it is used.
   - **Away again, and nothing is removed until they say they are home** (the owner,
     2026-11-20, midday: "Going off site. Will not be present to provide you the permissions
-    to delete. I will confirm once I am home"; they follow the work by remote). Waiting for
-    them on this machine: the worktrees `C:\sr-k16` (the light report's fourth mend, merged)
-    and `C:\sr-k20` (the proofs' second review, done), and every scratch worktree whose
-    branch is merged or whose review comes in after this.
+    to delete. I will confirm once I am home"; they follow the work by remote). The two
+    worktrees that were finished then (`C:\sr-k16`, `C:\sr-k20`) were removed at their word
+    before they left ("Please request permissions for removal for those before I go").
+    Waiting for them: every scratch worktree whose branch is merged or whose review comes
+    in after that.
   - **The silhouette's rounds go on, and the library gets built** (the owner, 2026-11-20,
     awake again, shown Claude's recommendation that the seventh silhouette version be the
     last round that chases the reading: "Rounds continue. I want that library built. So
@@ -1049,7 +1050,20 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       between its faces, which is less than what its rim shows from above (**Claude's
       decision: a ring is held to the greater of the two**); a weld that merges a ring's
       own points is not seen; past 512 shapes round ones are dropped unsaid. **A fresh
-      agent is mending those. Give no style a `max_facet_deg` until a reviewer says
+      agent mended those** (2026-11-20, merged; FORM.md, "What was mended, third round"):
+      **advice names only a count that builds**: every round shape records the most its
+      count can be before a limit the build holds would refuse it (a part's triangles,
+      the model's, every later copy, mirror, subdivision or scatter, the recipe's
+      budget), and the search stops there, saying which limit when nothing up to it
+      holds (an estimate through a boolean and for a sculpt, and said so). **A ring is
+      held to the greater of its faces' turn and its widest rim's turn seen down its
+      axis**, and the words say which. A weld that merges a ring's own points, and
+      shapes past the records, are said as not measured; the advice's work has one
+      bound for the whole check. By its own account every seeded fault was caught (one
+      only after it added a test), no mesh changed, and Sepulcra's four-sided cones read
+      90° again by their rims (the median is 90°; no verdict at 20° moved; one at 45°
+      did, `urn_toppled`). One of its tests takes about 90 s in a debug build. **Its
+      review is running. Give no style a `max_facet_deg` until a reviewer says
       merge.** The recipe measure's three small findings were mended with it (the
       snap held by a test; the wobbling rod's limit stated and held: up to 1.8% of the
       width a long rod is cut and reads square, past it it is pressed and reads rounder;

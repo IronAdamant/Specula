@@ -1162,10 +1162,16 @@ pub struct ModelExtras {
     /// measured first, then those that are the coarsest seen at some size, then the rest).
     pub round: Vec<Round>,
     /// How many round shapes have a triangle of their own in the finished model, whatever
-    /// `round` keeps.
+    /// `round` keeps, and the round shapes made past what one build records (all of them,
+    /// whether or not cut away later: `round_not_recorded`).
     pub round_total: usize,
-    /// How many of them were not measured, whatever `round` keeps.
+    /// How many of them were not measured, whatever `round` keeps (not counting those not
+    /// recorded).
     pub round_not_measured: usize,
+    /// How many round shapes were made past what one build records ([`crate::made`]'s
+    /// records and slots, [`crate::facet`]'s round shapes): counted in `round_total`, and never
+    /// measured.
+    pub round_not_recorded: usize,
     /// What the recipe is built of ([`crate::Made`]): each shape it names with its own outlines
     /// and its own surface in the finished model, measured on the triangles that carry it
     /// ([`crate::Shape::owners`]: what its operations, a boolean and a scatter left of it), one
@@ -1183,6 +1189,30 @@ pub use crate::facet::Round;
 
 /// Round shapes kept for one model's facts.
 pub const MAX_ROUND: usize = 64;
+
+/// The counts a round shape's builder takes (fewest, most): read by the builder and kept with
+/// every round shape's record, so that what advises another count asks these and never copies
+/// them.
+const SIDES: (i64, i64) = (3, 256);
+const SUBDIVISIONS: (i64, i64) = (0, 5);
+const TORUS_SEGMENTS: (i64, i64) = (3, 512);
+const TORUS_SIDES: (i64, i64) = (3, 64);
+const CAPSULE_SEGMENTS: (i64, i64) = (3, 256);
+const CAPSULE_RINGS: (i64, i64) = (1, 32);
+const LATHE_SEGMENTS: (i64, i64) = (3, 256);
+pub(crate) const SDF_LEAST_RESOLUTION: i64 = 4;
+
+/// A round shape's count as its builder took it: its value, its range, how the shape's
+/// triangles grow with it as the builder predicts them, and the builder itself, which says
+/// how many triangles it makes alone at another count (asked once, at the fewest it takes,
+/// or one more when it was built with that: a ring's triangles go as a line with its count).
+#[derive(Clone, Copy)]
+struct Counted<'a> {
+    value: u32,
+    range: (i64, i64),
+    grows: crate::facet::Grows,
+    alone: &'a dyn Fn(u32) -> usize,
+}
 
 impl Model {
     /// A bounded summary for tool responses.
@@ -1451,9 +1481,13 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         .sum();
     let finished: Vec<&Shape> = built.iter().map(|b| &b.shape).collect();
     // (Round shapes first: `made_of` takes the record.)
-    let (round, round_total, round_not_measured) = {
+    let (round, round_total, round_not_measured, round_not_recorded) = {
         let paths: Vec<String> = tally.made.borrow().iter().map(|r| r.path.clone()).collect();
-        crate::facet::finish(&tally.rounds.borrow(), &paths, &finished)
+        let budget = max_t.map(|m| (u64::from(m), lods[0].triangle_count() as u64));
+        let (round, total, not_measured) = crate::facet::finish(&tally.rounds.borrow(), &paths, &finished, &tally.totals.borrow(), budget);
+        // (Round shapes past what one build records are counted with the rest, and said.)
+        let dropped = tally.rounds_dropped.get();
+        (round, total + dropped, not_measured, dropped)
     };
     let (made, made_rest_m2) = tally.made_of(&finished, surface as f32);
     Ok(Model {
@@ -1469,7 +1503,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         budget: (min_t, max_t),
         notes,
         rig: rig.map(|(r, _)| r),
-        extras: ModelExtras { textures, terrain, terrain_transform, stats, round, round_total, round_not_measured, made, made_rest_m2 },
+        extras: ModelExtras { textures, terrain, terrain_transform, stats, round, round_total, round_not_measured, round_not_recorded, made, made_rest_m2 },
         wind,
     })
 }
@@ -1592,6 +1626,12 @@ struct Tally {
     /// The round shapes so far, each on its slot, with what has been done to them since
     /// ([`crate::facet`]), at most [`crate::facet::MAX_RECS`].
     rounds: std::cell::RefCell<Vec<crate::facet::Rec>>,
+    /// Round shapes made and not recorded (past the records, slots or round shapes one build
+    /// keeps): counted, and said.
+    rounds_dropped: std::cell::Cell<usize>,
+    /// The model's triangles at every check against the limits, in order (what a round shape's
+    /// greatest count must leave room for after it was made).
+    totals: std::cell::RefCell<Vec<u64>>,
     /// What the fine level is built of so far ([`crate::Made`]): each shape the recipe names,
     /// in the order built (a path and what it is).
     made: std::cell::RefCell<Vec<made::Record>>,
@@ -1619,7 +1659,10 @@ impl Tally {
         }
         let mut records = self.made.borrow_mut();
         let mut slots = self.slots.borrow_mut();
-        if records.len() < crate::made::MAX_KEPT && slots.len() < crate::made::MAX_SLOTS {
+        if records.len() >= crate::made::MAX_KEPT || slots.len() >= crate::made::MAX_SLOTS {
+            // (Past what one build keeps: its round shapes are counted, not measured.)
+            self.rounds_dropped.set(self.rounds_dropped.get() + notes.len());
+        } else {
             // (A shape whose outlines are not kept, a cutter, still has a slot for its round
             // shapes: one that speaks for nothing in what the model is built of.)
             let what = views.as_ref().map_or_else(|| notes.first().map_or("", |n| n.what), |v| v.0);
@@ -1631,20 +1674,76 @@ impl Tally {
             drop((records, slots));
             for note in notes {
                 let ring = note.ring.map(|sides| crate::facet::Ring::of(s, note.what, sides, note.radius));
-                self.round_on(note, slot, ring);
+                self.round_on(note, slot, ring, s.triangle_count() as u64, None);
             }
         }
     }
 
-    /// A round shape's note, on its slot.
-    fn round_on(&self, note: crate::facet::Note, slot: u32, ring: Option<crate::facet::Ring>) {
+    /// A round shape's note, on its slot: the shape had `made` triangles as built.
+    fn round_on(&self, note: crate::facet::Note, slot: u32, ring: Option<crate::facet::Ring>, made: u64, estimate: Option<&'static str>) {
         if !(note.turn_deg.is_finite() && note.radius.is_finite() && note.turn_deg > 0.0 && note.radius > 0.0) {
             return;
         }
         let record = self.slots.borrow().get(slot as usize).map_or(0, |s| s.record);
         let mut recs = self.rounds.borrow_mut();
         if recs.len() < crate::facet::MAX_RECS {
-            recs.push(crate::facet::Rec { note, record, slot, ring, maps: vec![crate::facet::IDENTITY], many: None, displaced: 0.0, unknown: None });
+            let since = self.totals.borrow().len();
+            recs.push(crate::facet::Rec { note, record, slot, ring, maps: vec![crate::facet::IDENTITY], many: None, displaced: 0.0, unknown: None, made, since, tight: None, share_max: made, estimate });
+        } else {
+            self.rounds_dropped.set(self.rounds_dropped.get() + 1);
+        }
+    }
+
+    /// How many distinct points the triangles of each round shape's slot have in `s`, for every
+    /// slot a round shape is on, in the order of their slots (none when nothing round was
+    /// built).
+    fn round_points(&self, s: &Shape) -> Vec<(u32, usize)> {
+        let recs = self.rounds.borrow();
+        if recs.is_empty() || s.owners.len() != s.tris.len() {
+            return Vec::new();
+        }
+        let mut slots: Vec<u32> = recs.iter().map(|r| r.slot).collect();
+        slots.sort_unstable();
+        slots.dedup();
+        let mut pts: Vec<(u32, [u32; 3])> = Vec::new();
+        for (t, &o) in s.tris.iter().zip(&s.owners) {
+            if slots.binary_search(&o).is_ok() {
+                for &i in t {
+                    // (A point is where it is: minus zero is zero.)
+                    pts.push((o, s.positions[i as usize].map(|x| (x + 0.0).to_bits())));
+                }
+            }
+        }
+        pts.sort_unstable();
+        pts.dedup();
+        slots.iter().map(|&slot| (slot, pts.partition_point(|p| p.0 <= slot) - pts.partition_point(|p| p.0 < slot))).collect()
+    }
+
+    /// A check against the part's limit took in the triangles of a piece (`owners`), each
+    /// counted `times` (the copies an op is about to make), in `checked` triangles in all:
+    /// each round shape among them is charged its share (a sculpt's count makes its whole
+    /// piece, so its share is the whole piece). `estimate`: why the piece's triangles at
+    /// another count can only be estimated (a boolean's result).
+    fn charged(&self, owners: &[u32], times: u64, checked: usize, estimate: Option<&'static str>) {
+        let mut recs = self.rounds.borrow_mut();
+        if recs.is_empty() || owners.is_empty() {
+            return;
+        }
+        let top = recs.iter().map(|r| r.slot as usize).max().unwrap_or(0);
+        let mut counts = vec![0u64; top + 1];
+        for &o in owners {
+            if let Some(c) = counts.get_mut(o as usize) {
+                *c += 1;
+            }
+        }
+        let all = owners.len() as u64;
+        for r in recs.iter_mut() {
+            let own = counts[r.slot as usize];
+            if own == 0 {
+                continue;
+            }
+            let share = if r.note.grows == crate::facet::Grows::Square { all } else { own };
+            r.charge(share.saturating_mul(times), checked as u64, estimate);
         }
     }
 
@@ -1674,6 +1773,8 @@ impl Tally {
         let mut records = self.made.borrow_mut();
         let mut slots = self.slots.borrow_mut();
         if records.len() >= crate::made::MAX_KEPT || of.len() != s.tris.len() {
+            // (Its round primitives are counted, not measured.)
+            self.rounds_dropped.set(self.rounds_dropped.get() + rounds.iter().flatten().count());
             return;
         }
         let record = records.len() as u32;
@@ -1688,6 +1789,8 @@ impl Tally {
                 if let Some(r) = round {
                     round_slots.push((r, *slot));
                 }
+            } else if round.is_some() {
+                self.rounds_dropped.set(self.rounds_dropped.get() + 1);
             }
         }
         if slot_of.iter().all(|&x| x == crate::shape::NO_OWNER) {
@@ -1698,7 +1801,7 @@ impl Tally {
         s.owners = of.iter().map(|&p| slot_of.get(p as usize).copied().unwrap_or(crate::shape::NO_OWNER)).collect();
         drop((records, slots));
         for (note, slot) in round_slots {
-            self.round_on(note, slot, None);
+            self.round_on(note, slot, None, s.triangle_count() as u64, Some(crate::facet::SCULPT_ESTIMATE));
         }
     }
 
@@ -1741,6 +1844,9 @@ impl Tally {
                 .with_numbers(total as f64, MAX_MODEL_TRIANGLES as f64));
         }
         self.triangles.set(total);
+        if !self.rounds.borrow().is_empty() {
+            self.totals.borrow_mut().push(total as u64);
+        }
         Ok(())
     }
 
@@ -2136,9 +2242,25 @@ impl Ctx<'_> {
     /// faces at `radius_m` by its number `count` (of `value`); `ring`: round its own Y axis
     /// (not for the coarse far level, which is coarse on purpose). Kept with the shape's slot
     /// once it is built, and measured in the finished model ([`crate::facet`]).
-    fn round(&self, what: &'static str, count: &'static str, value: u32, turn_deg: f32, radius_m: f32, ring: bool) {
+    fn round(&self, what: &'static str, count: &'static str, c: Counted, turn_deg: f32, radius_m: f32, ring: bool) {
         if !self.coarse {
-            self.tally.round_notes.borrow_mut().push(crate::facet::Note { what, count, count_value: value, turn_deg: f64::from(turn_deg), radius: f64::from(radius_m), ring: ring.then_some(value), primitive: None });
+            let other = if c.value > c.range.0 as u32 { c.range.0 as u32 } else { c.value + 1 };
+            let alone = (c.grows != crate::facet::Grows::Fourfold).then(|| (other, (c.alone)(other) as u64));
+            self.tally.round_notes.borrow_mut().push(crate::facet::Note {
+                alone,
+                what,
+                count,
+                count_value: c.value,
+                turn_deg: f64::from(turn_deg),
+                radius: f64::from(radius_m),
+                ring: ring.then_some(c.value),
+                primitive: None,
+                least: c.range.0 as u32,
+                most: c.range.1 as u32,
+                grows: c.grows,
+                // (Checked against the limits next, by its prediction, on top of these.)
+                total_before: self.tally.triangles.get() as u64,
+            });
         }
     }
 
@@ -2362,20 +2484,24 @@ impl Ctx<'_> {
                 let radius = self.positive(n, "radius", 1.0)?;
                 let top = if n.op == "cone" { 0.0 } else { self.ranged(n, "radius_top", radius as f64, 0.0, 1e4)? };
                 let height = self.positive(n, "height", 1.0)?;
-                let sides = self.int(n, "sides", 12, 3, 256)?;
-                self.round(if n.op == "cone" { "cone" } else { "cylinder" }, "sides", sides, 360.0 / sides as f32, radius.max(top), true);
+                let sides = self.int(n, "sides", 12, SIDES.0, SIDES.1)?;
+                let grows = crate::facet::Grows::Linear { per: 8, fixed: 0 };
+                let bevel = if n.op == "cone" { 0.0 } else { self.ranged(n, "bevel", 0.0, 0.0, 100.0)? };
+                let alone = |k: u32| Shape::cylinder(radius, top, height, k, bevel).map_or(0, |s| s.triangle_count());
+                self.round(if n.op == "cone" { "cone" } else { "cylinder" }, "sides", Counted { value: sides, range: SIDES, grows, alone: &alone }, 360.0 / sides as f32, radius.max(top), true);
                 // (Its own section, and what it is from the side, which two of its three views are.)
                 self.made(if n.op == "cone" { "cone" } else { "cylinder" }, vec![(made::ngon(sides, radius.max(top)), 1.0), (made::trapezoid(radius, top, height), 2.0)]);
-                let bevel = if n.op == "cone" { 0.0 } else { self.ranged(n, "bevel", 0.0, 0.0, 100.0)? };
-                (8 * sides as usize, Box::new(move || geom(Shape::cylinder(radius, top, height, sides, bevel))))
+                (grows.at(sides) as usize, Box::new(move || geom(Shape::cylinder(radius, top, height, sides, bevel))))
             }
             "sphere" => {
-                let (r, sub) = (self.positive(n, "radius", 1.0)?, self.int(n, "subdivisions", 1, 0, 5)?);
+                let (r, sub) = (self.positive(n, "radius", 1.0)?, self.int(n, "subdivisions", 1, SUBDIVISIONS.0, SUBDIVISIONS.1)?);
                 // (A twenty-sided ball's faces turn 41.8 degrees from one to the next, and each
                 // subdivision halves that.)
-                self.round("sphere", "subdivisions", sub, 41.81 / (1u32 << sub) as f32, r, false);
+                let grows = crate::facet::Grows::Fourfold;
+                // (Its triangles are its prediction exactly: nothing to ask.)
+                self.round("sphere", "subdivisions", Counted { value: sub, range: SUBDIVISIONS, grows, alone: &|k| grows.at(k) as usize }, 41.81 / (1u32 << sub) as f32, r, false);
                 self.made("sphere", vec![(made::circle(r), 1.0)]);
-                (20 * 4usize.pow(sub), Box::new(move || Ok(Shape::sphere(r, sub))))
+                (grows.at(sub) as usize, Box::new(move || Ok(Shape::sphere(r, sub))))
             }
             "torus" => {
                 let radius = self.positive(n, "radius", 1.0)?;
@@ -2383,21 +2509,25 @@ impl Ctx<'_> {
                 if tube >= radius {
                     return Err(e(&n.at("tube"), ErrorCode::OutOfRange, "tube must be smaller than radius").with_numbers(tube as f64, radius as f64));
                 }
-                let (segs, sides) = (self.int(n, "segments", 24, 3, 512)?, self.int(n, "sides", 8, 3, 64)?);
+                let (segs, sides) = (self.int(n, "segments", 24, TORUS_SEGMENTS.0, TORUS_SEGMENTS.1)?, self.int(n, "sides", 8, TORUS_SIDES.0, TORUS_SIDES.1)?);
                 // (Round the ring, and round the tube: two rounds, each with its own radius.)
-                self.round("torus", "segments", segs, 360.0 / segs as f32, radius + tube, true);
-                self.round("torus", "sides", sides, 360.0 / sides as f32, tube, false);
+                let by_segs = crate::facet::Grows::Linear { per: 2 * u64::from(sides), fixed: 0 };
+                let by_sides = crate::facet::Grows::Linear { per: 2 * u64::from(segs), fixed: 0 };
+                self.round("torus", "segments", Counted { value: segs, range: TORUS_SEGMENTS, grows: by_segs, alone: &|k| Shape::torus(radius, tube, k, sides).triangle_count() }, 360.0 / segs as f32, radius + tube, true);
+                self.round("torus", "sides", Counted { value: sides, range: TORUS_SIDES, grows: by_sides, alone: &|k| Shape::torus(radius, tube, segs, k).triangle_count() }, 360.0 / sides as f32, tube, false);
                 self.made("torus", vec![(made::circle(radius + tube), 1.0), (made::stadium(2.0 * (radius + tube), tube), 2.0)]);
-                (2 * segs as usize * sides as usize, Box::new(move || Ok(Shape::torus(radius, tube, segs, sides))))
+                (by_segs.at(segs) as usize, Box::new(move || Ok(Shape::torus(radius, tube, segs, sides))))
             }
             "capsule" => {
                 let (r, h) = (self.positive(n, "radius", 0.5)?, self.positive(n, "height", 2.0)?);
-                let (segs, rings) = (self.int(n, "segments", 12, 3, 256)?, self.int(n, "rings", 3, 1, 32)?);
+                let (segs, rings) = (self.int(n, "segments", 12, CAPSULE_SEGMENTS.0, CAPSULE_SEGMENTS.1)?, self.int(n, "rings", 3, CAPSULE_RINGS.0, CAPSULE_RINGS.1)?);
                 // (Round its axis, and over each end: a quarter turn in `rings` bands.)
-                self.round("capsule", "segments", segs, 360.0 / segs as f32, r, true);
-                self.round("capsule", "rings", rings, 90.0 / rings as f32, r, false);
+                let by_segs = crate::facet::Grows::Linear { per: 2 * (2 * u64::from(rings) + 1), fixed: 0 };
+                let by_rings = crate::facet::Grows::Linear { per: 4 * u64::from(segs), fixed: 2 * u64::from(segs) };
+                self.round("capsule", "segments", Counted { value: segs, range: CAPSULE_SEGMENTS, grows: by_segs, alone: &|k| Shape::capsule(r, h, k, rings).triangle_count() }, 360.0 / segs as f32, r, true);
+                self.round("capsule", "rings", Counted { value: rings, range: CAPSULE_RINGS, grows: by_rings, alone: &|k| Shape::capsule(r, h, segs, k).triangle_count() }, 90.0 / rings as f32, r, false);
                 self.made("capsule", vec![(made::circle(r), 1.0), (made::stadium(h.max(2.0 * r), r), 2.0)]);
-                (2 * segs as usize * (2 * rings as usize + 1), Box::new(move || Ok(Shape::capsule(r, h, segs, rings))))
+                (by_segs.at(segs) as usize, Box::new(move || Ok(Shape::capsule(r, h, segs, rings))))
             }
             "plane" => {
                 let size = self.vec2(n, "size", [1.0, 1.0])?;
@@ -2473,12 +2603,13 @@ impl Ctx<'_> {
                     return Err(e(&format!("{}[{i}][0]", n.at("profile")), ErrorCode::OutOfRange, "lathe radius must be ≥ 0"));
                 }
                 let prof: Vec<V2> = rows.iter().map(|r| [r[0], r[1]]).collect();
-                let segs = self.int(n, "segments", 16, 3, 256)?;
+                let segs = self.int(n, "segments", 16, LATHE_SEGMENTS.0, LATHE_SEGMENTS.1)?;
                 // (Round its axis, at its widest; its profile's own corners are its maker's.)
-                self.round("lathe", "segments", segs, 360.0 / segs as f32, prof.iter().map(|p| p[0]).fold(0.0f32, f32::max), true);
-                self.made("lathe", vec![(made::ngon(segs, prof.iter().map(|p| p[0]).fold(0.0f32, f32::max)), 1.0), (made::mirrored(&prof), 2.0)]);
+                let grows = crate::facet::Grows::Linear { per: 2 * (prof.len() as u64 + 1), fixed: 0 };
                 let caps = self.bool(n, "caps", true);
-                (2 * segs as usize * (prof.len() + 1), Box::new(move || Ok(Shape::lathe(&prof, segs, caps))))
+                self.round("lathe", "segments", Counted { value: segs, range: LATHE_SEGMENTS, grows, alone: &|k| Shape::lathe(&prof, k, caps).triangle_count() }, 360.0 / segs as f32, prof.iter().map(|p| p[0]).fold(0.0f32, f32::max), true);
+                self.made("lathe", vec![(made::ngon(segs, prof.iter().map(|p| p[0]).fold(0.0f32, f32::max)), 1.0), (made::mirrored(&prof), 2.0)]);
+                (grows.at(segs) as usize, Box::new(move || Ok(Shape::lathe(&prof, segs, caps))))
             }
             "sweep" => {
                 let profile = self.outline(n.get("profile").unwrap(), &n.at("profile"), MAX_PROFILE_POINTS, 1)?;
@@ -2647,6 +2778,9 @@ impl Ctx<'_> {
             _ => before,
         };
         self.tally.grow(&n.path, before, predicted)?;
+        if let Some(times) = predicted.checked_div(before) {
+            self.tally.charged(&s.owners, times as u64, predicted, None);
+        }
         // Charged before it runs, by the vertices it visits or the triangles it makes.
         let v = s.positions.len() as u64;
         let units = match n.op.as_str() {
@@ -2738,7 +2872,18 @@ impl Ctx<'_> {
                 mv = Some(Moved::Unknown("bent (not affine)"));
                 s.bend(self.ranged(n, "deg_per_m", 0.0, -720.0, 720.0)? as f64)
             }
-            "weld" => s.weld(self.ranged(n, "eps", 1e-4, 1e-7, 1.0)?),
+            "weld" => {
+                // A weld that merges a round shape's own points leaves it another shape than the
+                // one recorded (fewer points round it than its count): not measured. One that
+                // merges only points at one place leaves it as it was.
+                let eps = self.ranged(n, "eps", 1e-4, 1e-7, 1.0)?;
+                let had = self.tally.round_points(s);
+                s.weld(eps);
+                let merged: Vec<u32> = self.tally.round_points(s).into_iter().zip(had).filter(|(now, was)| now.1 < was.1).map(|(now, _)| now.0).collect();
+                if !merged.is_empty() {
+                    self.tally.moved(&merged, &Moved::Unknown("welded: a weld merged points of it, so it is not what its count made"));
+                }
+            }
             "color" => s.set_color(self.color(n, "color")),
             "gradient" => {
                 let range = self.vec2(n, "range", [0.0, 1.0])?;
