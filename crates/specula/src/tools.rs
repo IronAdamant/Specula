@@ -756,6 +756,8 @@ impl CallerThread {
             "security_incidents" => CallerThread::Security,
             n if n.starts_with("l10n_") => CallerThread::L10n,
             n if n.starts_with("memory_") => CallerThread::Memory,
+            // (A recipe's format is a table: answered with the shape library's, on the caller's thread.)
+            "model_schema" => CallerThread::Formae,
             n if n.starts_with("formae_") => CallerThread::Formae,
             n if n.starts_with("lex_") => CallerThread::Lex,
             n if n.starts_with("studio_") => CallerThread::Studio,
@@ -2693,9 +2695,11 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
                           time and whether the build cache already had it, and for animated models the bones and \
                           clips (name, duration, loop). Recipe errors come back structured (code, path into the \
                           recipe, message). A .glb/.gltf path imports a glTF asset (textures, materials, skin, \
-                          clips). Iterate on a recipe file with this, then world_spawn it as shape \"model\". \
-                          Named shapes (a gear, a heart, an arch, a gem, a torus...) go in a recipe by name: \
-                          formae_list names them."
+                          clips). The answer says whether the model is closed (watertight) and how many of its \
+                          edges are open. Iterate on a recipe file with this, then world_spawn it as shape \
+                          \"model\", or picture it with studio_sheet. model_schema says how a recipe is written, \
+                          with an example that builds: ask it before writing one. Named shapes (a gear, a heart, \
+                          an arch, a gem, a torus...) go in a recipe by name: formae_list names them."
                 .into(),
             input_schema: schema(
                 vec![

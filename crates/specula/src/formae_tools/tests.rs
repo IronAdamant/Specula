@@ -186,11 +186,37 @@ fn the_library_is_pointed_at_where_an_agent_looks() {
     assert!(model.about.contains("formae_list"), "{}", model.about);
 }
 
+/// `model_schema`: a recipe's format is asked for once, answered on the caller's thread, short,
+/// and it is pointed at where an agent that is about to write a recipe looks.
+#[test]
+fn a_recipes_format_is_one_short_answer_and_pointed_at() {
+    assert_eq!(crate::tools::CallerThread::of("model_schema"), Some(crate::tools::CallerThread::Formae), "it is answered on the caller's thread");
+    let whole = schema_tool(&Json::obj::<&str>([])).unwrap();
+    let text = whole.to_string();
+    assert!(text.len() <= specula_model::SCHEMA_FIRST_BYTES, "{} bytes", text.len());
+    // What a cold agent has to guess without it: a part's name, where a shape goes, how a part
+    // is turned, and that a build says whether a model is closed.
+    for needs in ["the part's name (required)", "\"shape\"", "rotate: deg", "whether it is closed", "\"example\"", "formae_list"] {
+        assert!(text.contains(needs), "the first answer does not say {needs:?}: {text}");
+    }
+    // One thing, field by field; and a wrong name answers with the right ones.
+    let extrude = schema_tool(&Json::obj([("of", Json::from("extrude"))])).unwrap().to_string();
+    assert!(extrude.contains("outline (required)") && extrude.contains("bevel"), "{extrude}");
+    let wrong = schema_tool(&Json::obj([("of", Json::from("extrud"))])).unwrap_err();
+    assert!(wrong.contains("extrude"), "{wrong}");
+    assert!(schema_tool(&Json::obj([("of", Json::from("x".repeat(MAX_WORD + 1)))])).is_err(), "an argument over its limit is refused");
+    // Pointed at: the tool an agent builds with, the asset kit's first step, the catalogue.
+    let defs = crate::tools::definitions();
+    let build = defs.iter().find(|d| d.name == "model_build").expect("model_build");
+    assert!(build.description.contains("model_schema") && build.description.contains("closed"), "{}", build.description);
+    assert!(crate::toolscope::BRIEFS.iter().any(|(n, _)| *n == "model_schema"), "no catalog line");
+}
+
 /// Every tool argument has a limit in its schema.
 #[test]
 fn the_tools_are_defined_with_bounds() {
     let defs = definitions();
-    assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["formae_list", "formae_get"]);
+    assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["formae_list", "formae_get", "model_schema"]);
     for d in &defs {
         let props = d.input_schema.get("properties").and_then(Json::as_object).unwrap();
         for (name, prop) in props {

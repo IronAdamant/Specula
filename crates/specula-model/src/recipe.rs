@@ -132,6 +132,13 @@ const OUTLINE: &[Field] = &[
 ];
 const JITTER: &[Field] = &[o("offset", Vec3), o("rotate", Vec3), o("scale", Num)];
 
+/// A recipe's own fields (the parser refuses any other; [`schema`] says what each is).
+const TOP_FIELDS: &[&str] =
+    &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures", "wind", "edits"];
+/// A part's fields (likewise).
+const PART_FIELDS: &[&str] =
+    &["name", "material", "color", "when", "shape", "include", "generate", "params", "ops", "smooth_angle", "lod_detail", "bones", "blend", "texture", "uv_scale", "note"];
+
 /// Shape generators (a part's `shape`).
 const SHAPES: &[(&str, &[Field])] = &[
     ("box", &[r("size", Vec3), o("bevel", Num)]),
@@ -881,8 +888,7 @@ impl Recipe {
         if obj.iter().any(|(k, _)| k == "texgraph") {
             return Err(e("texgraph", ErrorCode::WrongType, "this file is a texture graph, not a recipe: use it from a recipe's \"textures\" (\"textures\": {\"stone\": \"<this file's name>\"}) and a part's \"texture\""));
         }
-        const TOP: &[&str] =
-            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures", "wind", "edits"];
+        const TOP: &[&str] = TOP_FIELDS;
         for (k, _) in obj {
             if !TOP.contains(&k.as_str()) {
                 return Err(e(k, ErrorCode::UnknownField, format!("'{k}' is not a field of a recipe; it accepts: {}", TOP.join(", "))));
@@ -1033,8 +1039,7 @@ impl Recipe {
         for (i, pj) in items.iter().enumerate() {
             let path = format!("parts[{i}]");
             let po = pj.as_object().ok_or_else(|| type_err(&path, "a part object"))?;
-            const PART: &[&str] =
-                &["name", "material", "color", "when", "shape", "include", "generate", "params", "ops", "smooth_angle", "lod_detail", "bones", "blend", "texture", "uv_scale", "note"];
+            const PART: &[&str] = PART_FIELDS;
             for (k, _) in po {
                 if !PART.contains(&k.as_str()) {
                     return Err(e(&format!("{path}.{k}"), ErrorCode::UnknownField, format!("'{k}' is not a field of a part; it accepts: {}", PART.join(", "))));
@@ -2925,6 +2930,8 @@ fn smooth_path(path: &[V3], scales: &[f32], smooth: u32, closed: bool) -> (Vec<V
 
 mod form;
 mod procgen;
+mod schema;
+pub use schema::{schema, SCHEMA_EXAMPLE, SCHEMA_FIRST_BYTES};
 pub use procgen::{generator_names, sdf_names};
 
 #[cfg(test)]

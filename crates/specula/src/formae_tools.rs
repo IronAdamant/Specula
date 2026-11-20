@@ -278,6 +278,7 @@ pub fn call(_session: &SessionInfo, name: &str, args: &Json) -> ToolOutput {
     let out = match name {
         "formae_list" => list_tool(args),
         "formae_get" => get_tool(args),
+        "model_schema" => schema_tool(args),
         other => Err(format!("unknown formae tool '{other}'")),
     };
     match out {
@@ -717,7 +718,25 @@ pub fn definitions() -> Vec<ToolDef> {
                 &["name"],
             ),
         },
+        ToolDef {
+            name: "model_schema".into(),
+            description: format!(
+                "How a model recipe is written, from the table the builder itself reads. With nothing asked: the whole format in one \
+                 short answer (under {} bytes): what a recipe file is and where it goes, a recipe's fields, a part's fields, every \
+                 shape, operation and generator on a line each (what it needs, then what it may take), and a whole recipe that builds, \
+                 to start from. With of: a shape's, an operation's or a generator's name (or outline, part, recipe): every field of \
+                 that one thing with what each takes. Ask this before writing a recipe: a wrong field costs a refused build. Read-only.",
+                specula_model::SCHEMA_FIRST_BYTES
+            ),
+            input_schema: schema(vec![("of", s(MAX_WORD, "One shape, operation or generator by name (extrude, sdf, form, rotate, scatter...), or outline, part, recipe. Left out: the whole format, short."))], &[]),
+        },
     ]
+}
+
+/// `model_schema`: a recipe's format ([`specula_model::recipe_schema`]).
+fn schema_tool(args: &Json) -> Result<Json, String> {
+    let of = text(args, "of", MAX_WORD)?;
+    specula_model::recipe_schema(of.as_deref())
 }
 
 #[cfg(test)]

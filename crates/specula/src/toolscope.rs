@@ -193,6 +193,7 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("memory_why", "notes about a file, and who changed it"),
     ("formae_list", "shape library: every name in one short answer"),
     ("formae_get", "one shape: snippets to paste; measures on request"),
+    ("model_schema", "how a recipe is written, with an example: ask first"),
     ("claim_take", "claim a subtree or region"),
     ("claim_renew", "extend claim leases"),
     ("claim_release", "release claims"),
