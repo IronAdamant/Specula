@@ -794,3 +794,112 @@ running engine; the preview with a window; a window minimised, resized or dragge
 report; a session closing with a render in flight; the validation layer's output; the discrete
 adapter. One run, on a busy machine, had the agents' calls fall to 27 a second after a report
 with no pulse running; two later runs did not repeat it and it is put down to load, unproved.
+
+## What was mended, fifth round
+
+A builder that wrote none of it (2026-11-20), on a busy machine (other agents compiling and on
+the GPU). The review's probe was run first on the code as found and gave its table to the frame.
+
+1. **What decides a pulse is the schedule's, and tested as the engine runs it.** The glue that
+   was in `run_windowed` (when to pulse, with which deadline, which class a call is, when to
+   stop, what the frame's own pump steps) is a trait, `schedule::Window`, with
+   `Schedule::serve_frame` (one frame's serve window) and `Schedule::frame_pump` (the frame's
+   own pump). The engine's side (`WindowSide` in `lib.rs`) is six methods of one line each; the
+   tests' simulation implements the same trait, so the simulated loop runs the code the window
+   runs. The simulation also runs the frame's own pump as the engine does, in the frame's time
+   (it had counted it as served time).
+2. **The deadline rule, held.** A pulse is charged what a *landing* costs and starts only when
+   that fits before the deadline. *Test*: `no_pulse_starts_without_room_for_a_landing`
+   (landings of 5 ms, more than any margin, in four 45 ms windows): no pulse starts later than
+   the deadline less a landing, every landing ends by the deadline, a pulse is left out in each
+   window, and the last pulse came within a landing and a look of that line. *Seeded*: the
+   check taken out (`if false && ...`): it fails, and so does the table below.
+3. **"Frames are no later for it", made true where it can be.** The cause at 60 Hz was the
+   estimate (one decaying maximum for looks and landings, halving every 50 ms); held to 20 frames
+   a second it was the frame's own pump landing a second render after the window landed one.
+   Now:
+   - a landing's cost is kept apart from a look's: the last landing's cost, or the estimate
+     before it less a quarter when that is more, so it is not forgotten between landings
+     however slow the renders; every pulse is charged it (any look may find a render landed);
+   - no pulse runs before a landing of the queued jobs has been timed: the first landing is in
+     the frame's own pump, as every landing was before pulses, and teaches the estimate; when a
+     frame's pump finds no step job queued the estimate is forgotten;
+   - when its window pulsed, the frame's own pump leaves alone the jobs pulses are for, so a
+     render that lands after the window's last pulse is landed at the start of the next window;
+   - a job whose step landed its render and that has more to do (its pass ran out of credit
+     before it sent the next) is still one pulses are for (`Steps::gpu_waiting`), or the window
+     stopped looking at it until the frame's pump.
+
+   *Test*: `pulses_make_no_frame_later_than_the_frames_own_pump`, the review's rows and more
+   (renders of 3, 40, 100 and 300 ms, landings of 0.6 to 10 ms, 60 Hz and held to 20 frames a
+   second, 4 s after 0.5 s): in every row no more frames are late with pulses than with the
+   frame's own pump alone, and no fewer renders land. As run:
+
+   | Render, landing | Display | Late, pump alone | Late, pulses | Renders, pump alone / pulses |
+   |---|---|---|---|---|
+   | 3 ms, 0.6 ms | 60 Hz | 0 of 240 | 0 of 240 | 240 / 742 |
+   | 3 ms, 0.6 ms | 20 fps | 0 of 80 | 0 of 80 | 80 / 859 |
+   | 3 ms, 4 ms | 20 fps | 0 of 80 | 0 of 80 | 80 / 479 |
+   | 40 ms, 4 ms | 20 fps | 0 of 80 | 0 of 80 | 80 / 80 |
+   | 100 ms, 6 ms | 60 Hz | 0 of 240 | 0 of 240 | 34 / 35 |
+   | 100 ms, 6 ms | 20 fps | 34 of 69 | 0 of 80 | 34 / 37 |
+   | 100 ms, 10 ms | 60 Hz | 0 of 240 | 0 of 240 (no pulse fits) | 34 / 34 |
+   | 300 ms, 10 ms | 60 Hz | 4 of 236 | 4 of 236 (no pulse fits) | 13 / 13 |
+   | 300 ms, 10 ms | 20 fps | 13 of 76 | 0 of 80 | 13 / 13 |
+
+   *Seeded*: the old estimate put back (a pulse charged a look's decaying cost, landings feeding
+   it): the 100 ms, 10 ms row at 60 Hz fails. The frame's pump stepping pulsed jobs again: the
+   3 ms, 4 ms row held to 20 frames a second fails (the review's 40 ms, 4 ms row no longer
+   catches it, since the charge now keeps the last pulse a landing before the deadline).
+   **What is still a limit:** a landing that costs more than the last ones did (the first
+   after a spike's estimate has decayed, a pipeline built inside it) can end past the deadline,
+   by its excess; the table holds landing costs constant. Where a landing does not fit the
+   window at all (10 ms at 60 Hz here) no pulse runs and a job lands one render a frame, as
+   before.
+4. **The report's own half, held.** `step_once` (which steps every GPU test's report) holds after
+   every step that the job's `on_gpu` answer is whether its render is in flight, read from the
+   engine (the capture flight of its slot, or its result unread in the slot), and that a step
+   that waits with the view loaded waits on its render. *Seeded*: `LightJob::on_gpu` answering
+   `false`: the three GPU tests that step reports fail. In `steps.rs`,
+   `a_landed_job_with_more_to_do_is_pulsed_for_and_left_alone_by_the_frame_after_pulses`:
+   *seeded* without the landed flag, and with a pump that steps pulsed jobs anyway: each fails.
+5. **A live check in Rust: `light_window_check`** (`tools/examen/src/native/light.rs`). On each
+   adapter an engine with a window (`--no-activate`, a settings folder of its own, `--max-fps
+   20`) runs a report of 80 renders and a preview of sixteen tiles, and holds that `perf_frame`'s
+   `serve.step_pulses` moved, that the report's renders outnumber the window's frames over the
+   call, that the preview has its tiles, that the view's capture has no validation warning and
+   the engine ends saying it saw no validation error. As run: integrated 80 renders over 21
+   frames (279 pulses, 0.8 s), discrete 80 over 32 (398 pulses, 1.3 s); the preview 16 tiles
+   over 10 and 15 frames. *Seeded* (`LightJob::on_gpu` answering `false`, built and run): it
+   fails, 80 renders over 87 frames with no pulse.
+
+**What a landing costs, measured** (debug build, busy machine; each landing is a `step.landed`
+trace event, from the start of the step that landed the render to its end; `perf_frame`'s
+`serve` section has `step_landings`, `step_landing_last_ms` and `step_landing_most_ms`, the
+whole pump a landing was in, the next render's submit included):
+
+| | Report, 640x360 | Preview, 320 px tiles |
+|---|---|---|
+| integrated | median 0.26 ms, 90th 0.36, most 0.49 (80) | median 0.89 ms, 90th 1.14, most 2.20 (16) |
+| discrete | median 0.34 ms, 90th 0.45, most 0.72 (80) | median 1.07 ms, 90th 1.33, most 1.70 (16) |
+
+The whole pump a landing is in (landing, the next submit, and any other job's slices) was at
+most 4.8 to 6.3 ms over three 1280x720 reports with eight agents calling, and up to 8.6, 14 and
+19 ms while a second engine ran 2048-square reports on the same integrated GPU. So the 4 to 10
+ms the review simulated is real for a whole pump on a contended GPU, not for a landing alone.
+
+**Checked beside it.** The preview with a window: 16 tiles of 320 in 178 and 203 ms (headless
+144 ms), and its picture the same bytes with the window, twice, as headless. A session closed
+(the MCP session deleted) 15 ms into a 2048-square report: answered `session_closed` at 52 ms,
+and over the next three seconds `step_pulses` did not move (the engine counts pulses, not its
+thread's wakes: a pulse left running would have moved it). A report cut short by its call's
+time could not be made from outside here (a call has 25 s, and the largest report took 2 to
+3 s); the GPU test that moves a job's deadline holds it. A minimised window was not tried: the
+only ways found (`ShowWindow`, `WM_SYSCOMMAND`) hand the keyboard to another window. Validation:
+no message, by the live check on both adapters. **The run that fell to 27 calls a second** (the
+review's run1) was not brought back: three rounds of a swarm of eight, a report, and the swarm
+alone gave 1,196 to 1,414 calls a second, and three more with a second engine loading the same
+GPU gave 801 to 1,266 (late frames rose; no fall). What fits it, by the code and unproved: a
+present whose gap passes 100 ms is taken as a stall, and the next window is the least, 1 ms,
+so while every frame takes over 100 ms (the GPU held by another process) each frame serves a
+call or two; eight agents at about nine such frames a second make about 27 calls.
