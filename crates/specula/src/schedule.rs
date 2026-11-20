@@ -61,11 +61,21 @@
 //! once (docs/design/WORKERS.md). A job whose render is still on the GPU waits, and a job looked
 //! at only once a frame lands one render a frame: with a window held to 20 frames a second, a
 //! `perf_light` report took 3.7 times as long as it did when the job spun on the fence (light
-//! review 4). So while one waits on its render, the window also *pulses*: it looks at the step
-//! jobs about every millisecond, between calls, in its own whole-millisecond waits (never a busy
-//! wait). A pulse starts only when what pulses cost lately (a decaying maximum, as a call's)
-//! still fits before the deadline, so frames are no later for it; it stops as soon as no job
-//! waits on the GPU; and with none waiting a window makes no wake it would not have made.
+//! review 4). So while one waits on its render (or has just landed it and has more to do), the
+//! window also *pulses*: it looks at the step jobs about every millisecond, between calls, in its
+//! own whole-millisecond waits (never a busy wait). Any look may find a render landed, so a pulse
+//! is charged what a *landing* costs: the last landing's cost, or the estimate before it less a
+//! quarter when that is more, kept apart from what a look costs and never forgotten with time
+//! (light review 5: an estimate that halved every 50 ms had forgotten a landing by the next one
+//! when renders were slower than that, and a landing began with room for a look only). A pulse
+//! starts only when that fits before the deadline, so a landing in a pulse ends by it unless it
+//! costs more than the last ones did. Until a landing of the queued jobs has been timed (by the
+//! frame's own pump, as every landing was before pulses) no pulse runs, and once no step job is
+//! queued what a landing costs is forgotten. The frame's own pump ([`Schedule::frame_pump`])
+//! leaves alone the jobs the pulses are for when its window pulsed, so a frame does not land a
+//! render in its own time that the next window can land in its (light review 5: held to 20
+//! frames a second a frame paid for two landings). Pulses stop as soon as no job waits on the
+//! GPU, and with none waiting a window makes no wake it would not have made.
 //!
 //! Time comes from the [`Inbox`] the calls come from: real time in the engine, a simulated clock
 //! in the tests, which run the whole loop against a simulated display deterministically.
@@ -124,16 +134,32 @@ const FIRST_PROBES: usize = 3;
 /// While a step job waits on its render, the window looks at the step jobs this often (waits
 /// are whole milliseconds and end up to a timer tick late: every one to two milliseconds).
 pub const PULSE_EVERY: Duration = Duration::from_millis(1);
-/// What a pulse is assumed to cost before one has been timed, and the least its estimate decays
-/// to (a look at a fence; a landing reads timestamps and submits the next render).
-const PULSE_GUESS: Duration = Duration::from_millis(1);
-const PULSE_FLOOR: Duration = Duration::from_micros(50);
+/// What a look (a pump in which every job only waited) is assumed to cost before one has been
+/// timed, and the least its estimate decays to.
+const LOOK_GUESS: Duration = Duration::from_micros(200);
+const LOOK_FLOOR: Duration = Duration::from_micros(50);
 
-/// What a serve window hands back to the loop: a call to apply, or a pulse (the step jobs looked
-/// at). Either way the loop answers whether a step job now waits on its render on the GPU.
-pub enum Work<R> {
-    Call(R),
-    Pulse,
+/// The windowed loop's side of a frame: what its serve window serves and its pumps step. The
+/// engine's (`run_windowed`'s) is a few lines that each call one thing; the
+/// tests' is a simulation. What decides when a pulse runs, with which deadline, and whether the
+/// frame's own pump steps a job is the schedule's ([`Schedule::serve_frame`],
+/// [`Schedule::frame_pump`]), so it is tested as the engine runs it.
+pub trait Window<R> {
+    /// What a call costs, roughly.
+    fn class(&self, call: &R) -> Class;
+    /// Applies a call.
+    fn call(&mut self, call: R);
+    /// One pass of the step pump. `leave_pulsed`: leave alone the jobs pulses are for (a job
+    /// with a render on the GPU, or one that has just landed it and has more to do). Answers
+    /// whether a job did more than wait (a render landed, a slice ran): a landing's cost.
+    fn pump(&mut self, leave_pulsed: bool) -> bool;
+    /// Whether a queued step job has a render on the GPU, or has just landed one and has more to
+    /// do (`Steps::gpu_waiting`): what pulses are for.
+    fn gpu_waiting(&self) -> bool;
+    /// Whether any step job is queued.
+    fn steps_queued(&self) -> bool;
+    /// Whether to stop serving (checked between calls).
+    fn stop(&mut self) -> bool;
 }
 
 /// The median of `v` (not empty, at most [`PROBES`] long).
@@ -270,8 +296,11 @@ pub struct Schedule {
     sized_for: Duration,
     /// Per [`Class`]: the longest call lately and when it was measured (see [`Schedule::cost`]).
     costs: [(Duration, Option<Instant>); CLASSES],
-    /// What a pulse cost lately, kept as a class's is.
-    pulse_cost: (Duration, Option<Instant>),
+    /// What a look cost lately (a pump in which every job only waited), kept as a class's is.
+    look_cost: (Duration, Option<Instant>),
+    /// What a landing costs ([`Schedule::landed`]): what every pulse is charged (`None`: no
+    /// landing of this run of step jobs has been timed yet).
+    landing_cost: Option<Duration>,
     /// The last presented frame's number (presents that showed nothing don't count) and when it
     /// was presented.
     last_frame: (u64, Option<Instant>),
@@ -306,9 +335,18 @@ pub struct Schedule {
     unblocked_presents: u64,
     busy_windows: u64,
     /// Since start: pulses run (step jobs looked at within a window), and the pulses that had no
-    /// room left before a deadline (the frame's own pump looked next).
+    /// room left before a deadline.
     pulses: u64,
     pulses_left_out: u64,
+    /// A pulse ran in this frame's window: the frame's own pump leaves alone the jobs pulses are
+    /// for.
+    pulsed: bool,
+    /// Since start: frame pumps that left those jobs alone; landings (in pulses and in frame
+    /// pumps), the last one's cost and the most one cost.
+    frame_pumps_left: u64,
+    landings: u64,
+    landing_last: Duration,
+    landing_most: Duration,
 }
 
 impl Default for Schedule {
@@ -318,7 +356,8 @@ impl Default for Schedule {
             sized: MIN_SERVE,
             sized_for: REFRESH_GUESS,
             costs: Class::ALL.map(|c| (c.guess(), None)),
-            pulse_cost: (PULSE_GUESS, None),
+            look_cost: (LOOK_GUESS, None),
+            landing_cost: None,
             last_frame: (0, None),
             display: None,
             refresh: None,
@@ -340,6 +379,11 @@ impl Default for Schedule {
             busy_windows: 0,
             pulses: 0,
             pulses_left_out: 0,
+            pulsed: false,
+            frame_pumps_left: 0,
+            landings: 0,
+            landing_last: Duration::ZERO,
+            landing_most: Duration::ZERO,
         }
     }
 }
@@ -369,7 +413,12 @@ impl Schedule {
             ("unblocked_presents", Json::from(self.unblocked_presents)),
             ("step_pulses", Json::from(self.pulses)),
             ("step_pulses_left_out", Json::from(self.pulses_left_out)),
-            ("step_pulse_cost_ms", ms(self.pulse_cost_at(now))),
+            ("step_landing_ms", self.landing_cost.map_or(Json::Null, ms)),
+            ("step_look_ms", ms(self.look_cost_at(now))),
+            ("step_landings", Json::from(self.landings)),
+            ("step_landing_last_ms", ms(self.landing_last)),
+            ("step_landing_most_ms", ms(self.landing_most)),
+            ("step_frame_pumps_left", Json::from(self.frame_pumps_left)),
         ])
     }
 
@@ -468,16 +517,40 @@ impl Schedule {
         self.costs[class as usize] = (took.max(decayed - decayed / 16), Some(now));
     }
 
-    /// What a pulse is expected to cost at `now`, as a class's call is.
-    fn pulse_cost_at(&self, now: Instant) -> Duration {
-        decayed(self.pulse_cost, PULSE_FLOOR, now)
+    /// What a look is expected to cost at `now`, as a class's call is.
+    fn look_cost_at(&self, now: Instant) -> Duration {
+        decayed(self.look_cost, LOOK_FLOOR, now)
     }
 
-    /// A pulse took `took`. Unlike a call's, the estimate decays only with time: most pulses
-    /// are a look at a fence and cost nothing, and a cost that fell a sixteenth with each would
-    /// soon forget what a landing costs.
-    fn pulse_costed(&mut self, took: Duration, now: Instant) {
-        self.pulse_cost = (took.max(self.pulse_cost_at(now)), Some(now));
+    /// What a pulse is charged at `now`: what a landing costs (any look may find a render
+    /// landed, and whether one has is known only by looking), or a look's cost when that is more.
+    /// `None` before a landing of this run of step jobs has been timed: no pulse runs then.
+    fn pulse_charge(&self, now: Instant) -> Option<Duration> {
+        self.landing_cost.map(|c| c.max(self.look_cost_at(now)))
+    }
+
+    /// Whether pulses are wanted after work that answered `waits` (a job's render on the GPU).
+    fn pulses_wanted(&self, waits: bool) -> bool {
+        waits && self.landing_cost.is_some()
+    }
+
+    /// A pump in which a job did more than wait took `took`. The estimate is the last landing's
+    /// cost, or what it was less a quarter when that is more: a costly landing is remembered for
+    /// a few landings, however far apart they come (light review 5: an estimate that halved every
+    /// 50 ms had forgotten a landing by the next one when renders took longer than that, and a
+    /// landing started with room for a look). It is forgotten when a frame's pump finds no step
+    /// job queued ([`Schedule::frame_pump`]): until one of the next jobs has landed in a frame's
+    /// own pump, as every landing did before pulses, no pulse runs.
+    fn landed(&mut self, took: Duration) {
+        self.landing_cost = Some(self.landing_cost.map_or(took, |c| took.max(c - c / 4)));
+        self.landings += 1;
+        self.landing_last = took;
+        self.landing_most = self.landing_most.max(took);
+    }
+
+    /// A pump in which every job only waited took `took`, measured at `now`.
+    fn looked(&mut self, took: Duration, now: Instant) {
+        self.look_cost = (took.max(self.look_cost_at(now)), Some(now));
     }
 
     /// Sizes the next window after a present that returned at `now`. `frame` is the presented
@@ -574,8 +647,8 @@ impl Schedule {
     /// Serves calls from `inbox` (oldest first; `held` before any) until `deadline`, waking as
     /// each arrives (see the module docs for how waits end). `class` tells what a call costs;
     /// `handle` applies one; `stop` is checked between calls. Calls still queued at the end may be
-    /// moved to `held`, which the next window starts with. (No step job waits on the GPU: the
-    /// engine's loop uses [`Schedule::serve_with`]; the tests, this.)
+    /// moved to `held`, which the next window starts with. (No step job: the engine's loop uses
+    /// [`Schedule::serve_frame`]; the tests, this.)
     #[cfg(test)]
     pub fn serve<R>(
         &mut self,
@@ -583,55 +656,100 @@ impl Schedule {
         held: &mut VecDeque<R>,
         deadline: Instant,
         class: impl Fn(&R) -> Class,
-        mut handle: impl FnMut(R),
+        handle: impl FnMut(R),
         stop: impl FnMut() -> bool,
     ) -> Served {
-        let work = |w: Work<R>| {
-            if let Work::Call(r) = w {
-                handle(r);
+        /// Calls only: no step job.
+        struct Calls<C, H, S>(C, H, S);
+        impl<R, C: Fn(&R) -> Class, H: FnMut(R), S: FnMut() -> bool> Window<R> for Calls<C, H, S> {
+            fn class(&self, call: &R) -> Class {
+                (self.0)(call)
             }
-            false
-        };
-        self.serve_with(inbox, held, deadline, false, class, work, stop)
+            fn call(&mut self, call: R) {
+                (self.1)(call)
+            }
+            fn pump(&mut self, _: bool) -> bool {
+                false
+            }
+            fn gpu_waiting(&self) -> bool {
+                false
+            }
+            fn steps_queued(&self) -> bool {
+                false
+            }
+            fn stop(&mut self) -> bool {
+                (self.2)()
+            }
+        }
+        self.serve_with(inbox, held, deadline, &mut Calls(class, handle, stop))
     }
 
-    /// [`Schedule::serve`], and pulses while a step job waits on its render (the module docs).
-    /// `waiting`: whether one does as the window starts. `work` applies a call
-    /// ([`Work::Call`]) or looks at the step jobs ([`Work::Pulse`]), and answers whether a step
-    /// job waits on its render after it. A pulse is due at once when one waits, then
-    /// [`PULSE_EVERY`] after the last; it runs between calls, only while what pulses cost lately
-    /// fits before `deadline`, and never when no job waits.
-    #[allow(clippy::too_many_arguments)]
-    pub fn serve_with<R>(
-        &mut self,
-        inbox: &mut impl Inbox<R>,
-        held: &mut VecDeque<R>,
-        deadline: Instant,
-        waiting: bool,
-        class: impl Fn(&R) -> Class,
-        mut work: impl FnMut(Work<R>) -> bool,
-        mut stop: impl FnMut() -> bool,
-    ) -> Served {
+    /// One frame's serve window, as the windowed loop serves it: from now for the window the
+    /// last present sized (or [`MINIMIZED_SERVE`] while the window is minimized). Returns why it
+    /// ended and how long it lasted.
+    pub fn serve_frame<R>(&mut self, inbox: &mut impl Inbox<R>, held: &mut VecDeque<R>, minimized: bool, w: &mut impl Window<R>) -> (Served, Duration) {
+        let start = inbox.now();
+        let window = if minimized { MINIMIZED_SERVE } else { self.window() };
+        let ended = self.serve_with(inbox, held, start + window, w);
+        (ended, inbox.now().saturating_duration_since(start))
+    }
+
+    /// The frame's own pump of the step jobs, once a frame after its serve window. When a pulse
+    /// ran in that window, it leaves alone the jobs pulses are for: they were looked at within
+    /// the window, and a render that lands after the window's last pulse is landed by the next
+    /// window's first, where the window has room for it, not here in the frame's own time (light
+    /// review 5: held to 20 frames a second a pulse landed one render in the window and this
+    /// pump a second, and the frame paid for two). Its landings are timed as a pulse's are;
+    /// with no step job queued after it, what a landing costs is forgotten.
+    pub fn frame_pump<R>(&mut self, inbox: &impl Inbox<R>, w: &mut impl Window<R>) {
+        let leave = std::mem::take(&mut self.pulsed);
+        self.frame_pumps_left += u64::from(leave);
+        let start = inbox.now();
+        let worked = w.pump(leave);
+        let done = inbox.now();
+        if worked {
+            self.landed(done.saturating_duration_since(start));
+        }
+        if !w.steps_queued() {
+            self.landing_cost = None;
+        }
+    }
+
+    /// [`Schedule::serve`], and pulses while a step job waits on its render (the module docs):
+    /// `w` applies calls and pumps the step jobs, and says whether one waits on the GPU. A pulse
+    /// is due at once when one waits as the window starts, and [`PULSE_EVERY`] after a call or
+    /// a pulse that leaves one waiting; it runs between calls, and starts only when what a
+    /// landing costs fits before `deadline` (a pulse left out then is the last of the window,
+    /// unless a later call starts them again), never before a landing of this run of jobs has
+    /// been timed, and never when no job waits.
+    pub fn serve_with<R>(&mut self, inbox: &mut impl Inbox<R>, held: &mut VecDeque<R>, deadline: Instant, w: &mut impl Window<R>) -> Served {
         self.windows += 1;
         let mut first = true;
         // When the step jobs are next looked at (`None`: no job waits on the GPU).
-        let mut next_pulse = waiting.then(|| inbox.now());
+        let mut next_pulse = self.pulses_wanted(w.gpu_waiting()).then(|| inbox.now());
         loop {
-            if stop() {
+            if w.stop() {
                 return Served::Stopped;
             }
             let now = inbox.now();
             if next_pulse.is_some_and(|at| now >= at) {
-                if now + self.pulse_cost_at(now) > deadline {
-                    // No room before the frame: its own pump looks next.
+                if self.pulse_charge(now).is_none_or(|charge| now + charge > deadline) {
+                    // No room before the frame for what a landing costs.
                     self.pulses_left_out += 1;
                     next_pulse = None;
                 } else {
-                    let waits = work(Work::Pulse);
+                    let worked = w.pump(false);
+                    let waits = w.gpu_waiting();
                     self.pulses += 1;
+                    self.pulsed = true;
                     let done = inbox.now();
-                    self.pulse_costed(done - now, done);
-                    next_pulse = waits.then_some(done + PULSE_EVERY);
+                    let took = done.saturating_duration_since(now);
+                    if worked {
+                        self.landed(took);
+                    } else {
+                        self.looked(took, done);
+                    }
+                    next_pulse = self.pulses_wanted(waits).then_some(done + PULSE_EVERY);
                     continue;
                 }
             }
@@ -665,7 +783,7 @@ impl Schedule {
             };
             // A call that would likely run past the deadline waits for the next window (unless
             // it is this window's first: every window makes progress).
-            let kind = class(&request);
+            let kind = w.class(&request);
             let now = inbox.now();
             if !first && now + self.cost(kind, now) > deadline {
                 held.push_front(request);
@@ -677,7 +795,8 @@ impl Schedule {
                 return self.ended(inbox, held);
             }
             first = false;
-            let waits = work(Work::Call(request));
+            w.call(request);
+            let waits = self.pulses_wanted(w.gpu_waiting());
             self.calls += 1;
             let done = inbox.now();
             self.costed(kind, done - now, done);
@@ -1095,30 +1214,31 @@ mod tests {
     /// Runs the windowed loop for `seconds` of simulated time: serve, `work` of frame work, then a
     /// FIFO present that blocks until the next vblank of a display refreshing every `refresh`.
     fn sim_loop(s: &mut Schedule, sim: &Shared, refresh: Duration, work: Duration, seconds: f64) -> Run {
-        sim_loop_with(s, sim, refresh, work, seconds, None)
+        sim_frames(s, sim, refresh, work, seconds, &mut SimWindow::new(sim, None, true))
     }
 
     /// [`sim_loop`], with a step job whose renders the frame's own pump looks at once a frame
     /// (as the engine's does) and the serve windows pulse for.
     fn sim_loop_with(s: &mut Schedule, sim: &Shared, refresh: Duration, work: Duration, seconds: f64, job: Option<&RefCell<SimJob>>) -> Run {
+        sim_frames(s, sim, refresh, work, seconds, &mut SimWindow::new(sim, job, true))
+    }
+
+    /// The windowed loop as `run_windowed` runs it ([`Schedule::serve_frame`], then the frame's
+    /// own pump with [`Schedule::frame_pump`], the frame's work, a present), over `w`.
+    fn sim_frames(s: &mut Schedule, sim: &Shared, refresh: Duration, work: Duration, seconds: f64, w: &mut SimWindow) -> Run {
         let mut inbox = SimInbox(Rc::clone(sim));
         let mut held = VecDeque::new();
         let (start, calls, held_before) = (sim.borrow().t, sim.borrow().handled.len(), s.held);
         let (mut frames, mut late, mut last) = (0, 0, None);
         while sim.borrow().t < start + Duration::from_secs_f64(seconds) {
             let period = s.period();
-            let t0 = sim.borrow().t;
-            let deadline = sim.borrow().origin + t0 + s.window();
-            let handler = Rc::clone(sim);
-            let waiting = job.is_some_and(|j| j.borrow().on_gpu());
-            let end = s.serve_with(&mut inbox, &mut held, deadline, waiting, |c| c.class, |w| work_on(&handler, job, w), || false);
+            let (end, served) = s.serve_frame(&mut inbox, &mut held, false, w);
             assert_eq!(end, Served::Window);
-            if let Some(j) = job {
-                // The frame's own pump.
-                look(sim, j);
-            }
+            // The frame's own pump: frame work, as in the engine (not served time).
+            w.in_frame = true;
+            s.frame_pump(&inbox, w);
+            w.in_frame = false;
             let mut st = sim.borrow_mut();
-            let served = st.t - t0;
             st.t += work;
             let at = refresh * (st.t.as_nanos() / refresh.as_nanos() + 1) as u32;
             let blocked = at - st.t;
@@ -1169,14 +1289,15 @@ mod tests {
         }
     }
 
-    /// The step pump over `job` at the simulated time: lands its render if the GPU is done, and
-    /// says whether a render is (still, or again) on the GPU.
+    /// The step pump over `job` at the simulated time: lands its render if the GPU is done (and
+    /// says so: a landing), or only looks.
     fn look(sim: &Shared, job: &RefCell<SimJob>) -> bool {
         let mut st = sim.borrow_mut();
         let mut j = job.borrow_mut();
         let Some(at) = j.lands_at else { return false };
         j.looks += 1;
-        if st.t >= at {
+        let landed = st.t >= at;
+        if landed {
             j.landed.push((at, st.t));
             st.t += j.land;
             j.renders_left -= 1;
@@ -1186,28 +1307,77 @@ mod tests {
             j.waited += 1;
         }
         j.ends.push(st.t);
-        j.lands_at.is_some()
+        landed
     }
 
-    /// The loop's `work` in the simulation: a call handled, or the step pump, and whether a job
-    /// waits on the GPU after it.
-    fn work_on(sim: &Shared, job: Option<&RefCell<SimJob>>, w: Work<Call>) -> bool {
-        match w {
-            Work::Call(c) => sim.borrow_mut().handle(c),
-            Work::Pulse => {
-                look(sim, job.expect("a pulse only while a job waits"));
-            }
+    /// The simulation's side of a frame ([`Window`]): calls the simulation handles, and one step
+    /// job. `pulses`: whether it asks for pulses while the job's render is on the GPU (`false`:
+    /// the job is looked at only by the frame's own pump, as before pulses).
+    struct SimWindow<'a> {
+        sim: Shared,
+        job: Option<&'a RefCell<SimJob>>,
+        pulses: bool,
+        /// Set by the loop around the frame's own pump.
+        in_frame: bool,
+        /// When each pulse started (simulated), and the frame pumps that left the job alone.
+        pulse_starts: Vec<Duration>,
+        left_alone: u64,
+    }
+
+    impl<'a> SimWindow<'a> {
+        fn new(sim: &Shared, job: Option<&'a RefCell<SimJob>>, pulses: bool) -> SimWindow<'a> {
+            SimWindow { sim: Rc::clone(sim), job, pulses, in_frame: false, pulse_starts: Vec::new(), left_alone: 0 }
         }
-        job.is_some_and(|j| j.borrow().on_gpu())
+    }
+
+    impl Window<Call> for SimWindow<'_> {
+        fn class(&self, call: &Call) -> Class {
+            call.class
+        }
+
+        fn call(&mut self, call: Call) {
+            self.sim.borrow_mut().handle(call);
+        }
+
+        fn pump(&mut self, leave_pulsed: bool) -> bool {
+            let Some(j) = self.job else { return false };
+            if leave_pulsed && j.borrow().on_gpu() {
+                self.left_alone += 1;
+                return false;
+            }
+            if !self.in_frame {
+                self.pulse_starts.push(self.sim.borrow().t);
+            }
+            look(&self.sim, j)
+        }
+
+        fn gpu_waiting(&self) -> bool {
+            self.pulses && self.job.is_some_and(|j| j.borrow().on_gpu())
+        }
+
+        fn steps_queued(&self) -> bool {
+            self.job.is_some_and(|j| j.borrow().on_gpu())
+        }
+
+        fn stop(&mut self) -> bool {
+            false
+        }
     }
 
     /// One serve window of `len` from now with `job`; returns the window's deadline (simulated).
+    /// The schedule has timed one of the job's landings, as a frame's own pump would have.
     fn one_window(s: &mut Schedule, sim: &Shared, len: Duration, job: Option<&RefCell<SimJob>>) -> Duration {
-        let mut inbox = SimInbox(Rc::clone(sim));
-        let deadline_t = sim.borrow().t + len;
-        let deadline = sim.borrow().origin + deadline_t;
-        let waiting = job.is_some_and(|j| j.borrow().on_gpu());
-        let end = s.serve_with(&mut inbox, &mut VecDeque::new(), deadline, waiting, |c| c.class, |w| work_on(sim, job, w), || false);
+        one_window_in(s, &mut SimWindow::new(sim, job, true), len)
+    }
+
+    fn one_window_in(s: &mut Schedule, w: &mut SimWindow, len: Duration) -> Duration {
+        if let (Some(j), None) = (w.job, s.landing_cost) {
+            s.landed(j.borrow().land);
+        }
+        let mut inbox = SimInbox(Rc::clone(&w.sim));
+        let deadline_t = w.sim.borrow().t + len;
+        let deadline = w.sim.borrow().origin + deadline_t;
+        let end = s.serve_with(&mut inbox, &mut VecDeque::new(), deadline, w);
         assert_eq!(end, Served::Window);
         deadline_t
     }
@@ -1278,19 +1448,18 @@ mod tests {
                 let mut inbox = SimInbox(Rc::clone(&sim));
                 let deadline = inbox.now() + ms(45.0);
                 let handler = Rc::clone(&sim);
+                // A job that waits as the window starts and has landed by its first look (its
+                // look and landing take no time, so that only wakes and calls are compared).
+                let job = SimJob::new(&sim, Duration::ZERO, 1);
+                job.borrow_mut().land = Duration::ZERO;
+                job.borrow_mut().look = Duration::ZERO;
                 match pulse {
                     None => {
                         s.serve(&mut inbox, &mut VecDeque::new(), deadline, |c| c.class, |c| handler.borrow_mut().handle(c), || false);
                     }
-                    // A job that waits as the window starts and has landed by its first look.
                     Some(waiting) => {
-                        let work = |w: Work<Call>| {
-                            if let Work::Call(c) = w {
-                                handler.borrow_mut().handle(c);
-                            }
-                            false
-                        };
-                        s.serve_with(&mut inbox, &mut VecDeque::new(), deadline, waiting, |c| c.class, work, || false);
+                        s.landed(Duration::ZERO);
+                        s.serve_with(&mut inbox, &mut VecDeque::new(), deadline, &mut SimWindow::new(&sim, Some(&job), waiting));
                     }
                 }
                 let st = sim.borrow();
@@ -1677,5 +1846,70 @@ mod tests {
         assert!(rate > 2000.0, "{rate:.0} calls/s");
         assert!((45.0..=80.0).contains(&fps), "{fps:.0} fps");
         assert!(late * 10 <= frames, "{late} of {frames} frames late");
+    }
+
+    /// Light review 5, finding 1: "a pulse starts only when it fits before the deadline" was
+    /// held by no test (with the check taken out every test passed: they looked at where looks
+    /// end, and a 0.6 ms landing fitted in the margin they allowed). Here a landing costs 5 ms,
+    /// more than any margin, and a pulse comes due about every millisecond of four 45 ms windows:
+    /// none starts later than the deadline less what a landing costs, so every landing ends by
+    /// the deadline; a pulse due after that line is left out (counted); and the last pulse of
+    /// each window started within a landing and a look of the line (it had something to refuse).
+    #[test]
+    fn no_pulse_starts_without_room_for_a_landing() {
+        let sim = Sim::new(Duration::ZERO);
+        let job = SimJob::new(&sim, ms(3.0), usize::MAX);
+        let land = ms(5.0);
+        job.borrow_mut().land = land;
+        let mut s = Schedule::default();
+        let mut w = SimWindow::new(&sim, Some(&job), true);
+        for window in 0..4 {
+            let (left_out, start) = (s.pulses_left_out, sim.borrow().t);
+            let deadline = one_window_in(&mut s, &mut w, ms(45.0));
+            let line = deadline - land;
+            let starts: Vec<Duration> = w.pulse_starts.iter().copied().filter(|t| *t >= start).collect();
+            assert!(starts.len() >= 8, "window {window}: {} pulses", starts.len());
+            assert!(starts.iter().all(|t| *t <= line), "window {window}: a pulse started past {line:?}, the deadline less a landing: {starts:?}");
+            assert!(job.borrow().ends.iter().all(|e| *e <= deadline), "window {window}: a landing ended past the deadline");
+            assert!(s.pulses_left_out > left_out, "window {window}: no pulse was left out");
+            let last = *starts.last().unwrap();
+            assert!(last + land + job.borrow().gpu + TIMER_SLOP * 2 >= line, "window {window}: the last pulse ({last:?}) was not near the line ({line:?})");
+        }
+    }
+
+    /// Light review 5, finding 3: "frames are no later for pulses" was not true when renders are
+    /// slow and landing one is costly. A pulse was charged what pulses cost lately, halving every
+    /// 50 ms, so a render slower than that landed in a pulse that had room for a look only; and
+    /// held to 20 frames a second a pulse landed one render in the window and the frame's own
+    /// pump a second, so the frame paid for two. Now a pulse is charged what a landing costs
+    /// (the last landing's cost, not forgotten with time), and the frame's own pump leaves alone
+    /// a job the window's pulses looked at. The review's rows and more, four seconds each after
+    /// half a second: at 60 Hz and held to 20 frames a second, with pulses no more frames are
+    /// late than with the frame's own pump alone, and no fewer renders land. (The simulation runs
+    /// the frame's pump as the engine does: after the window, in the frame's own time.)
+    #[test]
+    fn pulses_make_no_frame_later_than_the_frames_own_pump() {
+        let mut table = String::new();
+        for (gpu, land) in [(3.0, 0.6), (3.0, 4.0), (40.0, 4.0), (100.0, 6.0), (100.0, 10.0), (300.0, 10.0)] {
+            for cap in [None, Some(20)] {
+                let run = |pulses: bool| {
+                    let sim = Sim::new(Duration::ZERO);
+                    let job = SimJob::new(&sim, ms(gpu), usize::MAX);
+                    job.borrow_mut().land = ms(land);
+                    let mut s = Schedule::default();
+                    s.set_display_refresh(Some(HZ60));
+                    s.set_max_fps(cap);
+                    let mut w = SimWindow::new(&sim, Some(&job), pulses);
+                    sim_frames(&mut s, &sim, HZ60, ms(1.0), 0.5, &mut w);
+                    let before = job.borrow().landed.len();
+                    let run = sim_frames(&mut s, &sim, HZ60, ms(1.0), 4.0, &mut w);
+                    let renders = job.borrow().landed.len() - before;
+                    (run.late, run.frames, renders, s.pulses)
+                };
+                let (alone, with) = (run(false), run(true));
+                table.push_str(&format!("render {gpu} ms, landing {land} ms, cap {cap:?}: pump alone {} of {} late, {} renders; with pulses {} of {} late, {} renders, {} pulses\n", alone.0, alone.1, alone.2, with.0, with.1, with.2, with.3));
+                assert!(with.0 <= alone.0 && with.2 >= alone.2, "render {gpu} ms, landing {land} ms, cap {cap:?}:\n{table}");
+            }
+        }
     }
 }

@@ -72,6 +72,17 @@ struct Entry {
     class: Class,
     trace: specula_core::trace::Ctx,
     started: Instant,
+    /// Its last step landed its render and it has more to do (the pass ran out of credit before
+    /// it sent the next): pulses are still for it ([`Steps::gpu_waiting`]).
+    landed: bool,
+}
+
+impl Entry {
+    /// A job the window's pulses are for: its render is on the GPU, or it has just landed one
+    /// and has more to do.
+    fn pulsed_for(&self) -> bool {
+        self.landed || self.job.on_gpu()
+    }
 }
 
 /// Queued step jobs and their credit.
@@ -91,9 +102,11 @@ impl Steps {
         !self.queue.is_empty()
     }
 
-    /// Whether a queued job has a render on the GPU ([`StepJob::on_gpu`]).
+    /// Whether a queued job has a render on the GPU ([`StepJob::on_gpu`]), or has just landed one
+    /// and has more to do: the jobs the window's pulses are for (`schedule`, "Step jobs waiting
+    /// on the GPU").
     pub fn gpu_waiting(&self) -> bool {
-        self.queue.iter().any(|e| e.job.on_gpu())
+        self.queue.iter().any(Entry::pulsed_for)
     }
 
     pub fn to_json(&self) -> Json {
@@ -148,18 +161,21 @@ impl Engine {
             reply.refuse(&e);
             return;
         }
-        self.steps.queue.push_back(Entry { job, owner, session, cancel_on_close: call != 0, reply, deadline, class, trace, started });
+        self.steps.queue.push_back(Entry { job, owner, session, cancel_on_close: call != 0, reply, deadline, class, trace, started, landed: false });
     }
 
     /// Runs queued slices round-robin within the credit earned at `share` of the wall time since
     /// the last pump; drops jobs past their deadline (`timed_out`) or of closed sessions.
-    pub(crate) fn pump_steps(&mut self, share: f64, server: &specula_protocol::Server) {
+    /// `leave_pulsed`: leaves alone the jobs the window's pulses are for (the frame's own pump,
+    /// after a window that pulsed: `Schedule::frame_pump`). Answers whether a job did more than
+    /// wait.
+    pub(crate) fn pump_steps(&mut self, share: f64, server: &specula_protocol::Server, leave_pulsed: bool) -> bool {
         let now = Instant::now();
         let earned = self.steps.last_pump.map_or(MAX_CREDIT_MS, |t| (now - t).as_secs_f64() * 1000.0 * share);
         self.steps.last_pump = Some(now);
         if self.steps.queue.is_empty() {
             self.steps.credit_ms = MAX_CREDIT_MS;
-            return;
+            return false;
         }
         if self.steps.last_session_check.is_none_or(|t| now - t >= SESSION_CHECK) {
             self.steps.last_session_check = Some(now);
@@ -167,7 +183,7 @@ impl Engine {
             self.drop_closed_steps(&alive);
         }
         self.steps.credit_ms = (self.steps.credit_ms + earned).min(MAX_CREDIT_MS);
-        self.run_steps();
+        self.run_steps(leave_pulsed)
     }
 
     /// Drops the queued jobs of sessions not in `alive` (`session_closed`), whatever they were
@@ -182,18 +198,29 @@ impl Engine {
         }
     }
 
-    /// The queued jobs' slices for this pass, within the credit earned.
-    pub(crate) fn run_steps(&mut self) {
-        // Jobs in a row that had nothing to do until a worker returns: when that is all of
-        // them, going round again would only spin.
+    /// The queued jobs' slices for this pass, within the credit earned (`leave_pulsed`: see
+    /// [`Engine::pump_steps`]). Answers whether a job did more than wait.
+    pub(crate) fn run_steps(&mut self, leave_pulsed: bool) -> bool {
+        // Jobs in a row that had nothing to do until a worker returns (or were left alone):
+        // when that is all of them, going round again would only spin.
         let mut waited = 0;
+        let mut worked = false;
         while self.steps.credit_ms > 0.0 {
             let Some(mut e) = self.steps.queue.pop_front() else { break };
             if Instant::now() > e.deadline {
                 let _ = e.reply.send(stopped("timed_out", &format!("the {} ran out of its caller's time; ask for less (fewer subjects, rows or frames) or call again when the engine is less busy", e.job.kind())));
                 continue;
             }
+            if leave_pulsed && e.pulsed_for() {
+                self.steps.queue.push_back(e);
+                waited += 1;
+                if waited >= self.steps.queue.len() {
+                    break;
+                }
+                continue;
+            }
             let _c = e.trace.enter();
+            let flying = e.job.on_gpu();
             let t = Instant::now();
             let step = {
                 // (A zone of its own, named for the job's kind: a slow frame says which job's
@@ -204,6 +231,14 @@ impl Engine {
             let took = t.elapsed();
             self.steps.credit_ms -= took.as_secs_f64() * 1000.0;
             self.engine_work_done(e.trace.call, Some(e.class), "step_job", took);
+            let landed = flying && !e.job.on_gpu() && !matches!(step, Step::Wait);
+            if landed {
+                // What landing a render cost, from its step's start to its end (LIGHT.md, the
+                // fifth round's measures).
+                specula_core::trace_event!(&crate::trace_sink::ENGINE, Debug, "step.landed", kind = e.job.kind(), ms = took.as_secs_f64() * 1000.0);
+            }
+            e.landed = landed && matches!(step, Step::More);
+            worked |= !matches!(step, Step::Wait);
             match step {
                 Step::More => {
                     waited = 0;
@@ -225,6 +260,7 @@ impl Engine {
                 }
             }
         }
+        worked
     }
 
     pub(crate) fn steps_busy(&self) -> bool {
@@ -311,7 +347,7 @@ mod tests {
         while counted_answer.recv_timeout(Duration::from_millis(1)).is_err() {
             assert!(Instant::now() < give_up, "the job behind a waiting one never finished ({} slices, {inline} of them in its own call)", slices.get());
             e.steps.credit_ms = MAX_CREDIT_MS;
-            e.run_steps();
+            e.run_steps(false);
         }
         assert_eq!(slices.get(), 40);
         // Only the waiting job is left: a pass asks it once and ends (it would spin until its
@@ -322,7 +358,7 @@ mod tests {
         e.steps.credit_ms = MAX_CREDIT_MS;
         let before = e.steps.credit_ms;
         let asked = Instant::now();
-        e.run_steps();
+        e.run_steps(false);
         assert_eq!(e.steps.queue.len(), 1, "still waiting, still queued");
         assert!(e.steps.credit_ms > before - 1.0 && asked.elapsed() < Duration::from_secs(5), "the pass spun on a job that only waits");
         drop(waiting_answer);
@@ -375,9 +411,77 @@ mod tests {
         while rendered.try_recv().is_err() {
             assert!(Instant::now() < give_up, "the render never landed");
             e.steps.credit_ms = MAX_CREDIT_MS;
-            e.run_steps();
+            e.run_steps(false);
         }
         assert!(e.steps.busy() && !e.steps.gpu_waiting(), "landed and answered: no more pulses");
+    }
+
+    /// A job with renders as `perf_light`'s: a step that finds its render on the GPU waits the
+    /// first time and lands it the next; the step after a landing sends the next render.
+    struct Lands {
+        renders: usize,
+        flying: bool,
+        looked: bool,
+        steps: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl StepJob for Lands {
+        fn kind(&self) -> &'static str {
+            "lands"
+        }
+
+        fn step(&mut self, _: &mut Engine, _: &Reply) -> Step {
+            self.steps.set(self.steps.get() + 1);
+            if self.flying {
+                if !std::mem::replace(&mut self.looked, true) {
+                    return Step::Wait;
+                }
+                (self.flying, self.looked) = (false, false);
+                self.renders -= 1;
+                return if self.renders == 0 { Step::Done(ToolOutput::text("{}")) } else { Step::More };
+            }
+            self.flying = true;
+            Step::More
+        }
+
+        fn on_gpu(&self) -> bool {
+            self.flying
+        }
+    }
+
+    /// Light review 5: the engine's half of the frame's own pump. A job that has just landed a
+    /// render and has more to do (the pass ran out of credit before it sent the next) is still
+    /// one the pulses are for, or the window would stop looking at it until the frame's pump; and
+    /// a pump asked to leave such jobs alone (the frame's own, after a window that pulsed) steps
+    /// none of them, whether its render is on the GPU or just landed, and says it did nothing.
+    #[test]
+    fn a_landed_job_with_more_to_do_is_pulsed_for_and_left_alone_by_the_frame_after_pulses() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        let (reply, _answer) = crate::jobs::channel();
+        let owner = crate::jobs::JobOwner { name: "light".into(), key: "light".into() };
+        let steps = std::rc::Rc::new(std::cell::Cell::new(0));
+        let start = StepStart { owner, session: "light".into(), call: 0, reply, deadline: Instant::now() + Duration::from_secs(120), class: crate::schedule::Class::Render };
+        e.step_job(start, Box::new(Lands { renders: 3, flying: false, looked: false, steps: std::rc::Rc::clone(&steps) }));
+        let pass = |e: &mut Engine, credit: f64, leave: bool| {
+            e.steps.credit_ms = credit;
+            e.run_steps(leave)
+        };
+        // Its call sent the first render and (within its inline time, or in a pass after it)
+        // found it on the GPU.
+        if steps.get() == 1 {
+            pass(&mut e, MAX_CREDIT_MS, false);
+        }
+        assert_eq!(steps.get(), 2);
+        assert!(e.steps.gpu_waiting());
+        // Left alone while its render is on the GPU.
+        assert!(!pass(&mut e, MAX_CREDIT_MS, true) && steps.get() == 2, "a pump that leaves pulsed jobs alone stepped one");
+        // Landed, with the credit spent by the landing: it has more to do, and pulses are for it.
+        assert!(pass(&mut e, 1e-9, false) && steps.get() == 3, "the landing is work");
+        assert!(e.steps.gpu_waiting(), "a job that landed and has more to do stopped the pulses");
+        assert!(!pass(&mut e, MAX_CREDIT_MS, true) && steps.get() == 3, "a pump that leaves pulsed jobs alone stepped a landed one");
+        // Its next step sends the next render; a step finding it on the GPU waits.
+        assert!(pass(&mut e, MAX_CREDIT_MS, false) && steps.get() == 5);
+        assert!(e.steps.gpu_waiting());
     }
 
     /// Review of 998af3d (major 1): twenty agents looping world_hash {verify} filled the slots and

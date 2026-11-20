@@ -2871,36 +2871,15 @@ impl Engine {
             if self.game_quit {
                 break;
             }
-            let window = if minimized { schedule::MINIMIZED_SERVE } else { schedule.window() };
-            let serve_start = Instant::now();
             // While a step job's render is on the GPU, the window also looks at the step jobs
-            // about every millisecond (`schedule`, "Step jobs waiting on the GPU"), where the
-            // frame's own pump looks once a frame.
-            let waiting = self.steps.gpu_waiting();
-            let ended = schedule.serve_with(
-                &mut inbox,
-                &mut held,
-                serve_start + window,
-                waiting,
-                |r| call_class(&r.command),
-                |w| {
-                    match w {
-                        schedule::Work::Call(r) => {
-                            let _z = profile::zone("requests");
-                            self.handle_traced(r, server);
-                        }
-                        schedule::Work::Pulse => self.pump_steps(steps::WINDOW_SHARE, server),
-                    }
-                    self.steps.gpu_waiting()
-                },
-                || interrupt::requested() || ui.close_requested(),
-            );
+            // about every millisecond (`schedule`, "Step jobs waiting on the GPU"); what decides
+            // when is the schedule's, and `WindowSide` only does what it is told.
+            let (ended, served) = schedule.serve_frame(&mut inbox, &mut held, minimized, &mut WindowSide { engine: self, server, ui });
             if ended != Served::Window {
                 // Stopping (or the server is gone). Held calls' reply channels close as they
                 // drop, which answers them "shutting down".
                 break;
             }
-            let served = serve_start.elapsed();
             self.trace_idle_checks();
             let frame_zone = profile::zone("frame");
             let frame_started = Instant::now();
@@ -2922,7 +2901,8 @@ impl Engine {
             self.serve_captures();
             self.pump_captures();
             self.pump_workers(Some(server));
-            self.pump_steps(steps::WINDOW_SHARE, server);
+            // (Leaving alone the jobs this frame's pulses looked at: `Schedule::frame_pump`.)
+            schedule.frame_pump(&inbox, &mut WindowSide { engine: self, server, ui });
             // Timelines whose starters left, or idle too long, end (see `timeline`).
             self.timeline_sweep(server);
             // The input monitor's halts; a swarm pause holds playtests where they are.
@@ -3182,7 +3162,7 @@ impl Engine {
             self.serve_captures();
             self.pump_captures();
             self.pump_workers(Some(server));
-            self.pump_steps(steps::HEADLESS_SHARE, server);
+            self.pump_steps(steps::HEADLESS_SHARE, server, false);
             self.timeline_sweep(server);
             // The input monitor's halts; a swarm pause holds playtests where they are.
             self.security_pump();
@@ -4153,6 +4133,42 @@ fn commits_independently(command: &Command) -> bool {
         command,
         Command::Review(review_tools::ReviewCall::Decide { .. }) | Command::Project(project_tools::ProjectCall::CommitFixes { .. })
     )
+}
+
+/// The engine as the window's schedule serves and steps it ([`schedule::Window`]): each method
+/// does one thing. When a pulse runs, with which deadline, and what the frame's own pump leaves
+/// alone are the schedule's, held by its tests on a simulated clock.
+struct WindowSide<'a> {
+    engine: &'a mut Engine,
+    server: &'a Server,
+    ui: &'a UiThread,
+}
+
+impl schedule::Window<Request> for WindowSide<'_> {
+    fn class(&self, call: &Request) -> Class {
+        call_class(&call.command)
+    }
+
+    fn call(&mut self, call: Request) {
+        let _z = profile::zone("requests");
+        self.engine.handle_traced(call, self.server);
+    }
+
+    fn pump(&mut self, leave_pulsed: bool) -> bool {
+        self.engine.pump_steps(steps::WINDOW_SHARE, self.server, leave_pulsed)
+    }
+
+    fn gpu_waiting(&self) -> bool {
+        self.engine.steps.gpu_waiting()
+    }
+
+    fn steps_queued(&self) -> bool {
+        self.engine.steps.busy()
+    }
+
+    fn stop(&mut self) -> bool {
+        interrupt::requested() || self.ui.close_requested()
+    }
 }
 
 fn call_class(command: &Command) -> Class {

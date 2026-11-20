@@ -1231,8 +1231,34 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       a landing costly (3 to 7 late frames of 240 at 60 Hz; the estimate of a pulse's
       cost decays between landings). One of its runs had agents' calls fall to 27 a
       second after a report, on a busy machine, not repeated and not explained. **A
-      fresh agent is mending those.** The window check is owed with the live checks,
-      since the window's loop changed.
+      fresh agent mended those** (2026-11-20, merged; LIGHT.md, "What was mended, fifth
+      round"). A pulse is charged what a landing costs and starts only if that fits
+      before the deadline; the estimate of a landing is kept apart from a look's and
+      does not decay with time; after a wait that pulsed, the frame's own pump leaves
+      the pulsed jobs alone. The reviewer's table is a permanent test of twelve rows:
+      with pulses no more frames are late than with the frame's pump alone, in every
+      row (100 ms renders landing in 6 ms at 20 frames a second: 34 late of 69 with
+      the pump alone, none of 80 with pulses). **The window loop's glue is out of the
+      loop** (`schedule::Window`, `serve_frame`, `frame_pump`: the simulation runs the
+      loop's own code), and **a live check in Rust holds it in a running engine**
+      (`light_window_check`: with a window at 20 frames a second, 80 renders over 21
+      frames on the integrated adapter and over 32 on the discrete, zero validation
+      messages; with the report's job made to say it has no render on the card, it
+      fails). A real landing costs 0.3 to 1.1 ms (the report, the preview; the most
+      seen 2.2 ms), so the review's 4 to 10 ms is a whole pump on a contended card,
+      not a landing. **Two limits, as its author states them:** a landing dearer than
+      the recent ones can still end past the deadline by the excess; where a landing
+      cannot fit the wait at all, no pulse runs and a report lands one render a frame.
+      **The run that fell to 27 calls a second was not reproduced** in six rounds, two
+      of them beside a second engine on the same card; its cause is a hypothesis read
+      from the code (a gap of over 100 ms between presents is taken as a stall and the
+      next wait drops to a millisecond) and is unproved. **Its review is queued.** The
+      window check is owed with the live checks, since the window's loop changed.
+      **A guard had been failing on the working branch since the third round's
+      merge** (`reply_wait_guard`: a test of the report's peeked at a reply where it
+      should wait; Claude had run a chosen few of the engine's 33 integration tests on
+      that merge and not all). It is mended in this round, and every engine merge now
+      runs all of them.
     - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
       PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
       builds: a large thin rounded cutter set a metre past the corner of what it cuts
