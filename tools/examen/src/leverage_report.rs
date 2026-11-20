@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use specula_core::Json;
 
-use crate::leverage::{absolute, commas, costs_dir, fmt, load_json, num, posix, read_cost, read_run, repo, settings, take, text, truthy, whole, R, TOKEN_KINDS};
+use crate::leverage::{absolute, commas, costs_dir, fmt, load_json, num, posix, read_cost, read_run, repo, run_data, settings, settings_in, take, text, truthy, whole, R, TOKEN_KINDS};
+use crate::leverage_arms::{baseline_of, DEFAULT_BASELINE};
 
 fn runs_of(root: &Path) -> Vec<PathBuf> {
     let mut runs: Vec<PathBuf> = std::fs::read_dir(root).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.join("run.json").is_file()).collect()).unwrap_or_default();
@@ -49,9 +50,61 @@ struct Row {
     json: Json,
 }
 
+/// One cell's means, as the report's table by job and arm has them.
+struct Mean {
+    job: String,
+    /// The arm's name.
+    arm: String,
+    /// How the table names the cell (the arm, and its engine's build when it ran on two).
+    label: String,
+    tokens: f64,
+    requests: Option<f64>,
+    passed: f64,
+    of: i64,
+}
+
+/// Each cell that is not the baseline's against the baseline's cells of the same job: its
+/// mean weighted tokens (and requests) over theirs (the mean of their means, when the
+/// baseline ran on more than one build), and the checks each passed.
+fn against_baseline(means: &[Mean], baseline: &str) -> Vec<Json> {
+    let mut out = Vec::new();
+    for m in means.iter().filter(|m| m.arm != baseline) {
+        let base: Vec<&Mean> = means.iter().filter(|b| b.job == m.job && b.arm == baseline).collect();
+        let n = base.len() as f64;
+        let tokens = (!base.is_empty()).then(|| base.iter().map(|b| b.tokens).sum::<f64>() / n);
+        let requests = base.iter().map(|b| b.requests).collect::<Option<Vec<f64>>>().filter(|r| !r.is_empty()).map(|r| r.iter().sum::<f64>() / n);
+        let passed = (!base.is_empty()).then(|| base.iter().map(|b| b.passed).sum::<f64>() / n);
+        let ratio = |a: Option<f64>, b: Option<f64>| match (a, b) {
+            (Some(a), Some(b)) if b > 0.0 => Json::Num((a / b * 100.0).round() / 100.0),
+            _ => Json::Null,
+        };
+        let opt = |x: Option<f64>| x.map_or(Json::Null, Json::Num);
+        out.push(Json::obj([
+            ("job", Json::Str(m.job.clone())),
+            ("arm", Json::Str(m.label.clone())),
+            ("baseline", Json::Str(baseline.to_owned())),
+            ("weighted", Json::Num(m.tokens.round())),
+            ("baseline_weighted", opt(tokens.map(f64::round))),
+            ("times", ratio(Some(m.tokens), tokens)),
+            ("requests_times", ratio(m.requests, requests)),
+            ("passed", Json::Str(format!("{:.1} / {}", m.passed, m.of))),
+            ("baseline_passed", passed.map_or(Json::Null, |p| Json::Str(format!("{p:.1} / {}", base[0].of)))),
+        ]));
+    }
+    out
+}
+
 /// `report ROOT`: writes `report.md` and `report.json` into the runs' folder and returns the
-/// report's text.
+/// report's text. The baseline is the one the runs were prepared with.
+#[cfg(test)]
 pub fn report(root: &Path) -> R<String> {
+    report_in(root, None)
+}
+
+/// `report ROOT [--data FOLDER]`: with a data folder, its settings name the baseline and the
+/// weights to fall back on; without one, the runs' own records do (and, for runs made before
+/// they kept a baseline, `plain`).
+pub fn report_in(root: &Path, data: Option<&Path>) -> R<String> {
     let root = absolute(root);
     let mut runs = Vec::new();
     for run in runs_of(&root) {
@@ -60,9 +113,21 @@ pub fn report(root: &Path) -> R<String> {
     if runs.is_empty() {
         return Err(format!("{}: no runs", posix(&root)));
     }
+    let given = data.map(settings_in).transpose()?;
+    let mut recorded: Vec<String> = Vec::new();
+    for (_, r, _) in &runs {
+        let b = at(r, &["settings", "baseline"]).and_then(Json::as_str).unwrap_or(DEFAULT_BASELINE).to_owned();
+        if !recorded.contains(&b) {
+            recorded.push(b);
+        }
+    }
+    let baseline = given.as_ref().map_or_else(|| recorded[0].clone(), baseline_of);
     let mut out = vec!["# Measured leverage: the runs".to_owned(), String::new(), format!("Folder: `{}`. Every run is here, failed ones included.", name_of(&root)), String::new()];
     let mut seen: Vec<String> = Vec::new();
-    let default_weights = || settings().ok().and_then(|s| s.get("token_weights").cloned()).unwrap_or(Json::Null);
+    if given.is_none() && recorded.len() > 1 {
+        seen.push(format!("- these runs were prepared with more than one baseline ({}); the report measures against {baseline} (`--data FOLDER` names another)", recorded.join(", ")));
+    }
+    let default_weights = || given.clone().or_else(|| settings().ok()).and_then(|s| s.get("token_weights").cloned()).unwrap_or(Json::Null);
     let mut weight_sets: BTreeMap<String, Json> = BTreeMap::new();
     for (_, r, _) in &runs {
         let s = r.get("settings").cloned().unwrap_or(Json::Null);
@@ -206,6 +271,7 @@ pub fn report(root: &Path) -> R<String> {
     for (job, arm, build) in cells.keys() {
         builds.entry((job.clone(), arm.clone())).or_default().push(build);
     }
+    let mut means: Vec<Mean> = Vec::new();
     for ((job, arm, build), ts) in &cells {
         // (An arm run on two engine builds is two cells: the build is part of what was run.)
         let arm = if builds[&(job.clone(), arm.clone())].len() > 1 { format!("{arm}, build {build}") } else { arm.clone() };
@@ -224,6 +290,37 @@ pub fn report(root: &Path) -> R<String> {
         let per = if passed > 0.0 { commas0(tokens / passed) } else { "none passed".to_owned() };
         let (low, high) = (weighted.iter().copied().fold(f64::MAX, f64::min), weighted.iter().copied().fold(f64::MIN, f64::max));
         out.push(format!("| {job} | {arm} | {} of {} | {} | {} to {} | {minutes:.0} | {passed:.1} / {of} | {per} |", done.len(), ts.len(), commas0(tokens), fmt(Some(low)), fmt(Some(high))));
+        let requests: Vec<f64> = done.iter().filter_map(|t| at(&t.builder, &["by_kind", "requests"]).and_then(Json::as_f64)).collect();
+        let requests = (requests.len() == done.len()).then(|| requests.iter().sum::<f64>() / n);
+        means.push(Mean { job: job.clone(), arm: ts[0].arm.clone(), label: arm, tokens, requests, passed, of });
+    }
+    let ratios = against_baseline(&means, &baseline);
+    out.extend(
+        [
+            String::new(),
+            format!("## Against the baseline arm, `{baseline}` (each cell's mean over the mean of the baseline's judged runs of the same job)"),
+            String::new(),
+            "| Job | Arm | Weighted tokens | The baseline's | Times the baseline's | Requests, times the baseline's | Checks passed | The baseline's |".to_owned(),
+            "|---|---|---|---|---|---|---|---|".to_owned(),
+        ],
+    );
+    for r in &ratios {
+        let times = |k: &str| num(r, k).map_or_else(|| "-".to_owned(), |x| format!("{x:.2}"));
+        let cell = |k: &str| text(r, k).unwrap_or("-").to_owned();
+        out.push(format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} |",
+            cell("job"),
+            cell("arm"),
+            num(r, "weighted").map_or_else(|| "-".to_owned(), commas0),
+            num(r, "baseline_weighted").map_or_else(|| "no judged run".to_owned(), commas0),
+            times("times"),
+            times("requests_times"),
+            cell("passed"),
+            cell("baseline_passed"),
+        ));
+    }
+    if ratios.is_empty() {
+        out.push(format!("| - | - | no judged cell beside the baseline's (`{baseline}`) | - | - | - | - | - |"));
     }
     let object = |j: Option<&Json>| j.cloned().filter(|j| j.as_object().is_some()).unwrap_or(Json::Obj(Vec::new()));
     let last: Vec<Json> = runs.iter().map(|(_, _, c)| object(c.get("judge"))).collect();
@@ -278,7 +375,7 @@ pub fn report(root: &Path) -> R<String> {
     }
     let said = out.join("\n") + "\n";
     std::fs::write(root.join("report.md"), &said).map_err(|e| format!("report.md: {e}"))?;
-    let data = Json::obj([("leverage", Json::Num(1.0)), ("runs", Json::Arr(table.into_iter().map(|t| t.json).collect()))]);
+    let data = Json::obj([("leverage", Json::Num(1.0)), ("baseline", Json::Str(baseline)), ("against_baseline", Json::Arr(ratios)), ("runs", Json::Arr(table.into_iter().map(|t| t.json).collect()))]);
     std::fs::write(root.join("report.json"), data.to_pretty() + "\n").map_err(|e| format!("report.json: {e}"))?;
     Ok(said)
 }
@@ -394,9 +491,15 @@ pub(crate) fn home() -> Option<PathBuf> {
 /// `export ROOT DEST`: what a repository keeps of a set of runs: the report, and one file a run
 /// with its settings, what it cost and its verdict. Never the games, the transcripts or a path
 /// of the machine they ran on (each is replaced by a name).
+#[cfg(test)]
 pub fn export(root: &Path, dest: &Path) -> R<Json> {
+    export_in(root, dest, None)
+}
+
+/// `export ROOT DEST [--data FOLDER]`: the report as [`report_in`] makes it.
+pub fn export_in(root: &Path, dest: &Path, data: Option<&Path>) -> R<Json> {
     let (root, dest) = (absolute(root), absolute(dest));
-    let said = report(&root)?;
+    let said = report_in(&root, data)?;
     print!("{}", said.chars().map(|c| if c.is_ascii() { c } else { '?' }).collect::<String>());
     std::fs::create_dir_all(&dest).map_err(|e| format!("{}: {e}", posix(&dest)))?;
     let repo = repo();
@@ -674,7 +777,8 @@ pub fn where_of(run: &Path) -> R<Json> {
     }
     let b = read_cost(&run)?.get("builder").cloned().unwrap_or(Json::Null);
     let k = b.get("by_kind").cloned().filter(|k| truthy(Some(k)));
-    let w = read_run(&run)?.get("settings").and_then(|s| s.get("token_weights")).cloned().filter(|w| truthy(Some(w))).map_or_else(|| settings().map(|s| s.get("token_weights").cloned().unwrap_or(Json::Null)), Ok)?;
+    let r = read_run(&run)?;
+    let w = r.get("settings").and_then(|s| s.get("token_weights")).cloned().filter(|w| truthy(Some(w))).map_or_else(|| settings_in(&run_data(&r)).map(|s| s.get("token_weights").cloned().unwrap_or(Json::Null)), Ok)?;
     let split = match &k {
         None => Json::Obj(Vec::new()),
         Some(k) => {

@@ -18,6 +18,9 @@ mod corpus;
 mod gate;
 mod kept;
 mod leverage;
+mod leverage_arms;
+#[cfg(test)]
+mod leverage_arms_tests;
 mod leverage_report;
 mod leverage_trace;
 #[cfg(test)]
@@ -52,8 +55,10 @@ examen: the repository's own tooling
       was of; --built-at, before the next build, gives the files that have not changed since
       that commit an old time, so that cargo builds only what changed.
 
-  examen leverage --check
-  examen leverage prepare JOB ARM N --out ROOT [--exe SPECULA_EXE] [--port P] [--from RUN] [--build NAME]
+  examen leverage --check [--data FOLDER]
+  examen leverage prompt [--data FOLDER] [--job JOB] [--arm ARM] [--out ROOT] [--exe [KEY=]PATH ...]
+  examen leverage prepare JOB ARM N --out ROOT [--data FOLDER] [--exe [KEY=]SPECULA_EXE ...]
+              [--port P] [--from RUN] [--build NAME]
   examen leverage engine start|stop RUN | call RUN TOOL ['{json}' | @FILE] | tools RUN [FILTER]
   examen leverage run RUN [--judge [--again WHY]] [--note TEXT] | finish RUN
   examen leverage record RUN --tokens N --tool-uses N --duration-s N [--usage TRANSCRIPT]
@@ -63,7 +68,8 @@ examen: the repository's own tooling
   examen leverage trace RUN [RUN ...] [--judge] [--json]   (every request: what it read, wrote and cost)
       The measured comparison's harness (docs/design/LEVERAGE.md): the same game jobs built
       through the engine and without it, each run in a folder of its own, what it cost kept
-      apart from what its judge sees.
+      apart from what its judge sees. --data FOLDER (default evals/leverage) names another
+      comparison's settings and jobs, its arms among them; a run keeps the folder it came from.
 
   examen corpus tables FEMALE.csv MALE.csv
       Prints crates/specula-corpus/src/ansur_data.rs: how each of a body's dimensions is spread

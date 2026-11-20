@@ -11,8 +11,9 @@
 //! tells `record` what that agent's harness reported.
 //!
 //! ```text
-//! examen leverage --check
-//! examen leverage prepare JOB ARM N --out ROOT [--exe SPECULA_EXE] [--port P] [--from RUN] [--build NAME]
+//! examen leverage --check [--data FOLDER]          (or: check --data FOLDER)
+//! examen leverage prompt [--data FOLDER] [--job JOB] [--arm ARM] [--out ROOT] [--exe [KEY=]PATH ...]
+//! examen leverage prepare JOB ARM N --out ROOT [--data FOLDER] [--exe [KEY=]SPECULA_EXE ...] [--port P] [--from RUN] [--build NAME]
 //! examen leverage engine start|stop RUN
 //! examen leverage call RUN TOOL ['{json}' | @FILE]
 //! examen leverage tools RUN [FILTER]
@@ -26,6 +27,11 @@
 //! examen leverage where RUN [RUN ...] [--json]
 //! examen leverage trace RUN [RUN ...] [--judge] [--json] [--said A-B [--cut N]]
 //! ```
+//!
+//! Every command but `call`, `play` and `check RUN` (whose words after the run are passed on
+//! as they are) takes `--data FOLDER` (default `evals/leverage`): the settings and jobs of a
+//! comparison, with its arms (crate::leverage_arms). A run keeps the folder it was prepared
+//! from, and every later command on it reads that one; a `--data` that is not it is refused.
 //!
 //! A run's folder (`ROOT/<job>-<arm>-<n>/`) holds what the builder and the judge see:
 //! `BRIEF.md`, `work/` (the game), and for the engine arm `engine/` (its settings and trace).
@@ -44,9 +50,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use specula_core::Json;
 
+use crate::leverage_arms::{engine_docs, fill, kind_of_run, Arm, Exes, Kind};
 use crate::run::stop_tree;
 
-pub const ARMS: [&str; 2] = ["engine", "plain"];
 pub const KINDS: [&str; 2] = ["behaviour", "checkable"];
 /// What a run's size counts leave out: build output, the engine's own files, the SDK copy.
 const SKIP_DIRS: [&str; 9] = ["target", "specula-sdk", "specula-core", ".specula-cache", "captures", "worlds", "saves", "__pycache__", ".git"];
@@ -56,8 +62,9 @@ const CODE: [&str; 12] = ["rs", "py", "js", "ts", "html", "css", "json", "toml",
 pub const TOKEN_KINDS: [&str; 4] = ["input", "cache_write", "cache_read", "output"];
 /// The names a request's usage record gives them (Claude Code's).
 const USAGE_NAMES: [&str; 4] = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"];
-/// Words a brief may not hold: it is one text for both arms.
-const BRIEF_NAMES_NO: [&str; 5] = ["Specula", "engine", "Python", "Rust", "cargo"];
+/// Words a brief may not hold: it is one text for both arms (the default data's; another data
+/// folder names its own: `brief_names_no`).
+pub const BRIEF_NAMES_NO: [&str; 5] = ["Specula", "engine", "Python", "Rust", "cargo"];
 
 /// What was asked cannot be done; the text says why.
 pub type R<T> = Result<T, String>;
@@ -68,8 +75,48 @@ pub fn repo() -> PathBuf {
     crate::run::root()
 }
 
-fn data() -> PathBuf {
+/// The data folder a command reads when it is given none (`--data FOLDER`).
+pub fn default_data() -> PathBuf {
     repo().join("evals").join("leverage")
+}
+
+/// A data folder as a command line names it: from the folder the command is run in, or, when
+/// there is no such folder there, from the repository (`--data evals/leverage-props`).
+pub fn data_named(given: &Path) -> PathBuf {
+    let here = absolute(given);
+    if given.is_relative() && !here.is_dir() && repo().join(given).is_dir() {
+        repo().join(given)
+    } else {
+        here
+    }
+}
+
+/// How a run's record names its data folder: from the repository when it is inside it.
+fn data_word(data: &Path) -> String {
+    let data = absolute(data);
+    match data.strip_prefix(absolute(&repo())) {
+        Ok(inside) => posix(inside),
+        Err(_) => posix(&data),
+    }
+}
+
+/// The data folder a run was prepared from (a run made before `--data` was: the default).
+pub fn run_data(r: &Json) -> PathBuf {
+    match text(r, "data").filter(|d| !d.is_empty()) {
+        None => default_data(),
+        Some(d) if Path::new(d).is_absolute() => PathBuf::from(d),
+        Some(d) => repo().join(d),
+    }
+}
+
+/// The run's data folder, refused when a command was given another (`--data`): a run is
+/// judged and recorded by the data it was prepared from.
+pub fn run_data_checked(r: &Json, given: Option<&Path>) -> R<PathBuf> {
+    let theirs = run_data(r);
+    match given {
+        Some(g) if absolute(g) != absolute(&theirs) => Err(format!("this run was prepared from the data in {}, not {}: leave out --data, or give that one", posix(&theirs), posix(g))),
+        _ => Ok(theirs),
+    }
 }
 
 /// A path with `/`, as a brief names it.
@@ -169,8 +216,14 @@ fn epoch_s() -> f64 {
 
 // ---- data -----------------------------------------------------------------------------------
 
+/// The default data folder's settings.
 pub fn settings() -> R<Json> {
-    let s = load_json(&data().join("settings.json"))?;
+    settings_in(&default_data())
+}
+
+/// A data folder's settings, checked.
+pub fn settings_in(data: &Path) -> R<Json> {
+    let s = load_json(&data.join("settings.json"))?;
     let problems = check_settings(&s);
     if problems.is_empty() {
         Ok(s)
@@ -192,10 +245,7 @@ pub fn check_settings(s: &Json) -> Vec<String> {
             out.push(format!("{k} must name a model"));
         }
     }
-    let arms: Option<Vec<&str>> = s.get("arms").and_then(Json::as_array).map(|a| a.iter().filter_map(Json::as_str).collect());
-    if arms.as_deref() != Some(&ARMS[..]) {
-        out.push(format!("arms must be {ARMS:?}: the comparison is between the two"));
-    }
+    out.extend(crate::leverage_arms::check_arms(s));
     let jobs: &[(String, Json)] = match s.get("jobs").and_then(Json::as_object) {
         Some(jobs) if !jobs.is_empty() => jobs,
         _ => {
@@ -244,9 +294,17 @@ pub fn check_settings(s: &Json) -> Vec<String> {
     out
 }
 
+/// A job of the default data folder.
+#[cfg(test)]
 pub fn job(name: &str) -> R<Json> {
-    let j = load_json(&data().join("jobs").join(format!("{name}.json")))?;
-    let problems = check_job(&j, name);
+    job_in(&default_data(), name)
+}
+
+/// A job of a data folder, checked against what its settings say a brief may not name.
+pub fn job_in(data: &Path, name: &str) -> R<Json> {
+    let j = load_json(&data.join("jobs").join(format!("{name}.json")))?;
+    let names_no = settings_in(data).map(|s| crate::leverage_arms::brief_names_no(&s))?;
+    let problems = check_job_with(&j, name, &names_no);
     if problems.is_empty() {
         Ok(j)
     } else {
@@ -258,7 +316,15 @@ fn echo(j: &Json) -> String {
     j.to_string().chars().take(60).collect()
 }
 
+/// A job's problems, held to the default data's words a brief may not name.
+#[cfg(test)]
 pub fn check_job(j: &Json, name: &str) -> Vec<String> {
+    let names_no: Vec<String> = BRIEF_NAMES_NO.iter().map(|w| (*w).to_owned()).collect();
+    check_job_with(j, name, &names_no)
+}
+
+/// A job's problems; `names_no`: the words its brief may not name (it goes to every arm).
+pub fn check_job_with(j: &Json, name: &str, names_no: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     if whole(j, "leverage") != Some(1) {
         out.push("leverage must be 1".to_owned());
@@ -300,8 +366,8 @@ pub fn check_job(j: &Json, name: &str) -> Vec<String> {
     if all.chars().count() < 400 {
         out.push("the brief says what the game does (it is under 400 characters)".to_owned());
     }
-    for word in BRIEF_NAMES_NO {
-        if all.contains(word) {
+    for word in names_no {
+        if all.contains(word.as_str()) {
             out.push(format!("the brief is the same for both arms and names no tool ({word})"));
         }
     }
@@ -332,29 +398,36 @@ pub fn check_job(j: &Json, name: &str) -> Vec<String> {
     out
 }
 
-/// Every problem in the data files, as lines (none: the data is good).
+/// Every problem in the default data folder's files, as lines (none: the data is good).
+#[cfg(test)]
 pub fn check_all() -> Vec<String> {
+    check_all_in(&default_data())
+}
+
+/// Every problem in a data folder's files, as lines (none: the data is good).
+pub fn check_all_in(data: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    let s = match load_json(&data().join("settings.json")) {
+    let s = match load_json(&data.join("settings.json")) {
         Ok(s) => s,
         Err(e) => return vec![e],
     };
     out.extend(check_settings(&s).into_iter().map(|p| format!("settings.json: {p}")));
-    let mut names: Vec<String> = std::fs::read_dir(data().join("jobs"))
+    let names_no = crate::leverage_arms::brief_names_no(&s);
+    let mut names: Vec<String> = std::fs::read_dir(data.join("jobs"))
         .map(|d| d.flatten().filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(str::to_owned)).collect())
         .unwrap_or_default();
     names.sort();
     let mut ids: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut any_change = false;
     for name in &names {
-        let j = match load_json(&data().join("jobs").join(format!("{name}.json"))) {
+        let j = match load_json(&data.join("jobs").join(format!("{name}.json"))) {
             Ok(j) => j,
             Err(e) => {
                 out.push(e);
                 continue;
             }
         };
-        out.extend(check_job(&j, name).into_iter().map(|p| format!("jobs/{name}.json: {p}")));
+        out.extend(check_job_with(&j, name, &names_no).into_iter().map(|p| format!("jobs/{name}.json: {p}")));
         if let Some(of) = text(&j, "change_of") {
             if !names.iter().any(|n| n == of) {
                 out.push(format!("jobs/{name}.json: change_of names no job ({of})"));
@@ -368,8 +441,8 @@ pub fn check_all() -> Vec<String> {
         }
     }
     out.extend(ids.iter().filter(|(_, at)| at.len() > 1).map(|(id, at)| format!("{id} names one item across all jobs (it is in {})", at.join(", "))));
-    if !any_change {
-        out.push("the change round is one of the jobs".to_owned());
+    if !any_change && s.get("change_round").and_then(Json::as_bool) != Some(false) {
+        out.push("the change round is one of the jobs (or settings.json says \"change_round\": false)".to_owned());
     }
     let limits: Vec<&str> = s.get("jobs").and_then(Json::as_object).map(|j| j.iter().map(|(k, _)| k.as_str()).collect()).unwrap_or_default();
     for name in &limits {
@@ -442,7 +515,7 @@ pub(crate) fn write_cost(run: &Path, c: &Json) -> R<()> {
 }
 
 /// How a builder's brief names this tool and its run.
-fn me(run: &Path) -> (String, String) {
+pub(crate) fn me(run: &Path) -> (String, String) {
     let exe = std::env::current_exe().map(|e| posix(&e)).unwrap_or_else(|_| "examen".to_owned());
     (format!("\"{exe}\" leverage"), format!("\"{}\"", posix(&absolute(run))))
 }
@@ -475,13 +548,28 @@ fn arm_text(arm: &str, run: &Path, change: bool) -> Vec<String> {
     ]
 }
 
-fn brief_text(j: &Json, arm: &str, run: &Path, s: &Json) -> String {
+/// What `arm`'s brief says it has: the text in the code for an arm of a settings file that
+/// names its arms as words, or the arm's own text with its placeholders filled in. `exe`: the
+/// engine the arm runs (`None`, as in `prompt` without `--exe`: `{docs}` says where it would be).
+pub(crate) fn arm_lines(arm: &Arm, run: &Path, change: bool, exe: Option<&Path>) -> R<Vec<String>> {
+    let Some(lines) = &arm.text else { return Ok(arm_text(&arm.name, run, change)) };
+    let (tool, rd) = me(run);
+    let work = posix(&absolute(run).join("work"));
+    let docs = match (arm.kind, exe) {
+        (Kind::Engine, Some(exe)) => posix(&engine_docs(exe).ok_or_else(|| format!("{}: no repository's docs/design/ above this engine, which the {} arm's text names as {{docs}} (give the specula executable a checkout built: target/release/specula.exe)", posix(exe), arm.name))?),
+        (Kind::Engine, None) => format!("<the docs folder of the engine given as --exe {}PATH>", if arm.exe.is_empty() { String::new() } else { format!("{}=", arm.exe) }),
+        (Kind::Plain, _) => posix(&repo().join("docs")),
+    };
+    lines.iter().map(|l| fill(l, &[("tool", &tool), ("run", &rd), ("work", &work), ("docs", &docs)]).map_err(|why| format!("the {} arm's text: {why}", arm.name))).collect()
+}
+
+pub(crate) fn brief_text(j: &Json, arm: &Arm, run: &Path, s: &Json, exe: Option<&Path>) -> R<String> {
     let id = text(j, "id").unwrap_or("");
     let lim = s.get("jobs").and_then(|jobs| jobs.get(id)).cloned().unwrap_or(Json::Null);
     let mut lines = vec![format!("# {}", text(j, "title").unwrap_or("")), String::new()];
     lines.extend(j.get("brief").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).map(str::to_owned));
     lines.push(String::new());
-    lines.extend(arm_text(arm, run, j.get("change_of").is_some()));
+    lines.extend(arm_lines(arm, run, j.get("change_of").is_some(), exe)?);
     lines.push(String::new());
     lines.push("Limits and rules".to_owned());
     lines.push(format!(
@@ -492,7 +580,7 @@ fn brief_text(j: &Json, arm: &str, run: &Path, s: &Json) -> String {
     lines.push(format!("- Your work folder is {}. Write nowhere else.", posix(&absolute(run).join("work"))));
     lines.extend(s.get("rules").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).map(|r| format!("- {r}")));
     lines.push("- When you finish, answer with: what you built, the commands for the two checks, what you checked yourself, and what does not work.".to_owned());
-    lines.join("\n") + "\n"
+    Ok(lines.join("\n") + "\n")
 }
 
 /// What `cmd` printed, and its exit code, run in `cwd` for at most `limit` (`None`: it could
@@ -549,18 +637,21 @@ pub struct Prepare {
     pub arm: String,
     pub n: i64,
     pub out: PathBuf,
-    pub exe: Option<PathBuf>,
+    /// The engine executables given (`--exe PATH`, `--exe KEY=PATH`).
+    pub exe: Exes,
     pub port: Option<i64>,
     pub from: Option<PathBuf>,
     pub build: Option<String>,
+    /// The data folder (`None`: the default, `evals/leverage`).
+    pub data: Option<PathBuf>,
 }
 
 pub fn prepare(a: &Prepare) -> R<Json> {
-    let s = settings()?;
-    let j = job(&a.job)?;
-    if !ARMS.contains(&a.arm.as_str()) {
-        return Err(format!("arm must be one of {ARMS:?}"));
-    }
+    let data = a.data.clone().unwrap_or_else(default_data);
+    let s = settings_in(&data)?;
+    let j = job_in(&data, &a.job)?;
+    let arm = crate::leverage_arms::arm_named(&s, &a.arm)?;
+    let engine = arm.kind == Kind::Engine;
     let root = absolute(&a.out);
     let run = root.join(format!("{}-{}-{}", a.job, a.arm, a.n));
     if run.exists() {
@@ -568,9 +659,11 @@ pub fn prepare(a: &Prepare) -> R<Json> {
     }
     let work = run.join("work");
     // (Checked before anything is made: a refused prepare leaves no folder that refuses the next.)
-    let exe = a.exe.as_deref().map(absolute);
-    if a.arm == "engine" && !exe.as_ref().is_some_and(|e| e.is_file()) {
-        return Err("the engine arm needs --exe: the specula executable (a release build)".to_owned());
+    let exe = if engine { Some(a.exe.of(&arm)?) } else { None };
+    if engine && arm.text.is_some() {
+        // (The brief is made before anything is: an arm whose text names {docs} of an engine
+        // that has none is refused here.)
+        brief_text(&j, &arm, &run, &s, exe.as_deref())?;
     }
     let limits = s.get("jobs").and_then(|jobs| jobs.get(&a.job)).cloned().unwrap_or(Json::Null);
     let pick = |k: &str| s.get(k).cloned().unwrap_or(Json::Null);
@@ -578,6 +671,8 @@ pub fn prepare(a: &Prepare) -> R<Json> {
         ("leverage", Json::Num(1.0)),
         ("job", Json::Str(a.job.clone())),
         ("arm", Json::Str(a.arm.clone())),
+        ("kind", Json::Str(arm.kind.name().to_owned())),
+        ("data", Json::Str(data_word(&data))),
         ("n", Json::Num(a.n as f64)),
         ("phase", Json::Str("build".to_owned())),
         ("prepared", Json::Str(now_text())),
@@ -590,12 +685,13 @@ pub fn prepare(a: &Prepare) -> R<Json> {
                 ("limits", limits.clone()),
                 ("judge", pick("judge")),
                 ("token_weights", pick("token_weights")),
+                ("baseline", Json::Str(crate::leverage_arms::baseline_of(&s))),
             ]),
         ),
     ]);
-    let port = match (a.arm.as_str(), a.port) {
-        ("engine", Some(p)) => Some(p),
-        ("engine", None) => Some(free_port(&s, &root)?),
+    let port = match (engine, a.port) {
+        (true, Some(p)) => Some(p),
+        (true, None) => Some(free_port(&s, &root)?),
         _ => None,
     };
     if let Some(of) = text(&j, "change_of") {
@@ -608,7 +704,7 @@ pub fn prepare(a: &Prepare) -> R<Json> {
         // The game as it was handed in; never its builder's costs or the judge's verdict.
         copy_tree(&from.join("work"), &work, &["target", ".specula-cache"])?;
         r.set("from", Json::Str(run_name(from)));
-    } else if a.arm == "engine" {
+    } else if engine {
         // The engine arm starts where anyone who builds through the engine starts: a project
         // the engine made (docs/design/FIRST_HOUR.md, slice 7). Its SDK is the engine's own.
         std::fs::create_dir_all(run.join("engine")).map_err(|e| format!("{}: {e}", posix(&run)))?;
@@ -623,14 +719,17 @@ pub fn prepare(a: &Prepare) -> R<Json> {
     } else {
         std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", posix(&work)))?;
     }
-    if a.arm == "engine" {
-        r.set("exe", Json::Str(posix(&exe.unwrap_or_default())));
+    if engine {
+        if !arm.exe.is_empty() {
+            r.set("exe_key", Json::Str(arm.exe.clone()));
+        }
+        r.set("exe", Json::Str(posix(&exe.clone().unwrap_or_default())));
         r.set("engine_build", Json::Str(a.build.clone().unwrap_or_else(engine_build)));
         r.set("port", port.map_or(Json::Null, |p| Json::Num(p as f64)));
         std::fs::create_dir_all(run.join("engine")).map_err(|e| format!("{}: {e}", posix(&run)))?;
     }
     write_run(&run, &r)?;
-    std::fs::write(run.join("BRIEF.md"), brief_text(&j, &a.arm, &run, &s)).map_err(|e| format!("BRIEF.md: {e}"))?;
+    std::fs::write(run.join("BRIEF.md"), brief_text(&j, &arm, &run, &s, exe.as_deref())?).map_err(|e| format!("BRIEF.md: {e}"))?;
     Ok(Json::obj([
         ("run", Json::Str(posix(&run))),
         ("brief", Json::Str(posix(&run.join("BRIEF.md")))),
@@ -653,7 +752,7 @@ fn specula(r: &Json, run: &Path, words: &[String], limit: Duration) -> Option<(i
 }
 
 fn engine_arm(r: &Json) -> R<()> {
-    if text(r, "arm") == Some("engine") {
+    if kind_of_run(r) == Kind::Engine {
         Ok(())
     } else {
         Err("this run's arm has no engine".to_owned())
@@ -691,7 +790,7 @@ pub fn engine_cmd(what: &str, run: &Path) -> R<i32> {
 /// (`specula stop` refuses both a stop that failed and an engine that is not there with exit
 /// code 1: its answer tells them apart).
 pub fn stop_engine(r: &Json, run: &Path) -> bool {
-    if text(r, "arm") != Some("engine") {
+    if kind_of_run(r) != Kind::Engine {
         return true;
     }
     match specula(r, run, &["stop".to_owned(), "--port".to_owned(), port_text(r)], Duration::from_secs(180)) {
@@ -889,7 +988,7 @@ fn call_totals(run: &Path, phase: &str) -> R<Json> {
 pub fn finish(run: &Path) -> R<Json> {
     let mut r = read_run(run)?;
     let mut c = read_cost(run)?;
-    if text(&r, "arm") == Some("engine") {
+    if kind_of_run(&r) == Kind::Engine {
         c.set("engine_stopped", Json::Bool(stop_engine(&r, run)));
         c.set("engine", call_totals(run, "build")?);
     }
@@ -1017,6 +1116,41 @@ const BUILDER_PROMPT: &str = "You are a builder in a measured comparison. Your w
 read it and build what it asks, in the work folder it names, within the limits and rules it states. \
 When you finish, answer with what the brief asks for.";
 
+/// `prompt`: what every builder of a data folder would be told, made as `prepare` makes it and
+/// nothing made: the process's prompt, then each job's brief for each arm, as it would be
+/// written to `ROOT/<job>-<arm>-1/BRIEF.md`. An engine arm's `{docs}` is found from its
+/// executable when `--exe` gives it, and said as a placeholder when not.
+pub fn prompts(data: &Path, only_job: Option<&str>, only_arm: Option<&str>, out: &Path, exes: &Exes) -> R<String> {
+    let s = settings_in(data)?;
+    let arms = match only_arm {
+        Some(name) => vec![crate::leverage_arms::arm_named(&s, name)?],
+        None => crate::leverage_arms::arms_of(&s)?,
+    };
+    let jobs: Vec<String> = s.get("jobs").and_then(Json::as_object).unwrap_or(&[]).iter().map(|(k, _)| k.clone()).filter(|k| only_job.is_none_or(|o| o == k)).collect();
+    if jobs.is_empty() {
+        return Err(format!("{}: no job {} in settings.json", posix(data), only_job.unwrap_or("")));
+    }
+    let mut said = format!(
+        "Data: {}. Arms: {}; the baseline: {}.\n\nThe prompt each builder's process is started with, in its run's folder:\n\n{BUILDER_PROMPT}\n",
+        data_word(data),
+        crate::leverage_arms::arms_of(&s)?.iter().map(|a| format!("{} (kind {}{})", a.name, a.kind.name(), if a.exe.is_empty() { String::new() } else { format!(", runs the engine --exe {}=PATH", a.exe) })).collect::<Vec<_>>().join(", "),
+        crate::leverage_arms::baseline_of(&s)
+    );
+    for job in &jobs {
+        let j = job_in(data, job)?;
+        for arm in &arms {
+            let run = absolute(out).join(format!("{job}-{}-1", arm.name));
+            let exe = match (arm.kind, exes.0.get(&arm.exe)) {
+                (Kind::Engine, Some(_)) => Some(exes.of(arm)?),
+                _ => None,
+            };
+            said.push_str(&format!("\n===== {job} / {}: {} =====\n\n", arm.name, posix(&run.join("BRIEF.md"))));
+            said.push_str(&brief_text(&j, arm, &run, &s, exe.as_deref())?);
+        }
+    }
+    Ok(said)
+}
+
 fn judge_prompt(rules: &str) -> String {
     format!(
         "You are the judge of one game in a measured comparison. You built none of it. Your whole task is in the file JUDGE.md in the folder \
@@ -1064,8 +1198,8 @@ pub fn run_cmd(a: &RunArgs) -> R<i32> {
 }
 
 fn run_agent(a: &RunArgs) -> R<i32> {
-    let s = settings()?;
     let r = read_run(&a.run)?;
+    let s = settings_in(&run_data(&r))?;
     let run = absolute(&a.run);
     let who = if a.judge { "judge" } else { "builder" };
     let rules: Vec<&str> = s.get("rules").and_then(Json::as_array).map(|r| r.iter().filter_map(Json::as_str).collect()).unwrap_or_default();
@@ -1227,7 +1361,7 @@ pub fn record(a: &Record) -> R<Json> {
     };
     let mut held = a.tokens;
     if let Some(by_kind) = by_kind {
-        held = weighted(&by_kind, &settings()?.get("token_weights").cloned().unwrap_or(Json::Null));
+        held = weighted(&by_kind, &settings_in(&run_data(&r))?.get("token_weights").cloned().unwrap_or(Json::Null));
         row.set("by_kind", by_kind);
         row.set("weighted", Json::Num(held));
     }
@@ -1246,7 +1380,7 @@ pub fn record(a: &Record) -> R<Json> {
 // ---- judging --------------------------------------------------------------------------------
 
 fn acceptance_of(r: &Json) -> R<(Json, Vec<Json>)> {
-    let j = job(text(r, "job").unwrap_or(""))?;
+    let j = job_in(&run_data(r), text(r, "job").unwrap_or(""))?;
     let items = j.get("acceptance").and_then(Json::as_array).map(<[Json]>::to_vec).unwrap_or_default();
     Ok((j, items))
 }
@@ -1266,7 +1400,7 @@ pub fn judge_text(run: &Path, r: &Json) -> R<String> {
         "- A check that cannot be run as the game's own documents say fails, and so does every item that needed it; say so once and go on.".to_owned(),
         "- You may read the game's files to choose inputs and to explain a failure. Do not repair anything.".to_owned(),
     ];
-    if text(r, "arm") == Some("engine") {
+    if kind_of_run(r) == Kind::Engine {
         lines.push(format!(
             "- This game runs on the Specula engine. `{tool} play {rd} ...` is the engine's own headless run of it (it needs no engine started), and `{tool} check {rd} --file FILE` plays every run a checks file of your own lists in one command (the game's `notes/checks.md` says how one is written, or `notes/how.md` in a game made before that note was; keep yours in your scratch folder, and take frames with `play`: a check's frame is written into the game's own folder); if its documents use an engine left running, start it with `{tool} engine start {rd}` and stop it with `{tool} engine stop {rd}` when you are done, and calls go through `{tool} call {rd} TOOL '{{json}}'`. Never run the engine's executable yourself."
         ));
@@ -1275,7 +1409,7 @@ pub fn judge_text(run: &Path, r: &Json) -> R<String> {
     lines.push("The list".to_owned());
     lines.extend(items.iter().map(|a| format!("- **{}** ({}): {}", text(a, "id").unwrap_or(""), text(a, "kind").unwrap_or(""), text(a, "text").unwrap_or(""))));
     if let Some(of) = text(&j, "change_of") {
-        let base = job(of)?;
+        let base = job_in(&run_data(r), of)?;
         let from = text(r, "from").unwrap_or("");
         let before_run = absolute(run).parent().map(|p| p.join(from)).unwrap_or_default();
         let before = read_cost(&before_run)?.get("verdict").cloned().filter(|v| truthy(Some(v)));
@@ -1340,7 +1474,7 @@ pub fn judge(run: &Path, verdict: Option<&Path>, again: Option<&str>) -> R<Json>
             return Err("'finish' the run first: the judge starts from what the builder handed in".to_owned());
         }
         std::fs::write(run.join("JUDGE.md"), judge_text(&run, &r)?).map_err(|e| format!("JUDGE.md: {e}"))?;
-        let s = settings()?;
+        let s = settings_in(&run_data(&r))?;
         let lim = s.get("judge").cloned().unwrap_or(Json::Null);
         return Ok(Json::obj([
             ("judge", Json::Str(posix(&run.join("JUDGE.md")))),
@@ -1368,7 +1502,7 @@ pub fn judge(run: &Path, verdict: Option<&Path>, again: Option<&str>) -> R<Json>
     let totals = scored.get("totals").cloned().unwrap_or(Json::Null);
     c.set("verdict", scored);
     let mut by = c.get("judge").cloned().filter(|j| j.as_object().is_some()).unwrap_or(Json::Obj(Vec::new()));
-    if text(&r, "arm") == Some("engine") {
+    if kind_of_run(&r) == Kind::Engine {
         by.set("engine_stopped", Json::Bool(stop_engine(&r, &run)));
         by.set("engine", call_totals(&run, "judge")?);
     }
@@ -1442,33 +1576,81 @@ fn number(text: &str, what: &str) -> R<f64> {
     text.parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0).ok_or_else(|| format!("{what} takes a number, not {text:?}"))
 }
 
+/// `--data FOLDER`, if it was given: a folder that is there (taken out of `args`).
+fn data_arg(args: &mut crate::cli::Args) -> R<Option<PathBuf>> {
+    let Some(given) = args.value("--data")? else { return Ok(None) };
+    let data = data_named(Path::new(&given));
+    if !data.join("settings.json").is_file() {
+        return Err(format!("--data {given}: no settings.json there ({})", posix(&data)));
+    }
+    Ok(Some(data))
+}
+
+/// Refuses a `--data` that is not the one each run was prepared from.
+fn same_data(runs: &[String], given: Option<&Path>) -> R<()> {
+    if given.is_some() {
+        for run in runs {
+            run_data_checked(&read_run(&run_named(Path::new(run)))?, given)?;
+        }
+    }
+    Ok(())
+}
+
+/// The harness's check of a data folder: prints its problems; exit code 1 if there are any.
+fn check_data(data: &Path) -> i32 {
+    let problems = check_all_in(data);
+    for line in &problems {
+        println!("{line}");
+    }
+    println!("leverage data: {}", if problems.is_empty() { "ok".to_owned() } else { format!("{} problem(s)", problems.len()) });
+    i32::from(!problems.is_empty())
+}
+
+/// Every `--exe` value given, in order (taken out of `args`).
+fn exe_args(args: &mut crate::cli::Args) -> R<Exes> {
+    let mut given = Vec::new();
+    while let Some(v) = args.value("--exe")? {
+        given.push(v);
+    }
+    Exes::parse(&given)
+}
+
 fn dispatch(mut args: crate::cli::Args) -> R<i32> {
     if args.flag("--check") {
-        let problems = check_all();
-        for line in &problems {
-            println!("{line}");
-        }
-        println!("leverage data: {}", if problems.is_empty() { "ok".to_owned() } else { format!("{} problem(s)", problems.len()) });
-        return Ok(i32::from(!problems.is_empty()));
+        let data = data_arg(&mut args)?.unwrap_or_else(default_data);
+        return Ok(check_data(&data));
     }
     let mut all = args.rest();
     if all.is_empty() {
-        return Err("usage: examen leverage --check | prepare | engine | call | tools | play | run | finish | record | usage | judge | report | export | where | trace (examen help says what each takes)".to_owned());
+        return Err("usage: examen leverage --check [--data FOLDER] | prompt | prepare | engine | call | tools | play | check | run | finish | record | usage | judge | report | export | where | trace (examen help says what each takes)".to_owned());
     }
     let sub = all.remove(0);
     let mut args = crate::cli::Args::new(all);
     match sub.as_str() {
+        "prompt" => {
+            let data = data_arg(&mut args)?.unwrap_or_else(default_data);
+            let (job, arm) = (args.value("--job")?, args.value("--arm")?);
+            let out = args.value("--out")?.unwrap_or_else(|| "ROOT".to_owned());
+            let exes = exe_args(&mut args)?;
+            words(args, "prompt [--data FOLDER] [--job JOB] [--arm ARM] [--out ROOT] [--exe [KEY=]PATH ...]", 0, 0)?;
+            print!("{}", prompts(&data, job.as_deref(), arm.as_deref(), Path::new(&out), &exes)?);
+            Ok(0)
+        }
         "prepare" => {
+            let data = data_arg(&mut args)?;
             let out = args.value("--out")?.ok_or("prepare takes --out ROOT")?;
-            let (exe, from, build) = (args.value("--exe")?, args.value("--from")?, args.value("--build")?);
+            let exe = exe_args(&mut args)?;
+            let (from, build) = (args.value("--from")?, args.value("--build")?);
             let port = args.value("--port")?.map(|p| p.parse::<i64>().map_err(|_| format!("--port takes a whole number, not {p:?}"))).transpose()?;
-            let w = words(args, "prepare JOB ARM N --out ROOT [--exe SPECULA_EXE] [--port P] [--from RUN] [--build NAME]", 3, 3)?;
+            let w = words(args, "prepare JOB ARM N --out ROOT [--data FOLDER] [--exe [KEY=]SPECULA_EXE ...] [--port P] [--from RUN] [--build NAME]", 3, 3)?;
             let n = w[2].parse::<i64>().map_err(|_| format!("N is a whole number, not {:?}", w[2]))?;
-            println!("{}", prepare(&Prepare { job: w[0].clone(), arm: w[1].clone(), n, out: PathBuf::from(out), exe: exe.map(PathBuf::from), port, from: from.map(PathBuf::from), build })?);
+            println!("{}", prepare(&Prepare { job: w[0].clone(), arm: w[1].clone(), n, out: PathBuf::from(out), exe, port, from: from.map(PathBuf::from), build, data })?);
             Ok(0)
         }
         "engine" => {
+            let data = data_arg(&mut args)?;
             let w = words(args, "engine start|stop RUN", 2, 2)?;
+            same_data(&w[1..], data.as_deref())?;
             if !matches!(w[0].as_str(), "start" | "stop") {
                 return Err("usage: examen leverage engine start|stop RUN".to_owned());
             }
@@ -1486,24 +1668,41 @@ fn dispatch(mut args: crate::cli::Args) -> R<i32> {
         }
         "check" => {
             let rest = args.rest();
+            // (With no run, or only `--data FOLDER`: the harness's own check of a data folder.
+            // With a run, the words after it are the game's own check's, whatever they are.)
+            match rest.as_slice() {
+                [] => return Ok(check_data(&default_data())),
+                [flag, given] if flag == "--data" => {
+                    let data = data_arg(&mut crate::cli::Args::new(vec![flag.clone(), given.clone()]))?.unwrap_or_else(default_data);
+                    return Ok(check_data(&data));
+                }
+                _ => {}
+            }
             let Some((run, flags)) = rest.split_first() else { return Err("usage: examen leverage check RUN [--only NAME (specula check's flags)]".to_owned()) };
             check_cmd(&run_named(Path::new(run)), flags)
         }
         "tools" => {
+            let data = data_arg(&mut args)?;
             let w = words(args, "tools RUN [FILTER]", 1, 2)?;
+            same_data(&w[..1], data.as_deref())?;
             tools_cmd(&run_named(Path::new(&w[0])), w.get(1).map(String::as_str))
         }
         "finish" => {
+            let data = data_arg(&mut args)?;
             let w = words(args, "finish RUN", 1, 1)?;
+            same_data(&w, data.as_deref())?;
             println!("{}", finish(Path::new(&w[0]))?);
             Ok(0)
         }
         "run" => {
+            let data = data_arg(&mut args)?;
             let (judge, again, note) = (args.flag("--judge"), args.value("--again")?, args.value("--note")?);
             let w = words(args, "run RUN [--judge [--again WHY]] [--note TEXT]", 1, 1)?;
+            same_data(&w, data.as_deref())?;
             run_cmd(&RunArgs { run: PathBuf::from(&w[0]), judge, again, note })
         }
         "record" => {
+            let data = data_arg(&mut args)?;
             let need = |v: Option<String>, name: &str| v.ok_or_else(|| format!("record takes {name}"));
             let tokens = number(&need(args.value("--tokens")?, "--tokens N")?, "--tokens")?;
             let tool_uses = number(&need(args.value("--tool-uses")?, "--tool-uses N")?, "--tool-uses")?;
@@ -1519,6 +1718,7 @@ fn dispatch(mut args: crate::cli::Args) -> R<i32> {
             };
             let (note, usage, judge) = (args.value("--note")?, args.value("--usage")?.map(PathBuf::from), args.flag("--judge"));
             let w = words(args, "record RUN --tokens N --tool-uses N --duration-s N [...]", 1, 1)?;
+            same_data(&w, data.as_deref())?;
             println!("{}", record(&Record { run: PathBuf::from(&w[0]), tokens, tool_uses, duration_s, ended, note, usage, by_kind, judge })?);
             Ok(0)
         }
@@ -1528,25 +1728,31 @@ fn dispatch(mut args: crate::cli::Args) -> R<i32> {
             Ok(0)
         }
         "judge" => {
+            let data = data_arg(&mut args)?;
             let (verdict, again) = (args.value("--verdict")?.map(PathBuf::from), args.value("--again")?);
             let w = words(args, "judge RUN [--verdict FILE [--again WHY]]", 1, 1)?;
+            same_data(&w, data.as_deref())?;
             println!("{}", judge(Path::new(&w[0]), verdict.as_deref(), again.as_deref())?);
             Ok(0)
         }
         "report" => {
-            let w = words(args, "report ROOT", 1, 1)?;
-            let said = crate::leverage_report::report(Path::new(&w[0]))?;
+            let data = data_arg(&mut args)?;
+            let w = words(args, "report ROOT [--data FOLDER]", 1, 1)?;
+            let said = crate::leverage_report::report_in(Path::new(&w[0]), data.as_deref())?;
             print!("{}", said.chars().map(|c| if c.is_ascii() { c } else { '?' }).collect::<String>());
             Ok(0)
         }
         "export" => {
-            let w = words(args, "export ROOT DEST", 2, 2)?;
-            println!("{}", crate::leverage_report::export(Path::new(&w[0]), Path::new(&w[1]))?);
+            let data = data_arg(&mut args)?;
+            let w = words(args, "export ROOT DEST [--data FOLDER]", 2, 2)?;
+            println!("{}", crate::leverage_report::export_in(Path::new(&w[0]), Path::new(&w[1]), data.as_deref())?);
             Ok(0)
         }
         "where" => {
+            let data = data_arg(&mut args)?;
             let json = args.flag("--json");
             let w = words(args, "where RUN [RUN ...] [--json]", 1, 64)?;
+            same_data(&w, data.as_deref())?;
             let found: Vec<Json> = w.iter().map(|run| crate::leverage_report::where_of(Path::new(run))).collect::<R<_>>()?;
             if json {
                 println!("{}", Json::Arr(found).to_pretty());
@@ -1558,11 +1764,13 @@ fn dispatch(mut args: crate::cli::Args) -> R<i32> {
             Ok(0)
         }
         "trace" => {
+            let data = data_arg(&mut args)?;
             let (json, judge) = (args.flag("--json"), args.flag("--judge"));
             // (`--said A-B [--cut N]`: what was done at those requests, in place of the ledger.)
             let said = args.value("--said")?;
             let cut = args.number("--cut", 600)? as usize;
             let w = words(args, "trace RUN [RUN ...] [--judge] [--json] [--said A-B [--cut N]]", 1, 64)?;
+            same_data(&w, data.as_deref())?;
             if let Some(range) = said {
                 let (from, to) = range.split_once('-').unwrap_or((range.as_str(), range.as_str()));
                 let whole = |n: &str| n.trim().parse::<usize>().map_err(|_| format!("--said takes requests as A-B or N (got '{range}')"));
@@ -1581,7 +1789,7 @@ fn dispatch(mut args: crate::cli::Args) -> R<i32> {
             }
             Ok(0)
         }
-        other => Err(format!("'{other}' is not a command of examen leverage (--check, prepare, engine, call, tools, play, check, run, finish, record, usage, judge, report, export, where, trace)")),
+        other => Err(format!("'{other}' is not a command of examen leverage (--check, prompt, prepare, engine, call, tools, play, check, run, finish, record, usage, judge, report, export, where, trace)")),
     }
 }
 
