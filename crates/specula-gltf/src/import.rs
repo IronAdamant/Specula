@@ -1641,6 +1641,7 @@ pub(crate) fn convert(l: &Loaded, opts: &ImportOptions, mut warnings: Vec<Warnin
     let model = Model {
         name,
         bounds: mesh.bounds(),
+        open_edges: mesh.open_edge_count(),
         lods: vec![mesh],
         lod_ratios: vec![1.0],
         collider,

@@ -1183,6 +1183,11 @@ pub struct Model {
     /// Every material preset `lods[0].parts` uses, resolved from the style.
     pub materials: Vec<(String, MaterialPreset)>,
     pub bounds: Bounds,
+    /// Edges of the finest level that are not shared by exactly two triangles, after welding
+    /// equal positions ([`MeshData::open_edge_count`]): 0 for a closed (watertight) mesh. Counted
+    /// once, when the model is built, so that every answer about a model can say whether it is
+    /// closed without anyone exporting it to find out.
+    pub open_edges: usize,
     /// Stable hash of every LOD and the collider (same recipe + params + seed ⇒ same hash on
     /// every platform).
     pub hash: u64,
@@ -1268,6 +1273,10 @@ impl Model {
                 })),
             ),
             ("bounds", Json::obj([("min", v3(b.min)), ("max", v3(b.max))])),
+            // Whether the finest level is a closed (watertight) mesh, and how many of its edges
+            // are not shared by exactly two triangles when it is not.
+            ("closed", Json::Bool(self.open_edges == 0)),
+            ("open_edges", Json::Num(self.open_edges as f64)),
             ("materials", Json::arr(self.materials.iter().map(|(n, _)| Json::Str(n.clone())))),
             (
                 "collider",
@@ -1522,6 +1531,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     Ok(Model {
         name: recipe.name.clone(),
         bounds: lods[0].bounds(),
+        open_edges: lods[0].open_edge_count(),
         lods,
         lod_ratios: ratios,
         collider,
