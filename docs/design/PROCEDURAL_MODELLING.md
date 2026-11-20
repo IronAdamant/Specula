@@ -203,6 +203,34 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   to experiment on both"): as written its two wings rise up and outward with the spine coming down
   between them, as the hip bones do; as converted they drooped into a dome. A model that did not
   take the pictures confirmed it. There the mend shows what the recipes meant.
+- **A known fault, not mended yet: a strongly stretched node can be cut off by the box it is
+  meshed in** (found 2026-11-20, by holding the modeller against
+  [DISTANCE_FIELDS.md](DISTANCE_FIELDS.md): each case meshed inside the automatic box and inside
+  explicit `bounds` wide enough for the whole surface). A stretched node's field reads short of
+  the distance by the ratio of its least stretch to its greatest, and the box is widened as if
+  it did not:
+  - **`round`, `shell` or `displace` on an unevenly stretched node, or on a group with such a
+    child**, moves the surface by the amount times that ratio's inverse along the long axis,
+    and the box grows by the amount alone. A sphere of radius 0.1 stretched ten to one and
+    rounded by 0.05 loses 0.43 m of its length; shelled by 0.04, 0.15 m.
+  - **Two parts stretched by more than about four to one and joined smoothly** reach further
+    than the join's width past their tips. Two ten-to-one needles joined at `smooth` 0.1 lose
+    0.12 m (the model is 2.24 m long where the surface is 2.50 m); twenty to one, 0.34 m.
+    Nested smooth groups of such parts lose more (two groups of four: 0.51 m).
+  - **The mesh is still closed** (the box's border caps it flat), so no check catches it.
+  - **Until it is mended: give such a recipe explicit `bounds`**, or make the long part without
+    `stretch` (a capsule, a `round_cone`, a `chain`, an `ellipsoid`).
+  - Not affected: no recipe in this repository stretches a sculpt node this way (each was
+    sampled outside its box, with the figure's parts: nothing escapes). Thin edges made by an
+    `intersection` or a `difference` joined smoothly lose nothing (a meeting's field is at least
+    that of the child that sets its box), and neither do nested smooth groups of unstretched
+    parts (each level's box is widened again). The mesher's pruning is not affected (whole tree
+    against pruned at 72,000 points a case: no difference).
+  - Not settled: `twist` and `bend` were not tried; an `ellipsoid` and a `column` also read
+    short far away and did not escape in the cases tried, with no proof that they cannot; and,
+    found on the way and not investigated, **two crescents joined smoothly meshed open**, and
+    thin shells and tips left one to four edges shared by other than two triangles, which the
+    investigator put down to features thinner than a cell.
 - **Roundness as one number** (M6 part 4, 2026-11-18): `roundness`, 0 to 1, on a `box` and a
   `cylinder` here, and on a `rect` outline (the profile of an extrusion, a loft or a sweep). 0 is the
   hard shape, 1 its fully round form (the ellipsoid as wide, as tall and as deep; the ellipse), and
@@ -370,9 +398,9 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
       which primitive made each triangle (`primitive_of_triangles`) is charged at the
       weights only, not for powers past them.
     **A ninth** (2026-11-20, of that mend, against a distance bracketed from both sides by
-    the reviewer's own method) **said not to merge it. Neither major finding is mended
-    yet, so until they are: do not give `roundness` to a shape that is thin along one
-    axis, and do not take the work limit to bound a recipe of deeply nested unions.**
+    the reviewer's own method) **said not to merge it.** (Both major findings are mended
+    below; that mend has yet to be reviewed. **Until a reviewer says merge, do not give
+    `roundness` to a shape that is thin along one axis.**)
     1. **The mend brought a fault of its own: just past a thin face, beside its rim, the
        field falls far short of the distance, and steps.** A plank of half sizes
        1 by 0.5 by 0.00001 at a roundness of 0.3, sampled near its rim: a hair inside the
@@ -405,6 +433,120 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     distance and never over it; no other step in 13 million samples; 510 is a true ceiling
     on one sample's powers; the charge depends on nothing but the recipe and its tree;
     Sepulcra's approved props build as they did.
+    **What was mended after the ninth** (2026-11-20, by a builder that wrote none of it):
+    - *1, at its cause.* There is one nearest point: for each `mu` every share has one
+      answer, and the sum of the shares to the power falls as `mu` grows. A start cannot make
+      an answer wrong; a solve that stops before it has arrived, and calls where it stopped
+      the answer, can. That is what the sure way did: twelve Newton steps on `mu`, which on a
+      thin shape's sum (falling as a power of `mu` over many decades) gain less than a
+      doubling each, where the review's sample needed about thirty. Now:
+      - the first steps are believed only when they have arrived: every share on its
+        equation and the sum on one to a thousand-millionth, and the next step on `mu` under
+        a ten-millionth of it (the step is what says how near `mu` is near the surface, where
+        the sum is nearly level). Past the hard shape they are taken from two starts in turn:
+        the way out of the hard shape, then the touching plane at the sample;
+      - **the sure way cannot fail to arrive.** `mu` lies between two bounds known before a
+        step: the distance's lower bound times the least half size (the shape holds the ball
+        of that radius), and a bound on the distance (past the hard shape its distance, plus
+        the most the hard surface is from the rounded one) times the half sizes' length. Its
+        steps are on the logarithms of `mu` and of the sum, a straight line where the sum
+        falls as a power; each is kept inside the bounds, which close in at every step; one
+        that would leave them, or that has not halved them in two steps, halves them instead
+        (from below, a step on `mu` itself first, which cannot pass the answer on that convex
+        curve). Each share is solved in logarithms from above. It stops when a step is under
+        a ten-trillionth of `ln mu`;
+      - a lower bound worked out in single precision is lowered by what rounding can add
+        before the steps lean on it (found by the new tests: where it is the distance itself,
+        at a ball or a face's middle, its last places put a floor over the answer, and 5.5% of
+        a ball's samples, on a build's grid at 96, took the sure way for it).
+
+      So **whichever way a sample is answered, it is the one nearest point** to within those
+      tolerances, and nothing can switch between two answers: no step. Where the nearest point
+      lies about a thin shape, and what finds it: over a face away from its rim, on the face
+      below the sample, its normal the face's (the way out arrives); just past a face beside
+      its rim, on the rim, its normal nearly in the shape's plane (the way out does not
+      arrive, the touching plane at the sample does: the old start, right there); beside the
+      rim at mid-thickness, past an edge or a corner, on the rim or the corner's rounding, its
+      normal the way out (the way out); inside the hard shape and outside the rounded one,
+      beside a rim or a corner (the touching plane's foot, as before); inside the rounded
+      shape nothing is solved for (the field is a bound there). Whatever falls through goes
+      to the sure way: of 200,000 samples just past a thin face, a millionth to a thousand
+      thicknesses out, 2.75% did with one start and 0.01% with two (a sheet a millionth as
+      thick at 0.4); of 200,000 anywhere in a 2 m box, 0.02% for that sheet and none for a
+      cube, a ball, a plate or a foil.
+      Also found by the new step scan, and mended with the arrival rule: a sample a
+      hundredth of a millimetre past a rod's end at a roundness of 0.2 came out at the hard
+      shape's distance, 4% short, beside samples that were right.
+    - *The test of 1.* The field outside is held against a bracket that shares nothing with
+      the solve: at a nearest point found by halving alone (no start, no step of Newton's),
+      the distance is at most the distance to that point brought onto the surface, and at
+      least `n . p - h(n)` for the normal `n` there, `h` the support (the ninth review's
+      bound); where the two are more than a ten-millionth apart, the review's own search over
+      directions is taken too. Over a box thin along each axis in turn and a cylinder thin
+      along its height or across it, from 1:1 to a hundred-millionth, at eleven roundnesses
+      (0.02 to 1), over each face, beside each rim and at its corner, past each kind of edge
+      and a corner, a hair inside and a hair outside each hard face, from a millionth of the
+      thickness to a hundred sizes out, and the eighth and ninth reviews' samples by name:
+      33,206 samples, the field within the bracket at every one: never outside it by more
+      than 0.22 of what rounding the coordinates to single precision can move it, and, where
+      that rounding is under a thousandth of the distance, never by more than 6.1e-5 of the
+      distance (these two figures are for this set). Along lines through every one of those
+      regions, finest at the hard surface (2,970 lines of 240 samples), the field changes no
+      faster than the distance moved.
+      A share runs with the crate's tests (every 29th sample, every 7th line); all of them
+      with `--ignored`.
+    - *2, at its cause.* Pruning now takes every node's distance at the ball's middle in one
+      pass, each node once, and decides from those: a ball's pruning costs one evaluation of
+      the tree, which is what it was charged. The distances are taken by the same steps in
+      the same order, so every pruned tree and every mesh is the same to the bit, and no
+      charge moved (only what was done uncharged is no longer done; the walk is no longer
+      quadratic in the depth). **The bound that is true now**: every evaluation a build makes
+      is charged its weight; a rounded sample's weight pays for 17 powers (3 at a roundness of
+      1); every power past that, over the build, is charged 84 units; so no build takes more
+      than one power for each 84 units it is charged, whatever its recipe. A test counts it:
+      the weights of every primitive evaluated are under the work charged, and under 10, 40
+      and 120 nested unions and under 60 unions each with a speck the powers and the rounded
+      samples a unit of work are what the calibrated case's are, within a twentieth.
+    - *3.* Asking which primitive made each triangle is billed as a build is, for the powers
+      past the weights, inside its own limit; a test counts the same questions asked again.
+    - *4.* Every exponential and logarithm the solve takes is counted as a power, and every
+      square root as a quarter of one (a price stated, not timed: one instruction, against
+      a few dozen for a power), rounded up to whole powers a sample. Nothing else repeats. A
+      sample takes at most 4,328 powers, counted from the code (it was 510; the sure way's
+      cap is 64 steps of up to 65 each). On the ninth review's own random set (2.83 million
+      samples outside shapes 1:1 to a hundred-millionth thin, a millimetre to ten kilometres,
+      at roundnesses 0.02 to 1) 1.0% took the sure way (3.1% before) and the most any took
+      was 1,271.
+    - *5.* What it costs now, by count, each figure for the samples named. The calibrated case
+      (a cube of roundness 0.3 cut from a 2 m box, resolution 48) takes 18.0 powers a rounded
+      sample and 10.9 a thousand units charged (16.3 and 9.5 before: the arrival rule's extra
+      step and the square roots); the bound, 11.9 a thousand, is 1.10 times that. Under 10, 40,
+      100 and 120 nested unions the same cube takes 0.94 to 0.56 of it a unit, and a sheet a
+      millionth as thick at 0.67, cut through the middle, 1.03 (29.7 powers a sample). The
+      far samples of the test above take 11.6 to 20.4 powers each (10.0 to 19.0 with the old
+      arrival rule). Just past a thin face, a millionth to a thousand thicknesses out, a
+      sheet's samples take 16 to 20 on average.
+    - *6.* A test fails when the tally is not started again at a build (a build after a
+      thousand evaluations on its thread is charged as one alone), when what was paid is not
+      kept (a bill that over-runs, falls back and over-runs again charges each power once),
+      and when the colours are not charged as they go (no more than a tenth of a coloured
+      build's powers run between two charges).
+    - *What changed for recipes that built before:* no recipe in the repository uses
+      `roundness`, and for every other primitive nothing is charged differently: no recipe's
+      charge moved, and Sepulcra's asset tests pass with their meshes. Builds of rounded
+      shapes that are not in the repository (the ninth review's table, as a share of the work
+      limit at resolutions 48, 64, 80, 96 and 128): a lone cube of roundness 0.3 as before
+      (0.469 at 64, refused at 96); the cube cut from the box 5% to 8% dearer (1.350 at 96,
+      was 1.273); a cube of roundness 0.67 cut from it 10% to 11% dearer, and **refused at
+      80, where it built** (1.059, was 0.957); a 2 m sheet a millionth as thick through the
+      middle at 0.67 0.856 at 64 (0.988 under the eighth's mend, 0.718 before it), and at
+      0.4 **refused at 64, where it built** (1.026, was 0.952 and 0.718); boards, plates and
+      discs within 2%.
+    - *Left as it is:* times. The rates against a plain cut are for a quiet machine: `cargo run
+      --release -p specula-model --example rounded_rates 5` times the calibrated case, the
+      dearest by count, both reviews' cases (the plank past its face, the cube under 40 and
+      120 unions) against a plain cut in the same run, with each one's powers a thousand
+      units.
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded

@@ -335,9 +335,11 @@ the finished model: "What was mended", below.)
   round shapes **whose facets are seen at the asset's size**; that shape (`worst`: where in the
   recipe, what it is, its turn, its radius, and `sag_m`, how far the middle of a facet stands in
   from the true curve); the eight that sag the most; and how many round shapes the recipe has.
-  A facet is seen when it stands in by a 512th of the asset's size or more (a pixel of the
-  studio's silhouettes): the six sides of a candle on a table of candles are not counted, and
-  the six sides of the table's leg are.
+  A facet is seen when it stands in by a 512th of the asset's size or more: the six sides of a
+  candle on a table of candles are not counted, and the six sides of the table's leg are. (That
+  is a pixel of the studio's silhouettes for a wall. A sloped band's faces stand in less than
+  its outline does seen from above, so a ring is also measured by its widest rim seen down its
+  axis, and is held to the greater: "What was mended, third round", below.)
 - **The check `faceting`**, when a style gives `[form] max_facet_deg` (degrees, 0 to 180; none
   unless given): fails an asset whose `turn_deg` is over it, naming the shape and where it is,
   with how many sides would hold the limit in its fix, and that a shape meant to have flat sides
@@ -437,7 +439,8 @@ test. Not reviewed yet.) The table above still says what each shape records as i
    old sag was not), and that a subdivided icosphere's largest turn is up to a tenth above the
    nominal one (22.5° at one subdivision, not 20.9°). **Not measured, and said:** a taper, a
    twist and a bend (not affine); a torus's tube, a capsule's ends and a sculpt stretched
-   unevenly; past 4,096 round shapes in a build. A displacement moves the facets and the
+   unevenly; past what one build records (512 shapes' records, 8,192 slots, 4,096 round
+   shapes: the third review found this said nothing, and it was mended in the third round). A displacement moves the facets and the
    curve they stand for together: the facets are measured as they were and how far it moved
    them is said (`displaced_m`). The same mesh now gets the same answer however its recipe
    wrote it (a cylinder of radius 1, one of 0.1 scaled by ten as a part's op, an include's or
@@ -600,7 +603,8 @@ once. Not reviewed yet.)
    one side to the next, stretched unevenly (the model could measure them the same way and
    does not yet), and a sculpt stretched unevenly. A limit of the definition: looked at down
    its axis, a flat cone's base outline turns a full side at each corner while its faces turn
-   much less; what is measured is the faces.
+   much less; what is measured is the faces. (Mended in the third round: the rim is measured
+   too, and a ring is held to the greater.)
    **Held** by `tests/facet_truth.rs`, the reviewer's probe kept with a truth of its own (it
    carries every map from the operations' definitions and measures the finished mesh; it calls
    nothing it checks): one chain in four of the 400 by default, all 400 `#[ignore]`d, now drawn
@@ -707,7 +711,7 @@ checks, and fails for each of five faults seeded one at a time (the map in place
 inverse transpose; the ring's own plane; a band's rims swapped; the stand-in from the
 nominal radius; the chord's factor dropped). **The 39 leant capsules the second review's
 probe still flags are that probe's**: it counted a capsule's walls and not its end faces
-round the axis; the record is right. **None of what follows is mended yet.**
+round the axis; the record is right. (What follows was mended in the third round, below.)
 
 1. **Major: the fix can name a count that the build refuses.** The search for a count that
    holds the limit goes up to the count's range and does not know the limit on a part's
@@ -735,6 +739,157 @@ round the axis; the record is right. **None of what follows is mended yet.**
 
 Not settled: whether an ordinary recipe can drive one advice search to its work limit.
 Not checked: booleans; the full run of 400 chains; sculpts.
+
+#### What was mended, third round
+
+(2026-11-20, by a model that wrote none of it; each finding seen first with the reviewer's
+probes, each mend held by a test that fails on the code before it, and faults seeded back
+once each. Not reviewed yet.)
+
+1. **Advice is only ever a count the build takes.** The cause: the search for a count went to
+   the count's range and knew none of the limits a build holds a part and a model to. Now
+   **the modeller records, for every round shape, the fewest and the most of its count it can
+   be built with** (`Round::least`, `most`, `most_by`): its builder's own range (the same
+   numbers the builder reads, kept with the record; the studio no longer has a table of them),
+   and the greatest count at which every limit the build held its triangles to would still
+   hold: the shape itself by its builder's own prediction (which the build checks first:
+   against a part's 65,536 triangles and the model's room when it was made); every piece of a
+   part its triangles were in after it, as each operation's check counted them (an array's
+   and a radial's copies, a mirror that keeps both halves, a subdivision, a scatter's copies,
+   a boolean's result), its share grown as the shape's own triangles grow (a ring's go as a
+   line with its count: its builder is asked once what it makes alone at its fewest, and the
+   line runs through that and what it made); the model's triangles at their greatest since it
+   was made; and the recipe's own `budget.max_triangles`. The fix's search stops there; when
+   no count up to it holds the limit it says "at the most it can be built with (108; past it
+   the triangles one part may have would be exceeded) it still turns 5.6°". **Estimated, and
+   said in the fix:** a sculpt's resolution (what a mesher makes is known only once it has
+   made it: taken to grow as the square of the resolution), and a shape whose triangles pass
+   through a boolean (its share of the result taken to grow as its own do; a boolean's own
+   work limit is not counted). **Held** by `the_reviews_lathe_is_told_only_what_builds`: the
+   review's lathe (301 rows, 8 segments, scaled `[1,1.7,0.6]`) builds at 108 and is refused at
+   109; at 1.2° and at 2° the fix names no count and says the most turns 5.6° (by its rim seen
+   from above, an ellipse of 1 by 0.6: by its faces alone 2° held at 98, as the review found);
+   at 6° the count named builds and passes. And by `every_kind_is_told_only_counts_that_build`:
+   a cylinder, a cone, a torus's segments and its tube, a capsule's segments and its ends, a
+   bell lathe leant, a sphere and a sculpt, each copied in one place until its part's limit
+   bites below its range: the most builds and one more does not (but for the sculpt, whose
+   most is an estimate), and at limits just above and just below what the most turns the
+   advice is followed, built and checked.
+2. **A ring is held to the greater of two turns**: between its faces, as before, and of its
+   **widest rim seen down its axis** (`Round::rim`: the rim's polygon, mapped, less its part
+   along the mapped axis; every rim of a ring falls on that polygon scaled, so the widest is
+   the outline from above). Its turn is the angle between the outline's sides at each corner;
+   its stand-in is how far the rim's true curve (a circle carried through the map and seen so:
+   an ellipse) stands out of each side, at the arc's middle, where the curve runs parallel to
+   the side (an affine map keeps that). For a wall it is the section, and agrees with the faces
+   to 1e-9; for a cone of 8 sides and height 0.2 it is 45° and 76 mm where its faces turn 9.3°.
+   A ring is seen where either stands in by a 512th of the asset's size; it is held to the
+   greater turn of those seen, and the message says which: "its faces turn 12.3° from one to
+   the next" or "its rim, seen along its axis, turns 45.0° at a corner ... (its faces turn
+   12.3°)"; the fix holds both of those seen at the count it names. The facts give `rim` with
+   each record and `by` beside the answer. **Held** by the truth test, which now measures the
+   rim itself (`rim_truth`: the corners of the widest profile row on the finished mesh, by
+   their angle in the shape's frame, seen along the mapped axis; the outline's turn where both
+   neighbours are a side away; the curve's stand-in by a search of 200 steps along each arc,
+   not its middle): every drawn chain, the copies, the review's cone table plain and leant and
+   stretched (`a_cones_rim_is_measured_seen_down_its_axis`), and the booleans below, within
+   0.02° and 0.2%. (The truth's first version took two corners above one another for two, by
+   rounding their angles, and was wrong at a pentagon's corner: found, and mended there.) The
+   two sentences the review found false for sloped bands (`Round::sag`'s; "a pixel of the
+   studio's silhouettes") now say what they measure.
+3. **A weld that merges a ring's own points leaves it not measured**, said as "welded: a weld
+   merged points of it". Before and after a `weld`, the distinct points of every round shape's
+   triangles are counted; fewer after means it is no longer what its count made. One that
+   merges only points at one place (a seam) leaves it measured as it was. Held by
+   `a_weld_that_merges_a_rings_points_is_said` (64 sides of radius 0.5 welded by 1 mm, by 6 cm
+   and by 15 cm).
+4. **Round shapes past what one build records are counted and said**
+   (`ModelExtras::round_not_recorded`, in `round_total`): past 512 shapes' records, 8,192
+   slots or 4,096 round shapes, each is counted; the facts say `not_recorded`, and the check
+   fails on them as not measured ("65 round shapes made past what one build records were not
+   recorded, so not measured"). Held by `round_shapes_past_the_records_are_counted` (nine
+   includes of 64 columns and a tapered one: 577, of which 65 are not recorded).
+5. **"At a radius of" is the radius of the band that turns** (`Round::turn_radius_m`: its
+   wider rim's furthest from the axis, square to it): a torus with a three-sided tube reads its
+   inner wall's. The rim's message gives the rim's.
+6. **All the advice one check gives is bounded together**, at 8 million faces and rim corners
+   measured (`MOST_ADVICE_WORK`; was 40 million for each search), counted before each is done
+   and none done past it (then no count is named, and the fix says why). The search is now
+   short by construction: it stops at the most a part can be built with, and a part's
+   triangles bound its maps times its count times its profile. Counted
+   (`faceting_advice_work`): on Sepulcra's 56 at limits of 20°, 5° and 1°, 246,763 in all, the
+   most for one check 54,400 (`grave_mound`); a torus of three by three copied 21 ways each
+   stretched its own way (21 maps, a count that builds up to 512), at 0.9°, 2° and 7°, within
+   the bound and within a budget of 1.5 s a check. Held by
+   `the_advice_work_is_bounded_for_the_whole_check`.
+7. **Booleans in the truth test** (`booleans_keep_records_that_hold_against_the_mesh`): a
+   nine-sided column with half of it cut away by a box, a box with a hole cut by a
+   seven-sided column taller than it (the cutter's record speaks for the walls), and a union
+   of a column with a narrower one turned and standing half inside it. Each record is measured
+   and holds against the faces and rim corners the result kept, measured by the truth on the
+   faces whose corners lie on the ring's profile and whose normals point from its axis (faces a
+   cut crosses, which have corners inside them, are left out).
+
+**Sepulcra again** (its 56 recipes): 41 name something round; in 39 a round shape whose facets
+show turns more than 20°, as before; none is not measured; the median is 90.0° (87.5° before:
+its four-sided cones, whose faces turn 87° to 89°, are held by their rims seen from above, 90°).
+No verdict at 20° moved; at 45° one did (`urn_toppled`). The coarsest showing shape is now held
+by its rim in 12: four-sided cones in `bone_colossus` (another cone than before, 89.0° to
+90°), `candle_cluster`, `candle_shrine`, `fence_iron_broken`, `fence_iron_corner`, `gate_iron`
+(another cone), `graveyard_fence` and `wraith` (87.1° to 89.4°, all now 90°); `lantern_dead`'s
+six-sided cone (56.6° to 60°); `shambler`'s lathe (71.1° to 73.4°); `urn_toppled`'s lathe
+(44.9° to 49.8°); and `mausoleum_domed`'s eight-sided cylinder (45° either way, now said by its
+rim). Where Sepulcra's counts can be built with less than their range: its spheres in
+`grave_marker_wood`, `grave_mound` and `wreath_stand` (4 subdivisions: a part's or the model's
+triangles), and its recipes with a `budget.max_triangles` (`graveyard_fence`'s cone 19 sides,
+`wraith`'s cone 31 and lathe 37, `shambler`'s lathe 30, `rune_pillar`'s torus 104 segments and
+39 sides; their sculpts' resolutions, estimated).
+
+**Limits that remain:** a sculpt's most resolution and a boolean's share are estimates (said
+in the fix); a boolean's own work limit and the coarse far level's build are not counted
+toward the most; the most leaves room for the model's triangles as the build logged them after
+the shape was made, taking its share at the most a check counted; a cut ring is measured as the
+whole ring (exact where what is kept still has neighbouring faces and corners, an overstatement
+where it has none); the rim of a ring is its widest row's, and a lathe whose profile has
+several rows at its widest is one rim seen from above.
+
+#### Its fourth review
+
+A model that wrote none of it (2026-11-20) **said not to merge it**. The measure of a ring and
+its rim held against a truth of the reviewer's own (the convex hull of every finished vertex
+seen down the mapped axis, the ellipse sampled at 20,000 points: over 200 random chains of
+uneven scales, turns, leans and mirrors on cylinders, cones, a waisted lathe, tori and
+capsules, the worst turn 0.0001° out and the worst stand-in five parts in a million), "the
+widest rim" is the right outline to hold a ring to, and the most a count can be is exact
+under every limit on triangles it tried (a radial copy, a mirror, a subdivision, a weld, the
+budget, the model's room, a scatter, the third review's lathe: each builds at its most and is
+refused one past it). Sepulcra's counts are as stated, twelve props held by the rim (the
+eleven named above and `mausoleum_domed`), and no mesh changed. What it refused it for:
+
+1. **The fix can still name a count the build refuses: for work.** The most a count can be
+   holds every limit on triangles and not the build's limit on work (1,500 million units),
+   and work grows with the count: the far levels' simplification, assembly, operations on
+   every vertex, the collider, and a texture's baking, which gets what the rest leaves. One
+   lathe of 301 rows and 8 segments with a 512-pixel texture graph of two noises and two far
+   levels builds; the fix names 108; at 108 the build is refused ("needs 1555437000 work
+   units; at most 1500000000"). The same with a 256-pixel graph of ten noises, and with no
+   texture under four far levels, hard shading and eight or more `ao` steps. None of
+   Sepulcra's 56 is such a recipe. "Limits that remain" above names a boolean's work and the
+   coarse far level, and not this.
+2. **Three of its rules are held by no default test**: with the budget's branch taken out
+   the fix names 256 and the build is refused over its budget; with the model's room taken
+   out, 129 and refused for the model's triangles; with a scatter's copies not counted, 256
+   and refused at a part of 408,000 triangles; and every test passes under each. (As written
+   all three are exact.) The test of counts that build covers copies limited by a part's
+   triangles only.
+3. *Minor:* a ring is held to its rim whether or not the rim can be seen (a cone's base
+   sunk in a tower), and "what it cannot know" reads as a whole shape hidden.
+
+Not settled by it: whether the slow test of advice (85 to 173 s for its file in a release
+build on a busy machine) keeps inside the gate's time under sixteen threads; what the check
+says at the advice's work bound on a real recipe. Not checked: booleans and sculpts at their
+most, two round shapes that share a piece, an include with a budget of its own, the full
+run of 400 chains, clippy.
 
 **Not built:** pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so

@@ -25,9 +25,21 @@ pub struct RecipeInfo {
 impl AssetFacts {
     /// The coarsest of its measured round shapes whose facets are seen at its size (they stand
     /// in from the true curve by [`crate::form::FACET_SEEN`] of its greatest width or more):
-    /// the one that turns the most between neighbouring faces. `None` when no facet shows.
+    /// the one that turns the most, by [`specula_model::Round::held`] (the greater of its faces'
+    /// turn and, a ring's, its widest rim's seen down its axis, of those seen). `None` when no
+    /// facet shows.
     pub fn faceting(&self) -> Option<&specula_model::Round> {
-        self.round.iter().filter(|r| r.measured() && r.sag_m() >= self.width_m * crate::form::FACET_SEEN).max_by(|a, b| a.turn_deg.total_cmp(&b.turn_deg).then(a.sag_m().total_cmp(&b.sag_m())))
+        self.faceting_held().map(|(r, _, _)| r)
+    }
+
+    /// [`AssetFacts::faceting`], with the turn it is held to and which turn that is.
+    pub fn faceting_held(&self) -> Option<(&specula_model::Round, f32, specula_model::facet::By)> {
+        let seen = self.width_m * crate::form::FACET_SEEN;
+        self.round
+            .iter()
+            .filter(|r| r.measured())
+            .filter_map(|r| r.held(seen).map(|(t, by)| (r, t, by)))
+            .max_by(|a, b| a.1.total_cmp(&b.1).then(a.0.sag_seen().total_cmp(&b.0.sag_seen())))
     }
 
     /// Its round shapes whose facets were not measured (a taper, a twist or a bend after them;
@@ -259,6 +271,9 @@ pub struct AssetFacts {
     pub round_total: usize,
     /// How many of them were not measured (whatever `round` keeps).
     pub round_not_measured: usize,
+    /// How many round shapes its build made past what one build records (counted in
+    /// `round_total`, never measured: the check fails on them as not measured).
+    pub round_not_recorded: usize,
     /// What its recipe is built of: each shape it names with its own outlines and its surface
     /// ([`specula_model::Made`]), and the surface nothing of that speaks for. Read as shape
     /// language by [`crate::built::built_of`] when a check or an answer wants it (some
@@ -349,6 +364,7 @@ impl AssetFacts {
             round: model.extras.round.clone(),
             round_total: model.extras.round_total,
             round_not_measured: model.extras.round_not_measured,
+            round_not_recorded: model.extras.round_not_recorded,
             made: model.extras.made.clone(),
             made_rest_m2: model.extras.made_rest_m2,
         }
@@ -375,22 +391,27 @@ impl AssetFacts {
             ("materials", Json::arr(self.materials.iter().map(|m| Json::from(m.name.as_str())))),
         ]);
         j.set("form", self.form.to_json());
-        if !self.round.is_empty() {
+        if !self.round.is_empty() || self.round_not_recorded > 0 {
             // What is seen of it: the coarsest of the measured round shapes whose facets show at
-            // the asset's size; the first few in the order that is read (those not measured,
-            // then those that are the answer at some size); and how many there are and were kept.
+            // the asset's size (by the greater of its faces' turn and its rim's seen down its
+            // axis, of those that show); the first few in the order that is read (those not
+            // measured, then those that are the answer at some size); and how many there are,
+            // were kept, and could not be recorded.
+            let held = self.faceting_held();
             let mut f = Json::obj([
-                ("turn_deg", Json::from(self.faceting().map_or(0.0, |w| (f64::from(w.turn_deg) * 100.0).round() / 100.0))),
+                ("turn_deg", Json::from(held.map_or(0.0, |(_, t, _)| (f64::from(t) * 100.0).round() / 100.0))),
                 ("width_m", r(self.width_m)),
                 ("round", Json::arr(self.round.iter().take(8).map(|r| r.to_json()))),
                 ("round_shapes", Json::from(self.round_total)),
                 ("round_kept", Json::from(self.round.len())),
-                ("not_measured", Json::from(self.round_not_measured.max(self.faceting_unmeasured().count()))),
+                ("not_measured", Json::from(self.round_not_measured.max(self.faceting_unmeasured().count()) + self.round_not_recorded)),
+                ("not_recorded", Json::from(self.round_not_recorded)),
                 ("level", Json::from("the finest")),
             ]);
-            match self.faceting() {
-                Some(worst) => {
+            match held {
+                Some((worst, _, by)) => {
                     f.set("worst", worst.to_json());
+                    f.set("by", Json::from(if by == specula_model::facet::By::Rim { "its rim, seen along its axis" } else { "its faces" }));
                 }
                 None => {
                     f.set("note", Json::from("no measured round shape's facets show at the asset's size"));

@@ -234,6 +234,47 @@ fn the_answer_is_kept_however_many_shapes_are_answers() {
     assert!(m.extras.round.len() == n && m.extras.round_total == n, "{} kept of {}", m.extras.round.len(), m.extras.round_total);
 }
 
+/// **Past what one build records, round shapes are counted and said** (the third review's
+/// fourth finding): nine includes of 64 columns each and a tapered column after them are 577
+/// round shapes, of which one build records 512; the 65 past them (the tapered one among them)
+/// are in the total and said not recorded, never dropped without a word.
+#[test]
+fn round_shapes_past_the_records_are_counted() {
+    let cols: Vec<String> = (0..64).map(|i| part(&format!("c{i}"), r#"{"op":"cylinder","radius":0.1,"height":1,"sides":5}"#, &format!(r#"{{"op":"move","by":[{},0,0]}}"#, f64::from(i) * 0.3))).collect();
+    let mut lib = BTreeMap::new();
+    lib.insert("row".to_string(), format!(r#"{{ "name": "row", "parts": [{}] }}"#, cols.join(", ")));
+    let mut list: Vec<String> = (0..9).map(|i| format!(r#"{{ "name": "r{i}", "include": "row", "ops": [{{"op":"move","by":[0,0,{}]}}] }}"#, f64::from(i) * 0.3)).collect();
+    list.push(part("last", r#"{"op":"cylinder","radius":0.1,"height":1,"sides":5}"#, r#"{"op":"taper","from":1,"to":0.5}"#));
+    let m = make_with(&format!(r#"{{ "name": "t", "parts": [{}] }}"#, list.join(", ")), &lib);
+    assert!(m.extras.round_total == 577 && m.extras.round_not_recorded == 65 && m.extras.round_not_measured == 0, "total {}, not recorded {}, not measured {}", m.extras.round_total, m.extras.round_not_recorded, m.extras.round_not_measured);
+}
+
+/// **A weld that merges a ring's own points leaves it not measured** (the third review's third
+/// finding): a column of 64 sides of radius 0.5 (a side 49 mm long) welded by a millimetre is
+/// the ring it was, measured; welded by 6 or 15 cm (past a side) the mesh no longer has the
+/// ring its count made, and the record says so.
+#[test]
+fn a_weld_that_merges_a_rings_points_is_said() {
+    let col = r#"{"op":"cylinder","radius":0.5,"height":1,"sides":64}"#;
+    let plain = the(&one(col, ""), "parts[0].shape");
+    let fine = the(&one(col, r#"{"op":"weld","eps":0.001}"#), "parts[0].shape");
+    assert!(fine.measured() && fine.turn_deg == plain.turn_deg && fine.sag == plain.sag, "{fine:?}");
+    for eps in [0.06, 0.15] {
+        let r = the(&one(col, &format!(r#"{{"op":"weld","eps":{eps}}}"#)), "parts[0].shape");
+        assert!(!r.measured() && r.unmeasured.is_some_and(|w| w.contains("weld")), "weld {eps}: {r:?}");
+    }
+}
+
+/// **The radius said is the radius of the band that turns** (the third review's fifth finding):
+/// a torus of radius 0.6 with a three-sided tube turns most round its axis at its inner wall,
+/// 0.5 from the axis, though it reaches 0.8; seen from above its rim is the 0.8.
+#[test]
+fn the_radius_said_is_the_bands_that_turns() {
+    let r = one(r#"{"op":"torus","radius":0.6,"tube":0.2,"segments":12,"sides":3}"#, "").extras.round.iter().find(|r| r.count == "segments").cloned().unwrap();
+    let rim = r.rim.unwrap();
+    assert!(near(r.turn_radius_m, 0.5, 1e-5) && near(r.radius_m, 0.8, 1e-5) && near(rim.radius_m, 0.8, 1e-5) && near(r.turn_deg, 30.0, 1e-4) && near(rim.turn_deg, 30.0, 1e-4), "{r:?}");
+}
+
 /// A scatter's round items are measured as each was placed: the largest placement speaks.
 #[test]
 fn a_scatter_measures_its_round_items() {
@@ -268,5 +309,40 @@ fn a_forms_facets_are_measured_in_the_finished_model() {
     for shape in [ball(1.0), r#"{"op":"form","form":"torus","detail":16}"#.to_string(), out(1.0)] {
         let m = one(&shape, r#"{"op":"taper","from":1,"to":3}"#);
         assert!(!m.extras.round.is_empty() && m.extras.round.iter().all(|r| !r.measured() && r.unmeasured.is_some_and(|u| u.contains("tapered"))), "{shape}: {:?}", m.extras.round);
+    }
+}
+
+/// **A form's record names a greatest detail that builds** (the faceting record's fourth round:
+/// advice only ever a count that builds): for solids whose triangles grow as a line and as the
+/// square of their detail, and for outlines by name, the record's range is the library's least
+/// detail to a most no greater than its greatest, and the same shape asked at that most is built
+/// (a part's and the model's limits hold), its record measured.
+#[test]
+fn a_forms_most_detail_builds() {
+    let s = style();
+    let shapes = [
+        r#"{"op":"form","form":"sphere","detail":24}"#.to_string(),
+        r#"{"op":"form","form":"torus","detail":16}"#.to_string(),
+        r#"{"op":"form","form":"cylinder","detail":40}"#.to_string(),
+        r#"{"op":"form","form":"cube_sphere","detail":12}"#.to_string(),
+        r#"{"op":"form","form":"capsule","detail":9}"#.to_string(),
+        r#"{"op":"form","form":"circle","raise":{"as":"bevelled","thickness":0.2,"width":0.05,"round":true},"detail":30}"#.to_string(),
+        r#"{"op":"extrude","outline":{"form":"heart","detail":10},"height":0.2}"#.to_string(),
+        r#"{"op":"extrude","outline":{"form":"ellipse","detail":9},"height":0.2}"#.to_string(),
+    ];
+    for shape in shapes {
+        let m = one(&shape, "");
+        assert!(!m.extras.round.is_empty(), "{shape}: no record");
+        for r in &m.extras.round {
+            // (Every one of these has finer details that build, and a solid's record says so; an
+            // outline's may stop where its count steps past the square of the ratio: see
+            // `form_rounds`.)
+            let solid = shape.contains(r#""op":"form""#);
+            assert!(r.count == "detail" && r.least == 8 && r.most >= r.count_value && (r.most > r.count_value || !solid) && r.most <= 4096, "{shape}: {r:?}");
+            let at = shape.replacen(&format!("\"detail\":{}", r.count_value), &format!("\"detail\":{}", r.most), 1);
+            let text = format!(r#"{{ "name": "t", "parts": [{}] }}"#, part("p", &at, ""));
+            let again = build(&text, &BuildParams::new(&s)).unwrap_or_else(|e| panic!("{shape}: its most {} ({}) is refused: {e}", r.most, r.most_by));
+            assert!(again.extras.round.iter().any(|q| q.count_value == r.most && q.measured()), "{at}: {:?}", again.extras.round);
+        }
     }
 }

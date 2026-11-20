@@ -280,10 +280,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       said with the measure wherever it is used.
   - **Away again, and nothing is removed until they say they are home** (the owner,
     2026-11-20, midday: "Going off site. Will not be present to provide you the permissions
-    to delete. I will confirm once I am home"; they follow the work by remote). Waiting for
-    them on this machine: the worktrees `C:\sr-k16` (the light report's fourth mend, merged)
-    and `C:\sr-k20` (the proofs' second review, done), and every scratch worktree whose
-    branch is merged or whose review comes in after this.
+    to delete. I will confirm once I am home"; they follow the work by remote). The two
+    worktrees that were finished then (`C:\sr-k16`, `C:\sr-k20`) were removed at their word
+    before they left ("Please request permissions for removal for those before I go").
+    Waiting for them: every scratch worktree whose branch is merged or whose review comes
+    in after that.
   - **The silhouette's rounds go on, and the library gets built** (the owner, 2026-11-20,
     awake again, shown Claude's recommendation that the seventh silhouette version be the
     last round that chases the reading: "Rounds continue. I want that library built. So
@@ -371,9 +372,22 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       meshes inside is too small in two cases** (a smooth join onto an intersection or
       a cut with an edge thinner than about 29 degrees, or onto an unevenly scaled
       part; and a smooth group inside a smooth group, whose dips add where the box
-      takes the larger). It ran nothing for that. **A fresh agent is investigating
-      whether surface is really lost** (`.swarmnotes/m6/part4/bounds/`); the mend
-      waits for the rounded field's mend on the same file.
+      takes the larger). It ran nothing for that. **A fresh agent investigated by
+      builds** (`.swarmnotes/m6/part4/bounds/report.md`): neither of those two cases
+      loses anything (a meeting's field is at least that of the child that sets its
+      box; each level of nesting widens the box again), and **a fault of the same
+      family is real: a sculpt node stretched unevenly reads short by the ratio of its
+      stretches, and the box is widened as if it did not.** A ten-to-one needle
+      rounded by 5 cm loses 43 cm of its length; two such needles joined smoothly lose
+      12 cm; the mesh stays closed, so no check catches it. No recipe in the
+      repository does this (each was sampled outside its box, the figure's parts
+      too). The investigator's mend is written down and measured (a reach passed down
+      the tree, joined with today's box so that no existing mesh moves); **it is not
+      made yet: it waits for the rounded field's mend on the same file.** Until then
+      such a recipe needs explicit `bounds` (PROCEDURAL_MODELLING.md, tier 3, "A known
+      fault"). Two facts it proved went into the page (5.4: a meeting stays by its
+      operands; a pair needs one exact part), with a test (23 in all). Found on the
+      way and **not yet investigated: two crescents joined smoothly meshed open.**
       What it means for the sculpt stage is written into the page's section 6: a joined
       part's reach is taken from its field, not from its box.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
@@ -1049,8 +1063,28 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       between its faces, which is less than what its rim shows from above (**Claude's
       decision: a ring is held to the greater of the two**); a weld that merges a ring's
       own points is not seen; past 512 shapes round ones are dropped unsaid. **A fresh
-      agent is mending those. Give no style a `max_facet_deg` until a reviewer says
-      merge.** The recipe measure's three small findings were mended with it (the
+      agent mended those** (2026-11-20, merged; FORM.md, "What was mended, third round"):
+      **advice names only a count that builds**: every round shape records the most its
+      count can be before a limit the build holds would refuse it (a part's triangles,
+      the model's, every later copy, mirror, subdivision or scatter, the recipe's
+      budget), and the search stops there, saying which limit when nothing up to it
+      holds (an estimate through a boolean and for a sculpt, and said so). **A ring is
+      held to the greater of its faces' turn and its widest rim's turn seen down its
+      axis**, and the words say which. A weld that merges a ring's own points, and
+      shapes past the records, are said as not measured; the advice's work has one
+      bound for the whole check. By its own account every seeded fault was caught (one
+      only after it added a test), no mesh changed, and Sepulcra's four-sided cones read
+      90° again by their rims (the median is 90°; no verdict at 20° moved; one at 45°
+      did, `urn_toppled`). One of its tests takes about 90 s in a debug build. **Its
+      reviewer said not to merge it** (2026-11-20; FORM.md, "Its fourth review"): the
+      rim and the ring hold against a truth of its own, the most a count can be is
+      exact under every limit on triangles it tried, and **the fix can still name a
+      count the build refuses, for work**: the build's work limit is not among the
+      limits held, and work grows with the count (a lathe with a 512-pixel texture
+      and two far levels is told 108 segments and refused at 108). None of Sepulcra's
+      props is such a recipe. And three of its rules (the budget, the model's room, a
+      scatter's copies) are held by no default test. **A fresh agent is mending
+      those. Give no style a `max_facet_deg` until a reviewer says merge.** The recipe measure's three small findings were mended with it (the
       snap held by a test; the wobbling rod's limit stated and held: up to 1.8% of the
       width a long rod is cut and reads square, past it it is pressed and reads rounder;
       the two weak tests made exact).
@@ -1137,8 +1171,18 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       1.6), the window keeping its rate; at the display's own rate on a busy machine no
       look fits the one-millisecond wait and a report lands one render a frame as before.
       The timeline's preview job waits the same way now (its previews byte for byte the
-      same). **A short review of that change is running; the window check is owed with
-      the live checks, since the window's loop changed.**
+      same). **Its short review said not to merge it** (2026-11-20; LIGHT.md, "Its fifth
+      review"): the mechanism works (a report of 80 renders in 1.1 s with a window at 20
+      frames a second and eight agents calling, neither starving the other; nothing
+      changed when no job waits), and **two of its rules are held by no test** (a pulse
+      started past the frame's deadline, and the report's own job saying it has a
+      render on the card: each seeded away, every test passes), and "frames are no
+      later for it" is false in the author's own simulation when renders are slow and
+      a landing costly (3 to 7 late frames of 240 at 60 Hz; the estimate of a pulse's
+      cost decays between landings). One of its runs had agents' calls fall to 27 a
+      second after a report, on a busy machine, not repeated and not explained. **A
+      fresh agent is mending those.** The window check is owed with the live checks,
+      since the window's loop changed.
     - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
       PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
       builds: a large thin rounded cutter set a metre past the corner of what it cuts
@@ -1168,8 +1212,27 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       build under deeply nested unions (the mesher's pruning evaluates a subtree again
       at each level and is charged once: 6 times the calibrated powers at 120 levels).
       **Until a reviewer says merge: do not give `roundness` to a shape that is thin
-      along one axis.** No recipe in the repository uses `roundness`. A fresh agent is
-      mending both, with the reviewer's bracketed distance as a permanent test.
+      along one axis.** No recipe in the repository uses `roundness`. **A fresh agent
+      mended both** (2026-11-20, merged; PROCEDURAL_MODELLING.md, "What was mended after
+      the ninth"). What it found: the start was never the cause. There is one nearest
+      point, and the old sure way stopped after twelve steps where a thin shape needs
+      about thirty, and called where it stood the answer. Now a first try is believed
+      only when it has arrived, and whatever has not goes to **a bracketed solve that
+      cannot fail to arrive** (its `mu` lies between two bounds known beforehand, and
+      every step stays between them or halves them). The field is held against a
+      certified bracket that shares nothing with the solve (33,206 samples over every
+      region of thin boxes and cylinders, all inside; 2,970 lines scanned for a step,
+      none). **Pruning now evaluates each node once** (it was once for each level of
+      nesting, charged once), with pruned trees and meshes the same to the bit, so
+      "no build takes more than one power for each 84 units it is charged" is true
+      under nested unions, held by a count. What it costs: the stricter arrival rule
+      takes 1.4 to 1.7 more powers a sample, so two builds of rounded shapes that are
+      not in the repository are refused where they built (a cube at roundness 0.67
+      cut from a box at resolution 80; a millionth-thick sheet at 0.4 at 64). By its
+      own account eight seeded faults were each caught. **Its review (the tenth of
+      this field) is running; the warning above stands until it says merge.** Owed
+      with it: the rates on a quiet machine (`cargo run --release -p specula-model
+      --example rounded_rates 5`).
     - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.

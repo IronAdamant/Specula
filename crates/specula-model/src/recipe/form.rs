@@ -406,9 +406,49 @@ impl Ctx<'_> {
     /// round the shape's own Y axis of `detail` sides (a form's surfaces are not one), so under
     /// a stretch that is not the same every way the finished model says it is not measured;
     /// under a move, a turn or a uniform scale it is measured, the radius and the sag scaled.
-    fn form_rounds(&self, what: &'static str, detail: u32, list: impl IntoIterator<Item = (f64, f64)>) {
+    ///
+    /// What its count may be at most (the record's `most`, which advice never passes, and the
+    /// prediction it is checked by): `size(k)` is the shape's triangles at detail `k`, from the
+    /// library's count (exact, and no build). A form's counts step (a piece has
+    /// `max(2, ⌈detail · turns⌉)` segments) and grow as a line or as the square of the detail,
+    /// so no line through two counts and no square of a ratio bounds them. The record's
+    /// prediction is the line over them from the built detail `n`: `size(n)`, and `per` the
+    /// steepest rise `⌈(size(k) − size(n)) / (k − n)⌉` over every `k` from `n` to the most,
+    /// so at every detail the advice may name it is no less than what the build makes
+    /// ([`crate::facet::Grows::Above`]). The most is the library's [`formae::DETAIL_MAX`], or
+    /// the first detail past a part's limit (where the advice stops, by that limit), or the
+    /// last whose count the library answers.
+    ///
+    /// An outline by name (`outline`: `size` is then a measure its triangles grow no faster
+    /// than, not the triangles: what takes the outline makes them) is predicted by the square of
+    /// the ratio from what was built ([`crate::facet::Grows::Square`]), and its most is the last
+    /// detail up to which `size(k) · n² <= size(n) · k²` holds at every detail from `n` (a step
+    /// past the square ends it there; the advice stops at a part's limit by the square itself).
+    fn form_rounds(&self, what: &'static str, detail: u32, outline: bool, size: &dyn Fn(u32) -> Option<u64>, list: impl IntoIterator<Item = (f64, f64)>) {
+        let list: Vec<(f64, f64)> = list.into_iter().collect();
+        if list.is_empty() || self.coarse {
+            return;
+        }
+        let at_n = size(detail).unwrap_or(0);
+        let (mut most, mut per) = (detail, 0u64);
+        let n2 = u128::from(detail) * u128::from(detail);
+        for k in detail.saturating_add(1)..=formae::DETAIL_MAX {
+            let Some(t) = size(k) else { break };
+            let k2 = u128::from(k) * u128::from(k);
+            if outline && u128::from(t) * n2 > u128::from(at_n) * k2 {
+                break;
+            }
+            per = per.max(t.saturating_sub(at_n).div_ceil(u64::from(k - detail)));
+            most = k;
+            if !outline && t > MAX_PART_TRIANGLES as u64 {
+                break;
+            }
+        }
+        let grows = if outline { crate::facet::Grows::Square } else { crate::facet::Grows::Above { n: detail, at_n, per } };
+        let alone = |k: u32| grows.at(k) as usize;
         for (turn, radius) in list {
-            self.round(what, "detail", detail, turn as f32, radius as f32, false);
+            let c = Counted { value: detail, range: (i64::from(formae::DETAIL_MIN), i64::from(most)), grows, alone: &alone };
+            self.round(what, "detail", c, turn as f32, radius as f32, false);
         }
     }
 
@@ -457,7 +497,11 @@ impl Ctx<'_> {
         let ring: Vec<[f64; 3]> = o.rings[0].iter().map(|p| [p[0], 0.0, -p[1]]).collect();
         hold_floor(&ring, path, &format!("the outline '{word}'"))?;
         if let Ok(Some((turn, radius))) = spec.facets(detail) {
-            self.form_rounds(found.form.name, detail, [(turn, radius)]);
+            // (An outline's triangles are made by what takes it: `a·points + b` with `b` no
+            // less than `-2a` (an extrusion's walls and caps, a lathe's bands, a cap alone),
+            // whose ratio from one detail to a greater is at most that of `points - 2`.)
+            let size = |k: u32| spec.count(k).ok().map(|c| u64::from(c.points).saturating_sub(2));
+            self.form_rounds(found.form.name, detail, true, &size, [(turn, radius)]);
         }
         Ok(ring.iter().map(|p| [p[0] as f32, p[2] as f32]).collect())
     }
@@ -519,7 +563,14 @@ impl Ctx<'_> {
         };
         let mut s = to_shape(&mesh, &n.path)?;
         let what = found.form.name;
-        self.form_rounds(what, detail, mesh.rounds().iter().map(|r| (r.turn_deg, r.radius)));
+        let size = |k: u32| {
+            let points = match &solid {
+                Some(s) => s.count(k).ok()?.points,
+                None => spec.count(k).ok()?.points,
+            };
+            Some((2 * u64::from(points) + 4 * u64::from(genus)).saturating_sub(4))
+        };
+        self.form_rounds(what, detail, false, &size, mesh.rounds().iter().map(|r| (r.turn_deg, r.radius)));
         // Its outlines: a raised figure's own outer ring and the boxes it is raised to (as an
         // extruded outline's); a solid's hull seen along each of its axes.
         let views = match (&solid, spec.build(detail)) {

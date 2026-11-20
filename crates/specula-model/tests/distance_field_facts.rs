@@ -719,6 +719,63 @@ fn the_slope_through_a_join_is_the_cosine_of_half_the_angle() {
     }
 }
 
+/// 5.4's fourth and fifth points: a meeting's field is at least each field it is made of, so its
+/// growth along a thin edge stays within the dip of an operand that is exact outside; and a pair
+/// joined polynomially needs only one exact part, at the price of the whole width.
+#[test]
+fn a_meeting_stays_by_its_operands_and_a_pair_needs_one_exact_part() {
+    let mut s = Seq(0x5eed_d157_0014);
+    // A box met with a wedge of half angle 3 degrees whose edge lies inside the box.
+    let block = Plane::Box { c: [0.0, 0.0], half: [1.0, 0.5] };
+    let (sn, cs) = dmath::sin_cos_f64(3.0f64.to_radians());
+    let edge = 0.2;
+    let met = |p: P2| block.signed(p).max((p[0] - edge) * sn + p[1] * cs).max((p[0] - edge) * sn - p[1] * cs);
+    let dip = 0.1 / 4.0;
+    // Along the wedge's axis the field stays under the dip far past the edge: 0.9 D / sin a.
+    let far = edge + 0.9 * dip / sn;
+    assert!(far - edge > 15.0 * dip && met([far, 0.0]) <= dip && met([far, 0.0]) > 0.0, "the field {} at {far}", met([far, 0.0]));
+    // And never further than the dip from the box it was met with.
+    let mut beyond = 0;
+    for _ in 0..200_000 {
+        let p = [s.span(-2.0, 2.0), s.span(-1.5, 1.5)];
+        let out = block.signed(p);
+        assert!(met(p) >= out, "the meeting's field {} is under the box's {out}", met(p));
+        if out > 0.0 {
+            beyond += 1;
+            assert!(met(p) > dip || out <= dip, "a point {out} from the box has the meeting's field {}", met(p));
+        }
+    }
+    assert!(beyond > 50_000);
+    // A pair, one part exact and the other reading short outside by a ratio.
+    let mut found = [0usize; 2];
+    for _ in 0..400 {
+        let (a, b) = pair(&mut s);
+        let (k, ratio) = (s.span(0.2, 1.2), s.span(0.05, 1.0));
+        let short = |p: P2| if b.signed(p) > 0.0 { ratio * b.signed(p) } else { b.signed(p) };
+        for _ in 0..600 {
+            let p = [s.span(-3.0, 3.0), s.span(-3.0, 3.0)];
+            let (fa, fb) = (a.signed(p), short(p));
+            if fa <= 0.0 || fb <= 0.0 {
+                continue;
+            }
+            for (slot, degree) in [(0usize, 2u32), (1, 3)] {
+                if poly(fa, fb, k, degree) <= 0.0 {
+                    found[slot] += 1;
+                    let h = reach(fa, fb, k);
+                    let most = k * (1.0 - h / 2.0) * (1.0 - h / 2.0) + 1e-12;
+                    assert!(fa <= most && fb <= most && most <= k + 1e-12, "degree {degree}: fields {fa} and {fb} in the joined solid, over {most} (k {k})");
+                }
+            }
+        }
+    }
+    assert!(found[0] > 300 && found[1] > 150, "points of a joined solid outside both parts: {found:?}");
+    // The short part's own reach is the dip over its ratio, which the whole width does not cover:
+    // two short parts can pass it (2.5 and 5.4's second point).
+    let (k, ratio) = (0.4, 0.1);
+    let both_short = poly(ratio * 2.0 * k, ratio * 2.0 * k, k, 2);
+    assert!(both_short <= 0.0, "two fields reading {ratio} of a distance of 2 k join to {both_short}: a point two widths from both parts is in the joined solid");
+}
+
 /// 5.5: a chain of polynomial joins with one width `k` never falls more than `k` below the least
 /// field, however long it is; a balanced tree of them has no such limit.
 #[test]

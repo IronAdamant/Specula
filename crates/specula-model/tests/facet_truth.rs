@@ -180,6 +180,11 @@ struct Truth {
     sag: f64,
     turn: f64,
     fit: f64,
+    /// A ring's widest rim seen down the mapped axis: the largest turn of its outline at a
+    /// corner (between two neighbouring corners on either side) and the furthest the rim's
+    /// true curve stands out of a side of it (0 for a ball).
+    rim_turn: f64,
+    rim_sag: f64,
 }
 
 fn truth(ts: &[[V; 3]], m: &M, t: V, kind: Kind, rows: &[[f64; 2]]) -> Truth {
@@ -277,7 +282,96 @@ fn truth(ts: &[[V; 3]], m: &M, t: V, kind: Kind, rows: &[[f64; 2]]) -> Truth {
         }
     }
     let _ = faces;
-    Truth { sag, turn, fit }
+    let (rim_turn, rim_sag) = match kind {
+        Kind::Ring => rim_truth(ts, m, t, rows),
+        Kind::Ball(_) => (0.0, 0.0),
+    };
+    Truth { sag, turn, fit, rim_turn, rim_sag }
+}
+
+/// A ring's widest rim seen down its mapped axis, measured on the mesh `ts` (whose shape frame
+/// is mapped by `x ↦ m·x + t`): the corners of the widest profile row, by their angle round the
+/// axis in the shape's frame, each seen along `m·Y` (less its part along it); the outline's turn
+/// at a corner whose neighbours on both sides are one step away, and how far the rim's true
+/// circle, carried through `m` and seen so, stands out of each side between neighbours (found by
+/// a fine search along the arc: not the arc's middle, which is what the record uses).
+fn rim_truth(ts: &[[V; 3]], m: &M, t: V, rows: &[[f64; 2]]) -> (f64, f64) {
+    let mi = inv(m);
+    let wide = rows.iter().map(|r| r[0]).fold(0.0f64, f64::max);
+    let axis = mv(m, [0.0, 1.0, 0.0]);
+    let d = unit(axis);
+    let seen = |p: V| {
+        let q = sub(p, t);
+        let along = dot(q, d);
+        sub(q, d.map(|x| x * along))
+    };
+    // (By angle: corners above one another, within a hundred-thousandth of a radian, are one
+    // corner seen so.)
+    let mut found: Vec<(f64, V)> = Vec::new();
+    for tri in ts {
+        for p in tri {
+            let l = mv(&mi, sub(*p, t));
+            let rho = dmath::hypot_f64(l[0], l[2]);
+            if (rho - wide).abs() <= 1e-5 * wide.max(1e-9) {
+                found.push((dmath::atan2_f64(-l[2], l[0]), seen(*p)));
+            }
+        }
+    }
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut c: Vec<(f64, V)> = Vec::new();
+    for f in found {
+        if c.last().is_none_or(|l| f.0 - l.0 > 1e-5) {
+            c.push(f);
+        }
+    }
+    if c.len() > 1 && c[0].0 + std::f64::consts::TAU - c[c.len() - 1].0 <= 1e-5 {
+        c.pop();
+    }
+    // (A point a cut left in the middle of a side is no corner: where the outline goes straight
+    // on through it.)
+    let all = c.clone();
+    let k = all.len();
+    if k >= 3 {
+        c = (0..k).filter(|&i| angle(sub(all[i].1, all[(i + k - 1) % k].1), sub(all[(i + 1) % k].1, all[i].1)) > 1e-3).map(|i| all[i]).collect();
+    }
+    let n = c.len();
+    if n < 3 {
+        return (0.0, 0.0);
+    }
+    let tau = std::f64::consts::TAU;
+    let gap = |i: usize| {
+        let j = (i + 1) % n;
+        let g = c[j].0 - c[i].0;
+        if j == 0 {
+            g + tau
+        } else {
+            g
+        }
+    };
+    // (A side's angle: the gaps' middle one, so that a cut, which leaves a short gap and a
+    // long one, does not change it.)
+    let mut gaps: Vec<f64> = (0..n).map(gap).collect();
+    gaps.sort_by(f64::total_cmp);
+    let step = gaps[n / 2];
+    let next = |i: usize| gap(i) <= 1.5 * step;
+    let (mut turn, mut sag) = (0.0f64, 0.0f64);
+    for i in 0..n {
+        let (h, j) = ((i + n - 1) % n, (i + 1) % n);
+        if next(h) && next(i) {
+            turn = turn.max(angle(sub(c[i].1, c[h].1), sub(c[j].1, c[i].1)));
+        }
+        if next(i) {
+            let (a, b) = (c[i].1, c[j].1);
+            let e = sub(b, a);
+            for s in 0..=200 {
+                let th = c[i].0 + gap(i) * f64::from(s) / 200.0;
+                let (sn, cs) = dmath::sin_cos_f64(th);
+                let q = seen([0, 1, 2].map(|k| mv(m, [wide * cs, 0.0, -wide * sn])[k] + t[k]));
+                sag = sag.max(len(cross(e, sub(q, a))) / len(e));
+            }
+        }
+    }
+    (turn, sag)
 }
 
 /// A shape drawn for a case: its JSON, its kind, its profile rows (a ring's), the count that
@@ -366,6 +460,8 @@ struct Case {
     what: String,
     sag_ratio: f64,
     turn_off: f64,
+    rim_ratio: f64,
+    rim_off: f64,
 }
 
 /// Runs the cases `0..n` of the drawn chains (every `every`th), holding each record measured
@@ -410,7 +506,17 @@ fn chains(n: usize, every: usize) -> Vec<Case> {
         // (The record is f32, the mesh f32: a part in a few thousand, and a few hundred
         // thousandths of a degree.)
         assert!((rs - tr.sag).abs() <= 2e-3 * tr.sag + 1e-7 && (rt - tr.turn).abs() <= 0.02, "{at}: record stands in {rs:.6} and turns {rt:.3}; the mesh {:.6} and {:.3}", tr.sag, tr.turn);
-        out.push(Case { what: sh.json.split('"').nth(3).unwrap_or("").to_string(), sag_ratio: rs / tr.sag, turn_off: rt - tr.turn });
+        // A ring's widest rim seen down its axis: the record against the mesh's own.
+        let (mut rim_ratio, mut rim_off) = (1.0, 0.0);
+        if sh.kind == Kind::Ring {
+            let rim = r.rim.unwrap_or_else(|| panic!("{at}: a ring with no rim: {r:?}"));
+            let (rs, rt) = (f64::from(rim.sag), f64::from(rim.turn_deg));
+            assert!((rs - tr.rim_sag).abs() <= 2e-3 * tr.rim_sag + 1e-7 && (rt - tr.rim_turn).abs() <= 0.02, "{at}: the rim's record stands in {rs:.6} and turns {rt:.3}; the mesh's {:.6} and {:.3}", tr.rim_sag, tr.rim_turn);
+            (rim_ratio, rim_off) = (rs / tr.rim_sag, rt - tr.rim_turn);
+        } else {
+            assert!(r.rim.is_none(), "{at}: a ball has no rim");
+        }
+        out.push(Case { what: sh.json.split('"').nth(3).unwrap_or("").to_string(), sag_ratio: rs / tr.sag, turn_off: rt - tr.turn, rim_ratio, rim_off });
     }
     out
 }
@@ -435,6 +541,8 @@ fn the_record_holds_against_the_mesh_on_every_chain() {
     for what in ["cylinder", "sphere", "capsule", "lathe", "cone", "torus"] {
         let (r, t) = worst(what);
         assert!((r - 1.0).abs() < 2e-3 && t.abs() < 0.02, "{what}: {r} {t}");
+        let rim = cases.iter().filter(|c| c.what == what).fold((1.0f64, 0.0f64), |(r, t), c| (if (c.rim_ratio - 1.0).abs() > (r - 1.0).abs() { c.rim_ratio } else { r }, if c.rim_off.abs() > t.abs() { c.rim_off } else { t }));
+        assert!((rim.0 - 1.0).abs() < 2e-3 && rim.1.abs() < 0.02, "{what}'s rim: {} {}", rim.0, rim.1);
     }
 }
 
@@ -512,7 +620,7 @@ fn copies_drawn_from_a_seed_are_measured_as_placed() {
     let alone = tris(&make(&format!(r#"{{ "name": "a", "parts": [ {{ "name": "p", "material": "stone", "shape": {cyl} }} ] }}"#), &lib));
     let worst_of = |ts: &[[V; 3]], copies: usize| {
         assert_eq!(ts.len(), alone.len() * copies, "copies in order, whole");
-        let (mut sag, mut turn) = (0.0f64, 0.0f64);
+        let (mut sag, mut turn, mut rim_sag, mut rim_turn) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
         for chunk in ts.chunks(alone.len()) {
             let (m, t, miss) = fit(&alone, chunk);
             assert!(miss < 1e-5, "a copy's map does not fit: {miss:.2e}");
@@ -520,9 +628,12 @@ fn copies_drawn_from_a_seed_are_measured_as_placed() {
             assert!(tr.fit < 1e-4);
             sag = sag.max(tr.sag);
             turn = turn.max(tr.turn);
+            rim_sag = rim_sag.max(tr.rim_sag);
+            rim_turn = rim_turn.max(tr.rim_turn);
         }
-        (sag, turn)
+        (sag, turn, rim_sag, rim_turn)
     };
+    let rim_holds = |r: &Round, rim_sag: f64, rim_turn: f64| r.rim.is_some_and(|x| (f64::from(x.turn_deg) - rim_turn).abs() < 0.02 && (f64::from(x.sag) - rim_sag).abs() <= 2e-3 * rim_sag);
     // (Jittered turns about every axis, with an uneven scale after: the copies' rings lean
     // each its own way.)
     for (ops, copies) in [
@@ -530,9 +641,10 @@ fn copies_drawn_from_a_seed_are_measured_as_placed() {
         (r#"{"op":"radial","count":6,"jitter":{"rotate":[30,0,30]}},{"op":"lean","x":0.6,"z":-0.3}"#, 6),
     ] {
         let model = make(&format!(r#"{{ "name": "t", "parts": [ {{ "name": "p", "material": "stone", "shape": {cyl}, "ops": [{ops}] }} ] }}"#), &lib);
-        let (sag, turn) = worst_of(&tris(&model), copies);
+        let (sag, turn, rim_sag, rim_turn) = worst_of(&tris(&model), copies);
         let r = rec(&model, "parts[0].shape", "sides").unwrap();
         assert!(r.measured() && (f64::from(r.turn_deg) - turn).abs() < 0.02 && (f64::from(r.sag_m()) - sag).abs() <= 2e-3 * sag, "{ops}: {r:?} against {turn:.3} {sag:.6}");
+        assert!(rim_holds(r, rim_sag, rim_turn), "{ops}: {r:?} against the rim's {rim_turn:.3} {rim_sag:.6}");
     }
     // A scatter: each item placed (turned about the vertical, scaled evenly), then the whole
     // leant.
@@ -544,9 +656,119 @@ fn copies_drawn_from_a_seed_are_measured_as_placed() {
     let ts = tris(&model);
     let copies = ts.len() / alone.len();
     assert!(copies > 2, "{copies}");
-    let (sag, turn) = worst_of(&ts, copies);
+    let (sag, turn, rim_sag, rim_turn) = worst_of(&ts, copies);
     let r = rec(&model, "parts[0].generate.items[0].shape", "sides").unwrap();
     assert!(r.measured() && (f64::from(r.turn_deg) - turn).abs() < 0.02 && (f64::from(r.sag_m()) - sag).abs() <= 2e-3 * sag, "scatter: {r:?} against {turn:.3} {sag:.6}");
+    assert!(rim_holds(r, rim_sag, rim_turn), "scatter: {r:?} against the rim's {rim_turn:.3} {rim_sag:.6}");
+}
+
+/// **A sloped band seen from above** (the third review's second finding): a cone's faces turn
+/// little where it is flat, but seen down its axis its rim is the polygon of its sides. The
+/// review's table (radius 1), and the same leant and stretched: the record's rim against the
+/// mesh's own; its faces' turn against the formula for a cone's.
+#[test]
+fn a_cones_rim_is_measured_seen_down_its_axis() {
+    let lib = BTreeMap::new();
+    for (sides, height, rim_turn, rim_sag) in [(8u32, 0.2, 45.0, 0.0761), (12, 0.5, 30.0, 0.0341), (4, 0.05, 90.0, 0.2929)] {
+        let cone = format!(r#"{{"op":"cone","radius":1,"height":{height},"sides":{sides}}}"#);
+        let rows = [[0.0, 0.0], [1.0, 0.0], [0.0, height]];
+        for (ops, m) in [("", I3), (r#"{"op":"lean","x":0.7},{"op":"scale","by":[1,1,2.5]}"#, mm(&sc([1.0, 1.0, 2.5]), &[[1.0, 0.7, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]))] {
+            let model = make(&format!(r#"{{ "name": "t", "parts": [ {{ "name": "p", "material": "stone", "shape": {cone}, "ops": [{ops}] }} ] }}"#), &lib);
+            let ts = tris(&model);
+            let tr = truth(&ts, &m, centre(&ts, &m, Kind::Ring, &rows, &cone), Kind::Ring, &rows);
+            let r = rec(&model, "parts[0].shape", "sides").unwrap();
+            let rim = r.rim.unwrap();
+            assert!(tr.fit < 1e-4 && (f64::from(rim.turn_deg) - tr.rim_turn).abs() < 0.02 && (f64::from(rim.sag) - tr.rim_sag).abs() <= 2e-3 * tr.rim_sag, "{cone} [{ops}]: {r:?} against the rim's {:.3} {:.6}", tr.rim_turn, tr.rim_sag);
+            assert!((f64::from(r.turn_deg) - tr.turn).abs() < 0.02, "{cone} [{ops}]: faces {r:?} against {:.3}", tr.turn);
+            if ops.is_empty() {
+                // (As the review measured it: the outline turns 360° over the sides and stands in
+                // ρ(1 − cos(180°/n)); the faces turn far less.)
+                assert!((tr.rim_turn - rim_turn).abs() < 1e-3 && (tr.rim_sag - rim_sag).abs() < 1e-4 && r.turn_deg < 0.6 * rim.turn_deg, "{cone}: {r:?}");
+            }
+        }
+    }
+}
+
+/// The triangles of `ts` that are a ring's own faces under `x ↦ m·x + t`: every corner on its
+/// profile (the line through `rows`, in order: a cut leaves corners between them) and its
+/// normal out from the axis where it is (what a boolean left of it; the walls it cut, and
+/// another operand's faces, are not).
+fn ring_faces(ts: &[[V; 3]], m: &M, t: V, rows: &[[f64; 2]]) -> Vec<[V; 3]> {
+    let mi = inv(m);
+    let scale = rows.iter().map(|r| r[0].abs().max(r[1].abs())).fold(0.0f64, f64::max);
+    let off_profile = |r: f64, y: f64| {
+        rows.windows(2)
+            .map(|w| {
+                let (a, b) = (w[0], w[1]);
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let l2 = dx * dx + dy * dy;
+                let s = if l2 > 0.0 { (((r - a[0]) * dx + (y - a[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                dmath::hypot_f64(a[0] + s * dx - r, a[1] + s * dy - y)
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    ts.iter()
+        .filter(|tri| {
+            let l = tri.map(|p| mv(&mi, sub(p, t)));
+            let on = l.iter().all(|q| off_profile(dmath::hypot_f64(q[0], q[2]), q[1]) < 1e-5 * scale);
+            let n = cross(sub(l[1], l[0]), sub(l[2], l[0]));
+            let mid = [(l[0][0] + l[1][0] + l[2][0]) / 3.0, (l[0][2] + l[1][2] + l[2][2]) / 3.0];
+            let (h, r) = (dmath::hypot_f64(n[0], n[2]), dmath::hypot_f64(mid[0], mid[1]));
+            on && h > 1e-4 * len(n) && r > 0.0 && (n[0] * mid[0] + n[2] * mid[1]).abs() > 0.9 * h * r
+        })
+        .copied()
+        .collect()
+}
+
+/// **Booleans** (not checked by the third review): a ring cut so that part of it is gone, a
+/// round cutter that leaves walls, and a union of two rings. Each record is held against the
+/// faces of it the result kept, measured here, or says it was not measured; the record is the
+/// whole ring's, so where what is kept still has neighbouring faces and corners it is exact.
+#[test]
+fn booleans_keep_records_that_hold_against_the_mesh() {
+    let lib = BTreeMap::new();
+    let one = |shape: &str| make(&format!(r#"{{ "name": "t", "parts": [ {{ "name": "p", "material": "stone", "shape": {shape} }} ] }}"#), &lib);
+    let held = |model: &Model, path: &str, ts: Vec<[V; 3]>, m: &M, t: V, rows: &[[f64; 2]]| {
+        let r = rec(model, path, "sides").unwrap_or_else(|| panic!("{path}: no record in {:?}", model.extras.round));
+        if !r.measured() {
+            return false;
+        }
+        assert!(!ts.is_empty(), "{path}: none of its faces found");
+        let tr = truth(&ts, m, t, Kind::Ring, rows);
+        let rim = r.rim.unwrap();
+        assert!(
+            (f64::from(r.turn_deg) - tr.turn).abs() < 0.02 && (f64::from(r.sag_m()) - tr.sag).abs() <= 2e-3 * tr.sag && (f64::from(rim.turn_deg) - tr.rim_turn).abs() < 0.02 && (f64::from(rim.sag) - tr.rim_sag).abs() <= 2e-3 * tr.rim_sag,
+            "{path}: {r:?} against faces {:.3} {:.6}, rim {:.3} {:.6}",
+            tr.turn,
+            tr.sag,
+            tr.rim_turn,
+            tr.rim_sag
+        );
+        tr.turn > 0.0 && tr.rim_turn > 0.0
+    };
+    // A nine-sided column, half of it cut away by a box.
+    let rows = [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]];
+    let model = one(r#"{"op":"difference","of":[{"op":"cylinder","radius":0.5,"height":1,"sides":9},{"op":"box","size":[2,2,2],"ops":[{"op":"move","by":[1.05,-0.5,0]}]}]}"#);
+    let ts = tris(&model);
+    let mut measured = 0;
+    measured += usize::from(held(&model, "parts[0].shape.of[0]", ring_faces(&ts, &I3, [0.0; 3], &rows), &I3, [0.0; 3], &rows));
+    // A box with a hole: the cutter (a seven-sided column, taller than the box) leaves walls,
+    // whose rows are where the box's faces cut it.
+    let cut_rows = [[0.0, 0.0], [0.3, 0.0], [0.3, 0.5], [0.3, 1.0], [0.3, 1.5], [0.3, 2.0], [0.0, 2.0]];
+    let model = one(r#"{"op":"difference","of":[{"op":"box","size":[2,1,2]},{"op":"cylinder","radius":0.3,"height":2,"sides":7,"ops":[{"op":"move","by":[0,-0.5,0]}]}]}"#);
+    let ts = tris(&model);
+    measured += usize::from(held(&model, "parts[0].shape.of[1]", ring_faces(&ts, &I3, [0.0, -0.5, 0.0], &cut_rows), &I3, [0.0, -0.5, 0.0], &cut_rows));
+    // Two columns in a union, the second narrower, turned and standing half inside the first:
+    // what of it is inside is gone, and the first's top is cut round it. (Cut along a plane
+    // square to its axis, a ring keeps corners on its profile, which the truth's faces need; a
+    // cut across a face leaves corners inside it, and those faces are not looked at.)
+    let model = one(r#"{"op":"union","of":[{"op":"cylinder","radius":0.5,"height":1,"sides":11},{"op":"cylinder","radius":0.3,"height":1,"sides":7,"ops":[{"op":"rotate","deg":[0,10,0]},{"op":"move","by":[0,0.5,0]}]}]}"#);
+    let ts = tris(&model);
+    measured += usize::from(held(&model, "parts[0].shape.of[0]", ring_faces(&ts, &I3, [0.0; 3], &rows), &I3, [0.0; 3], &rows));
+    let turned = ry(10.0);
+    let rows2 = [[0.0, 0.0], [0.3, 0.0], [0.3, 1.0], [0.0, 1.0]];
+    measured += usize::from(held(&model, "parts[0].shape.of[1]", ring_faces(&ts, &turned, [0.0, 0.5, 0.0], &rows2), &turned, [0.0, 0.5, 0.0], &rows2));
+    assert_eq!(measured, 4, "every record here is measured, and held against faces and corners of it the result kept");
 }
 
 /// **A sculpt's figure is an estimate, held within bounds**: its record is what a cell of its

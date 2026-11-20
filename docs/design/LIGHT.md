@@ -761,3 +761,36 @@ had landed by its next look).
 **Not done.** No release build was measured, nor a 60 Hz display without a cap, nor a
 minimized window (its serve window is 16 ms and pulses there too). A report at the display's
 rate on a busy machine still lands one render a frame, since no pulse fits a 1 ms window.
+
+## Its fifth review
+
+A short review of that change alone, by a model that wrote none of it (2026-11-20), **said not
+to merge it**. The mechanism works: with a window held to 20 frames a second and eight agents
+calling, a report of 80 renders landed several a frame and took 1.11 to 1.16 s, while the
+agents made 985 to 1,153 calls a second (573 to 1,421 with no report running); neither starves
+the other. With no step job waiting the path is the one before the change, but for one walk of
+at most 64 queued jobs after each call. What it refused it for:
+
+1. **The deadline rule is held by no test.** With the check taken out, so that a pulse starts
+   whatever the deadline, all 29 schedule tests pass: they look at where looks end, against a
+   margin that the simulated look and landing (0.02 and 0.6 ms) fit inside.
+2. **The report's own half of the mend is held by no test.** With `perf_light`'s job made to
+   say it has no render on the card, which switches its pulses off and brings the fourth
+   review's finding back, every light test passes. No test reads that answer, and none runs
+   the window loop's use of it (the preview job's is tested).
+3. **"Frames are no later for it" is not true when renders are slow and landing one is
+   costly** (by the author's own simulation; not shown in a running engine). The estimate of a
+   pulse's cost halves every 50 ms, so when a render takes longer than that the estimate has
+   fallen to its floor by the next landing, and a landing can start with room for a look only.
+   At 60 Hz with a millisecond of frame work, over four seconds: renders of 100 ms landing in
+   6 ms made 3 frames of 237 late where the frame's own pump made none of 240, and landing in
+   10 ms, 7 of 233. Held to 20 frames a second the cause is another (a pulse lands one render
+   inside the wait and the frame's own pump lands a second, so one frame pays for two) and
+   the result goes both ways: 13 late of 76 against none of 80 in one case, 2 of 80 against 34
+   of 69 in another. Whether a real landing costs 4 to 10 ms was not measured.
+
+Not checked by it: an alternating before and after in a running engine; frame gaps in a
+running engine; the preview with a window; a window minimised, resized or dragged during a
+report; a session closing with a render in flight; the validation layer's output; the discrete
+adapter. One run, on a busy machine, had the agents' calls fall to 27 a second after a report
+with no pulse running; two later runs did not repeat it and it is put down to load, unproved.
