@@ -1771,6 +1771,12 @@ fn rules_that_move_few_readings_are_held_by_the_one_they_move_most() {
     // The sides of a corner bend from three degrees ([`CURVING_DEG`]; from two, a lens with tips
     // of 90 degrees reads 0.05 square on the mean): 0.08.
     hold("lens tip 90", &|s| s.mean[S] >= 0.065, "CURVING_DEG (3, 7)");
+    // A window runs straight under three degrees ([`STRAIGHT_DEG`]; under four, a gear of
+    // eight triangular teeth reads down to 0.75 round): 0.96 round at the least.
+    hold("gear tri teeth 8", &|s| s.lo[R] >= 0.86, "STRAIGHT_DEG (3, 6)");
+    // A run is a side if it bows by under a fifth of a pixel ([`BOW_PX`]; under two fifths, a
+    // hedgehog reads down to nothing square): 0.14 square at the least.
+    hold("hedgehog", &|s| s.lo[S] >= 0.07, "BOW_PX 0.2");
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
