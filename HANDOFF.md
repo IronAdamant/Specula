@@ -1164,8 +1164,18 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       1.6), the window keeping its rate; at the display's own rate on a busy machine no
       look fits the one-millisecond wait and a report lands one render a frame as before.
       The timeline's preview job waits the same way now (its previews byte for byte the
-      same). **A short review of that change is running; the window check is owed with
-      the live checks, since the window's loop changed.**
+      same). **Its short review said not to merge it** (2026-11-20; LIGHT.md, "Its fifth
+      review"): the mechanism works (a report of 80 renders in 1.1 s with a window at 20
+      frames a second and eight agents calling, neither starving the other; nothing
+      changed when no job waits), and **two of its rules are held by no test** (a pulse
+      started past the frame's deadline, and the report's own job saying it has a
+      render on the card: each seeded away, every test passes), and "frames are no
+      later for it" is false in the author's own simulation when renders are slow and
+      a landing costly (3 to 7 late frames of 240 at 60 Hz; the estimate of a pulse's
+      cost decays between landings). One of its runs had agents' calls fall to 27 a
+      second after a report, on a busy machine, not repeated and not explained. **A
+      fresh agent is mending those.** The window check is owed with the live checks,
+      since the window's loop changed.
     - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
       PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
       builds: a large thin rounded cutter set a metre past the corner of what it cuts
