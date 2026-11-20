@@ -287,6 +287,30 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     themselves** (the automatic permission check had refused Claude's batch removal before
     any prompt reached them). Removals are allowed again while they are at the machine; a
     refused one is surfaced to them and never worked around.
+  - **A project's own recipes get a catalogue, and the engine tells an agent where everything
+    is, unasked** (the owner, 2026-11-20, night, asked whether the shape library and saved
+    models and recipes will save time, and told plainly that a saved recipe helps only an
+    agent that knows it is there, and that no plan covered that): "Build that recipe into
+    the plan alongside the library. And a way to have Specula Engine automatically notify
+    you and other AI agents on WHERE To find the tools, WHERE to find both library and
+    recipes and what they contain. From the start, both before and after loading on a
+    project, both existing or new." Both are items of ROADMAP M6 now, after the library of
+    shapes (which had no roadmap item of its own until that night either: its plan had been
+    in this page and in notes on this machine). *Claude's reading:* (1) one call that lists
+    what a project already holds, a first answer of about 3 KB and rows that paste, as the
+    library's catalogue is, with a line of its own for every recipe; text read from a
+    project's files is data shown to an agent and never instructions to it. (2) One
+    orientation, made by one function from the engine's state, under about 1.5 KB: where
+    the tools are, where the library is and what it holds, where the project's own recipes
+    and saved models are and what they hold. It reaches an agent on every path without
+    being asked for: the MCP handshake's `instructions`, `agent_hello`'s answer, the first
+    lines of the shell's commands; before a project is loaded (never the person's list of
+    projects) and after, for a new project and for an existing one with no notes (told
+    from its files, nothing written into it); and a session is told once when it changes.
+    (3) Measured with the comparison's harness: what a cold agent spends before its first
+    file with it and without, and whether what was there was reused. **It is the library
+    slot's next stage** (it does not wait for the sculpt's box, as the sculpt primitives
+    do).
   - **One or two subagents at a time** (the owner, 2026-11-20, evening, by remote, with six
     running): "Once your sub agents are done, and if possible, I'd like you to reduce how many
     is them down to just 1 or two as to conserve my usage and to extend it." So what is
