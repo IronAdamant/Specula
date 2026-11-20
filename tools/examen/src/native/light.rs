@@ -9,10 +9,13 @@
 //! - so the report lands more than one render a frame: its renders outnumber the frames the
 //!   window presented from just before the call to just after it (a count, not a time; the
 //!   frames of the commands around the call are counted against it);
+//! - a timeline's preview of sixteen tiles answers with them all, with the window;
 //! - nothing the validation layer said: the view's own capture after the report has no
 //!   validation warning, and the engine says at its end that it saw no validation error.
 //!
-//! Before the fourth round a job was looked at once a frame, so it landed one render a frame,
+//! Its log says what each landing cost, for the report and for the preview (the engine's
+//! `step.landed` events, from the landing step's start to its end), with how many frames each
+//! took. Before the fourth round a job was looked at once a frame, so it landed one render a frame,
 //! and this check failed on both counts.
 
 use std::path::Path;
@@ -32,8 +35,36 @@ const SETUP: [(&str, &str); 5] = [
 
 const REPORT: &str = r#"{"width": 640, "height": 360, "frames": 9, "eye": [4, 3, 6], "target": [0, 0.5, 0]}"#;
 
+/// The preview's timeline: a camera round the middle cube.
+const ORBIT: &str = r#"{"path": "orbit", "timeline": {"schema": "specula.timeline.v1", "duration": 2, "tracks": [{"kind": "camera", "name": "orbit", "rail": {"points": [[6, 2, 0], [0, 2, 6], [-6, 2, 0]]}, "move": [{"t": 0, "at": 0}, {"t": 2, "at": 1}], "look": {"entity": "/c1"}}]}}"#;
+
 fn number(json: &Json, path: &str) -> Option<f64> {
     at(json, path).and_then(Json::as_f64)
+}
+
+/// What landing a render cost each time a job of `kind` landed one after the trace's event
+/// `after` (the engine's `step.landed` events: the landing step's start to its end), sorted.
+fn landings(cx: &mut Cx, port: u64, kind: &str, after: f64) -> Result<Vec<f64>, String> {
+    let found = cx.call(port, Some(("lead", "lead")), "trace_query", r#"{"code": "step.landed", "limit": 200}"#)?;
+    let mut ms: Vec<f64> = at(&found, "events")
+        .and_then(Json::as_array)
+        .map(|e| e.iter().filter(|e| number(e, "id").is_some_and(|id| id > after) && text(e, "fields.kind") == Some(kind)).filter_map(|e| number(e, "fields.ms")).collect())
+        .unwrap_or_default();
+    ms.sort_by(f64::total_cmp);
+    Ok(ms)
+}
+
+/// The id of the trace's newest event.
+fn newest(cx: &mut Cx, port: u64) -> Result<f64, String> {
+    let found = cx.call(port, Some(("lead", "lead")), "trace_query", r#"{"limit": 10}"#)?;
+    Ok(number(&found, "ring.next_id").unwrap_or(1.0) - 1.0)
+}
+
+fn spread(ms: &[f64]) -> String {
+    match ms {
+        [] => "none".to_owned(),
+        _ => format!("{} landings, median {:.2} ms, 90th {:.2} ms, most {:.2} ms", ms.len(), ms[ms.len() / 2], ms[ms.len() * 9 / 10], ms[ms.len() - 1]),
+    }
 }
 
 pub fn light_window(cx: &mut Cx) -> Result<String, String> {
@@ -59,9 +90,13 @@ pub fn light_window(cx: &mut Cx) -> Result<String, String> {
         }
         // The window presents a while before the report (its rate and the scene's first frames).
         std::thread::sleep(std::time::Duration::from_secs(2));
+        // (Each landing is a `step.landed` event at debug level: what a landing costs.)
+        cx.call(port, lead, "trace_settings", r#"{"scope": "global", "subsystems": {"engine": "debug"}}"#)?;
+        let mark = newest(cx, port)?;
         let before = cx.call(port, lead, "perf_frame", "{}")?;
         let report = cx.call(port, lead, "perf_light", REPORT)?;
         let after = cx.call(port, lead, "perf_frame", "{}")?;
+        let report_landings = landings(cx, port, "perf_light", mark)?;
         let read = |j: &Json, key: &str| number(j, &format!("serve.{key}"));
         let (Some(p0), Some(p1), Some(w0), Some(w1)) = (read(&before, "step_pulses"), read(&after, "step_pulses"), read(&before, "windows"), read(&after, "windows")) else {
             return Err(format!("perf_frame has no serve record with step_pulses and windows: {}", super::short(&after)));
@@ -77,6 +112,17 @@ pub fn light_window(cx: &mut Cx) -> Result<String, String> {
                 super::short(at(&after, "serve").unwrap_or(&Json::Null))
             ));
         }
+        // The timeline's preview with the window: sixteen tiles, each a render on the GPU.
+        cx.call(port, lead, "timeline_set", ORBIT)?;
+        let mark = newest(cx, port)?;
+        let p_before = cx.call(port, lead, "perf_frame", "{}")?;
+        let preview = cx.call(port, lead, "timeline_preview", r#"{"path": "orbit", "frames": 16, "tile": 320}"#)?;
+        let p_after = cx.call(port, lead, "perf_frame", "{}")?;
+        let tiles = at(&preview, "frames").and_then(Json::as_array).map_or(0, Vec::len);
+        expect(tiles == 16, "the preview does not have its sixteen tiles", &preview)?;
+        let preview_frames = read(&p_after, "windows").unwrap_or(0.0) - read(&p_before, "windows").unwrap_or(0.0);
+        let preview_pulses = read(&p_after, "step_pulses").unwrap_or(0.0) - read(&p_before, "step_pulses").unwrap_or(0.0);
+        let preview_landings = landings(cx, port, "timeline_preview", mark)?;
         // The validation layer: nothing in the view's own capture, and no error at the end.
         let frame = cx.call(port, lead, "sight_frame", r#"{"width": 320, "height": 180, "response_format": "detailed"}"#)?;
         let warned: Vec<String> = at(&frame, "warnings").and_then(Json::as_array).map(|w| w.iter().map(super::short).filter(|s| s.to_lowercase().contains("validation")).collect()).unwrap_or_default();
@@ -87,8 +133,12 @@ pub fn light_window(cx: &mut Cx) -> Result<String, String> {
         if !last.contains("shut down (0 validation errors)") {
             return Err(format!("the engine on the {adapter} adapter did not end saying it saw no validation error; its last line: {last} ({})", Path::new(&log).display()));
         }
-        let landing = at(&after, "serve.step_landing_ms").map_or_else(|| "?".to_owned(), super::short);
-        cx.say(format!("{adapter} ({name}): {renders} renders over {frames} frames, {pulses} pulses, a landing charged {landing} ms; report took {} ms", number(&report, "took_ms").unwrap_or(-1.0)));
+        cx.say(format!(
+            "{adapter} ({name}): report {renders} renders over {frames} frames, {pulses} pulses, took {} ms; its landings: {}. Preview: 16 tiles over {preview_frames} frames, {preview_pulses} pulses; its landings: {}",
+            number(&report, "took_ms").unwrap_or(-1.0),
+            spread(&report_landings),
+            spread(&preview_landings)
+        ));
         said.push(format!("{adapter} ({name}): {renders} renders over {frames} frames, {pulses} pulses"));
         seen.push(name);
     }

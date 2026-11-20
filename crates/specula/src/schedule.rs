@@ -1911,6 +1911,5 @@ mod tests {
                 assert!(with.0 <= alone.0 && with.2 >= alone.2, "render {gpu} ms, landing {land} ms, cap {cap:?}:\n{table}");
             }
         }
-        eprintln!("{table}");
     }
 }
