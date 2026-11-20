@@ -1026,3 +1026,67 @@ shapes are shared and a style has to hold across them, is the other job written
 (`props`), and it is not run. Two runs a cell cannot show a difference smaller than a third. And
 nothing here measures a project that already holds assets to reuse, which is what the next stage
 builds (ROADMAP M6: a project's own catalogue; the engine telling an agent where everything is).
+
+## Results (2026-11-21: the same job after the builders' blindness was mended)
+
+The result above (found, and not cheaper) made the owner doubt the whole approach, and ask
+whether the builders had been working blind. They had. The runs were read request by request
+and the engine's code beside them (by the lead, by hand, with no agents):
+
+- **No answer of the engine's said whether a model is closed**, and the brief told every builder
+  that `model_build` did (a sentence nobody had checked). The job asked for it, so each builder
+  exported its models and wrote its own check: about 90,000 of 509,000 weighted tokens in one
+  run.
+- **Nothing said how a recipe is written** but a design document of 62 KB (one builder read it
+  whole and carried it through 41 requests: 134,000 weighted tokens) or one refused build a
+  field: 30 to 146 builds a run for four props, up to 77 of them refused.
+- **The shape the job asked for could not be made**: the library's heart takes no soft edge (its
+  point and its notch close an inset at once). One builder spent nine builds finding that out.
+- **A new project said nothing about models**: its notes are about a game.
+
+The engine's parts had been verified for correctness, by tests and by reviewers, and never for
+use: until that comparison nobody had made one prop a game wants with them. Building games
+through the engine had six passes of exactly this treatment (the sections above); building
+models had none, and was measured cold.
+
+**What was mended** (four changes, by hand, on the engine that was measured): every build's
+answer says `closed` and `open_edges`; `model_schema` says a recipe's whole format in one
+answer from the parser's own tables, with an example that builds, and a sculpt's nodes with a
+soft heart that builds; a new project has one page on models (`notes/models.md`), held against
+the engine by a test; a raise that cannot go as deep as asked says what to do instead.
+
+**Measured again**, the same job, the same builder and judge models, the same harness, two runs
+a cell; every run is in
+[perf/leverage/2026-11-21-props-fixed](../../perf/leverage/2026-11-21-props-fixed/report.md):
+
+| Arm | Before (2026-11-20) | After | Requests before, after | Builds, of which refused: before, after | Checks |
+|---|---|---|---|---|---|
+| `found` (the same brief, to the byte, in both) | 509,455; 663,346 | 219,039; 360,234 | 44, 52; 29, 34 | 53/11, 146/77; 18/2, 22/4 | 8, 9; 9, 9 of 9 |
+| `guided` (new: the brief points at the project's page on models, not at a design document) | | 173,926; 158,904 | 22, 20 | 16/0, 23/3 | 9, 9 of 9 |
+| `none` (an engine without the library, before the mends) | 447,786; 594,327 | not measured again | 31, 48 | 30/7, 68/6 | 9, 9 of 9 |
+
+- **With the brief unchanged, the same job costs half** (289,637 against 586,400 on the means):
+  the engine's own answers and the project's own page did that.
+- **With a brief that points at that page, it costs 0.28 times what it did** (166,415), with two
+  runs 9% apart where the arms before were a third apart, and every check passed.
+- Every builder asked `model_schema` (five or six times a run), took shapes by name in two of
+  four recipes and sculpted the heart from the example; none wrote a check of closedness
+  (each one's script reads `closed` from the engine's answer). The two `guided` builders never
+  opened the design document; the two `found` builders, whose brief still names it, read parts
+  of it, which is most of the difference between the two arms.
+- **What is still paid for and need not be**: every builder still wrote a script of its own to
+  build the four and print their facts (the engine now has a call for that, measured next), and
+  the shell's answers were still indented.
+- **What the judges saw that the list does not ask**: the sculpted heart has a crease down its
+  middle where its two halves join and a ragged seam at its sides, and five to nine thousand
+  triangles where the other props have hundreds; the coin's rim does not show in a front view;
+  a new project's style check fails a prop for being brightly coloured.
+
+**What this does not show.** `none` was not measured again: an engine with the mends and
+without the library does not exist as a build, so the two cannot be told apart here (the
+library by name was used in two of four recipes in every run; the mends are what changed
+between the two columns of `found`). Two runs a cell. One small job. And whether the engine
+pays on a game that needs what it has (3D, physics, sound) is still not measured.
+
+**The lesson, in the owner's words**: "sometimes, you need to pause, if you're seeing same
+numbers despite same attempts, which means something else has gone wrong."

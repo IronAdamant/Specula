@@ -350,7 +350,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       the engine by a test; a raise that cannot go deeper says what to do. By hand again
       with the fixes: all four props built on the first try, each closed
       (`gallery-full/part4/blind/`). Not reviewed by another model yet (no subagents).
-      **Step 3, running**: the same job measured again on the fixed engine.
+      **Step 3, measured** (2026-11-21; LEVERAGE.md, "Results (2026-11-21: the same job
+      after the builders' blindness was mended)";
+      [perf/leverage/2026-11-21-props-fixed](perf/leverage/2026-11-21-props-fixed/report.md)):
+      **with the brief unchanged to the byte, the same job costs half** (289,637 weighted
+      tokens against 586,400, on the means of two runs); **with a brief that points at the
+      project's page on models it costs 0.28 times what it did** (166,415; the two runs 9%
+      apart), every run passing 9 of 9 checks. Builds a run: 16 to 23 with 0 to 4 refused
+      (30 to 146 with up to 77 refused before). Every builder asked `model_schema`, read
+      `closed` from the engine and wrote no check of its own. What it does not show: the
+      engine without the library was not measured again (no such build has the mends), so
+      the mends and the library are not told apart; two runs a cell; one small job. What
+      the judges saw: the sculpted heart has a crease down its middle and a ragged seam,
+      and thousands of triangles.
     - **Three things not fixed, which the owner has put before any more library work**
       ("These will need to be reviewed first before we continue with library work"): the
       library's raise cannot put a soft edge on a figure with a point or a notch (a heart,
