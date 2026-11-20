@@ -341,6 +341,9 @@ fn index() -> Json {
     index_of(&rows, formae::aliases().len())
 }
 
+/// A kind's families in the table's order, each with its forms' names.
+type Families<'a> = Vec<(&'a str, Vec<&'a str>)>;
+
 /// The first answer for a table of `(kind, family, name)` rows (the library's, or a test's),
 /// always under [`MAX_INDEX_BYTES`] however large the table grows. While it fits, every name,
 /// one line a family (`"block: box wedge"`). When it does not, each family's line keeps its
@@ -350,7 +353,7 @@ fn index() -> Json {
 /// families it has (`"81 forms in 14 families: ..."`), which is a few dozen bytes a kind.
 fn index_of(rows: &[(Kind, &str, &str)], aliases: usize) -> Json {
     // (Each kind's families in the table's order, wherever their forms stand in it.)
-    let mut kinds: Vec<(Kind, Vec<(&str, Vec<&str>)>)> = Vec::new();
+    let mut kinds: Vec<(Kind, Families)> = Vec::new();
     for kind in [Kind::Plane, Kind::Curve, Kind::Solid] {
         let mut families: Vec<(&str, Vec<&str>)> = Vec::new();
         for &(_, family, name) in rows.iter().filter(|r| r.0 == kind) {

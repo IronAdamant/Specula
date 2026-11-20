@@ -248,7 +248,7 @@ fn check_index(answer: &Json, rows: &[(Kind, &str, &str)]) {
             if let Some(all) = line.strip_prefix(&format!("{family}: ")) {
                 assert_eq!(all.split(' ').collect::<Vec<_>>(), *names, "{line}");
             } else {
-                let cut = line.strip_prefix(&format!("{family} ({}):", names.len())).unwrap_or_else(|| panic!("{line}"));
+                let cut = line.strip_prefix(&format!("{family} ({}):", names.len())).and_then(|c| c.strip_suffix(" more")).unwrap_or_else(|| panic!("{line}"));
                 let words: Vec<&str> = cut.split(' ').filter(|w| !w.is_empty()).collect();
                 let (more, shown) = words.split_last().unwrap();
                 let more: usize = more.strip_prefix('+').unwrap_or_else(|| panic!("{line}")).parse().unwrap();
@@ -277,9 +277,7 @@ fn index_holds_any_table() {
     for (what, rows) in [("the library", &real), ("each family twice as long", &longer), ("twice the families", &wider), ("200 families of 50", &huge)] {
         let a = index_of(rows, 79);
         check_index(&a, rows);
-        if what == "the library" && a.to_string().len() + 1 <= MAX_INDEX_BYTES {
-            assert!(!a.to_string().contains(" more\""), "the library's table fits, so every name is in it: {a}");
-        }
+        assert!(what != "the library" || !a.to_string().contains(" more\""), "the library's table fits today, so every name is in it: {a}");
     }
     // (The three larger tables are cut, the last to a line a kind.)
     assert!(index_of(&longer, 79).to_string().contains(" more"));

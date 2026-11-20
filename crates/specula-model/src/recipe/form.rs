@@ -500,7 +500,7 @@ impl Ctx<'_> {
             // (An outline's triangles are made by what takes it: `a·points + b` with `b` no
             // less than `-2a` (an extrusion's walls and caps, a lathe's bands, a cap alone),
             // whose ratio from one detail to a greater is at most that of `points - 2`.)
-            let size = |k: u32| spec.count(k).ok().map(|c| u64::from(c.points).saturating_sub(2));
+            let size = |k: u32| spec.count(k).ok().map(|c| c.points.saturating_sub(2));
             self.form_rounds(found.form.name, detail, true, &size, [(turn, radius)]);
         }
         Ok(ring.iter().map(|p| [p[0] as f32, p[2] as f32]).collect())
@@ -568,7 +568,7 @@ impl Ctx<'_> {
                 Some(s) => s.count(k).ok()?.points,
                 None => spec.count(k).ok()?.points,
             };
-            Some((2 * u64::from(points) + 4 * u64::from(genus)).saturating_sub(4))
+            Some((2 * points + 4 * u64::from(genus)).saturating_sub(4))
         };
         self.form_rounds(what, detail, false, &size, mesh.rounds().iter().map(|r| (r.turn_deg, r.radius)));
         // Its outlines: a raised figure's own outer ring and the boxes it is raised to (as an
