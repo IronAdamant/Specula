@@ -50,6 +50,41 @@ fn error(code: &str, message: impl Into<String>) -> ToolOutput {
     ToolOutput::error(Json::obj([("error", Json::from(code)), ("message", Json::from(message.into()))]).to_string())
 }
 
+/// One line of `model_build_all`, from `model_build`'s own answer for `recipe`: what a builder
+/// would otherwise write a script to print (triangles, size, where it stands, closed), or why it
+/// was refused. Bounded ([`crate::studio_tools::MAX_BUILD_ALL_ROW`]): a refusal's message is cut.
+pub(crate) fn build_all_row(recipe: &str, answer: &Json, refused: bool) -> Json {
+    if refused {
+        let err = answer.get("recipe_error");
+        let text = |key: &str| err.and_then(|e| e.get(key)).and_then(Json::as_str);
+        let message: String = text("message").or_else(|| answer.get("message").and_then(Json::as_str)).unwrap_or("the build was refused").chars().take(240).collect();
+        return Json::obj([
+            ("recipe", Json::from(recipe)),
+            ("error", Json::from(text("code").or_else(|| answer.get("error").and_then(Json::as_str)).unwrap_or("build_failed"))),
+            ("at", Json::from(text("path").unwrap_or(""))),
+            ("message", Json::from(message)),
+        ]);
+    }
+    let corner = |k: &str| -> [f64; 3] {
+        let a = answer.get("bounds").and_then(|b| b.get(k)).and_then(Json::as_array);
+        let at = |i: usize| a.and_then(|a| a.get(i)).and_then(Json::as_f64).unwrap_or(0.0);
+        [at(0), at(1), at(2)]
+    };
+    let (lo, hi) = (corner("min"), corner("max"));
+    // (To a tenth of a millimetre: what a size is read for.)
+    let short = |x: f64| Json::from((x * 10_000.0) as i64 as f64 / 10_000.0);
+    let triangles = answer.get("lods").and_then(Json::as_array).and_then(|l| l.first()).and_then(|l| l.get("triangles")).and_then(Json::as_f64).unwrap_or(0.0);
+    Json::obj([
+        ("recipe", Json::from(recipe)),
+        ("name", Json::from(answer.get("name").and_then(Json::as_str).unwrap_or(""))),
+        ("triangles", Json::from(triangles)),
+        ("size_m", Json::arr((0..3).map(|k| short(hi[k] - lo[k])))),
+        ("stands_at_m", short(lo[1])),
+        ("closed", answer.get("closed").cloned().unwrap_or(Json::Null)),
+        ("open_edges", answer.get("open_edges").cloned().unwrap_or(Json::Null)),
+    ])
+}
+
 fn r3(x: f32) -> Json {
     Json::from((x as f64 * 1000.0).round() / 1000.0)
 }
@@ -1420,6 +1455,7 @@ fn planned_renders(call: &StudioCall, shared: &Shared, agent: &str) -> usize {
         // shots, each with its silhouette; a sibling: three thumbnails and a shot.)
         StudioCall::Check { siblings, .. } => 16 + 5 * siblings.as_ref().map_or(MAX_SUBJECTS - 1, Vec::len),
         StudioCall::Style { .. } => 0,
+        StudioCall::BuildAll { .. } => 0,
     }
 }
 
@@ -1462,6 +1498,7 @@ impl Ctx<'_> {
             StudioCall::Compare { from, sheet, format } => self.studio_compare(&agent, from, sheet, format, &mut bibles),
             StudioCall::Check { subject, siblings, tile, image, format } => self.studio_check(subject, siblings, tile, image, format, &mut bibles),
             StudioCall::Style { subjects, folder, variants, format } => self.studio_style(subjects, folder, variants, format, &mut bibles),
+            StudioCall::BuildAll { folder } => self.build_all(&folder),
         }
     }
 
@@ -2364,6 +2401,43 @@ impl Ctx<'_> {
         answer.set("recorded", crate::records::answer_json(id, records.epoch()));
         drop(records);
         self.studio_output(w, h, &rgba, packet, answer, image)
+    }
+
+    /// `model_build_all`: every recipe of `folder` built as `model_build` builds one (the same
+    /// call, so the same answer and the same refusals), and a line each. On the caller's thread:
+    /// the folder is listed here, and each build is waited for here.
+    fn build_all(&mut self, folder: &str) -> ToolOutput {
+        let root = self.shared.library.lock().root().to_path_buf();
+        let mut names: Vec<String> = match std::fs::read_dir(root.join(folder)) {
+            Ok(d) => d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".json") && !is_texture_graph(&root.join(folder).join(n))).collect(),
+            Err(e) => return error("not_found", format!("folder '{folder}' under the assets root: {e}")),
+        };
+        if names.len() > crate::studio_tools::MAX_BUILD_ALL {
+            return error("too_many_recipes", format!("folder '{folder}' has {} recipes; at most {} a call: name a smaller folder", names.len(), crate::studio_tools::MAX_BUILD_ALL));
+        }
+        names.sort();
+        let (mut rows, mut refused) = (Vec::with_capacity(names.len()), 0usize);
+        for n in &names {
+            let recipe = format!("{folder}/{n}");
+            let waited = self.tools.send(self.session, Command::ModelBuild(ModelSpec::new(recipe.as_str())));
+            let text = waited.content.iter().find_map(|c| match c {
+                Content::Text(t) => Some(t.clone()),
+                Content::Image { .. } => None,
+            });
+            let answer = text.as_deref().and_then(|t| Json::parse(t).ok()).unwrap_or(Json::Null);
+            if waited.is_error {
+                refused += 1;
+            }
+            let row = build_all_row(&recipe, &answer, waited.is_error);
+            // A line is bounded whatever a file is called (the answer's ceiling is the rows').
+            rows.push(if row.to_string().len() <= crate::studio_tools::MAX_BUILD_ALL_ROW {
+                row
+            } else {
+                let short: String = recipe.chars().take(160).collect();
+                Json::obj([("recipe", Json::from(short)), ("error", Json::from("line_too_long")), ("message", Json::from("this recipe's line is over its limit (a very long file name): build it alone with model_build"))])
+            });
+        }
+        ToolOutput::text(Json::obj([("folder", Json::from(folder)), ("recipes", Json::from(names.len())), ("built", Json::from(names.len() - refused)), ("refused", Json::from(refused)), ("models", Json::Arr(rows))]).to_string())
     }
 
     fn studio_style(&mut self, subjects: Vec<SubjectSpec>, folder: Option<String>, variants: bool, format: Format, bibles: &mut Bibles) -> ToolOutput {

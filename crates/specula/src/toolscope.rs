@@ -224,6 +224,7 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("time_control", "pause, resume, step, scale the clock"),
     ("perf_frame", "GPU ms per pass, draws, memory, budgets"),
     ("perf_light", "what each light feature costs here, against a budget"),
+    ("model_build_all", "build every recipe in a folder: a line each"),
     ("perf_zones", "CPU time per engine phase"),
     ("perf_memory", "heap use by zone"),
     ("perf_capture", "record frames to a trace file"),

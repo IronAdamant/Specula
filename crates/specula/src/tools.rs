@@ -758,6 +758,8 @@ impl CallerThread {
             n if n.starts_with("memory_") => CallerThread::Memory,
             // (A recipe's format is a table: answered with the shape library's, on the caller's thread.)
             "model_schema" => CallerThread::Formae,
+            // (Every recipe of a folder: listed and waited for on the caller's thread, with the studio's.)
+            "model_build_all" => CallerThread::Studio,
             n if n.starts_with("formae_") => CallerThread::Formae,
             n if n.starts_with("lex_") => CallerThread::Lex,
             n if n.starts_with("studio_") => CallerThread::Studio,

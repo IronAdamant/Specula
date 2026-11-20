@@ -498,7 +498,9 @@ before writing: a field that is guessed wrong is a refused build.
 
 builds it and answers its triangles, its bounds, `closed` (true: watertight) and `open_edges`.
 Nothing needs exporting, and no script of your own, to learn those. A recipe that is wrong is
-refused with the field and what is accepted there.
+refused with the field and what is accepted there. `specula call model_build_all '{}'` builds
+every recipe in `assets/models/` and answers a line each (triangles, size, closed, or why it
+was refused).
 
     specula call studio_sheet '{"recipe": "models/NAME.json"}'
 
@@ -734,7 +736,7 @@ mod tests {
         assert!(models.len() <= 3 * 1024, "notes/models.md is {} bytes: it is one page", models.len());
         assert!(notes.brief().contains("notes/models.md") && text("notes/how.md").contains("notes/models.md"), "the models' page is not pointed at");
         let tools = crate::tools::definitions();
-        for tool in ["model_schema", "model_build", "studio_sheet", "formae_list", "formae_get"] {
+        for tool in ["model_schema", "model_build", "model_build_all", "studio_sheet", "formae_list", "formae_get"] {
             assert!(models.contains(tool) && tools.iter().any(|d| d.name == tool), "notes/models.md and the engine's tools differ on {tool}");
         }
         for of in ["extrude", "sdf", "box", "cylinder", "sphere", "rotate", "move"] {
