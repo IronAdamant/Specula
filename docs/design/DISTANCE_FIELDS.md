@@ -281,6 +281,17 @@ point. Then use that `f` and `g` each change by at most `|x − y|`. ∎
      whose centres are 1 apart has `ρ = 0.875`; the edge of a wedge of half angle `α` has
      `ρ = sin α`, so joined smoothly to another part it can grow by `D / sin α`, which is
      as large as one likes.
+   - **A meeting or a cut reaches no further than what it is made of.** Its field is the
+     greater of its fields (3.3), so it is at least each of them: where an operand's field
+     is exact outside, the meeting's field outside that operand is at least the distance to
+     it. So the set where the meeting's field is at most `D` lies within `D` of every such
+     operand: the growth along a thin edge can run far from the meeting and never far from
+     what was met. (A cut's first operand is such an operand.)
+   - **For a pair joined polynomially, one exact part is enough, at the price of the whole
+     width.** A point of the joined solid that lies outside both `A` and `B` has both fields
+     at most `k (1 − h/2)²`, so at most `k`; if either field is exact outside, the point is
+     within `k` of that part. (The exponential join has no such limit: it thickens a part a
+     little however far away the other is.)
 3. For the polynomial joins, `u = f ∧ g` wherever `|f − g| ≥ k`: **the join changes the
    field only where the two fields are within `k` of each other in value.** That is about
    values, not places: the fields of two discs with one centre differ by the same amount
@@ -290,7 +301,11 @@ point. Then use that `f` and `g` each change by at most `|x − y|`. ∎
 *Proof.* 1 is 5.3. 2 is 5.1 applied at each point; then 4.3 for exact fields, and for a
 bound, `f(x) ≤ D` with `f(x) ≥ ρ · d(x, A)` gives `d(x, A) ≤ D / ρ`. For the wedge: on its
 axis beyond its edge the meeting's field is `sin α` times the distance to the edge (3.3),
-so it stays under `D` out to `D / sin α`. 3 is 5.1. ∎
+so it stays under `D` out to `D / sin α`. For the meeting: `f ∨ g ≥ f`, and `f` is the
+distance to `A` outside `A`. For the pair: outside both, the lesser field `m` is above zero,
+so `u ≤ 0` needs `k hⁿ/(2n) ≥ m`; then `h > 0` and the fields differ by `k (1 − h)`. The
+greater field is `m + k (1 − h) ≤ k hⁿ/(2n) + k (1 − h) ≤ k (h²/4 + 1 − h) = k (1 − h/2)²`,
+since `hⁿ/(2n) ≤ h²/4` for `0 ≤ h ≤ 1` and `n ≥ 2`. 3 is 5.1. ∎
 
 **In general it is a bound and not the distance.** Where the join is at work the field's
 slope is a mix of the two fields' slopes by the shares of 5.2. For two unit slopes at an
@@ -368,11 +383,14 @@ as the two fields are `4k` or `6k` apart.
   once exponentially. **A chain of polynomial joins with one width `k` needs `k` and no
   more, however many parts it has** (5.5); a group nested inside a group is a tree, and
   the widenings of the two add.
-- **A part that is only a bound outside needs more, and a box cannot say how much** (5.4): a
-  part scaled unevenly reaches `D` over the ratio of its scales; a meeting or a cut can
-  reach any distance along a thin edge. So the modeller takes a joined part's reach from
-  where its field is at most `D`, not from its box widened by `D`; and a smooth meeting of
-  a part that is only a bound inside can eat deeper than `D` (5.6).
+- **A part that is only a bound outside needs more** (5.4). A part scaled unevenly reaches
+  `D` over the ratio of its scales; and whatever moves its surface to another level of its
+  field (a swelling, a shell) moves it by that level over the ratio, by the same
+  inequality. A meeting or a cut can reach any distance from itself along a thin edge, and
+  never more than `D` from an operand that is exact outside: boxed by its operands it
+  needs `D` and no more, and boxed tightly about itself no widening is enough. A pair with
+  one exact part needs the join's whole width `k`. And a smooth meeting of a part that is
+  only a bound inside can eat deeper than `D` (5.6).
 - **An uneven scale costs the ratio of its least to its greatest factor** (2.5).
 
 ## 7. Where the same facts are published
@@ -452,5 +470,18 @@ above:
   measured across the line of equal fields, where any function that treats its two fields
   alike reads the same. It is measured from each side now, and the test shows that the
   plain lesser fails it.
+
+**The page was then held against the modeller's own boxes by builds** (2026-11-20; a third
+model, which meshed each case twice, inside the modeller's box and inside one wide enough
+for the whole surface). It showed that section 6 still said one thing wrongly for the
+modeller: that a join onto a meeting or a cut needs its reach "taken from the field, not
+from a box". A meeting is at least each field it is made of, so boxed by its operands it
+needs `D` and no more (5.4's fourth point, new); and it found that a pair needs only one
+exact part, at the price of the whole width (5.4's fifth point, new, proved above). What
+does lose surface in the modeller is the uneven scale of 2.5: two parts stretched ten to
+one and joined, or one such part swollen, pass the box, because the box was widened by the
+level and not by the level over the ratio. That is the modeller's fault and not the
+page's; it is recorded with the modeller
+([PROCEDURAL_MODELLING.md](PROCEDURAL_MODELLING.md), tier 3).
 
 Nothing on the page follows a source's wording.

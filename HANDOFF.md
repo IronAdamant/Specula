@@ -372,9 +372,22 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       meshes inside is too small in two cases** (a smooth join onto an intersection or
       a cut with an edge thinner than about 29 degrees, or onto an unevenly scaled
       part; and a smooth group inside a smooth group, whose dips add where the box
-      takes the larger). It ran nothing for that. **A fresh agent is investigating
-      whether surface is really lost** (`.swarmnotes/m6/part4/bounds/`); the mend
-      waits for the rounded field's mend on the same file.
+      takes the larger). It ran nothing for that. **A fresh agent investigated by
+      builds** (`.swarmnotes/m6/part4/bounds/report.md`): neither of those two cases
+      loses anything (a meeting's field is at least that of the child that sets its
+      box; each level of nesting widens the box again), and **a fault of the same
+      family is real: a sculpt node stretched unevenly reads short by the ratio of its
+      stretches, and the box is widened as if it did not.** A ten-to-one needle
+      rounded by 5 cm loses 43 cm of its length; two such needles joined smoothly lose
+      12 cm; the mesh stays closed, so no check catches it. No recipe in the
+      repository does this (each was sampled outside its box, the figure's parts
+      too). The investigator's mend is written down and measured (a reach passed down
+      the tree, joined with today's box so that no existing mesh moves); **it is not
+      made yet: it waits for the rounded field's mend on the same file.** Until then
+      such a recipe needs explicit `bounds` (PROCEDURAL_MODELLING.md, tier 3, "A known
+      fault"). Two facts it proved went into the page (5.4: a meeting stays by its
+      operands; a pair needs one exact part), with a test (23 in all). Found on the
+      way and **not yet investigated: two crescents joined smoothly meshed open.**
       What it means for the sculpt stage is written into the page's section 6: a joined
       part's reach is taken from its field, not from its box.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language

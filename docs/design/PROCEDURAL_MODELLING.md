@@ -147,6 +147,34 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   to experiment on both"): as written its two wings rise up and outward with the spine coming down
   between them, as the hip bones do; as converted they drooped into a dome. A model that did not
   take the pictures confirmed it. There the mend shows what the recipes meant.
+- **A known fault, not mended yet: a strongly stretched node can be cut off by the box it is
+  meshed in** (found 2026-11-20, by holding the modeller against
+  [DISTANCE_FIELDS.md](DISTANCE_FIELDS.md): each case meshed inside the automatic box and inside
+  explicit `bounds` wide enough for the whole surface). A stretched node's field reads short of
+  the distance by the ratio of its least stretch to its greatest, and the box is widened as if
+  it did not:
+  - **`round`, `shell` or `displace` on an unevenly stretched node, or on a group with such a
+    child**, moves the surface by the amount times that ratio's inverse along the long axis,
+    and the box grows by the amount alone. A sphere of radius 0.1 stretched ten to one and
+    rounded by 0.05 loses 0.43 m of its length; shelled by 0.04, 0.15 m.
+  - **Two parts stretched by more than about four to one and joined smoothly** reach further
+    than the join's width past their tips. Two ten-to-one needles joined at `smooth` 0.1 lose
+    0.12 m (the model is 2.24 m long where the surface is 2.50 m); twenty to one, 0.34 m.
+    Nested smooth groups of such parts lose more (two groups of four: 0.51 m).
+  - **The mesh is still closed** (the box's border caps it flat), so no check catches it.
+  - **Until it is mended: give such a recipe explicit `bounds`**, or make the long part without
+    `stretch` (a capsule, a `round_cone`, a `chain`, an `ellipsoid`).
+  - Not affected: no recipe in this repository stretches a sculpt node this way (each was
+    sampled outside its box, with the figure's parts: nothing escapes). Thin edges made by an
+    `intersection` or a `difference` joined smoothly lose nothing (a meeting's field is at least
+    that of the child that sets its box), and neither do nested smooth groups of unstretched
+    parts (each level's box is widened again). The mesher's pruning is not affected (whole tree
+    against pruned at 72,000 points a case: no difference).
+  - Not settled: `twist` and `bend` were not tried; an `ellipsoid` and a `column` also read
+    short far away and did not escape in the cases tried, with no proof that they cannot; and,
+    found on the way and not investigated, **two crescents joined smoothly meshed open**, and
+    thin shells and tips left one to four edges shared by other than two triangles, which the
+    investigator put down to features thinner than a cell.
 - **Roundness as one number** (M6 part 4, 2026-11-18): `roundness`, 0 to 1, on a `box` and a
   `cylinder` here, and on a `rect` outline (the profile of an extrusion, a loft or a sweep). 0 is the
   hard shape, 1 its fully round form (the ellipsoid as wide, as tall and as deep; the ellipse), and
