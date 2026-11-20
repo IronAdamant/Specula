@@ -60,6 +60,7 @@ pub mod mesh;
 pub mod ops;
 pub mod raise;
 pub mod draw;
+pub mod field;
 pub mod slice;
 mod cap;
 pub mod outline;

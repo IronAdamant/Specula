@@ -59,6 +59,11 @@ pub(crate) trait Make {
     fn limited(&self, _builds: u32) -> Option<std::rc::Rc<dyn Make>> {
         None
     }
+    /// Its distance field, where the construction has one of its own, its parametric pieces
+    /// sampled at `detail` ([`crate::field`]); `None`: the field is its build's.
+    fn field(&self, _detail: u32) -> Option<crate::field::Plan> {
+        None
+    }
     /// Whether it has curved surfaces.
     #[cfg_attr(not(test), allow(dead_code, reason = "read by the tests only"))]
     fn curved(&self) -> bool;
@@ -1012,6 +1017,18 @@ impl Make for Rev {
         u32::from(self.closed && self.full())
     }
 
+    fn field(&self, detail: u32) -> Option<crate::field::Plan> {
+        let segs: Vec<Seg> = self.pieces.iter().map(|p| p.seg.clone()).collect();
+        let stretch = match self.ring {
+            Ring::Circle => None,
+            // (An ellipse: the solid of revolution scaled along x and z. Another superellipse is
+            // not a revolution scaled: its field is its build's.)
+            Ring::Super { a, b, n: 2.0 } => Some([a, b]),
+            Ring::Super { .. } => return None,
+        };
+        Some(crate::field::Plan::turned(&segs, self.closed, self.shift, self.sweep, stretch, detail))
+    }
+
     fn curved(&self) -> bool {
         true
     }
@@ -1117,6 +1134,9 @@ impl Make for Extrude {
     }
     fn error(&self, detail: u32) -> Option<f64> {
         Geom::Rings(vec![self.segs.clone()]).sag(detail)
+    }
+    fn field(&self, detail: u32) -> Option<crate::field::Plan> {
+        Some(crate::field::Plan::slab(std::slice::from_ref(&self.segs), detail, 0.0, self.height))
     }
     fn genus(&self) -> u32 {
         0
@@ -1227,9 +1247,14 @@ pub(crate) struct Gen {
     pub genus: u32,
     /// The construction's own check ([`Make::check`]).
     pub check: Option<Check>,
+    /// Its own distance field, where it has one ([`Make::field`]).
+    pub field: Option<Rc<dyn Fn() -> crate::field::Plan>>,
 }
 
 impl Make for Gen {
+    fn field(&self, _detail: u32) -> Option<crate::field::Plan> {
+        self.field.as_ref().map(|f| f())
+    }
     fn count(&self, detail: u32) -> (u64, u64) {
         (self.count)(detail)
     }

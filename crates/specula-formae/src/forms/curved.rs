@@ -219,6 +219,7 @@ fn icosphere_geom(a: &Args) -> Result<Geom, Refusal> {
         error: Rc::new(|_| None),
         genus: 0,
         check: None,
+        field: Some(Rc::new(move || crate::field::Plan::ball([0.0, r, 0.0], r))),
     })))
 }
 
@@ -254,6 +255,7 @@ fn cube_sphere_geom(a: &Args) -> Result<Geom, Refusal> {
         error: Rc::new(|_| None),
         genus: 0,
         check: None,
+        field: Some(Rc::new(move || crate::field::Plan::ball([0.0, r, 0.0], r))),
     })))
 }
 
@@ -911,6 +913,7 @@ fn rbox_geom(a: &Args) -> Result<Geom, Refusal> {
         error: Rc::new(|_| None),
         genus: 0,
         check: None,
+        field: Some(Rc::new(move || crate::field::Plan::round_box([0.0, half[1], 0.0], half, r))),
     })))
 }
 fn rbox_anchors(a: &Args) -> Vec<Anchor> {
@@ -1024,6 +1027,7 @@ fn sweep(w: f64, exact: Measures, along: impl Fn(u32) -> u64 + 'static, ts: impl
             let mm = a3(d) as usize;
             tube_check(m, if closed { mm } else { mm + 1 }, segments(1.0, d) as usize, closed, 0)
         })),
+        field: None,
     })))
 }
 
@@ -1189,6 +1193,7 @@ fn mobius_geom(a: &Args) -> Result<Geom, Refusal> {
         error: Rc::new(|_| None),
         genus: 1,
         check: Some(Rc::new(|m: &Mesh, d| tube_check(m, segments(2.0, d) as usize, 4, true, 2))),
+        field: None,
     })))
 }
 fn mobius_anchors(a: &Args) -> Vec<Anchor> {
@@ -1243,6 +1248,7 @@ fn steinmetz_geom(a: &Args) -> Result<Geom, Refusal> {
         error: Rc::new(move |d| Some(r * versin(0.5 * PI / segments(0.5, d) as f64))),
         genus: 0,
         check: None,
+        field: Some(Rc::new(move || crate::field::Plan::bicylinder(r))),
     })))
 }
 fn steinmetz_anchors(a: &Args) -> Vec<Anchor> {

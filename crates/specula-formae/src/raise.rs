@@ -485,6 +485,15 @@ impl Make for Terrace {
         (self.rings.len() - 1) as u32
     }
 
+    /// A slab's is the figure's raised (DISTANCE_FIELDS.md 4.1). A bevel, a pillow or steps are
+    /// not one figure raised: their field is their build's.
+    fn field(&self, detail: u32) -> Option<crate::field::Plan> {
+        match self.depth {
+            Depth::Slab { t } => Some(crate::field::Plan::slab(&self.rings, detail, 0.0, t)),
+            _ => None,
+        }
+    }
+
     fn curved(&self) -> bool {
         self.rings.iter().flatten().any(|s| !matches!(s, Seg::Line { .. })) || self.steps.iter().any(|s| matches!(s, Step::Quarter { .. }))
     }
@@ -905,6 +914,16 @@ impl Make for Relief {
 
     fn genus(&self) -> u32 {
         0
+    }
+
+    /// The plate's box and the figure raised on it, their union (DISTANCE_FIELDS.md 3.2, 4.1):
+    /// the plate as the build places it (its rectangle from the figure's closed bounds, else from
+    /// its samples at `detail`).
+    fn field(&self, detail: u32) -> Option<crate::field::Plan> {
+        let sm = sample(&self.rings, detail);
+        let (pl, top) = (self.plate, self.plate + self.height);
+        let figure = crate::field::Plan::slab(&self.rings, detail, pl, top);
+        Some(crate::field::Plan::relief(self.rect(&sm.q), pl, figure, top))
     }
 
     fn curved(&self) -> bool {

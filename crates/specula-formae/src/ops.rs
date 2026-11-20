@@ -53,6 +53,10 @@ impl Solid {
     pub(crate) fn new(operator: &'static str, figure: &'static str, make: Rc<dyn Make>) -> Solid {
         Solid { operator, figure, make }
     }
+    /// Its construction (for its field: [`crate::field::of_solid`]).
+    pub(crate) fn make(&self) -> &Rc<dyn Make> {
+        &self.make
+    }
     fn check_detail(detail: u32) -> Result<(), Error> {
         if (DETAIL_MIN..=DETAIL_MAX).contains(&detail) {
             Ok(())
