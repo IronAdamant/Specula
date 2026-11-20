@@ -9,7 +9,7 @@
 
 use specula_core::Json;
 
-use super::procgen::GENERATORS;
+use super::procgen::{GENERATORS, SDF_NODES, SDF_SHARED};
 use super::{Field, Kind, OPS, OUTLINE, PART_FIELDS, SHAPES, TOP_FIELDS};
 
 /// The most the first answer may be, as compact JSON (held by a test).
@@ -33,6 +33,30 @@ pub const SCHEMA_EXAMPLE: &str = r#"{
         ]
       },
       "ops": [ { "op": "rotate", "deg": [90, 0, 0] }, { "op": "move", "by": [0, 0.15, 0] } ]
+    }
+  ]
+}"#;
+
+/// A sculpt that builds under any style with a material called `painted`: a soft heart, 0.3 wide,
+/// standing upright (two round cones from the lobes to the point, joined smoothly, flattened).
+/// What a raised figure cannot do for a shape with a point and a notch. (A test builds it.)
+pub const SCHEMA_SCULPT_EXAMPLE: &str = r#"{
+  "name": "soft_heart",
+  "parts": [
+    {
+      "name": "heart",
+      "material": "painted",
+      "shape": {
+        "op": "sdf",
+        "resolution": 48,
+        "tree": {
+          "op": "union", "smooth": 0.03, "stretch": [1, 1, 0.35],
+          "of": [
+            { "op": "round_cone", "from": [-0.07, 0.2, 0], "to": [0, 0.03, 0], "radius": 0.075, "radius_to": 0.012 },
+            { "op": "round_cone", "from": [0.07, 0.2, 0], "to": [0, 0.03, 0], "radius": 0.075, "radius_to": 0.012 }
+          ]
+        }
+      }
     }
   ]
 }"#;
@@ -157,7 +181,18 @@ pub fn schema(of: Option<&str>) -> Result<Json, String> {
     }
     for (kind, table) in [("shape", SHAPES), ("op", OPS), ("generator", GENERATORS)] {
         if let Some((n, fields)) = table.iter().find(|(n, _)| *n == name) {
-            return Ok(one(kind, n, fields));
+            let mut out = one(kind, n, fields);
+            if name == "sdf" {
+                // A sculpt's tree: its nodes by what each needs, what all of them may take, and
+                // one that builds.
+                let own = |fields: &'static [Field]| &fields[..fields.len().saturating_sub(SDF_SHARED)];
+                let shared: Vec<&str> = SDF_NODES.first().map(|(_, f)| f[f.len().saturating_sub(SDF_SHARED)..].iter().map(|f| f.name).collect()).unwrap_or_default();
+                out.set("tree", Json::from("one node, {\"op\": NAME, ...}: a primitive centred on its `at`, or a group of nodes (`of`), whose `smooth` (metres) melts its children into one surface"));
+                out.set("nodes", Json::arr(SDF_NODES.iter().map(|(n, f)| Json::from(line(n, own(f))))));
+                out.set("every_node_may_take", Json::from(shared.join(", ")));
+                out.set("example", Json::parse(SCHEMA_SCULPT_EXAMPLE).map_err(|e| format!("the sculpt example is not JSON: {e:?}"))?);
+            }
+            return Ok(out);
         }
     }
     let names = |table: &[(&str, &[Field])]| table.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ");
@@ -205,6 +240,26 @@ mod tests {
         assert!(b.min[1].abs() < 0.005, "it does not stand on the ground: {b:?}");
         // And it has its hole: more triangles than a plain disc of 32 sides (124).
         assert!(model.lods[0].triangle_count() > 150, "{} triangles: no hole", model.lods[0].triangle_count());
+    }
+
+    #[test]
+    fn a_sculpt_is_said_with_its_nodes_and_a_soft_heart_that_builds() {
+        let sdf = schema(Some("sdf")).unwrap();
+        let text = sdf.to_string();
+        // Each node by what it needs, without the thirteen fields all of them share.
+        assert!(text.contains("round_cone: from ([x, y, z]), to ([x, y, z]), radius; may take radius_to"), "{text}");
+        assert!(text.contains("union: of (distance-field nodes); may take smooth"), "{text}");
+        let shared = sdf.get("every_node_may_take").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(shared, "at, rotate, scale, stretch, mirror, repeat, elongate, twist, bend, round, shell, displace, color", "the shared fields moved: SDF_SHARED no longer counts them");
+        assert!(text.len() <= SCHEMA_FIRST_BYTES, "{} bytes", text.len());
+        // The soft heart builds, closed, 0.3 wide and tall, about 0.05 thick, standing upright.
+        let style = Style::parse(r##"{ "style": "t", "palette": { "ink": "#202020" }, "materials": { "painted": { "color": "#d04060", "roughness": 0.5 } } }"##).unwrap();
+        let model = build(SCHEMA_SCULPT_EXAMPLE, &BuildParams::new(&style)).unwrap_or_else(|e| panic!("the sculpt example does not build: {e:?}"));
+        assert_eq!(model.open_edges, 0, "the soft heart is not closed");
+        let b = model.bounds;
+        let size = [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]];
+        assert!((size[0] - 0.29).abs() < 0.03 && (size[1] - 0.26).abs() < 0.04 && (size[2] - 0.052).abs() < 0.015, "{size:?}");
+        assert!(b.min[1] > 0.0 && b.min[1] < 0.04, "it does not stand just over the ground: {b:?}");
     }
 
     #[test]

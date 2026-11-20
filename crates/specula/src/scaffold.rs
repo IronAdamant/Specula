@@ -303,6 +303,8 @@ the time runs out. It has a title screen, a pause menu, settings (volume, langua
 won and lost screens, one module with the rules, and its own checks (`specula check .`).
 Shapes by name (a gear, a heart, an arch, a star, a gem...) are a library that recipes and
 `shape2d` items take: `specula call formae_list '{}'` names them all.
+A model (a prop, a pickup, scenery) is a recipe under `assets/models/`: `notes/models.md` is
+how one is written, built and looked at, in three calls.
 
 Replace this note with what the game is to be (memory_note {id: "brief", ...}): every agent is
 given it at its first call.
@@ -377,6 +379,8 @@ game from its start with no window, and prints how it stands as one JSON object:
 **Shapes by name:** `specula call formae_list '{}'` names a library of figures and solids (a
 gear, a heart, an arch, a star, a torus, a gem...) that model recipes and `shape2d` items take
 by name; `formae_get` gives one ready to paste.
+
+**Models** (props, pickups, scenery) are recipes under `assets/models/`: `notes/models.md`.
 
 **game.json** (an unknown key is refused, by name)
 
@@ -473,6 +477,54 @@ by name; `formae_get` gives one ready to paste.
   `notes/NAME.md`, with the front matter this file has (`title`, `kind: decision`, `about`).
 "##;
 
+/// How a model is made through the engine, in one page: what a measured comparison's cold
+/// builders had to find out by refused builds, a 62 KB design document and scripts of their own
+/// (2026-11-21). Every call it names is held by a test below.
+const MODELS_NOTE: &str = r##"---
+title: How a model is written, built and looked at (recipes)
+kind: fact
+about: assets/models/, assets/style.json
+---
+A model (a prop, a pickup, scenery) is a recipe: one JSON file under `assets/models/`, which
+the engine builds. Three calls, with an engine running on this project:
+
+    specula call model_schema '{}'
+
+says how a recipe is written, whole, with one that builds to start from (`{"of": "extrude"}`:
+one shape, field by field; `{"of": "sdf"}`: a sculpt, with a soft heart to start from). Ask it
+before writing: a field that is guessed wrong is a refused build.
+
+    specula call model_build '{"recipe": "models/NAME.json"}'
+
+builds it and answers its triangles, its bounds, `closed` (true: watertight) and `open_edges`.
+Nothing needs exporting, and no script of your own, to learn those. A recipe that is wrong is
+refused with the field and what is accepted there.
+
+    specula call studio_sheet '{"recipe": "models/NAME.json"}'
+
+pictures it from four sides in one image (`image.path` in the answer): look at it. For one
+large front view: `"views": ["front"], "tile": 512`. For several models in one image:
+`"subjects": ["models/a.json", "models/b.json"]`. To see the form alone: `"passes": ["colour",
+"clay"]`.
+
+- **Sizes** are metres, +Y up. A mesh shape (`box`, `cylinder`, `sphere`...) stands on y = 0,
+  centred on the Y axis. A part's `ops` move and turn it, in order:
+  `{"op": "rotate", "deg": [90, 0, 0]}`, `{"op": "move", "by": [0, 0.15, 0]}`.
+- **Materials** are the names in `assets/style.json` (`matte`, `painted`, `metal`, `glow` to
+  start with), and a part's `color` is a palette name there or `"#rrggbb"`. Change the style
+  and every model changes with it.
+- **Shapes by name**: `specula call formae_list '{}'` names the library and `formae_get
+  {"name": "gear"}` gives the snippet to paste. A named plane figure lies flat in the ground
+  plane: raise it (`"raise": {"as": "slab", "thickness": 0.05}`) and stand it up with the
+  rotate above.
+- **A soft edge** on a raised figure: `"raise": {"as": "bevelled", "thickness": T, "width":
+  W}` or `{"as": "pillow", "thickness": T, "rise": R, "inset": I}`. A figure that narrows to a
+  point or has a sharp notch (a heart, a crescent) takes almost no inset (the refusal says how
+  deep it can go): sculpt those (`model_schema '{"of": "sdf"}'`).
+- **A budget**: `"budget": {"max_triangles": N}` in a recipe refuses a build over it, with the
+  count.
+"##;
+
 const CHECKS_NOTE: &str = r##"---
 title: How checks kept with a game are written (specula check)
 kind: fact
@@ -550,6 +602,7 @@ pub fn files(name: &str, module: &str) -> Vec<(String, String)> {
     out.push(("notes/brief.md".to_owned(), fill(BRIEF)));
     out.push(("notes/how.md".to_owned(), fill(HOW)));
     out.push(("notes/checks.md".to_owned(), fill(CHECKS_NOTE)));
+    out.push(("notes/models.md".to_owned(), MODELS_NOTE.to_owned()));
     out.push((".gitignore".to_owned(), GITIGNORE.to_owned()));
     out
 }
@@ -673,8 +726,28 @@ mod tests {
         assert!(source.contains(&format!("name: \"{module}\"")) && source.contains(&format!("const ROOT: &str = \"/{module}\";")));
         let smoke = Json::parse(text("checks/smoke.json")).expect("the check");
         assert_eq!(smoke.get("steps").and_then(Json::as_array).map(<[Json]>::len), Some(6));
-        let (notes, bad) = specula_memoria::Notes::read([("brief", text("notes/brief.md")), ("how", text("notes/how.md")), ("checks", text("notes/checks.md"))]);
+        let (notes, bad) = specula_memoria::Notes::read([("brief", text("notes/brief.md")), ("how", text("notes/how.md")), ("checks", text("notes/checks.md")), ("models", text("notes/models.md"))]);
         assert!(bad.is_empty(), "{bad:?}");
+        // The models' page (2026-11-21): one page, pointed at from the brief and the guide, and
+        // every tool, shape, operation, raise and material it names is one the engine has.
+        let models = text("notes/models.md");
+        assert!(models.len() <= 3 * 1024, "notes/models.md is {} bytes: it is one page", models.len());
+        assert!(notes.brief().contains("notes/models.md") && text("notes/how.md").contains("notes/models.md"), "the models' page is not pointed at");
+        let tools = crate::tools::definitions();
+        for tool in ["model_schema", "model_build", "studio_sheet", "formae_list", "formae_get"] {
+            assert!(models.contains(tool) && tools.iter().any(|d| d.name == tool), "notes/models.md and the engine's tools differ on {tool}");
+        }
+        for of in ["extrude", "sdf", "box", "cylinder", "sphere", "rotate", "move"] {
+            assert!(models.contains(of) && specula_model::recipe_schema(Some(of)).is_ok(), "notes/models.md names {of}, which a recipe does not take");
+        }
+        let style = specula_model::Style::parse(text("assets/style.json")).expect("the style");
+        for material in ["matte", "painted", "metal", "glow"] {
+            assert!(models.contains(&format!("`{material}`")) && style.materials.contains_key(material), "notes/models.md names the material {material}, which the project's style has not");
+        }
+        // The answer it promises is the answer a build gives, and its example builds here.
+        let example = specula_model::build(specula_model::SCHEMA_EXAMPLE, &specula_model::BuildParams::new(&style)).expect("model_schema's example builds under a new project's style");
+        let report = example.report();
+        assert!(report.get("closed").is_some() && report.get("open_edges").is_some() && models.contains("`closed`") && models.contains("`open_edges`"), "{report:?}");
         let brief = notes.brief();
         assert!(brief.contains("is a new Specula project") && brief.contains("How it is built and checked") && brief.contains("specula run . --ticks"), "{brief}");
         // The shape library is pointed at where a cold agent already looks (stage 3b of the

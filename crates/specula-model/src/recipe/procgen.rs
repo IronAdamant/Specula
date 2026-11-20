@@ -60,8 +60,11 @@ macro_rules! sdf_node {
     };
 }
 
+/// What every SDF node may take beside its own fields ([`sdf_node!`] appends them, in this order).
+pub(super) const SDF_SHARED: usize = 13;
+
 /// SDF nodes: primitives (centred on `at`) and groups.
-const SDF_NODES: &[(&str, &[Field])] = &[
+pub(super) const SDF_NODES: &[(&str, &[Field])] = &[
     ("sphere", sdf_node!(r("radius", Num))),
     ("box", sdf_node!(r("size", Vec3), o("corner", Num), o("roundness", Num))),
     ("cylinder", sdf_node!(r("radius", Num), r("height", Num), o("radius_top", Num), o("corner", Num), o("roundness", Num))),
