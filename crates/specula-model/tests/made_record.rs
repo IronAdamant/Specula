@@ -618,3 +618,28 @@ fn a_mirror_keeps_each_shape_to_its_own() {
     // (The box's face on the plane is gone: two boxes back to back, ten faces of 1 m2.)
     assert!(near(of(&m, "parts[0].shape.of[0]").area_m2, 10.0, 1e-3));
 }
+
+/// A shape by name records what it is made of as any other shape does: among other parts, with
+/// its own part's ops, its record is its surface built alone (to a part in ten thousand), and a
+/// form outline extruded is the extrude's.
+#[test]
+fn a_form_records_its_own_surface() {
+    let shapes = [
+        r#"{"op":"form","form":"icosahedron","args":{"edge":0.6}}"#,
+        r#"{"op":"form","form":"torus","args":{"radius":0.5,"tube":0.15},"detail":24}"#,
+        r#"{"op":"form","form":"truncated_octahedron"}"#,
+        r#"{"op":"form","form":"heart","detail":32,"raise":{"as":"pillow","thickness":0.1,"rise":0.05,"inset":0.003}}"#,
+        r#"{"op":"form","form":"annulus","detail":32,"raise":{"as":"slab","thickness":0.2}}"#,
+        r#"{"op":"extrude","outline":{"form":"heart","detail":32},"height":0.3}"#,
+    ];
+    let ops = [r#"{"op":"scale","by":[1.5,0.5,1]}"#, r#"{"op":"twist","deg_per_m":30}"#, ""];
+    for (i, shape) in shapes.iter().enumerate() {
+        let own = ops[i % ops.len()];
+        let m = parts(&[part("a", r#"{"op":"box","size":[1,1,1]}"#, r#"{"op":"move","by":[-5,0,0]}"#), part("f", shape, &joined(&[own, r#"{"op":"move","by":[5,0,0]}"#]))]);
+        adds_up(&m);
+        let alone = one(shape, &joined(&[own, r#"{"op":"move","by":[5,0,0]}"#]));
+        let (said, truth) = (of(&m, "parts[1].shape").area_m2, surface(&alone));
+        assert!(near(said, truth, 1e-4), "{shape}: recorded {said} m2, alone {truth}");
+        assert!(!of(&m, "parts[1].shape").views.is_empty(), "{shape}: no outlines");
+    }
+}

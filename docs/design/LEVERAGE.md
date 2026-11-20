@@ -123,6 +123,64 @@ It never runs the engine's executable itself. For the engine's tools it starts a
 so it is never listed among a person's projects) and calls it with `examen leverage call RUN TOOL '{json}'`
 or `TOOL @args.json`, which is the engine's own `specula call` with the run's port and identity, logged.
 
+## Another data folder
+
+Every command but `call`, `play` and `check RUN` takes `--data FOLDER` (default `evals/leverage`,
+which works as it always did: its briefs are the same to the byte, held by a test). A data folder is a
+`settings.json` and its `jobs/`. A run keeps the folder it was prepared from, and every later command on
+it (`run`, `judge`, `record`, `report`) reads that one; a `--data` that is not it is refused.
+
+A settings file gives its arms as words (`["engine", "plain"]`: the two arms whose text is in the
+harness's code, measured against `plain`) or as objects, with the arm the others are measured against:
+
+```json
+"arms": [
+  {"name": "none", "kind": "engine", "exe": "base", "text": ["What you have", "- ..."]},
+  {"name": "told", "kind": "engine", "exe": "library", "text": ["What you have", "- ..."]}
+],
+"baseline": "none",
+"brief_names_no": ["Specula", "formae", "library"],
+"change_round": false
+```
+
+- **`kind`** is what the harness does for the arm: `engine` (a project made by `specula new`, an
+  engine the builder may start, its tools through the harness, every call logged) or `plain` (an empty
+  work folder).
+- **`text`** is the "What you have" lines of the brief. `{tool}` (the harness's command), `{run}` (the
+  run's folder), `{work}` (its work folder) and `{docs}` (the documents of the checkout the arm's engine
+  was built in: the first folder above the executable with `docs/design/` and a `Cargo.toml`) are
+  filled in; `{{` and `}}` are a brace. A job's brief differs between arms only by this text.
+- **`exe`** names the engine an `engine` arm runs by a key, which the command line gives a path:
+  `--exe base=PATH --exe library=PATH`, so that one comparison runs arms on two builds. An arm with
+  no key runs the `--exe PATH` given with none.
+- **`brief_names_no`**: the words no job's brief may name (default: `Specula`, `engine`, `Python`,
+  `Rust`, `cargo`, for a comparison with a plain arm); **`change_round`**: `false` when no job changes
+  another's game.
+
+The report puts every arm of a job in its table and adds a section **against the baseline**: each
+cell's mean weighted tokens and requests over the baseline's, and the checks each passed. Its baseline
+is the one the runs were prepared with (`report ROOT --data FOLDER` names another).
+
+`prompt` prints what each builder would be told, and runs nothing: the process's prompt, then each
+job's brief for each arm as `prepare` would write it (with `--exe`, `{docs}` is found; without, it is
+said as a placeholder).
+
+```
+examen leverage check --data evals/leverage-props          # the data is well formed (or --check --data ...)
+examen leverage prompt --data evals/leverage-props --job kit --out ROOT --exe base=BASE --exe library=LIB
+examen leverage prepare kit none 1 --data evals/leverage-props --out ROOT --exe base=BASE --build base
+examen leverage prepare kit found 1 --data evals/leverage-props --out ROOT --exe library=LIB --build library
+examen leverage run ROOT/kit-none-1; examen leverage run ROOT/kit-none-1 --judge
+examen leverage report ROOT
+```
+
+`evals/leverage-props/` is the shape library's comparison (`specula-formae`, stage 3b): props built by
+a cold agent on an engine without the library (`none`), on the engine with it and its pointers and the
+same brief (`found`), and with a brief that names it (`told`), each against `none`. `--build` names
+each arm's engine in the report; without it a run records the commit of the checkout `examen` runs in,
+which is not the engine's when the executable was built elsewhere. The judge's page for an `engine`
+arm is the one the game jobs have (it names `play` and `check` beside `engine start` and `call`).
+
 ## What is and is not controlled
 
 - **Controlled:** the model, the brief, the budget told, the acceptance list, the judge's model and

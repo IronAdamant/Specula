@@ -1,0 +1,64 @@
+{
+  "leverage": 1,
+  "note": "The shape library's comparison (stage 3b of specula-formae): the same props built through the engine by a cold agent, in three arms on two builds of the engine. 'none': an engine built without the shape library (the executable the command line gives as --exe base=PATH), and a brief with no word of a library. 'found': the engine with the library and its pointers (--exe library=PATH: model_build's description, the modelling family's catalog line, a project's notes/how.md and the brief at the first call), and the same brief as 'none' to the byte: it measures whether a cold agent finds the library by the engine's own pointers. 'told': the same engine, and a brief that names the library and its two calls. Each is measured against 'none'. Run with --data evals/leverage-props (docs/design/LEVERAGE.md, 'Another data folder'); 'examen leverage prompt --data evals/leverage-props' prints what each builder is told.",
+  "runs_per_cell": 2,
+  "builder_model": "claude-sonnet-5-5",
+  "judge_model": "claude-opus-5-5",
+  "arms": [
+    {
+      "name": "none",
+      "kind": "engine",
+      "exe": "base",
+      "text": [
+        "What you have",
+        "- You build the props with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`). Models are recipes (JSON) that the engine builds: its documents are in {docs} (`design/PROCEDURAL_MODELLING.md` for recipes).",
+        "- An engine left running, with its tools: start it with `{tool} engine start {run}` and stop it with `{tool} engine stop {run}`; call a tool with `{tool} call {run} TOOL '{{json}}'` or `TOOL @args.json` (`model_build` builds a recipe and reports its triangles, bounds and whether it is closed; `sight_frame` and `studio_sheet` take pictures; `{tool} tools {run} [FILTER]` lists the tools). The engine starts with no window. Never run the engine's executable yourself.",
+        "- Whoever checks the props starts with no engine running: the commands in your README must work from there."
+      ]
+    },
+    {
+      "name": "found",
+      "kind": "engine",
+      "exe": "library",
+      "text": [
+        "What you have",
+        "- You build the props with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`). Models are recipes (JSON) that the engine builds: its documents are in {docs} (`design/PROCEDURAL_MODELLING.md` for recipes).",
+        "- An engine left running, with its tools: start it with `{tool} engine start {run}` and stop it with `{tool} engine stop {run}`; call a tool with `{tool} call {run} TOOL '{{json}}'` or `TOOL @args.json` (`model_build` builds a recipe and reports its triangles, bounds and whether it is closed; `sight_frame` and `studio_sheet` take pictures; `{tool} tools {run} [FILTER]` lists the tools). The engine starts with no window. Never run the engine's executable yourself.",
+        "- Whoever checks the props starts with no engine running: the commands in your README must work from there."
+      ]
+    },
+    {
+      "name": "told",
+      "kind": "engine",
+      "exe": "library",
+      "text": [
+        "What you have",
+        "- You build the props with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`). Models are recipes (JSON) that the engine builds: its documents are in {docs} (`design/PROCEDURAL_MODELLING.md` for recipes).",
+        "- An engine left running, with its tools: start it with `{tool} engine start {run}` and stop it with `{tool} engine stop {run}`; call a tool with `{tool} call {run} TOOL '{{json}}'` or `TOOL @args.json` (`model_build` builds a recipe and reports its triangles, bounds and whether it is closed; `sight_frame` and `studio_sheet` take pictures; `{tool} tools {run} [FILTER]` lists the tools). The engine starts with no window. Never run the engine's executable yourself.",
+        "- Whoever checks the props starts with no engine running: the commands in your README must work from there.",
+        "- The engine has a shape library: named plane figures and solids (a gear, a heart, an arch, a star, a torus, a gem, a capsule, a heater shield...) that a recipe takes by name and changes by numbers. `{tool} call {run} formae_list '{{}}'` names them all in one short answer; `{tool} call {run} formae_get '{{\"name\": \"gear\"}}'` gives one ready to paste."
+      ]
+    }
+  ],
+  "baseline": "none",
+  "brief_names_no": ["Specula", "formae", "library", "Python", "Rust", "cargo"],
+  "change_round": false,
+  "jobs": {
+    "kit":   {"token_cap": 400000,  "wall_s": 3600},
+    "props": {"token_cap": 1500000, "wall_s": 10800}
+  },
+  "judge": {"token_cap": 150000, "wall_s": 1800},
+  "token_weights": {"input": 1.0, "cache_write": 1.25, "cache_read": 0.1, "output": 5.0},
+  "ports": [7680, 7699],
+  "runner": {
+    "note": "As evals/leverage/settings.json's: Claude Code, with six tools and no MCP servers.",
+    "command": ["claude", "-p", "{prompt}", "--model", "{model}", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--tools", "Bash,Read,Write,Edit,Glob,Grep", "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep", "--no-session-persistence"]
+  },
+  "rules": [
+    "Download nothing and install nothing.",
+    "Someone may be using this machine: open no window that takes the keyboard or comes to the front, and never move the pointer or press keys for them.",
+    "Anything you start that listens, listens on 127.0.0.1 only.",
+    "Stop every process you started before you finish.",
+    "Write a file with your file-writing tool, never with a shell here-document: on this machine a here-document is refused when its text holds an apostrophe, and what was written into it is lost."
+  ]
+}

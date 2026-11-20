@@ -301,6 +301,8 @@ about: game.json, modules/{{module}}/
 What is here is the smallest game with every part, made by `specula new`: tap five times before
 the time runs out. It has a title screen, a pause menu, settings (volume, language, difficulty),
 won and lost screens, one module with the rules, and its own checks (`specula check .`).
+Shapes by name (a gear, a heart, an arch, a star, a gem...) are a library that recipes and
+`shape2d` items take: `specula call formae_list '{}'` names them all.
 
 Replace this note with what the game is to be (memory_note {id: "brief", ...}): every agent is
 given it at its first call.
@@ -371,6 +373,10 @@ game from its start with no window, and prints how it stands as one JSON object:
   then each line read from standard input is a step, `TICKS` or `TICKS WORD` (`10 up+shoot`:
   that input, then ten ticks), and the state is printed after it, until the input ends. It
   is how a program of yours plays by reaction, in one run, should a script of inputs not do.
+
+**Shapes by name:** `specula call formae_list '{}'` names a library of figures and solids (a
+gear, a heart, an arch, a star, a torus, a gem...) that model recipes and `shape2d` items take
+by name; `formae_get` gives one ready to paste.
 
 **game.json** (an unknown key is refused, by name)
 
@@ -671,6 +677,9 @@ mod tests {
         assert!(bad.is_empty(), "{bad:?}");
         let brief = notes.brief();
         assert!(brief.contains("is a new Specula project") && brief.contains("How it is built and checked") && brief.contains("specula run . --ticks"), "{brief}");
+        // The shape library is pointed at where a cold agent already looks (stage 3b of the
+        // library): the brief given at the first call, and the guide.
+        assert!(brief.contains("specula call formae_list") && text("notes/how.md").contains("specula call formae_list"), "{brief}");
         // The guide names every key a game file takes (what the comparison's builders opened
         // the engine's design documents for), and the sample's game file shows a report.
         let how = text("notes/how.md");

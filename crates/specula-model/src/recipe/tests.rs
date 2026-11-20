@@ -248,6 +248,7 @@ fn every_shape_and_op_builds() {
         // that size: `sdf::tests::a_rounded_shape_is_measured_in_metres`.)
         r#"{"op":"sdf","resolution":48,"tree":{"op":"box","size":[1,0.05,0.6],"roundness":0.2,"round":0.01,"at":[0,0.5,0]}}"#,
         r#"{"op":"sdf","resolution":40,"tree":{"op":"chain","smooth":0.03,"mirror":"x","points":[[0.2,1.4,0,0.05],[0.25,1.1,0,0.045],[0.27,0.85,0.05,0.03],[0.27,0.75,0.1,0.035]]}}"#,
+        r#"{"op":"form","form":"snub_cube","args":{"edge":0.4},"detail":16}"#,
     ];
     for s in shapes {
         let m = build_with(&one_part(s, ""), &[]).unwrap_or_else(|e| panic!("{s}: {e}"));

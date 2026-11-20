@@ -150,6 +150,8 @@ fn the_data_is_good_and_check_holds_what_the_data_test_holds() {
     assert!(!lev::check_job(&changed(&small, "id", Json::Str("other".to_owned())), "small").is_empty());
 }
 
+// (The shape library's comparison, `evals/leverage-props/`, is held in leverage_arms_tests.rs.)
+
 #[test]
 fn weighted_is_each_kind_times_its_weight() {
     let by = j(r#"{"input": 10, "cache_write": 100, "cache_read": 1000, "output": 20}"#);
@@ -163,7 +165,7 @@ fn weighted_is_each_kind_times_its_weight() {
 fn prepare_makes_nothing_before_it_has_checked() {
     let s = Scratch::new("prepare");
     // (Review R1: without --exe it left a half-made folder that refused every retry.)
-    let mut a = lev::Prepare { job: "small".into(), arm: "engine".into(), n: 1, out: s.root.clone(), exe: None, port: None, from: None, build: None };
+    let mut a = lev::Prepare { job: "small".into(), arm: "engine".into(), n: 1, out: s.root.clone(), exe: crate::leverage_arms::Exes::default(), port: None, from: None, build: None, data: None };
     assert!(refused(lev::prepare(&a)).contains("--exe"));
     assert!(!s.root.join("small-engine-1").exists());
     a.arm = "plain".into();

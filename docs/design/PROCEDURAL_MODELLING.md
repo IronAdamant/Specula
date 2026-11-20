@@ -56,12 +56,68 @@ Imported meshes (glTF) remain first-class. A recipe can `import` one and keep mo
 | **4** | **Generators**: scatter with rules (Poisson-disk placement, slope and height masks); building/facade grammars (floors → bays → windows); terrain heightfields with erosion; road and path layout from splines | Whole districts, forests, landscapes | M4 |
 
 Notes:
+- **Named shapes go in by name** beside the primitives: a gear, a heart, an arch, a star, a gem, a torus knot and
+  about 150 more (`formae_list '{}'` names them all in one short answer; "Shapes by name" below).
 - **Bevel is in tier 1 on purpose.** Real objects never have perfectly sharp edges. A small chamfer catches light and
   makes a primitive read as a crafted object. It is the cheapest large quality win in stylised 3D.
 - **Booleans are notoriously fragile** in floating point (slivers, holes, non-manifold results). The plan:
   - exact plane-based CSG with robust predicates for hard surfaces
   - SDF booleans for organic work, where small inexactness is invisible
   - every boolean result validated (watertight, no degenerate triangles) before acceptance
+
+## Shapes by name (`specula-formae`, 2026-11-20)
+
+The shape library's forms ([FORMAE.md](FORMAE.md): `crates/specula-formae`, plane figures, curves and solids by name,
+each with its parameters) reach recipes two ways, beside the generators of tier 1, which stay as
+they are (no existing recipe changes):
+
+- **An outline by name**, wherever an outline goes (`extrude`, `loft`, a `sweep`'s profile):
+  `{"form": "heart", "args": {"width": 1}, "detail": 64}`, with the outline's own `rotate`,
+  `scale`, `offset`, `bevel`, `resample` and `jitter`. Only a one-ring plane figure: a solid, an
+  open curve (its band is a figure) or a figure with holes is refused with what to do instead;
+  `radius`, `inner`, `segments` and `roundness` beside a form would do nothing and are refused.
+- **A shape by name**: `{"op": "form", "form": "icosahedron", "args": {"edge": 0.5}}`, or a
+  plane figure raised, `{"op": "form", "form": "annulus", "raise": {"as": "slab", "thickness":
+  0.1}}` (`as`: `slab`, `bevelled`, `pillow`, `stepped`, `relief`, each with its own fields).
+  `extrude` already raises a one-ring outline with bevels and tapers; the raise is for holes, the
+  pillow, the terraces and the relief.
+
+A form's own numbers are in `args` (so a figure's `scale` is never the outline's): each a number
+or an expression of the recipe's parameters and lets. The word is looked up at parse time and
+every key of `args` held against that form's parameters (an unknown one is refused with the list
+it takes); ranges are the library's, held at build. `detail` is the library's (8 to 4096; a full
+turn in that many segments), halved on the coarse far level. A form is counted before it is
+built (its triangles, `2V − 4 + 4g` for V points and genus g, against the part's and the model's
+limits; its points as work, `FORM_POINT` units each: 10,000, from the library's builds measured
+at 2,800 to 6,400 ns a point on a busy reference machine; the Möbius band, which searches its
+twisted strips for crossings, 150,000, measured at 99,000). A raised form refused for an inset
+too deep builds itself again, up to 41 times, to name an inset that holds: it makes no more of
+those builds than the model's budget has room for, and with no room names none and says so. **The library builds in `f64` and the
+modeller holds `f32`**: a form two of whose points come nearer than the greater of 20 µm (twice
+the weld `finalize` makes) and 2⁻¹⁸ of its reach, or a triangle that turns over or falls under
+the modeller's least area when rounded to `f32`, is refused as `Geometry` with the numbers.
+**A shape made of an outline by name is built closed or refused**: an extrusion, a loft or a
+capped or closed sweep whose edges are open as made, or open when the modeller finishes the
+model (it welds points within 10 µm and drops a triangle under 10⁻¹⁰ m²: a cap's thin ears, a
+wall too low), is refused as `Geometry` at its `outline` with its least triangle against that
+area. A semicircle of radius 0.1 mm at detail 24 extruded by a millimetre is the smallest case
+the review found (its cap's ears have 8.8 × 10⁻¹¹ m²). **The modeller's own outlines (`sides`,
+`rect`, `arch`, `star`, `points`) are older than this rule and are not held to it**, so that no
+existing recipe's outcome changes: `{"sides": 24, "radius": 1e-4}` extruded by a millimetre
+still builds a model with 12 open edges, and is accepted.
+Normals are the modeller's (by the part's smooth angle, as every generator's): the library's exact
+normals do not pass through `Shape`, which holds none. UVs and colours are as every generator's.
+What it records: a form shape is a named shape for `crate::made` (its outlines: a raised
+figure's ring and the boxes it is raised to, a solid's convex hull seen along each axis), and a
+faceting record (`Round`, count `detail`) for each smooth surface, of the turn measured between
+its faces (`Mesh::rounds`); an outline by name gives the shape made of it one of the turn
+between its chords and its arcs' radius (`Spec::facets`). Both are measured in the finished
+model as every round shape is (`crate::facet`): under a uniform scale as built and scaled,
+under an uneven stretch, a taper, a twist or a bend not measured, and said so.
+**A solid's record of what it is built of is its hull, not its form**: exact for a convex
+solid; **a torus reads as its disc** seen from above, a stellated solid as its hull, a raised
+figure with holes as its outer ring (FORM.md, "From what the recipe is built of").
+`tests/formae_recipes.rs` and `tests/facet_record.rs` hold all of it.
 
 ## Tiers 2-4 as built (2026-10-22)
 

@@ -242,6 +242,11 @@ impl WorkIn {
             // part of them taken away, so `k/n` bounds their growth: held for each by
             // `a_rings_vertices_grow_no_faster_than_its_count`.)
             Grows::Linear { .. } => take(k128, n128),
+            // (A form's line is made over its points' growth as well as its triangles', and
+            // over every count up to `k`, so the triangles' growth taken above bounds every
+            // count of its elements, at `k` and at a coarse build's count under it:
+            // `recipe/form.rs`, `form_rounds`.)
+            Grows::Above { .. } => {}
         }
         best
     }
@@ -450,6 +455,10 @@ pub(crate) enum Grows {
     /// With the square of the count, from what was built (a sculpt's resolution): an estimate,
     /// since what a mesher makes is known only once it has made it.
     Square,
+    /// No more than `at_n` at the count `n` it was built with, and `per` more a count past it:
+    /// a line its builder has checked lies over what it makes at every count from `n` to the
+    /// most its record names (a shape of the library, whose counts step: `recipe/form.rs`).
+    Above { n: u32, at_n: u64, per: u64 },
 }
 
 impl Grows {
@@ -459,6 +468,7 @@ impl Grows {
             Grows::Linear { per, fixed } => per.saturating_mul(u64::from(k)).saturating_add(fixed),
             Grows::Fourfold => 20u64 << (2 * k.min(20)),
             Grows::Square => 0,
+            Grows::Above { n, at_n, per } => at_n.saturating_add(per.saturating_mul(u64::from(k.saturating_sub(n)))),
         }
     }
 }
