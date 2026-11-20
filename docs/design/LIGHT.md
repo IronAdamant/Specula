@@ -76,7 +76,7 @@ is the answer.)
 | `features` | one row for each of `shadows`, `ssao`, `bloom`, `fxaa`, `fog`, `sky`, `grading`, `gi`, `point_lights`, the costliest first: `on`; and when it is on, `cost_ms` (the middle of the differences between the view as it is and the view without it, frame by frame of the same round), `share` of the frame, `without_ms` (that variant's median), `noise_ms`, `told_from_noise`, and `to_change` (the call that switches it off or turns it down) |
 | `passes` | the view's dearest passes as it is, by name (`shadow`, `scene`, `ssao`, `post_bloom`, ...) |
 | `to_hold_budget` | only when the budget is not held. `advised: true`: which features to `give_up`, costliest first, the `estimate_ms` that leaves, whether that is `enough`, and a `note`. `advised: false`: no advice, `why` (`too_few_frames`: fewer than five rounds counted; `busy`: the frames were too uneven to advise on) and a `note` |
-| `load` | whether the machine was `steady` while it was measured: how many of all the `frames` were `late_frames` (more than a twentieth over the mean of their own variant's quickest third), and `what` that means |
+| `load` | whether the machine was `steady` while it was measured: how many of all the `frames` were `late_frames` (more than a twentieth over the mean of their own variant's quickest third, and never of fewer than its quickest two: at five frames, its quickest two), and `what` that means |
 | `waited` | why the wait for what the view was loading ended: `not_needed`, `ready`, `limit` (ten seconds) or `call_time` |
 | `partial` | only when the call's time ran short: `rounds_counted`, `rounds_asked`, `why` |
 | `settings` | what the features are set to (shadow resolution and cascades, ssao samples, bloom levels, the GI's tier, the lights in view) |
@@ -532,8 +532,10 @@ are at the end). On a busy machine; nothing here rests on a time.
    | even, 3% | middle shuffled | 0.9 (58.9) 1.1/2.3/12.4/45.2 r 4.4 | 0.4 (91.7) 0.7/2.4/17.3/69.3 r 2.4 | 0.0 (98.7) 0.1/1.4/23.2/91.0 r 0.0 |
    | even, 3% | all shuffled | 0.9 (57.7) 1.2/2.8/12.6/43.8 r 4.8 | 0.4 (91.7) 0.5/2.2/18.1/69.4 r 2.4 | 0.1 (98.6) 0.2/1.6/23.0/90.0 r 2.4 |
 
-   **Read row by row.** On a load in step with the rounds the order taken tells costless
-   features as costs in 1.1% to 4.2% of cases where the second round's order told 30% to 36%,
+   **Read row by row.** (The rows of a load in step with the rounds are means over the load's
+   phase. The order is the same in every report, so a load locked to the rounds at one phase
+   hits the same feature each time: "What remains" below.) On a load in step with the rounds
+   the order taken tells costless features as costs in 1.1% to 4.2% of cases where the second round's order told 30% to 36%,
    and steady reports that tell one went from about 40% to 4% to 17%; with the period a
    twentieth off a round's length, from 14% to 21% at five and nine frames to 1.5% to 4.3%; with a
    period of two rounds, from 20% to 28% to 0% to 3%. **It is worse at a period of 1.2
@@ -597,9 +599,11 @@ are at the end). On a busy machine; nothing here rests on a time.
    that step a whole report failed (the seeded fault below). Now it answers `Step::Wait`: it goes to the back, the jobs behind
    it get their slices, and the pass ends once every queued job waits; it looks again a pass
    later. Headless, passes go back to back while step jobs are queued, so a report is not
-   slower; with a window, at most one render lands a pass where spinning could land two in
-   the same credit. `timeline_preview`'s job (`timeline_tools.rs`) has the same pattern and is
-   not changed here.
+   slower. **With a window this was wrong** (the fourth review): a pass is once a frame, so
+   exactly one render landed a frame, where the spin had landed nearly four a frame at 20
+   frames a second (this sentence said "could land two"), and a report with a slow window took
+   3.7 times as long. Mended in the fourth round, below. `timeline_preview`'s job
+   (`timeline_tools.rs`) has the same pattern and was not changed in this round.
 8. **Not checked by the review, checked now.** *A session that closes while the job waits for
    a view still loading*: the job is queued, waiting, and is dropped with `session_closed`
    when its session is seen gone (`Engine::drop_closed_steps`, the part of `pump_steps` that
@@ -617,15 +621,22 @@ was caught.
 
 **What remains.** A load in step with the rounds still tells a costless feature a cost 1% to
 4% of the time per feature, and 4% to 17% of steady reports name one; at a period of 1.2
-rounds it is now about 3% where it was none. A slow drift is told one time in a thousand at
+rounds it is now about 3% where it was none. Those are means over the load's phase (where in
+a round it starts). **The order is the same in every report**, so a load locked to the rounds
+at one phase would fall on the same places, and so on the same feature, report after report:
+the fourth review simulated one (+4% over half of each round, nine frames, the phase held)
+and at some phases one costless feature was told in three reports of four, and at others none.
+Such a load would have to keep step with the report's own rounds; none was found (in about
+2,300 raw frames an adapter no render's time depended on its place or on the render before
+it). The order is not changed for it. A slow drift is told one time in a thousand at
 five and seven frames. A machine that is merely uneven is still not advised on. Not run: an
 engine with a window, and a release build.
 
 ## Its fourth review
 
 A fourth model (2026-11-20) reviewed the third round's mends alone, with engines running
-with and without a window on both adapters, and said **not to merge them, for one finding.
-It is not mended yet.**
+with and without a window on both adapters, and said **not to merge them, for one finding**
+(mended: "What was mended, fourth round", below).
 
 1. **Major: with a slow window, a report takes about 3.7 times as long as it did.** With a
    window, step jobs are stepped once a frame. A job whose render is still on the graphics
