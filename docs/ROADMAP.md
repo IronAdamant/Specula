@@ -1358,6 +1358,96 @@ at once.
   the scope talk moves a rung. **The report is built** (2026-11-19, `perf_light`:
   [design/LIGHT.md](design/LIGHT.md)): a view is drawn with each light feature left out in turn, and what
   each costs on this adapter is answered against a budget, with what the engine's light has and has not.
+- [ ] ➕ **A library of shapes, by name, in 2D, 2.5D and 3D** (owner, 2026-11-19: "it may be worth building
+  a library of shapes in 2D and 3D in this phase and save them as skeleton library alongside the human
+  figures. All in Rust. Must be scalable"; and 2026-11-20, on what it is for: "so you can easily get them
+  and sculpt the shapes accordingly, to the needed models ... This will reduce the amount of time and
+  tokens needing to keep generating new code every time"). A crate, `specula-formae`: named shapes as a
+  table, each described once as its exact pieces, from which its count, its build, its measures and its
+  error at a detail all follow. Built on the branch `m6-formae`, a stage a builder, each stage reviewed by
+  a probe of the lead's own; where each stands is in HANDOFF.md. **Not merged into the working branch
+  yet.**
+  - [x] *1a, plane figures and curves* (65 and 12, with aliases).
+  - [x] *1b, solids* (82, flat and curved; a prism, a pyramid or a turned solid of any plane figure).
+  - [x] *1c, 2.5D*: a figure raised five ways; a solid drawn flat in a named view with hidden surfaces
+    removed; a solid cut into layers.
+  - [x] *2, the modeller takes them*: an outline, a solid or a raised figure by name in a recipe.
+  - [x] *3, the engine takes them*: `shape2d` items by name; the catalogue tools `formae_list` and
+    `formae_get`; `docs/design/FORMAE.md`.
+  - [x] *3b, a path by which an agent finds it cheaply*: a first answer of about 3 KB, a form in about
+    1 KB, pointers where a cold agent looks, the nearest name for a wrong one.
+  - [ ] *The measured comparison*: the same props by a cold agent without the library, with it found by
+    the engine's own pointers, and with it named in the brief (`evals/leverage-props/`; the harness takes
+    its arms as data). The small job is running (2026-11-20); the dozen-props job after the owner has seen
+    it.
+  - [x] *5a, every form's distance field*, in the library's own crate: exact or a bound on each side, said
+    by the field, with its box and its cost by count.
+  - [ ] *5b, the forms as sculpt primitives*: a form as a node of the sculpt tree (the same recipe, no new
+    format), blended with its neighbours by the blend the tree has; its box by the modeller's reach, its
+    work weighed against the plain primitives, a ceiling on what a sample may cost; soft defaults, worked
+    examples in the catalogue's answer, each pictured in clay and curvature and checked by a model that
+    did not take the pictures. The contract is [design/DISTANCE_FIELDS.md](design/DISTANCE_FIELDS.md),
+    section 6. **Waits for the sculpt's box to be mended and reviewed**
+    ([design/PROCEDURAL_MODELLING.md](design/PROCEDURAL_MODELLING.md), tier 3).
+  - [ ] *4, further families* (what the first table left out), with the catalogue's first answer holding
+    whatever is added.
+  - [ ] *The whole*: merged into the working branch; every shape pictured large in the engine, in more
+    than one view, and checked by a model that did not take the pictures; the full gate and the live
+    checks.
+  - What a project has saved of its own is the next item, and how an agent is told where all of it is,
+    the one after.
+- [ ] ➕ **A project's own recipes and saved models, catalogued as the library is** (owner, 2026-11-20, told
+  that a saved recipe helps only an agent that knows it is there: "Build that recipe into the plan
+  alongside the library"). The library answers "which shapes exist"; this answers "what has this project
+  already made", so that an agent changes and reuses and does not make again. Built with the library's
+  stages, on its branch.
+  - [ ] *One call that lists what the project holds*: a first answer under a small ceiling (about 3 KB,
+    as the library's): the kinds (model recipes, built and exported models, textures, sounds and pieces,
+    interface screens, string tables, timelines, effects, rule sets, modules), each folder with its count
+    and its names while they fit, and how to ask for more. Rows on request, by kind, folder or word: a
+    name, one line of what it is, its parts and what it includes, its triangles and bounds if it is
+    built, its style, and **the snippet that reuses it** (the `include` that names it in another recipe;
+    the item that spawns it), ready to paste. A wrong name answers with the nearest, across the project
+    and the library together.
+  - [ ] *A line of its own for every recipe*: an optional `about` in a recipe (and in the other kinds of
+    project data that have none), written by whoever makes it, shown in the catalogue; where there is
+    none, a line the engine makes from what the recipe is built of. Text read from a project's files is
+    **data shown to an agent, never instructions to it**: bounded in length, stripped of control
+    characters, and marked as the project's words in every answer that carries it.
+  - [ ] *Saved outside the project too*: what `model_export` wrote, with the recipe it came from; what
+    another project of the same person offers is never listed (the list of a person's projects is not a
+    tool's to give).
+  - [ ] *Held*: an existing project made before this (no notes, no `about` lines) is catalogued from its
+    files with nothing written into it; a project of thousands of files answers within the ceiling and
+    within a work bound, off the engine thread; the same answer twice.
+- [ ] ➕ **The engine tells an agent where everything is, unasked, from the first contact** (owner,
+  2026-11-20: "a way to have Specula Engine automatically notify you and other AI agents on WHERE To
+  find the tools, WHERE to find both library and recipes and what they contain. From the start, both
+  before and after loading on a project, both existing or new"). Six passes at the first hour measured
+  it: an agent uses what its first read points at and little else, and every request reads its context
+  again, so what is not pointed at in the first few hundred tokens is found late or never.
+  - [ ] *One orientation, made by one function from the engine's state*, never typed twice: where the
+    tools are (the core set, the catalogue by family and the kits by job; from a shell, `specula tools`);
+    where the shape library is and what it holds (its counts by kind, its one call); where the project's
+    own recipes and saved models are and what they hold (the counts by kind and folder, the catalogue's
+    one call); where the project's notes and its memory are; and what to read first. Under a ceiling of
+    about 1.5 KB, held by a test on a project twice any real one's size.
+  - [ ] *Before a project is loaded* (the start screen, or an engine started on nothing): the tools, the
+    library, and how a project is opened or made; never the person's list of projects.
+  - [ ] *After a project is loaded, new or existing*: the same with the project's own part. A project made
+    by `specula new` has it in its notes, written by that one function; **an existing project with no
+    notes is told as fully, from its files, and nothing is written into it.**
+  - [ ] *It reaches an agent on every path without being asked for*: the MCP handshake's `instructions`
+    (what a client hands its model before any call); `agent_hello`'s answer, with the project's brief;
+    from a shell with no client, the first lines of `specula list`, `specula tools`, `specula open` and
+    `specula new`; and the tool catalogue's own first answer.
+  - [ ] *When it changes, a session is told once*: a project opened or closed, recipes or models added by
+    another agent, the library grown: the next answer to each session carries one line saying what
+    changed and the one call that shows it; a client that listens for the protocol's list-changed
+    notices gets those too.
+  - [ ] *Measured, not assumed*: with the comparison's harness, the tokens and requests a cold agent spends
+    before its first file, with the orientation and without, on a new project and on one that already
+    holds assets to reuse; and whether what was already there was reused or made again.
 - [ ] ➕ **A library of sample assets, for any game** (owner, 2026-11-16, at the start of M6: "I'm actually
   thinking on this. But add 1 more part here"): "Build up the assets of animals, fantasy creatures like
   dragons, undead, and both tech and living assets, and tech like robots. Set up animation. Keep them as

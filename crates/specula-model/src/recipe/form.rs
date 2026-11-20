@@ -408,37 +408,64 @@ impl Ctx<'_> {
     /// under a move, a turn or a uniform scale it is measured, the radius and the sag scaled.
     ///
     /// What its count may be at most (the record's `most`, which advice never passes, and the
-    /// prediction it is checked by): `size(k)` is the shape's triangles at detail `k`, from the
-    /// library's count (exact, and no build). A form's counts step (a piece has
+    /// prediction it is checked by): `size(k)` is the shape's triangles and points at detail
+    /// `k`, from the library's count (exact, and no build). A form's counts step (a piece has
     /// `max(2, ⌈detail · turns⌉)` segments) and grow as a line or as the square of the detail,
     /// so no line through two counts and no square of a ratio bounds them. The record's
-    /// prediction is the line over them from the built detail `n`: `size(n)`, and `per` the
-    /// steepest rise `⌈(size(k) − size(n)) / (k − n)⌉` over every `k` from `n` to the most,
-    /// so at every detail the advice may name it is no less than what the build makes
-    /// ([`crate::facet::Grows::Above`]). The most is the library's [`formae::DETAIL_MAX`], or
-    /// the first detail past a part's limit (where the advice stops, by that limit), or the
-    /// last whose count the library answers.
+    /// prediction is a line from the built detail `n`: `T(n)`, and `per` the steepest rise
+    /// over every `k` from `n` to the most of `⌈(G(k) − T(n)) / (k − n)⌉`, where `G(k)` is the
+    /// greatest over every detail `j ≤ k` of `T(j)` and of `T(n)·V(j)/V(n)` (rounded up)
+    /// ([`crate::facet::Grows::Above`]). So the line is no less than what the build makes at
+    /// any detail up to `k`, and its growth from `T(n)` is no less than the points' growth: the
+    /// faceting record bounds the build's work at `k` by its elements' growth (`facet.rs`,
+    /// `Spent`), and a coarse far level built at a detail under `k` is under the line too
+    /// (`T(j)` steps, and a closed mesh of genus over one has more points to its triangles as
+    /// it is coarser, so neither bounds the other). The most is the library's
+    /// [`formae::DETAIL_MAX`], or the first detail past a part's limit (where the advice
+    /// stops, by that limit), or the last whose count the library answers; the build's work
+    /// limit then stops it where the finished model's work says (`facet.rs`, `most_count`).
     ///
     /// An outline by name (`outline`: `size` is then a measure its triangles grow no faster
     /// than, not the triangles: what takes the outline makes them) is predicted by the square of
     /// the ratio from what was built ([`crate::facet::Grows::Square`]), and its most is the last
     /// detail up to which `size(k) · n² <= size(n) · k²` holds at every detail from `n` (a step
     /// past the square ends it there; the advice stops at a part's limit by the square itself).
-    fn form_rounds(&self, what: &'static str, detail: u32, outline: bool, size: &dyn Fn(u32) -> Option<u64>, list: impl IntoIterator<Item = (f64, f64)>) {
+    fn form_rounds(&self, what: &'static str, detail: u32, outline: bool, size: &dyn Fn(u32) -> Option<(u64, u64)>, list: impl IntoIterator<Item = (f64, f64)>) {
         let list: Vec<(f64, f64)> = list.into_iter().collect();
         if list.is_empty() || self.coarse {
             return;
         }
-        let at_n = size(detail).unwrap_or(0);
+        let (at_n, points_n) = size(detail).unwrap_or((0, 0));
+        // (`G(j)` of the doc above, for a solid: its triangles, or its points' growth from the
+        // built detail in triangles, whichever is greater.)
+        let grown = |(t, v): (u64, u64)| {
+            let by_points = (u128::from(at_n) * u128::from(v)).div_ceil(u128::from(points_n.max(1)));
+            u128::from(t).max(by_points)
+        };
+        let mut top = 0u128;
+        if !outline {
+            for j in formae::DETAIL_MIN..detail {
+                if let Some(c) = size(j) {
+                    top = top.max(grown(c));
+                }
+            }
+        }
         let (mut most, mut per) = (detail, 0u64);
         let n2 = u128::from(detail) * u128::from(detail);
         for k in detail.saturating_add(1)..=formae::DETAIL_MAX {
-            let Some(t) = size(k) else { break };
+            let Some((t, v)) = size(k) else { break };
             let k2 = u128::from(k) * u128::from(k);
             if outline && u128::from(t) * n2 > u128::from(at_n) * k2 {
                 break;
             }
-            per = per.max(t.saturating_sub(at_n).div_ceil(u64::from(k - detail)));
+            let rise = if outline {
+                u128::from(t)
+            } else {
+                top = top.max(grown((t, v)));
+                top
+            };
+            let step = rise.saturating_sub(u128::from(at_n)).div_ceil(u128::from(k - detail));
+            per = per.max(u64::try_from(step).unwrap_or(u64::MAX));
             most = k;
             if !outline && t > MAX_PART_TRIANGLES as u64 {
                 break;
@@ -500,7 +527,7 @@ impl Ctx<'_> {
             // (An outline's triangles are made by what takes it: `a·points + b` with `b` no
             // less than `-2a` (an extrusion's walls and caps, a lathe's bands, a cap alone),
             // whose ratio from one detail to a greater is at most that of `points - 2`.)
-            let size = |k: u32| spec.count(k).ok().map(|c| c.points.saturating_sub(2));
+            let size = |k: u32| spec.count(k).ok().map(|c| (c.points.saturating_sub(2), c.points.saturating_sub(2)));
             self.form_rounds(found.form.name, detail, true, &size, [(turn, radius)]);
         }
         Ok(ring.iter().map(|p| [p[0] as f32, p[2] as f32]).collect())
@@ -568,7 +595,7 @@ impl Ctx<'_> {
                 Some(s) => s.count(k).ok()?.points,
                 None => spec.count(k).ok()?.points,
             };
-            Some((2 * points + 4 * u64::from(genus)).saturating_sub(4))
+            Some(((2 * points + 4 * u64::from(genus)).saturating_sub(4), points))
         };
         self.form_rounds(what, detail, false, &size, mesh.rounds().iter().map(|r| (r.turn_deg, r.radius)));
         // Its outlines: a raised figure's own outer ring and the boxes it is raised to (as an

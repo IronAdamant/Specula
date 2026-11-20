@@ -283,8 +283,41 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     to delete. I will confirm once I am home"; they follow the work by remote). The two
     worktrees that were finished then (`C:\sr-k16`, `C:\sr-k20`) were removed at their word
     before they left ("Please request permissions for removal for those before I go").
-    Waiting for them: every scratch worktree whose branch is merged or whose review comes
-    in after that.
+    **They came back that night and removed the eleven that had finished meanwhile
+    themselves** (the automatic permission check had refused Claude's batch removal before
+    any prompt reached them). Removals are allowed again while they are at the machine; a
+    refused one is surfaced to them and never worked around.
+  - **A project's own recipes get a catalogue, and the engine tells an agent where everything
+    is, unasked** (the owner, 2026-11-20, night, asked whether the shape library and saved
+    models and recipes will save time, and told plainly that a saved recipe helps only an
+    agent that knows it is there, and that no plan covered that): "Build that recipe into
+    the plan alongside the library. And a way to have Specula Engine automatically notify
+    you and other AI agents on WHERE To find the tools, WHERE to find both library and
+    recipes and what they contain. From the start, both before and after loading on a
+    project, both existing or new." Both are items of ROADMAP M6 now, after the library of
+    shapes (which had no roadmap item of its own until that night either: its plan had been
+    in this page and in notes on this machine). *Claude's reading:* (1) one call that lists
+    what a project already holds, a first answer of about 3 KB and rows that paste, as the
+    library's catalogue is, with a line of its own for every recipe; text read from a
+    project's files is data shown to an agent and never instructions to it. (2) One
+    orientation, made by one function from the engine's state, under about 1.5 KB: where
+    the tools are, where the library is and what it holds, where the project's own recipes
+    and saved models are and what they hold. It reaches an agent on every path without
+    being asked for: the MCP handshake's `instructions`, `agent_hello`'s answer, the first
+    lines of the shell's commands; before a project is loaded (never the person's list of
+    projects) and after, for a new project and for an existing one with no notes (told
+    from its files, nothing written into it); and a session is told once when it changes.
+    (3) Measured with the comparison's harness: what a cold agent spends before its first
+    file with it and without, and whether what was there was reused. **It is the library
+    slot's next stage** (it does not wait for the sculpt's box, as the sculpt primitives
+    do).
+  - **One or two subagents at a time** (the owner, 2026-11-20, evening, by remote, with six
+    running): "Once your sub agents are done, and if possible, I'd like you to reduce how many
+    is them down to just 1 or two as to conserve my usage and to extend it." So what is
+    running finishes, and nothing is started in its place until at most one is left. From
+    then, two slots (*Claude's reading*): one for the shape library's next stage, which the
+    owner wants built first; one for the next review or mend in line. The measured
+    comparison's builders and judges are counted in the same two slots, one cell at a time.
   - **The silhouette's rounds go on, and the library gets built** (the owner, 2026-11-20,
     awake again, shown Claude's recommendation that the seventh silhouette version be the
     last round that chases the reading: "Rounds continue. I want that library built. So
@@ -387,7 +420,41 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       such a recipe needs explicit `bounds` (PROCEDURAL_MODELLING.md, tier 3, "A known
       fault"). Two facts it proved went into the page (5.4: a meeting stays by its
       operands; a pair needs one exact part), with a test (23 in all). Found on the
-      way and **not yet investigated: two crescents joined smoothly meshed open.**
+      way: two crescents joined smoothly meshed open. **A fresh agent then made the
+      mend and investigated that** (2026-11-20, merged; PROCEDURAL_MODELLING.md, tier
+      3). *The box*: a reach passed down the tree (how far the set where a node's
+      field is at most a level lies from its box), each rule resting on a stated
+      inclusion, and the mesher's box moved out only where that reach passes the old
+      box by more than a quarter cell, so that **no mesh that was right changes by a
+      byte** (the box is asserted unchanged for every sculpt of the repository and
+      for figures at their limits; the pinned hashes pass). A truth test samples 240
+      drawn trees by the field alone: on the old box 18 had solid outside it (the
+      worst by 19 m: **a twisted or bent node was not held by the old box either**);
+      on the new, none. Every mended case costs less work. By its own account each
+      seeded fault was caught, one only after it added a test. *The open mesh*: the
+      cause is the mesher's, and older than this work: **where a sheet is thinner
+      than a cell, four of the mesher's quads share one edge** (one crescent is
+      enough: 436 such edges at the default resolution). The mesh is closed in the
+      directed sense and no check said a word. **Six sculpts of the repository have 1
+      to 18 such edges, three approved props among them** (`grave_rock` 1,
+      `statue_angel` 3, `statue_mourner` 2). The build now counts them and says where
+      (`thin_edges`, `thin_at`, a sentence in the model's notes). **The mesher itself
+      is not mended**: the mend (a vertex for each sheet through a cell) is written
+      down, about a day's work, and it changes the meshes of those six, so it waited
+      for the owner's word, which came the same night: **"You can mend the mesher. Yes
+      it'll take long but the fix needs to be now."** A fresh agent is making it
+      (branch `m6-mesher`), the six shown before and after in the engine. **The box mend's reviewer said
+      not to merge it** (2026-11-20; PROCEDURAL_MODELLING.md, "Its review said not to
+      merge the mend"): it found no point of any solid outside the new box and agreed
+      with each rule's reasoning, and **the new box also grows where the old one cut
+      nothing off, so ordinary sculpts with no stretch, twist or bend change mesh** (29
+      of 300 drawn trees; up to 39% coarser cells; the smallest case five balls in a
+      row, joined smoothly and turned). The repository's seven sculpts are unchanged,
+      which is all the mender's test held, and "no mesh that was right changes by a
+      byte" is false outside the repository. Two caps are held by no test. **A fresh
+      agent is mending it** (`m6-bounds2`): for a tree with nothing stretched, twisted
+      or bent, the mesher's box is the old box, unless a build shows the old box cut
+      the solid off.
       What it means for the sculpt stage is written into the page's section 6: a joined
       part's reach is taken from its field, not from its box.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
@@ -831,7 +898,25 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       document calls steady, and size still moves a few assets. **A seventh version is
       being made for those causes only** (the overhang; every rule held by a default
       test; the document true), with both corpora joined (162 assets) and the rate
-      stated on the half it was not tuned on. Claude recommended that the seventh be the
+      stated on the half it was not tuned on. **It is built, by two agents** (2026-11-20,
+      merged; FORM.md, "Its seventh version"): the first wrote the rule (two square
+      corners of an overhang are two corners: `apart`) and then lost its numbers to two
+      seed loops that raced over one worktree; a second, in a clean worktree, made every
+      table again one run at a time and finished it. **By its clean tables: of the
+      author's 103 common assets 91 lead as a person would in every mask (90 before); of
+      the sixth review's 59, 45 (42 before); of forty more, written with their leads
+      before any reading, 38** (the misread: a hamburger and a teapot; those forty are
+      easier than the review's 59, and the document says so). Overhang slabs, a
+      pedestal, a cornice, a ledge, a pillar and the combs moved toward square; a
+      watchtower, a lighthouse and a castle tower lead square where they led pointed.
+      **What got worse, named and held as it reads, not mended:** a cauldron that was
+      steadily (wrongly) pointed now flips between round, square and pointed as it
+      turns; a dog with tapered legs, a club and a pig swing more; a slab 0.04 thick
+      overhanging 0.08 flips in 28 of 360 masks. **Every rule was seeded away, one at a
+      time, 43 in all**: seven were caught by nothing; six have a test now (each held by
+      the reading it moves most, with tight bounds) and one, which changed no reading
+      of 548 shapes, was taken out. The default run takes 108 s of test time. **Its
+      seventh review is queued.** Claude recommended that the seventh be the
       last round that chases the reading; **the owner's word (2026-11-20): "Rounds
       continue."** So it is mended and reviewed until a reviewer says merge. Sepulcra is
       not counted again by it. No preset asks for it, and
@@ -986,8 +1071,47 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       busy machine** (`a_stalls_event_carries_the_threads_own_time`: it asserts that a
       thread which spun for 40 ms of wall time worked, and under load the thread was
       given 16 ms of 81). All are the next builder's first jobs. **Stage 3b, the path by
-      which an agent finds the library cheaply, is being built** by a fresh agent; then
-      the sculpt primitives (stage 5), then further families (stage 4).
+      which an agent finds the library cheaply: built** (2026-11-20, `18151028`). The
+      three faults first: the stepped raise's closed area kept only a millionth of
+      its digits at a corner turning by nearly a half turn (another formula there);
+      the full runs' time was the cutting of concave faces by a clipper that looked
+      at every corner for every ear, and a grid sized over a whole 28 km plate for a
+      0.1 mm band (the full runs take 73 s where one took 803); a refusal names its
+      unknown field; the engine's load-dependent test spins on the thread's own
+      clock. Then the path: **`formae_list` with nothing asked answers every name, a
+      line a family, in about 3 KB** (seeing every row took 39 KB), rows on request;
+      `formae_get` is about 1 KB with snippets first; one line pointing at it in a
+      new project's `notes/brief.md` and `notes/how.md`, in `model_build`'s
+      description and the modelling family's catalog line; a wrong shape name in a
+      recipe answers with the library's nearest. **Claude's review**: its three
+      probes hold on the new code, and a running engine answers as said from a shell
+      (`.swarmnotes/m6/part4/formae/review-3b.md`). **The comparison by cold agents
+      is written and not run** (`evals/leverage-props/`: a kit of four pickups and a
+      dozen props): the harness's arms were in its code, and a builder is making
+      them data (`m6-formae-harness`). Claude runs it in three arms: an engine
+      without the library; the library found by the engine's pointers alone; the
+      library named in the brief. **The harness is done** (`4deccc36`, branch `m6-formae-harness`:
+      `examen leverage --data FOLDER`, arms as data, a report against a named baseline, a
+      `prompt` command that prints what each builder is told and runs nothing); the two
+      engines are built (`C:/sf-base` without the library, `C:/sf-harness` with it), and
+      **the comparison is held in the queue** under the owner's one-or-two rule, the
+      small job first. **Stage 5 is cut in two. 5a, every form's distance field in the
+      library's own crate: built** (2026-11-20, `ab17003a`; `field::of`, `of_solid`,
+      `plane`; each field says whether it is exact or a bound on each side, the solid it
+      is the field of, its box and its cost by count): plane figures from their exact
+      lines and arcs; slabs and prisms exactly; reliefs; solids of revolution exactly;
+      part turns and stretched turns as bounds; the flat-faced convex solids by their
+      nearest face, edge or corner; the rest by the nearest triangle of their build,
+      with the sign by winding; curves and two oversized sweeps refused as data.
+      **Claude's review, by a probe of its own** (seven checks from a build's points and
+      faces alone): 1,554 fields with no fault, and the probe shown to fail on a seeded
+      one (`.swarmnotes/m6/part4/formae/review-5a.md`). What the next builder must
+      know: the stage changed the faceting record's interface for forms (a growth law
+      of its own), which the working branch's later faceting round will meet at the
+      next merge; and a field of a build costs up to ten thousand pieces a sample, so
+      5b must decide what a sculpt may hold. **5b, the node in the sculpt tree, waits
+      for the review of the modeller's box** (running). Then further families (stage
+      4).
       Stage 3 is the engine's 2D item with two read-only tools and
       `docs/design/FORMAE.md`; then further families. Each stage is reviewed by Claude, who
       did not write it; the whole is pictured in the engine and gated before it is merged.
@@ -1083,8 +1207,25 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       limits held, and work grows with the count (a lathe with a 512-pixel texture
       and two far levels is told 108 segments and refused at 108). None of Sepulcra's
       props is such a recipe. And three of its rules (the budget, the model's room, a
-      scatter's copies) are held by no default test. **A fresh agent is mending
-      those. Give no style a `max_facet_deg` until a reviewer says merge.** The recipe measure's three small findings were mended with it (the
+      scatter's copies) are held by no default test. **A fresh agent mended
+      those** (2026-11-20, merged; FORM.md, "What was mended, fourth round"). **The
+      most a count can be now holds the build's work limit too**: it read where every
+      unit of work is charged and how each grows with one round shape's count
+      (operations on a piece, paint, assembly, each far level's simplification, the
+      collider, a far level's coarse rebuild; texture baking does not grow), and
+      bounds the work at another count by an inequality a test holds on 150 drawn
+      recipes (every count named builds; the bound is 1.12 times the real work at the
+      median and 1.96 at worst). The review's textured lathe is told 82 and builds
+      there. **The bound is low on purpose**: the most said is 10% to 26% under the
+      most that builds, so a fix may say "none holds" a little early and never names
+      a count that is refused. Still an estimate, and said so: a sculpt's resolution,
+      a shape inside a boolean, and a recipe with far levels and a boolean, sculpt or
+      generator (53 of 54 drawn estimates build; one sculpt was 2% over a part's
+      limit). The three untested rules each have a row now, shown to fail on its
+      seeded fault. Two counts on one piece each build at their most alone and not
+      together: the fix says "it builds with every other count as it is now".
+      Sepulcra's counts did not move. **Its review is queued. Give no style a
+      `max_facet_deg` until a reviewer says merge.** The recipe measure's three small findings were mended with it (the
       snap held by a test; the wobbling rod's limit stated and held: up to 1.8% of the
       width a long rod is cut and reads square, past it it is pressed and reads rounder;
       the two weak tests made exact).
@@ -1181,8 +1322,34 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       a landing costly (3 to 7 late frames of 240 at 60 Hz; the estimate of a pulse's
       cost decays between landings). One of its runs had agents' calls fall to 27 a
       second after a report, on a busy machine, not repeated and not explained. **A
-      fresh agent is mending those.** The window check is owed with the live checks,
-      since the window's loop changed.
+      fresh agent mended those** (2026-11-20, merged; LIGHT.md, "What was mended, fifth
+      round"). A pulse is charged what a landing costs and starts only if that fits
+      before the deadline; the estimate of a landing is kept apart from a look's and
+      does not decay with time; after a wait that pulsed, the frame's own pump leaves
+      the pulsed jobs alone. The reviewer's table is a permanent test of twelve rows:
+      with pulses no more frames are late than with the frame's pump alone, in every
+      row (100 ms renders landing in 6 ms at 20 frames a second: 34 late of 69 with
+      the pump alone, none of 80 with pulses). **The window loop's glue is out of the
+      loop** (`schedule::Window`, `serve_frame`, `frame_pump`: the simulation runs the
+      loop's own code), and **a live check in Rust holds it in a running engine**
+      (`light_window_check`: with a window at 20 frames a second, 80 renders over 21
+      frames on the integrated adapter and over 32 on the discrete, zero validation
+      messages; with the report's job made to say it has no render on the card, it
+      fails). A real landing costs 0.3 to 1.1 ms (the report, the preview; the most
+      seen 2.2 ms), so the review's 4 to 10 ms is a whole pump on a contended card,
+      not a landing. **Two limits, as its author states them:** a landing dearer than
+      the recent ones can still end past the deadline by the excess; where a landing
+      cannot fit the wait at all, no pulse runs and a report lands one render a frame.
+      **The run that fell to 27 calls a second was not reproduced** in six rounds, two
+      of them beside a second engine on the same card; its cause is a hypothesis read
+      from the code (a gap of over 100 ms between presents is taken as a stall and the
+      next wait drops to a millisecond) and is unproved. **Its review is queued.** The
+      window check is owed with the live checks, since the window's loop changed.
+      **A guard had been failing on the working branch since the third round's
+      merge** (`reply_wait_guard`: a test of the report's peeked at a reply where it
+      should wait; Claude had run a chosen few of the engine's 33 integration tests on
+      that merge and not all). It is mended in this round, and every engine merge now
+      runs all of them.
     - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
       PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
       builds: a large thin rounded cutter set a metre past the corner of what it cuts
@@ -1229,8 +1396,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       takes 1.4 to 1.7 more powers a sample, so two builds of rounded shapes that are
       not in the repository are refused where they built (a cube at roundness 0.67
       cut from a box at resolution 80; a millionth-thick sheet at 0.4 at 64). By its
-      own account eight seeded faults were each caught. **Its review (the tenth of
-      this field) is running; the warning above stands until it says merge.** Owed
+      own account eight seeded faults were each caught. **Its reviewer (the tenth
+      of this field) said not to merge it, and found the field sound** (2026-11-20;
+      PROCEDURAL_MODELLING.md, "A tenth"): against a bracket of its own, 124,143
+      samples outside 66 shapes with none short or over past rounding, no step in 2.77
+      million, the charge bound held in every arrangement, the pruning the same to the
+      bit. What it refused it for: **"the sure way cannot fail to arrive" is false** (it
+      can reach its cap of 64 steps and return where it stands: one sample in 136,680,
+      on a sheet a hundred-millionth as thick as long, two parts in a thousand short;
+      and nothing makes the answer at the cap a bound), and three of its rules are held
+      by no default test (the cap; the arrival rule's second condition, which nothing
+      at all holds; two smaller ones). The mends are small and **queued** (the mesher's
+      mend is in the same file). **The warning above stands until a reviewer says
+      merge.** Owed
       with it: the rates on a quiet machine (`cargo run --release -p specula-model
       --example rounded_rates 5`).
     - **Then:** the same in 2D. And on the figure, by what the form views show: the plate front and back, the arm
@@ -2133,6 +2311,13 @@ recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer 
 through with the instance on the Mac), and a Steamworks app ID (later).
 
 Nothing is open (2026-11-20).
+
+(Whether the sculpt mesher may be mended where a sheet is thinner than a cell, though it
+moves the meshes of three approved props (`grave_rock`, `statue_angel`, `statue_mourner`)
+and three of the fidelity set by a few triangles each, was decided on 2026-11-20: "You can
+mend the mesher. Yes it'll take long but the fix needs to be now." A fresh agent is making
+the mend (`.swarmnotes/m6/part4/mesher/brief.md`), with the six shown before and after in
+the engine and checked by a model that did not take the pictures.)
 
 (An empty folder a reviewer made by mistake, `C:\sr-k2t`, was removed on 2026-11-20 at the
 owner's word. The reviewer had been refused the permission and asked the lead to do it; the

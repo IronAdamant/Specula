@@ -203,8 +203,55 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   to experiment on both"): as written its two wings rise up and outward with the spine coming down
   between them, as the hip bones do; as converted they drooped into a dome. A model that did not
   take the pictures confirmed it. There the mend shows what the recipes meant.
-- **A known fault, not mended yet: a strongly stretched node can be cut off by the box it is
-  meshed in** (found 2026-11-20, by holding the modeller against
+- **Mended (2026-11-20): a strongly stretched node was cut off by the box it is meshed in.**
+  The fault as found is below. **The box a sculpt is meshed in now holds what its field can
+  reach** (`reach` in `sdf.rs`): each node is asked for the level of its field its caller
+  needs, from the root's 0 down, and answers with a box and a ball holding every point where
+  its field is at most that level. Its distance modifiers are undone first (noise by its
+  amount, a shell by half, a swelling, and the scale times the least stretch, which is how the
+  stretch's short reading enters); a stretch turns the ball into an ellipsoid (a ball of its
+  least radius and a box of the rest); a smooth union asks its children for the level and its
+  greatest dip (`min(n − 1, 4)` quarters of its width, DISTANCE_FIELDS 5.5), or, tighter where
+  only one part is near, for the level, and meets each child's dipped reach with another's at
+  the level and the join's width (two parts) or nine quarters of it (more: proved in the
+  code's comment); a meeting or a cut asks for the level itself. An ellipsoid's and a column's
+  fields read short far from them and are answered exactly for what they read (an ellipsoid:
+  the greatest of a quadratic's roots; a column: its halves times `1 + level / cap`). A twist
+  or a bend keeps a point's distance from its axis and turns it by at most its rate times the
+  coordinate it goes by. **The mesher takes the old box and moves a side out only where this
+  reaches more than a quarter of a cell past it** (the grid samples half a cell past its box,
+  so nothing within a quarter is lost): every mesh that was right is the same mesh.
+  - **How it is held** (`sdf.rs` tests): each case below reaches its whole surface, closed
+    (two needles joined, a needle rounded, shelled, and a group's swelling over one, two groups
+    of four needles, a flat box twisted, a box bent; each failed before); the recipe of two
+    needles spans x ±1.25 within a cell; **a truth of its own**: 240 trees drawn from a fixed
+    sequence (every primitive; unions, near-unions, meetings and cuts, sharp and smooth,
+    nested; stretch, scale, turn, mirror, swelling, shell, noise, twist, bend, elongation,
+    repetition), the field sampled outside the box on its faces pushed out five ways and at
+    random, nowhere at or below nothing (the old box: 18 of them escaped, the worst by 19 m, a
+    twist); the pruning, whole tree against pruned, bit for bit, over 120 drawn trees and the
+    investigation's stretched cases, a block's tree pruned again as the mesher does; and **no
+    box moves** for any sculpt in the repository's recipes, nor for figures at both sexes'
+    limits of stature, three builds with traits at ±3 and five shapings (default melting with
+    the limbs at their limits, none, twice the default), each part at its own resolution.
+  - **What it costs**: the mended cases are meshed in a larger box at the same resolution, so
+    with coarser cells and less work (two needles at resolution 120: 21.4 M work units to
+    17.8 M; two groups of four: 145 M to 61 M; a rounded needle 6.7 M to 3.9 M); nothing in the
+    repository costs anything more.
+  - **Settled on the way**: the old box did not hold a twisted or bent node either (a flat box
+    twisted swings its corners past the box about it; the old box was a cube of its largest
+    coordinate); now it does. A rotated meeting of several boxes joined smoothly does not
+    escape the old box (a meeting's field is never below any operand's, and the box was widened
+    by a cube of the join's width, not a ball): run, 2 to 6 copies, widths 0.1 to 0.3.
+  - **Still a limit**: the reach is a bound, sometimes more generous than the solid. A figure
+    melted four to eight times more than the default (`smooth` 0.1 to 0.2) with its arms out
+    gets a whole-figure box up to a third deeper than before (its limbs' columns read short
+    across their broad side, and a join that wide is answered for where it could reach, not
+    where it does), so its cells are a few percent coarser; no solid was found outside either
+    box. A sliver thinner than the sampling of the truth test could pass it unseen. The union's
+    tighter answer asks every child three times: past 16,384 asks in a tree it asks once.
+
+- **The fault as found** (2026-11-20, by holding the modeller against
   [DISTANCE_FIELDS.md](DISTANCE_FIELDS.md): each case meshed inside the automatic box and inside
   explicit `bounds` wide enough for the whole surface). A stretched node's field reads short of
   the distance by the ratio of its least stretch to its greatest, and the box is widened as if
@@ -217,20 +264,66 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     than the join's width past their tips. Two ten-to-one needles joined at `smooth` 0.1 lose
     0.12 m (the model is 2.24 m long where the surface is 2.50 m); twenty to one, 0.34 m.
     Nested smooth groups of such parts lose more (two groups of four: 0.51 m).
-  - **The mesh is still closed** (the box's border caps it flat), so no check catches it.
-  - **Until it is mended: give such a recipe explicit `bounds`**, or make the long part without
-    `stretch` (a capsule, a `round_cone`, a `chain`, an `ellipsoid`).
+  - **The mesh was still closed** (the box's border caps it flat), so no check caught it.
   - Not affected: no recipe in this repository stretches a sculpt node this way (each was
     sampled outside its box, with the figure's parts: nothing escapes). Thin edges made by an
     `intersection` or a `difference` joined smoothly lose nothing (a meeting's field is at least
     that of the child that sets its box), and neither do nested smooth groups of unstretched
     parts (each level's box is widened again). The mesher's pruning is not affected (whole tree
     against pruned at 72,000 points a case: no difference).
-  - Not settled: `twist` and `bend` were not tried; an `ellipsoid` and a `column` also read
-    short far away and did not escape in the cases tried, with no proof that they cannot; and,
-    found on the way and not investigated, **two crescents joined smoothly meshed open**, and
-    thin shells and tips left one to four edges shared by other than two triangles, which the
-    investigator put down to features thinner than a cell.
+  - Not settled then, settled since (above): `twist` and `bend`; an `ellipsoid` and a
+    `column` reading short far away.
+  - **Its review said not to merge the mend** (2026-11-20, by a model that wrote none of it).
+    It found no point of any solid outside the new box (150 drawn trees of every primitive
+    and modifier, millimetres to kilometres, searched by the field's own bound; 300
+    stretched joins meshed twice; the ellipsoid's reach never short against a search over
+    directions) and agreed with each rule's reasoning. What it refused it for: **the new
+    box also grows where the old one cut nothing off, so ordinary sculpts with no stretch,
+    twist or bend change mesh**, and "every mesh that was right is the same mesh" above is
+    false. Of 300 drawn trees with none of those, 29 changed (58 of 600 meshes at
+    resolutions 24 and 64); of 36 boxes that grew at 64, 32 were meshed again in a much
+    larger box and none had a vertex past the old one. The box grew by up to 13 cells and
+    39% in its longest side, so those cells are up to 39% coarser. The smallest case: five
+    balls of radius 0.2 in a row, 0.3 apart, joined at `smooth` 0.15 and turned by
+    `[30, 40, 50]`. The repository's seven sculpts are unchanged, which is all the test of
+    boxes held. The causes, by its reading: a smooth union's reach is a box with no ball,
+    so the join's dip becomes a cube that a turn on the group then inflates; and a
+    column's reach grows the larger half of a pair of sections by the level over the
+    smaller. Also: two caps no test holds (16 notes a build; 16,384 asks a tree, a budget
+    that a chain of two-child smooth unions 16 deep already spends); and at `smooth` 0.1
+    and 0.2 two builds of the figure's `body` change too, where only the whole figure was
+    named. **A fresh agent is mending it.**
+- **A part thinner than a cell meshes with edges that four triangles share** (looked into on
+  2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
+  It is not the join and not the box: **one crescent** (`{"op": "difference", "of": [{"op":
+  "sphere", "radius": 0.5}, {"op": "sphere", "radius": 0.5, "at": [0.05, 0, 0]}]}`) has 436
+  such edges at the default resolution of 48 and 312 to 688 at every resolution from 24 to
+  120; a sphere with `shell` 0.01 has 168 to 12,312. **The cause, in the mesher**: dual
+  contouring puts one vertex in each cell the surface crosses and a quad across each grid edge
+  whose ends differ in sign. Where a sheet is thinner than a cell, a face of the grid can have
+  its four corners inside, outside, inside, outside in turn; all four of its edges cross, and
+  their four quads share the one mesh edge between the two cells either side of that face. The
+  mesh is closed (two of the quads run one way, two the other), so the modeller's own checks
+  passed it, and it is not a surface there: `open_edge_count` counts each such edge twice, a
+  level of detail keeps no volume for that part, and the studio's form facts read it as
+  `tangled_edge_m`. **Most sculpts in the repository have a few** (one to eighteen a part:
+  `grave_rock`, `statue_angel`, `statue_mourner`, `runestone_t3`, `skeleton_warrior_t3`,
+  `tree_t3`); their meshes are unchanged.
+  - **What is mended: it is said, and where.** The mesher counts the edges more than two
+    triangles share and the box round them (`SdfStats::thin_edges`, `thin_at`); the build's
+    report gives them for the sculpt (`thin_edges`, `thin_at`), and the model's `notes` say it
+    in a sentence with the part, the box, the cell and what to do (raise `resolution`, or
+    thicken it). Before, nothing was said anywhere an agent looks after `model_build`.
+  - **What is not mended: meshing each sheet on its own vertices.** The mend is manifold dual
+    contouring, done face by face: in each cell, the crossing edges of the grid are grouped
+    into the sheets that pass through the cell, two crossings on a face of the cell belong to
+    one sheet, and on a face with four the pairing is decided by the face alone (the sign of
+    the mean of its four corners, or of the field at its middle), so that the two cells either
+    side of it agree; each group gets its own vertex (its own QEF), and each quad takes, in
+    each of its four cells, the vertex of the group its grid edge belongs to. Every mesh edge
+    is then shared by exactly two quads. About a day's work with its tests, and it changes the
+    meshes of every sculpt above that has such edges, so their pinned hashes move and the
+    approved props would be looked at again: not started, and the owner's to order.
 - **Roundness as one number** (M6 part 4, 2026-11-18): `roundness`, 0 to 1, on a `box` and a
   `cylinder` here, and on a `rect` outline (the profile of an extrusion, a loft or a sweep). 0 is the
   hard shape, 1 its fully round form (the ellipsoid as wide, as tall and as deep; the ellipse), and
@@ -547,6 +640,43 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
       dearest by count, both reviews' cases (the plank past its face, the cube under 40 and
       120 unions) against a plain cut in the same run, with each one's powers a thousand
       units.
+    **A tenth** (2026-11-20, of those mends, against a bracket of the reviewer's own found by
+    halving alone) **said not to merge them, for one false sentence and rules no default test
+    holds; the field was sound in every sample it drew.** Until they are mended the warning
+    stands: do not give `roundness` to a shape that is thin along one axis.
+    1. **"The sure way cannot fail to arrive" is false.** It can reach its cap of 64 steps
+       and return where it stands. Half sizes 0.05 by 5e-10 by 0.0425 at a power of 2 (the
+       reviewer's every case was at that power), sampled exactly at the rim: the field is two parts in a thousand short of the
+       distance (short by less than what rounding the coordinates can move it). One sample
+       in 136,680 of the reviewer's sweep hit the cap, all of them on a sheet a
+       hundred-millionth as thick as long. Nothing makes the answer at the cap a bound: with
+       the cap lowered to 12, answers come out up to 35% over the distance. The likely
+       cause: the lower bound is lowered to a thousandth of itself near the surface, the
+       bracket is then some 46 natural logarithms wide, and nothing keeps the halvings it
+       needs, with Newton's steps between them, under 64.
+    2. **The cap is held by no default test** (lowered to 12, every default test and the
+       ignored full bracket test pass; only the ignored full step scan fails).
+    3. **The arrival rule's second condition is held by nothing** (the next step on `mu`
+       under a ten-millionth of it: dropped, every test passes, default and ignored, and so
+       do the reviewer's 124,000 samples and 2.77 million scanned for a step). Either it is
+       not needed, and it is what costs 1.4 to 1.7 powers a sample, or the rod it was said
+       to mend is in no test.
+    4. *Minor:* two more rules held by no test (the sure way's own lower bound made sure;
+       the first steps' square roots counted). And both solves end with the greater of
+       their answer and a lower bound worked out in single precision that is not made sure,
+       so the field can pass the distance by about a rounding of the coordinates (seen:
+       0.08 of what rounding allows).
+    Found sound: 124,143 samples outside 66 shapes (thin on one axis and on two, boxes and
+    cylinders, a twentieth of a millimetre to five kilometres, roundness 0.01 to 1, on faces,
+    rims and corners, a hair either side of each face, denormal and negative-zero
+    coordinates, a thousand-millionth of the thickness to a thousand sizes out), none short
+    or over past rounding; 12,537 inside, none said outside; no step in 2.77 million
+    samples; no power uncounted and none past the ceiling; the charge bound held in every
+    arrangement that built (cuts, smooth and `near` groups of twelve, a smooth rounded
+    cutter, colours, twist with bend and displacement, stretch with scale, a hundred nested
+    unions); the old pruning against the new on 273 drawn trees, the same to the bit; of 21
+    ordinary recipes at resolutions 32 to 128 the only new refusal is the one the author
+    named.
   - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
     own depth and the distance behind up to three touching planes, each never less than the
     depth, and never more than it by more than the hard shape's corner is from the rounded

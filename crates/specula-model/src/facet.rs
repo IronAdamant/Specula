@@ -142,25 +142,148 @@ pub struct Recount {
     kind: Again,
     /// The linear maps its copies were put through (the identity for a similarity's).
     maps: Vec<M3>,
+    /// What bounds the build's work at another count ([`Spent`]).
+    work: Option<WorkIn>,
 }
 
 impl Recount {
     /// A shape whose turn is `per` over its count (as a wall's is as built, `per` 360°, and a
     /// capsule's ends', 90°), unmoved: for a record made by hand.
     pub fn even(per: f64) -> Recount {
-        Recount { kind: Again::Even(per), maps: vec![IDENTITY] }
+        Recount { kind: Again::Even(per), maps: vec![IDENTITY], work: None }
     }
 
     /// A sphere of `radius`, unmoved, measured face by face: for a record made by hand.
     pub fn sphere(radius: f64) -> Recount {
-        Recount { kind: Again::Sphere(radius), maps: vec![IDENTITY] }
+        Recount { kind: Again::Sphere(radius), maps: vec![IDENTITY], work: None }
     }
 
     /// A sculpt's primitive, whose turn at resolution `n` is `2·asin(k / n)`: for a record made
     /// by hand.
     pub fn cell(k: f64) -> Recount {
-        Recount { kind: Again::Cell(k), maps: vec![IDENTITY] }
+        Recount { kind: Again::Cell(k), maps: vec![IDENTITY], work: None }
     }
+}
+
+/// What bounds the build's work were this shape built with another count: `W(k)` of
+/// [`Spent`], from what the build spent with its count as it was.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct WorkIn {
+    n: u32,
+    /// Its count in the coarse far level at another count: halved (rounded up to even, never
+    /// below its fewest) for sides, segments and rings; as it is for subdivisions and a
+    /// sculpt's resolution (which a coarse build halves too: taken whole, an estimate there).
+    halves: bool,
+    least: u32,
+    grows: Grows,
+    alone: Option<(u32, u64)>,
+    made: u64,
+    /// The work of the operations on pieces holding its triangles, whole.
+    own: u64,
+    /// The model-wide charges its parts are in.
+    held: Held,
+    total: u64,
+    /// The simplification of the far levels a coarse rebuild stood in for, at its count.
+    lods: u128,
+    coarse: Coarse,
+}
+
+impl WorkIn {
+    /// Its triangles at `k`: as the build checks them (its builder's prediction), and what its
+    /// builder makes, at the least what it made (on the line through what it made as built and
+    /// alone at another count, rounded up; with no such line, what the prediction adds, which
+    /// bounds it; a sculpt's taken to go as the square of its resolution).
+    fn triangles(&self, k: u32) -> (u128, u128) {
+        let n = self.n;
+        let a = u128::from(self.made.max(1));
+        let (own, grown) = match (self.grows, self.alone) {
+            (Grows::Square, _) => {
+                let nn = u128::from(n.max(1)) * u128::from(n.max(1));
+                let g = (a * u128::from(k) * u128::from(k)).div_ceil(nn);
+                (g, g)
+            }
+            (g, Some((m, tm))) if m != n && self.made > 0 => {
+                let (a, tm) = (i128::from(self.made), i128::from(tm));
+                let rise = (a - tm) * (i128::from(k) - i128::from(n));
+                let run = i128::from(n) - i128::from(m);
+                (u128::from(g.at(k)), (a + up_div(rise, run)).max(0) as u128)
+            }
+            (g, _) => {
+                let p = u128::from(g.at(k));
+                (p, a + p.saturating_sub(u128::from(g.at(n))))
+            }
+        };
+        (own, grown.max(a))
+    }
+
+    /// `ρ(k)` of [`Spent`]: the most any count of the shape's own elements grows by from its
+    /// count to `k`, as a fraction (numerator, denominator). The greater of: its triangles'
+    /// growth (as the triangle limits bound it); and `k / n`, which bounds every count of a
+    /// ring's elements that goes as a line `αk + β` with its count with `β ≥ 0` (its vertices,
+    /// rims, seams and edges). A
+    /// sphere's elements all go as four to the subdivisions (`20·4ˢ` faces, `30·4ˢ` edges,
+    /// `10·4ˢ + 2` points); a sculpt's are taken to go as the cube of its resolution, which its
+    /// meshing's grid does at the most (an estimate: its most is one already).
+    fn growth(&self, k: u32) -> (u128, u128) {
+        let n = self.n.max(1);
+        let a = u128::from(self.made.max(1));
+        let grown = self.triangles(k).1;
+        let mut best = (grown, a);
+        let mut take = |p: u128, q: u128| {
+            if q > 0 && p * best.1 > best.0 * q {
+                best = (p, q);
+            }
+        };
+        let (k128, n128) = (u128::from(k.max(n)), u128::from(n));
+        match self.grows {
+            Grows::Square => take(k128 * k128 * k128, n128 * n128 * n128),
+            Grows::Fourfold => take(1u128 << (2 * k.saturating_sub(n).min(40)), 1),
+            // (Every ring's builder makes vertices that go as a line with its count with no
+            // part of them taken away, so `k/n` bounds their growth: held for each by
+            // `a_rings_vertices_grow_no_faster_than_its_count`.)
+            Grows::Linear { .. } => take(k128, n128),
+            // (A form's line is made over its points' growth as well as its triangles', and
+            // over every count up to `k`, so the triangles' growth taken above bounds every
+            // count of its elements, at `k` and at a coarse build's count under it:
+            // `recipe/form.rs`, `form_rounds`.)
+            Grows::Above { .. } => {}
+        }
+        best
+    }
+
+    /// The build's work at `k` in place of its count, at the most (`W(k)` of [`Spent`]).
+    fn at(&self, k: u32) -> u128 {
+        let (num, den) = self.growth(k);
+        let up = |x: u128| x.div_ceil(den);
+        let own = u128::from(self.own);
+        let h = &self.held;
+        let s = own + u128::from(h.cost);
+        let assembled = u128::from(crate::work::ASSEMBLE_VERTEX);
+        let rebuilt = own + assembled * u128::from(h.vertices);
+        // (The collider's points: at k at most three a triangle of the parts holding it, less
+        // what they had here.)
+        let points = u128::from(h.per_point) * (up(3 * u128::from(h.triangles) * num)).saturating_sub(u128::from(h.assembled));
+        // (A coarse rebuild of what holds it costs no more than the same built in full with its
+        // count as the coarse build takes it: its pieces grown by that count's growth, no less
+        // than as they are here. The rest of a coarse rebuild costs no more than here.)
+        let c = if self.halves { (k.div_ceil(2).div_ceil(2) * 2).min(k).max(self.least) } else { k };
+        let (cn, cd) = self.growth(c);
+        let at_c = |x: u128| x * cn.max(cd) / cd + 1;
+        let coarse = match self.coarse {
+            Coarse::Never => 0,
+            // (What it cost here, and what holds it at its coarse count, whole.)
+            Coarse::Built => at_c(rebuilt),
+            Coarse::Could { parts, vertices } | Coarse::Unknown { parts, vertices } => {
+                u128::from(parts).saturating_sub(own) + assembled * u128::from(vertices.saturating_sub(h.vertices)) + at_c(rebuilt)
+            }
+        };
+        u128::from(self.total) + up(s * (num - den)) + points + self.lods + coarse
+    }
+}
+
+/// `rise / run` rounded up (never less than the line).
+fn up_div(rise: i128, run: i128) -> i128 {
+    rise.div_euclid(run) + i128::from(run > 0 && rise.rem_euclid(run) != 0)
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -197,6 +320,14 @@ impl Round {
             Again::Cell(k) => (2.0 * dmath::asin_f64((k / f64::from(count.max(1))).min(1.0)).to_degrees(), None),
         };
         Some((t as f32, rim.map(|r| r as f32)))
+    }
+
+    /// The build's work at the most were it built with `count` in place of its count, in work
+    /// units ([`crate::work`]): what [`Round::most`] holds to the build's work limit (`W(k)`
+    /// of the modeller's bound: docs/design/FORM.md, "What was mended, fourth round"). `None`
+    /// for a record made by hand.
+    pub fn work_at(&self, count: u32) -> Option<u64> {
+        self.recount.work.as_ref().map(|w| u64::try_from(w.at(count)).unwrap_or(u64::MAX))
     }
 
     /// The greater of the two turns [`Round::turns_at`] answers.
@@ -369,6 +500,9 @@ pub(crate) struct Rec {
     pub share_max: u64,
     /// Why its most count can only be estimated.
     pub estimate: Option<&'static str>,
+    /// The work charged to the operations on pieces its triangles were in, whole (each such
+    /// charge is by the piece's vertices or triangles, of which its own are a share).
+    pub work: u64,
 }
 
 /// Why a count's greatest that builds is estimated: a sculpt's triangles at another resolution
@@ -381,6 +515,90 @@ pub(crate) const BOOLEAN_ESTIMATE: &str = "it passes through a boolean, whose tr
 pub(crate) const PART_LIMIT: &str = "the triangles one part may have";
 pub(crate) const MODEL_LIMIT: &str = "the triangles the model may have";
 pub(crate) const BUDGET_LIMIT: &str = "the recipe's budget.max_triangles";
+pub(crate) const WORK_LIMIT: &str = "the build's work limit (1,500 million units)";
+/// Why the most is an estimate where the work its far level costs at another count is not
+/// known.
+pub(crate) const COARSE_ESTIMATE: &str =
+    "at another count its far level may be rebuilt coarse, and what a boolean, a sculpt or a generator costs there is known only once it is built (taken to cost what the parts did)";
+
+/// The build's work, as [`Rec::most_count`] holds a count to the build's work limit
+/// ([`crate::work::MAX_BUILD`]). Each charge of the build is by the vertices or the triangles
+/// of what it works on (a piece's, the model's parts', the finest level's), or does not depend
+/// on a round shape's count at all (a texture's bake, a boolean, a sculpt or a generator the
+/// shape is not in). So with `ρ(k)` the most any count of the shape's own elements grows by
+/// from its count `n` to `k`, a charge whose elements include the shape's costs at `k` at most
+/// `ρ(k)` times what it cost at `n` (the rest of what it works on does not change), and
+///
+/// `W(k) ≤ W(n) + (ρ(k) − 1)·S + P(k)`,
+///
+/// `S` the charges at `n` whose elements include the shape's (every level's simplification
+/// counted, charged or not), `P(k)` what may be charged at `k` and was not at `n`: a far level
+/// simplified where a coarse rebuild stood in, and a coarse rebuild itself.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Spent {
+    /// All the work of the build, its textures' bakes included.
+    pub total: u64,
+    /// The far levels the recipe asks for, and how many of them were charged no
+    /// simplification (a coarse rebuild stood in).
+    pub levels: u64,
+    pub unsimplified: u64,
+    /// The finest level's triangles, all parts.
+    pub triangles: u64,
+    /// Each built part in order, as assembled and simplified.
+    pub parts: Vec<PartSpent>,
+    /// The recipe's paint strokes, and the work a hull or box point costs the collider.
+    pub strokes: u64,
+    pub per_point: u64,
+    pub coarse: Coarse,
+}
+
+/// One built part's charges' elements.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PartSpent {
+    pub triangles: u64,
+    pub vertices: u64,
+    /// Its vertices once assembled (split where its faces turn past its smooth angle, and at
+    /// its texture's seams): the collider's points.
+    pub assembled: u64,
+    /// Whether paint strokes reach it (an untextured part).
+    pub painted: bool,
+}
+
+/// The model-wide charges a round shape's elements are in: those of the parts holding its
+/// triangles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Held {
+    /// Their assembly, paint and every level's simplification (charges by those parts'
+    /// vertices and triangles, which grow with the shape's at most as its own do).
+    pub cost: u64,
+    pub vertices: u64,
+    pub triangles: u64,
+    /// Their vertices once assembled, and what the collider charges a point. An assembled
+    /// part's vertices are split where its faces turn past its smooth angle, which a count
+    /// moves either way (a turn at the angle itself splits by the rounding): at another count
+    /// they are taken at their most, a vertex for every corner of every triangle.
+    pub assembled: u64,
+    pub per_point: u64,
+}
+
+/// The coarse far level ([`crate::recipe`]'s rebuild) as it stood at the count built.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Coarse {
+    /// No far levels: never rebuilt.
+    #[default]
+    Never,
+    /// Rebuilt whole: its cost at another count is its cost here and its share grown.
+    Built,
+    /// Not rebuilt, and nothing procedural in the build: at another count it may be, at no
+    /// more than the parts and their assembly cost here, with what holds the shape at its
+    /// coarse count (a coarse build halves counts and subdivides and displaces nothing).
+    /// `parts`: the work the parts took; `vertices`: all the parts' vertices.
+    Could { parts: u64, vertices: u64 },
+    /// Not rebuilt whole (not at all, with a boolean, a sculpt or a generator somewhere; or
+    /// stopped part way): what it costs at another count is not known. Taken as
+    /// [`Coarse::Could`] would, and the most is an estimate.
+    Unknown { parts: u64, vertices: u64 },
+}
 
 /// What an operation did to the triangles of a shape, for the round shapes among them.
 pub(crate) enum Moved {
@@ -531,40 +749,21 @@ impl Rec {
     /// the shape's own triangles grow: by no more than the prediction grows, which bounds what
     /// is built), the model's triangles at their greatest since it was made, and the recipe's
     /// budget (`budget`: its limit and the finished model's triangles).
-    fn most_count(&self, peak: u64, budget: Option<(u64, u64)>) -> (u32, &'static str) {
+    ///
+    /// And the build's work limit, by [`Spent`]'s inequality: `held` is what the model-wide
+    /// charges cost that the shape's elements are in (the parts holding its triangles: their
+    /// assembly, paint, collider points and every level's simplification) and those parts'
+    /// vertices.
+    fn most_count(&self, peak: u64, budget: Option<(u64, u64)>, work: &WorkIn) -> (u32, &'static str) {
         let n = self.note.count_value;
         let a = u128::from(self.made.max(1));
-        let p_n = u128::from(self.note.grows.at(n));
         let part = crate::recipe::MAX_PART_TRIANGLES as u128;
         let model = crate::recipe::MAX_MODEL_TRIANGLES as u128;
         let before = u128::from(self.note.total_before);
         let share = u128::from(self.share_max.max(self.made));
         let model_room = model.saturating_sub(u128::from(peak));
         for k in n.saturating_add(1)..=self.note.most {
-            // (What it would have at k: its own triangles as the build checks them (its
-            // prediction), and what its builder makes: on the line through what it made as
-            // built and alone at another count; with no such line, what the prediction adds,
-            // which bounds it.)
-            let (own, grown) = match (self.note.grows, self.note.alone) {
-                (Grows::Square, _) => {
-                    let nn = u128::from(n.max(1)) * u128::from(n.max(1));
-                    let g = (a * u128::from(k) * u128::from(k)).div_ceil(nn);
-                    (g, g)
-                }
-                (g, Some((m, tm))) if m != n && self.made > 0 => {
-                    let (a, tm) = (i128::from(self.made), i128::from(tm));
-                    let rise = (a - tm) * (i128::from(k) - i128::from(n));
-                    let run = i128::from(n) - i128::from(m);
-                    // (Rounded up: never less than the line.)
-                    let along = rise.div_euclid(run) + i128::from(run > 0 && rise.rem_euclid(run) != 0);
-                    (u128::from(g.at(k)), (a + along).max(0) as u128)
-                }
-                (g, _) => {
-                    let p = u128::from(g.at(k));
-                    (p, a + p.saturating_sub(p_n))
-                }
-            };
-            let grown = grown.max(a);
+            let (own, grown) = work.triangles(k);
             let more = grown - a;
             let why = if own > part {
                 Some(PART_LIMIT)
@@ -574,6 +773,8 @@ impl Rec {
                 self.tight.map(|t| t.2)
             } else if budget.is_some_and(|(limit, has)| share * more > u128::from(limit.saturating_sub(has)) * a) {
                 Some(BUDGET_LIMIT)
+            } else if work.at(k) > u128::from(crate::work::MAX_BUILD) {
+                Some(WORK_LIMIT)
             } else {
                 None
             };
@@ -584,8 +785,26 @@ impl Rec {
         (self.note.most.max(n), "its range")
     }
 
+    /// What bounds the build's work at another count ([`Spent`]): `held` is the model-wide
+    /// charges its elements are in.
+    fn work_in(&self, spent: &Spent, held: Held) -> WorkIn {
+        WorkIn {
+            n: self.note.count_value,
+            halves: matches!(self.note.count, "sides" | "segments" | "rings"),
+            least: self.note.least,
+            grows: self.note.grows,
+            alone: self.note.alone,
+            made: self.made,
+            own: self.work,
+            held,
+            total: spent.total,
+            lods: u128::from(spent.unsimplified) * u128::from(crate::work::SIMPLIFY_TRIANGLE) * u128::from(spent.triangles),
+            coarse: spent.coarse,
+        }
+    }
+
     /// What it is in the finished model.
-    fn measure(&self, path: String, peak: u64, budget: Option<(u64, u64)>) -> Round {
+    fn measure(&self, path: String, peak: u64, budget: Option<(u64, u64)>, spent: &Spent, held: Held) -> Round {
         let n = &self.note;
         // (As built: a ring's and a sphere's faces measured one by one; any other's from its
         // note.)
@@ -598,7 +817,11 @@ impl Rec {
             (None, "sphere") => sphere(&IDENTITY),
             _ => Under { faces: Seen { turn: n.turn_deg, radius: n.radius, sag: sag_of(n.radius, n.turn_deg) }, far: n.radius, rim: None },
         };
-        let (most, most_by) = self.most_count(peak, budget);
+        let work = self.work_in(spent, held);
+        let (most, most_by) = self.most_count(peak, budget, &work);
+        // (Where its far level's cost at another count is not known, the work it is held to is
+        // estimated: said only where that is what may bind, past the count built.)
+        let estimate = self.estimate.or_else(|| matches!(spent.coarse, Coarse::Unknown { .. }).then_some(COARSE_ESTIMATE).filter(|_| most > n.count_value || most_by == WORK_LIMIT));
         let rim = |s: Seen| Rim { turn_deg: s.turn as f32, radius_m: s.radius as f32, sag: s.sag as f32 };
         let as_built = |unmeasured: Option<&'static str>| Round {
             path: path.clone(),
@@ -613,10 +836,10 @@ impl Rec {
             least: n.least,
             most,
             most_by,
-            most_estimated: self.estimate,
+            most_estimated: estimate,
             displaced_m: self.displaced as f32,
             unmeasured,
-            recount: Recount::default(),
+            recount: Recount { work: Some(work.clone()), ..Recount::default() },
         };
         if self.unknown.is_some() {
             return as_built(self.unknown);
@@ -662,7 +885,7 @@ impl Rec {
             (None, _, "sides") if !uneven => Again::Even(360.0),
             _ => Again::No,
         };
-        let recount = Recount { kind, maps };
+        let recount = Recount { kind, maps, work: Some(work.clone()) };
         Round {
             turn_deg: all.faces.turn as f32,
             radius_m: all.far as f32,
@@ -1032,9 +1255,33 @@ pub(crate) fn slots_in(owners: &[u32]) -> Vec<u32> {
 /// `totals` is the build's log of the model's triangles at each check (a record's most count
 /// holds the greatest since it was made), `budget` the recipe's limit on the finished model's
 /// triangles with what it has.
-pub(crate) fn finish(recs: &[Rec], paths: &[String], shapes: &[&Shape], totals: &[u64], budget: Option<(u64, u64)>) -> (Vec<Round>, usize, usize) {
+///
+/// `spent`: the build's work ([`Spent`]), with its parts in the order of `shapes`.
+pub(crate) fn finish(recs: &[Rec], paths: &[String], shapes: &[&Shape], totals: &[u64], budget: Option<(u64, u64)>, spent: &Spent) -> (Vec<Round>, usize, usize) {
     if recs.is_empty() {
         return (Vec::new(), 0, 0);
+    }
+    // (Which parts hold each slot's triangles, and what the model-wide charges cost for them.)
+    let top = recs.iter().map(|r| r.slot as usize + 1).max().unwrap_or(0);
+    let mut held = vec![Held::default(); top];
+    let simplify = spent.levels.saturating_mul(crate::work::SIMPLIFY_TRIANGLE);
+    for (s, p) in shapes.iter().zip(&spent.parts) {
+        let cost = p
+            .vertices
+            .saturating_mul(crate::work::ASSEMBLE_VERTEX)
+            .saturating_add(p.triangles.saturating_mul(simplify))
+            .saturating_add(if p.painted { p.vertices.saturating_mul(spent.strokes).saturating_mul(crate::work::PAINT_VERTEX) } else { 0 });
+        for slot in slots_in(&s.owners) {
+            if let Some(h) = held.get_mut(slot as usize) {
+                h.cost = h.cost.saturating_add(cost);
+                h.vertices = h.vertices.saturating_add(p.vertices);
+                h.triangles = h.triangles.saturating_add(p.triangles);
+                h.assembled = h.assembled.saturating_add(p.assembled);
+            }
+        }
+    }
+    for h in &mut held {
+        h.per_point = spent.per_point;
     }
     // (The greatest of the log from each place on.)
     let mut peak_from = vec![0u64; totals.len() + 1];
@@ -1061,7 +1308,7 @@ pub(crate) fn finish(recs: &[Rec], paths: &[String], shapes: &[&Shape], totals: 
                 Some(i) => format!("{base}.tree#{i}"),
                 None => base,
             };
-            r.measure(path, peak_from[r.since.min(totals.len())], budget)
+            r.measure(path, peak_from[r.since.min(totals.len())], budget, spent, held.get(r.slot as usize).copied().unwrap_or_default())
         })
         .collect();
     let total = all.len();
@@ -1112,6 +1359,69 @@ mod tests {
 
     fn scale(v: [f64; 3]) -> M3 {
         [[v[0], 0.0, 0.0], [0.0, v[1], 0.0], [0.0, 0.0, v[2]]]
+    }
+
+    /// `ρ(k)` is never less than the counts' ratio for a ring (whose vertices may grow faster
+    /// than its triangles where its triangles have a fixed part, as a capsule's ends' do) nor
+    /// than `4^(k−n)` for a sphere; and the bound at the count built is the work spent there.
+    #[test]
+    fn the_growth_takes_the_counts_ratio() {
+        let w = |grows, alone, made| WorkIn { n: 10, halves: true, least: 3, grows, alone, made, own: 1000, held: Held::default(), total: 5000, lods: 0, coarse: Coarse::Never };
+        // (Triangles 2k + 100: from 10 to 20 they grow by 140/120, the count by 2.)
+        let ring = w(Grows::Linear { per: 2, fixed: 100 }, Some((3, 106)), 120);
+        let (p, q) = ring.growth(20);
+        assert!(p * 10 >= q * 20, "{p}/{q}");
+        assert_eq!(ring.at(10), 5000);
+        assert_eq!(ring.at(20), 5000 + (1000 * (p - q)).div_ceil(q));
+        let sphere = w(Grows::Fourfold, None, 20 << 20);
+        let (p, q) = WorkIn { n: 1, ..sphere }.growth(3);
+        assert!(p >= 16 * q, "{p}/{q}");
+    }
+
+    /// **What the work bound's `ρ(k)` rests on for a ring** ([`WorkIn::growth`]): every ring's
+    /// builder makes vertices that grow from one count to another by no more than the greater
+    /// of its triangles' growth and the counts' ratio, as built, once subdivided (whose new
+    /// points are its edges) and once welded; so every charge by a count of its elements
+    /// grows by no more than `ρ(k)`. Held at every pair of counts in a sweep of each kind.
+    #[test]
+    fn a_rings_vertices_grow_no_faster_than_its_count() {
+        let prof = [[0.0, 0.0], [0.5, 0.0], [0.42, 0.15], [0.2, 0.5], [0.06, 1.0], [0.0, 1.05]];
+        let open = [[0.5, 0.0], [0.4, 0.5], [0.45, 1.0]];
+        type Kind = (&'static str, Box<dyn Fn(u32) -> Shape>, u32, u32);
+        let kinds: Vec<Kind> = vec![
+            ("cylinder", Box::new(|k| Shape::cylinder(0.5, 0.5, 1.0, k, 0.0).unwrap()), 3, 60),
+            ("cone", Box::new(|k| Shape::cylinder(0.5, 0.0, 1.0, k, 0.0).unwrap()), 3, 60),
+            ("bevelled cylinder", Box::new(|k| Shape::cylinder(0.5, 0.3, 1.0, k, 0.05).unwrap()), 3, 60),
+            ("torus segments", Box::new(|k| Shape::torus(0.6, 0.2, k, 7)), 3, 60),
+            ("torus sides", Box::new(|k| Shape::torus(0.6, 0.2, 9, k)), 3, 40),
+            ("capsule segments", Box::new(|k| Shape::capsule(0.3, 1.5, k, 3)), 3, 60),
+            ("capsule rings", Box::new(|k| Shape::capsule(0.3, 1.5, 9, k)), 1, 32),
+            ("lathe", Box::new(move |k| Shape::lathe(&prof, k, true)), 3, 60),
+            ("open lathe", Box::new(move |k| Shape::lathe(&open, k, false)), 3, 60),
+        ];
+        for (what, make, lo, hi) in kinds {
+            let sizes = |s: Shape| {
+                let plain = (s.triangle_count() as u128, s.positions.len() as u128);
+                let mut sub = s.clone();
+                sub.subdivide(1);
+                let mut welded = s.clone();
+                welded.weld(1e-4);
+                [plain, (sub.triangle_count() as u128, sub.positions.len() as u128), (welded.triangle_count() as u128, welded.positions.len() as u128)]
+            };
+            let all: Vec<[(u128, u128); 3]> = (lo..=hi).map(|k| sizes(make(k))).collect();
+            for n in lo..hi {
+                for k in n + 1..=hi {
+                    for form in 0..3 {
+                        let (tn, vn) = all[(n - lo) as usize][form];
+                        let (tk, vk) = all[(k - lo) as usize][form];
+                        // (V(k)/V(n) ≤ max(T(k)/T(n), k/n).)
+                        let by_tris = vk * tn <= vn * tk;
+                        let by_count = vk * u128::from(n) <= vn * u128::from(k);
+                        assert!(by_tris || by_count, "{what} ({}): {vn} vertices at {n}, {vk} at {k}; {tn} and {tk} triangles", ["as built", "subdivided", "welded"][form]);
+                    }
+                }
+            }
+        }
     }
 
     /// Under a similarity a ring is as built, scaled; under a scale that stretches one way

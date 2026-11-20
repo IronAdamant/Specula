@@ -346,3 +346,55 @@ fn a_forms_most_detail_builds() {
         }
     }
 }
+
+/// **A form's most detail builds, the build's work included** (`form_rounds` and
+/// `facet::Grows::Above`, held to the work bound of docs/design/FORM.md, "What was mended,
+/// fourth round"): forms with a texture, four far levels, copies and `ao` passes, where the
+/// work limit binds before a part's triangles do. Each record's most builds, and what the
+/// build spent there is within the bound the record gave for it; most of them say the work
+/// limit is what bound them.
+#[test]
+fn a_forms_most_detail_builds_within_the_work_limit() {
+    const WORK: &str = "the build's work limit (1,500 million units)";
+    let mut nodes = Vec::new();
+    for i in 0..8 {
+        nodes.push(format!(r#""n{i}": {{ "op": "noise", "kind": "fbm", "scale": {}, "octaves": 6 }}"#, 3 + i));
+    }
+    let mut last = "n0".to_string();
+    for i in 1..8 {
+        nodes.push(format!(r#""b{i}": {{ "op": "blend", "a": "{last}", "b": "n{i}", "mode": "multiply", "amount": 0.3 }}"#));
+        last = format!("b{i}");
+    }
+    nodes.push(format!(r#""albedo": {{ "op": "gradient_map", "in": "{last}", "stops": [[0, "pale"], [1, "pale"]] }}"#));
+    let tex = format!(r#"{{ "size": 256, "seed": 1, "nodes": {{ {} }}, "outputs": {{ "base_color": "albedo", "height": "{last}" }} }}"#, nodes.join(","));
+    let ao = std::iter::repeat_n(r#"{"op":"ao","amount":0.3}"#, 14).collect::<Vec<_>>().join(",");
+    let shapes: [(&str, u32); 5] = [
+        (r#"{"op":"form","form":"sphere","detail":{N}}"#, 40),
+        (r#"{"op":"form","form":"torus","detail":{N}}"#, 40),
+        (r#"{"op":"form","form":"capsule","detail":{N}}"#, 40),
+        (r#"{"op":"form","form":"circle","raise":{"as":"bevelled","thickness":0.2,"width":0.05,"round":true},"detail":{N}}"#, 20),
+        (r#"{"op":"form","form":"annulus","raise":{"as":"bevelled","thickness":0.2,"width":0.02,"round":true},"detail":{N}}"#, 20),
+    ];
+    let s = style();
+    let at = |shape: &str, copies: u32, n: u32| {
+        format!(
+            r#"{{ "name": "t", "lods": [0.5, 0.25, 0.12, 0.06], "smooth_angle": 0, "textures": {{ "skin": {tex} }}, "parts": [ {{ "name": "p", "material": "stone", "texture": "skin", "shape": {}, "ops": [{{"op":"array","count":{copies},"offset":[0,0,0]}},{ao}] }} ] }}"#,
+            shape.replace("{N}", &n.to_string())
+        )
+    };
+    let (mut by_work, mut records) = (0, 0);
+    for (shape, copies) in shapes {
+        let first = 8;
+        let m = build(&at(shape, copies, first), &BuildParams::new(&s)).unwrap_or_else(|e| panic!("{shape}: {e}"));
+        assert!(!m.extras.round.is_empty(), "{shape}: no record");
+        for r in &m.extras.round {
+            records += 1;
+            assert!(r.count == "detail" && r.most >= first, "{shape}: {r:?}");
+            by_work += usize::from(r.most_by == WORK);
+            let again = build(&at(shape, copies, r.most), &BuildParams::new(&s)).unwrap_or_else(|e| panic!("{shape}: told its most {} ({}) builds: {e}", r.most, r.most_by));
+            let bound = r.work_at(r.most).unwrap();
+            assert!(again.extras.work <= bound, "{shape}: at {} it spent {} over the bound {bound}", r.most, again.extras.work);
+        }
+    }
+    assert!(2 * by_work > records, "the work limit bound only {by_work} of {records} records");
+}

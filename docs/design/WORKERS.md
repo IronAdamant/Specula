@@ -140,10 +140,15 @@ trait StepJob {
   window, a pass is once a frame, which landed one render a frame (light review 4: a report took
   3.7 times as long at 20 frames a second); so while any queued job has a render on the GPU the
   window's serve wait also *pulses* (`Schedule::serve_with`): it runs `pump_steps` about every
-  millisecond, between calls, in whole-millisecond waits (no busy wait), only while what a pulse
-  costs lately fits before the frame's deadline, and not at all when no job has a render on the
-  GPU. The credit is the same: a pulse earns what the time since the last pump earns. Headless,
-  the loop already goes round at once while a step job is queued.
+  millisecond, between calls, in whole-millisecond waits (no busy wait), and not at all when no
+  job has a render on the GPU (or has just landed one and has more to do). A pulse starts only
+  when what a landing costs (the last landing's cost, kept apart from a look's and not forgotten
+  with time) fits before the frame's deadline, and none runs before a landing of the queued jobs
+  has been timed by the frame's own pump. When the window pulsed, the frame's own pump leaves
+  those jobs alone (`Schedule::frame_pump`): a render that lands after the window's last pulse is
+  landed at the next window's start, not in the frame's time. The credit is the same: a pulse
+  earns what the time since the last pump earns. Headless, the loop already goes round at once
+  while a step job is queued.
 - Past its caller's deadline a job answers `timed_out`; when its session closes it is dropped
   (answered `session_closed`).
 

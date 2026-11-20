@@ -513,7 +513,10 @@ the finest level's).
 of a torus's tube, a capsule's ends or a sculpt stretched unevenly; a sculpt's facets beyond
 its cell against its tightest curve (a node's twist, bend, displacement and repetition are not
 counted, and a primitive whose triangles were not asked within the record's limit is not
-seen); whether a shape is hidden inside another part; and a sculpt primitive past the 16,384
+seen); whether a shape, or any part of it, is hidden inside another part (a ring is held to
+its widest rim whether or not that rim can be seen: a cone whose base is sunk in a wider part
+is held to its rim all the same, and the fix's way out for such an asset is to exempt it by
+name in `[form.allow]`, which its words say); and a sculpt primitive past the 16,384
 triangles asked whose every asked triangle went to its neighbours.
 
 **Sepulcra again** (its 56 recipes, as before): 41 name something round, and in **39** (was 36)
@@ -891,6 +894,140 @@ says at the advice's work bound on a real recipe. Not checked: booleans and scul
 most, two round shapes that share a piece, an include with a budget of its own, the full
 run of 400 chains, clippy.
 
+#### What was mended, fourth round
+
+(2026-11-20, by a model that wrote none of it; each finding seen first with the reviewer's
+probes, each mend held by a test that fails on the code before it, and faults seeded back once
+each. Not reviewed yet.)
+
+1. **The most a count can be holds the build's work limit too** (`most_by`: "the build's work
+   limit (1,500 million units)", and the fix says "past it the build's work limit would be
+   exceeded"). Read where every unit is charged (`work.rs`, `recipe.rs`), a build's work is,
+   charge by charge:
+   - an operation on a piece (`ao`, `weld`, a displacement, a tint, a move: by the piece's
+     vertices; a copy and a subdivision: by the triangles they make and the vertices);
+   - the paint strokes (each the vertices of every untextured part), the assembly (every
+     part's vertices) and each far level's simplification (every part's triangles);
+   - the collider (its points: the finest level's vertices as assembled, split where faces
+     turn past the smooth angle and at a texture's seams);
+   - a coarse rebuild of the recipe, when a far level is one (the parts again with sides,
+     segments and rings halved, no subdivision or displacement, and their assembly);
+   - a boolean's, a sculpt's and a generator's own work, and a texture's bake, which is its
+     graph's alone and does not depend on the model.
+
+   With `n` the count built and `k` another, **`W(k) ≤ W(n) + (ρ(k) − 1)·S + P(k)`**, where
+   `ρ(k)` is the most any count of the shape's own elements grows by from `n` to `k` (the
+   greater of its triangles' growth as the triangle limits already bound it and `k/n`, which
+   bounds a ring's vertices, rims, seams and edges, each a line in its count with nothing
+   taken away; a sphere's are all `4^(k−n)`); `S` is every charge at `n` whose elements include the shape's:
+   each operation on a piece holding its triangles, whole, and the paint, assembly and every
+   far level's simplification of the parts holding them (charged at `n` or not); and `P(k)` is
+   what may be charged at `k` and was not: the collider's points of those parts at three a
+   triangle (the most there can be: how many a smooth angle splits moves either way with a
+   count, and a turn at the angle itself splits by the rounding), less what they had; a far
+   level's simplification where a coarse rebuild stood in at `n`; and the coarse rebuild,
+   taken as the rest of it as it cost at `n` (or, where it was not made at `n`, as the parts
+   and their assembly cost there) with what holds the shape at its coarse count grown whole.
+   Each charge is by a count of elements, its elements other than the shape's do not change
+   with its count, and a charge whose elements include the shape's grows by no more than
+   `ρ(k)` times; so the inequality holds as long as every count of the shape's elements a
+   charge sees grows by no more than `ρ(k)`: for every ring's builder, as built, subdivided and
+   welded, at every pair of counts of a sweep, by `a_rings_vertices_grow_no_faster_than_its_count`;
+   and against real builds by the drawn test below. **The most is the
+   greatest `k` with `W(k)` at most 1,500 million**, safe and low: on every kind where work
+   binds, the most said is 10% to 26% below the most that builds (a cylinder 132 against
+   157, a cone 116 against 156, a lathe 87 against 97, a torus's segments 77 against 93 and
+   its tube 28 against 33, a capsule's segments 75 against 92 and its ends 13 against 17, a
+   sphere 4 against 4), most of it the coarse rebuild, which may be made at another count.
+   **An estimate, and said** ("at another count its far level may be rebuilt coarse, and
+   what a boolean, a sculpt or a generator costs there is known only once it is built"):
+   where the recipe has far levels, no coarse rebuild was made whole at `n`, and a boolean, a
+   sculpt or a generator was built (its coarse cost is not known before it is made); and, as
+   before, a sculpt's resolution (its meshing's work is taken to grow as the cube of it) and a
+   shape through a boolean (its work taken to grow as the shape's do). The bound is kept with
+   each record (`Round::work_at`), and the build's own work is now in the model
+   (`ModelExtras::work`).
+
+   **Held** by `facet_work.rs`: `the_reviews_assets_are_told_counts_that_build` (the review's
+   lathe with a 512-pixel graph of two noises: told 82, which builds; with a 256-pixel graph of
+   ten noises: 73; with no texture, four far levels, hard shading and eight `ao`: 60; each
+   built at its most within its bound, and the fix followed builds and holds);
+   `every_kind_where_work_binds_is_told_counts_that_build` (the nine kinds stacked in one
+   place under fourteen `ao` and four far levels: the most by work, built, the fix followed
+   and built); and `the_work_bound_holds_on_drawn_recipes` (150 recipes from a fixed sequence,
+   every kind, with operations, far levels, colliders, small textures, paint and a second part
+   of a box, a column or a boolean mixed: at 443 counts from the one built to the most, every
+   count builds and its work is within the bound; the bound is at the median 1.12 times the
+   work and at the worst 1.96). Where the most is by work the test holds that it builds and
+   not that one more is refused: the bound is low on purpose (`how_low_the_work_bound_is`,
+   ignored, finds the most that builds by halving).
+2. **The three rules no test held are held**: `every_kind_is_told_only_counts_that_build` has
+   a row for the recipe's budget beside a second part, for the model's room after two more
+   parts and for a scatter's copies (the review's recipes); each builds at its most, is refused
+   one past it for the limit named, and the advice either side of what its most turns is
+   followed and built.
+3. **The slow test is cheap by what it builds**: each kind's row is under a budget that bites
+   at a few thousand triangles (each kind's growth through the budget's branch) and one
+   cylinder's copies hold the part's limit; the rows at a part's limit for every kind are
+   `every_kind_is_told_only_counts_that_build_at_a_parts_limit`, ignored. Counted in
+   triangles built: 1,378,436 before; 1,154,106 now, of which the nine kinds are 130,664
+   and the review's row at the model's room (131,072 triangles a build) 678,250. In a debug
+   build on a busy machine `facet_advice.rs` now runs in 32 s and `facet_work.rs` in 44 s
+   (most of it the builds at the work limit, about 1.5 s of one core each by the limit's
+   own calibration).
+4. **A rim that cannot be seen is held all the same**, said in "What it cannot know" above and
+   in the fix of a ring ("or if its rim is hidden (a ring is held to its widest rim whether or
+   not it can be seen, as a cone's base sunk in a wider part)").
+
+**Faults seeded back**, one at a time, each caught: the work limit's check taken out
+(`every_kind_where_work_binds_is_told_counts_that_build` and the review's assets: the most
+went back to the part's limit); the operations' work not charged to the shapes in their piece
+(all three of `facet_work.rs`); the collider's points held to the counts' growth and not to
+three a triangle (the drawn test: a torus of 12 sides at a smooth angle of 30° splits by the
+rounding, and spent 3,721,520 where that bound said 3,706,040); the texture's bake left out of
+the work at the count built (the drawn test and the review's textured lathe); the coarse
+rebuild that was not made at the count built taken as nothing (the drawn test: a recipe whose
+far level is rebuilt coarse at 7 and not at the count it was built with); `k/n` left out of
+`ρ` (`the_growth_takes_the_counts_ratio`: no recipe drawn needs it, since every ring's
+triangles grow at least as fast as its count does where its vertices grow faster, but the
+rule is the code's); the budget's branch, the model's room and a scatter's copies each taken
+out (`every_kind_is_told_only_counts_that_build`: the most went past the limit the row names).
+
+**What the review did not check, checked** (probes, release builds):
+
+- *A boolean and a sculpt at their most*, which the fix says are estimates: of 54 drawn (a
+  column cut by a box, a lathe joined to a box with far levels, a sculpt's ball, a sculpt's
+  ball and slab with far levels, each copied up to 60 times), 53 build at their most; one
+  sculpt (said 19) is refused for a part of 66,804 triangles, 2% over: its triangles grew
+  faster than the square of its resolution. That is what "estimated" says.
+- *Two round shapes that share a piece*: each count's most is with every other count as it
+  is. A torus copied eight times builds at 512 segments with its 8 sides, and at 64 sides
+  with its 12 segments, and not at both. The fix names one count at a time, and now says so
+  ("it builds with every other count as it is now"); the check on the rebuilt asset names
+  the next. Two columns in two parts, each told 82 by its own part's limit, build together.
+- *An include with a budget of its own*: an included recipe's budget is not checked by the
+  build (a gem of 100 triangles' budget, included, builds at 156), so it holds nothing and
+  the most is its range; as the build, so the advice.
+- *The full run of 400 chains* (`facet_truth`, ignored): passes (release, 2.7 s).
+- *What the check says at the advice's work bound*: on no recipe could the bound be reached.
+  The search stops at the most a part can be built with, and a part's triangles bound its
+  maps times its count times its profile: the review's heavy torus (21 maps, a count that
+  builds to 512) at limits of 0.05° to 0.9° measures 53,760 faces and rim corners and says
+  "cannot hold the limit: at its most (512) it still turns 2.5°", and Sepulcra's most is
+  54,400 against the bound of 8 million. What it says past the bound ("could not be measured
+  here, so no count is named") is held by the check's unit test.
+
+**Sepulcra again** (its 56 recipes): as before. 41 name something round, 39 are held over 20°,
+none is not measured, the median is 90.00°, 12 are held by their rims (the same twelve), and
+the check fails 39 at 20°, 36 at 45° and 39 at 5°. None of them is near the work limit.
+
+**Limits that remain:** the most by work is low by design, by 10% to 26% where work binds,
+mostly for a coarse far level that may be rebuilt at another count; it is an estimate where a
+recipe with far levels, a boolean, a sculpt or a generator made no coarse rebuild at its
+count; the collider's points are taken at three a triangle; a sculpt's resolution and a
+shape through a boolean remain estimates, and a sculpt can be 2% past its part's limit at its
+most; two counts of one piece are each held with the other as it is.
+
 **Not built:** pieces that pass through each other by
 accident; a check for the figure's seams between its separately meshed parts (they share no edge, so
 `seam_m` does not see them: the form views do).
@@ -956,15 +1093,16 @@ and **checked only when a style asks** for one.
   shapes through a quarter turn, every degree, plain, mirrored and shifted by part of a pixel
   (360 masks each), and holds what is said here (every fifteen degrees in the default run; every
   degree in its ignored test, and `table` writes the numbers); among them every probe shape of
-  the fourth and fifth reviews. Beside them, a held-out corpus of 103 common assets says how
-  often it reads as a person would (below, "Its sixth version"). What the families read, by
-  the least and most at every degree (the sixth version):
+  the fourth and fifth reviews. Beside them, a corpus of 162 common assets (the sixth version's
+  103 and its sixth review's 59) and forty more held back and read once say how often it reads
+  as a person would (below, "Its seventh version"). What the families read, by the least and
+  most at every degree (the sixth version; what the seventh moved is in its section below):
   - **Round:** a disc, an egg, an oval of 2 or 3 to 1 (87% at the least), an octagon,
     capsules, a box rounded by a third of its shorter side or more (86% to 100%), a cloud, a
     disc with a slot (100%) or a notch (60%), a balloon on a string, a lollipop, a snowman with
     stick arms or thick ones, a disc with one to four whiskers, an apple with a stalk 6 to 16
     pixels wide and a disc with a whisker of 30 pixels (97% to 100%), a figure of a ball head,
-    a box body and capsule limbs (70% to 81%; with diagonal arms 6 to 24 pixels wide, 82% to
+    a box body and capsule limbs (70% to 81%; with diagonal arms 6 to 24 pixels wide, 81% to
     100%), in a T-pose (100%), with a round body (100%), a sheep (99%), a flask and a vase
     (80%), a tree of a ball on a trunk, a heart (69%), a disc with ten smooth lobes (98%), a
     star with rounded tips, lenses with tips of 110° and 130°. A hexagon is between round and
@@ -976,7 +1114,9 @@ and **checked only when a style asks** for one.
     (leading, 55% at the least), a plank whose edges wobble (64% at the least), **combs whose
     teeth are 20 pixels or more (81% at the least)**, a box with a thick limb, a hammer, a barrel
     (83%), gears with square teeth, **bottles (with a square shoulder 90%, a curved one 66%, a
-    long neck 53%)**, a mushroom (53%), a dome on a flat base (49%).
+    long neck 53%)**, a mushroom (53%), a dome on a flat base (49%); since the seventh version
+    a pedestal, a shelf with a cornice, a box with a slab overhanging it, a block with a ledge,
+    square rolls on a box (100%) and a staircase (83% at the least).
   - **Pointed:** a triangle, stars of three to sixteen points, a spike of 15° (63%), crescents
     (70% to 74%), a mace (95%), a pine of three tiers, ovals of five to one and more, lenses with
     tips of 50° and 70°, a figure with tapered limbs.
@@ -1012,7 +1152,20 @@ and **checked only when a style asks** for one.
   - **A part under about six pixels thick** (a comb's tooth under twelve pixels across, a
     fortieth of the silhouette) has its two corners smoothed into one end, and is read as a
     point (combs of teeth 6 and 8 pixels wide: 79% to 91% pointed). Teeth of twelve lead square
-    in 355 masks of 360 with short teeth, of twenty and more are square.
+    in every mask (58% square at the least), of sixteen and more are square (87% at the least);
+    until the seventh version short teeth of twelve led pointed in 5 masks of 360 and of
+    sixteen in 9.
+  - **A rounded stub on a body** (a sofa's arms, a scroll's rolls) shorter than six times its
+    own thickness is judged at the body's thickness, and its round end, a half turn in one
+    window, reads as a corner or a point: a sofa of parts each rounded by a third reads square.
+    Two square corners have their rule since the seventh version; a round end has none. **The
+    end of a slab under about a sixth as thick as the body it overhangs** may read as a point:
+    a slab 17 pixels thick on a body of 113, overhanging by 0.08 of the picture, leads pointed
+    in 28 masks of 360 (its square share 0.38 to 0.90).
+  - **Five common assets with no thin part drift with the picture's size** (the sixth review's
+    teddy bear, penguin, sunflower, pig and chess pawn): their mean share moves by up to 0.14 to
+    0.24 at 256 to 384 pixels against 512, and the pawn leads square in a few masks at 256 and
+    320. The cause is not traced.
   - **Shapes near half and half stay there**, and their lead says nothing (above).
   - **A body bristling with more than about a dozen hair-thin parts** (a disc with sixteen
     whiskers of one pixel) is not read at all. One to four hairs change nothing.
@@ -1020,20 +1173,24 @@ and **checked only when a style asks** for one.
     leads square or pointed by the angle (0.81); a star of sixteen shallow points (0.91), and
     one of twenty-four is wholly square, steadily (a person would say pointed); a
     lens with tips of 90°, between curve and point (0.64); a cumulus base of 3 to 1 (0.44); a
-    club tapering to a third of its foot (0.26) or a fifth (0.39); a box whose edges wobble by
-    six pixels (0.54); a gear of eight triangular teeth (0.37); a disc with a notch, whose
-    mouth's corners go between square and point (0.40: steady until its sixth version).
+    club tapering to a half of its foot (0.26) or a third (0.55 since the seventh version,
+    0.39 before); a box whose edges wobble by six pixels (0.54); a gear of eight triangular
+    teeth (0.37); a disc with a notch, whose mouth's corners go between square and point (0.40:
+    steady until its sixth version); since the seventh version a figure of a dog with tapered
+    legs (0.20, 0.63 pointed at the least, where it was 0.09 and 0.74) and a cauldron (0.70).
   - A corner on a curve reads a few degrees over its own angle; holes are not traced. It reads
     outlines, not surfaces: a ball on a square plinth seen from the front is both.
 - **It needs pixels.** A piece under 192 pixels across is not read at all (a thumbnail never
   is; it was 110 until the sixth version, and an oval on 160 to 200 pixels read up to 62%
   square), so the studio renders the three silhouettes again at 512 for it. From 192 up the
-  sized shapes of the families test (24 of them) read within 0.12 of 512 at pictures of 256,
-  320 and 384, and lead the same, but for a lens whose tips are right angles. Thin parts are a
+  sized shapes of the families test (26 of them since the seventh version, two ledges among
+  them) read within 0.12 of 512 at pictures of 256, 320 and 384, and lead the same, but for a
+  lens whose tips are right angles; the five assets above drift further. Thin parts are a
   limit of their own, in pixels and not in the shape's size: a comb's teeth under twelve
   pixels wide read as points at any size. Its cost is linear in the picture's pixels and the
-  outline's length (below, "Its sixth version": at most 48 steps a pixel and 256 an edge pixel,
-  counted); a silhouette of 512 takes about as long as a disc for ordinary shapes, and fifteen
+  outline's length but for a table of range maxima, which grows as that length times its
+  logarithm ("Its seventh version": at most 48 steps a pixel, 256 an edge pixel and about
+  6e log2(6e) for e edge pixels, counted); a silhouette of 512 takes about as long as a disc for ordinary shapes, and fifteen
   times a disc at the worst found (a comb of one-pixel teeth, on a busy machine), on the
   caller's own thread, and is read anew
   at each call.
@@ -1444,6 +1601,171 @@ and **checked only when a style asks** for one.
   the fifth review's coil, stalk, thin arms and plank are mended; the earlier reviews'
   probes are in the tests. **Until it is mended, the rate to say beside this measure is
   "about 70% to 87% of common assets, lower on things with ledges, brims and overhangs".**
+- **Its seventh version: the overhang's cause mended, and the measure held** (2026-11-20; made
+  by one agent, which stopped before it could hold what it made, and finished by another that
+  wrote none of it; neither wrote an earlier version). Every number below is from tables made
+  on a clean tree, every degree of a quarter turn, plain, mirrored and shifted, release, on a
+  busy machine, and both tables and every reading that moved are in the version's notes.
+  **Not reviewed yet.**
+  - **How it was held, and why that is said.** The first agent seeded faults into the source
+    in loops that ran in the background beside its own last tables, and two of them raced; its
+    last families table was read with a fault in the source (most likely `STRAIGHT_DEG` at 4
+    to 8: with that fault seeded on clean code, a gear of eight triangular teeth reads down to
+    0.75 round and a lens with tips of 90° 0.26 square, as that table had it). So its two
+    "regressions" (the gear, 0.93 round to 0.82; the lens, 0.06 square to 0.20) were the
+    fault's: **on clean code both read as before** (the gear 0.62 to 0.99 round, 0.93 on the
+    mean, round in all 360 masks; the lens 0.06 square and pointed in 348). Its corpus table
+    was clean (the clean run equals it byte for byte). Everything after was made again, one
+    run at a time.
+  - **The rates.** **On its own forty, the rate said beside the measure: 38 of 40 (95%) lead as a person would in every mask.** The forty were written by the first agent with the lead a person would give each, and committed (`3ea086c2`) before the measure was touched; they were read once on the final code (`fresh_table`, at `022af42e`, a clean tree). Misread, in every mask: a hamburger (pointed, 0.61) and a teapot (pointed, 0.64); why is not traced. The first agent had read them once before, on a build that may have held a seeded fault: 38 of 40 then too, the same two misread (two readings' least or most differ by up to 0.03). Nothing was changed after either reading. They are easier than the sixth review's 59: each has one lead (14 round, 14 square, 12 pointed), and they were written by an agent that knew the measure. On the corpus the tests hold (162: the sixth version's
+    103 and the sixth review's 59 joined, the review's leads as it wrote them), which was read
+    while this version was made: **91 of the 103** (90 before) and **45 of the 59** (42
+    before) lead as a person would in every mask; 136 of 162 (`MISREAD` holds the 26 others as
+    they read).
+  - **The overhang: the cause, traced.** A slab, a base, a cornice or a stub is one part
+    between the inward corners under it; the discs that touch its top and its underside are
+    the body's, so `plateaus` finds no level at the slab's own thickness within six times it,
+    and its end takes the body's thickness (132 pixels for a box of 0.44 by 0.51 at 512) and
+    the body's window (a half of 40 steps, reaching 54). A 31-pixel end then lies wholly in the
+    windows of its own middle steps, whose angle is its two right angles together, 151° to
+    180°: a point.
+  - **The rule** (`apart`). The corners are the peaks of the turn within the smoothing's own
+    reach (0.6 of its deviation each way, at least a step), from 15°; two peaks of one sign are
+    one corner unless the turn between them falls under half the lesser. Where two corners
+    follow each other round the outline, no closer than the smoothing spreads either, and each
+    is square at its own scale (its outward turn within half the distance to its nearer
+    neighbour each way, by `ROUND_DEG`; an inward corner's is less than nothing), every step
+    between them is also read in a window cut short of the farther corner, the middle of that
+    window cut with it, and its angle and its weight move from the whole window's toward the
+    cut one's by `s`, as square as the less square of the two corners is. **It is free of
+    scale**: every length in it is a distance along the outline between two corners, or a
+    share of one, or the smoothing's reach; every threshold an angle the measure already had,
+    or a half; drawn twice as large, every distance doubles with the windows. Three tries
+    failed first (in the first agent's notes): corners as runs of the body's small window,
+    which holds both corners of a short end as one run; the cut made by shortening the window,
+    which left windows that held both corners and not the inward one beside them, a point. (A
+    separate test that both corners turn outward was in it; seeded away it changed no reading
+    of 548 shapes, since each corner's own turn already asks it, and it is gone.)
+  - **What it moved** (every reading whose mean share moved by more than a tenth, or whose
+    leads changed, against the sixth version on the same shapes, every degree). **Better:** in
+    the families, every box with an overhanging slab but one (below), the pedestal, the
+    cornice, the ledge, the
+    square rolls (63% to 100% pointed in every mask before; now square in every mask, 0.87 to
+    1.00 on the mean), a
+    pillar with a capital and base, the combs of short teeth twelve and sixteen pixels wide
+    (square in every mask now); in the corpus, a watchtower on stilts, a lighthouse and a
+    castle tower (pointed to square), a hot air balloon (pointed to round), a turtle and a pig
+    (rounder: 0.65 to 0.83 and 0.90). **Steadier:** a staircase of five (square 0.72 to 1.00
+    before, 0.83 to 1.00 now), a pillar (its swing 0.57 to 0.30), a turtle (0.26 to 0.02).
+    **Worse, by how far a share moves as it turns** (the mean moved by less than a tenth or
+    the other way): a box with a slab 0.04 thick overhanging by 0.08 (wholly pointed and
+    steady before; now square in 332 masks, pointed in 28, square 0.38 to 0.90), and by 0.04
+    (square 1.00 in every mask; now 0.86 at the least); a dog with tapered legs (pointed 0.74
+    at the least, now 0.63); a club tapering to a third of its foot (its pointed share moves by
+    0.55, 0.39 before); a pig (0.34, 0.20 before); and **a cauldron**, which a person reads
+    round: wholly pointed and steady before, now round in 166 masks, square in 58 and pointed
+    in 136 (pointed 0.02 to 0.72). A lantern a person reads square went from pointed to half
+    round and half square (round in 258 masks), still misread. Each of these is the cut window:
+    seeded away, the dog and the club read as before. They are held as they read now. No asset
+    of the corpus that read as a person would reads otherwise. **`built.rs`'s readings did not
+    move**: its tests' 120 outlines, each at 384 and 512 pixels, read the same to three places
+    on the sixth version and the seventh.
+  - **The sixth review's staircase was the picture's edge, not the measure.** Drawn as that
+    review drew it, the staircase of five touches the picture's edge in 264 of its 360 masks,
+    and all 62 in which it led pointed are among them; drawn at 0.8 of that size, wholly
+    inside the picture, the sixth version reads it square in every mask (74% at the least).
+    The review's ledge shapes reached past the edge in the same way. They are families now,
+    drawn at 0.85, held as they read (at 0.85 the staircase still touches the edge in 71 masks,
+    and reads square in all).
+  - **Steady, or no longer called so.** The staircase and the combs of twelve and sixteen
+    pixels are steady now (above). Not mended, and named in "What it cannot say steadily": the
+    drift of five assets with the picture's size (cause not traced); a rounded stub on a body;
+    the end of a slab under about a sixth of the body's thickness; and the readings above that
+    the cut window made less steady.
+  - **The advice is tried on what is not a box**: pedestals, a cornice, slabs, a pillar, a top
+    hat, a ziggurat, staircases, a ledge, square rolls, a T, a U (square); stacked rounded
+    boxes, a rounded pedestal and T, a chain of balls, a capsule figure, a balloon dog (round);
+    a blade, spikes on a band, a star of 50° tips, a notched arrowhead (pointed); all pass in
+    every mask. A sofa of parts each rounded by a third does not; the round advice says so, and
+    the test holds that it does not, so that the sentence is changed if it ever reads round.
+  - **The numbers and the bound.** The sixth review's wrong numbers are corrected above (a
+    star of sixteen shallow points moves by 0.91; the clubs taper to a half and a third of their
+    foot; the diagonal arms read 81% at the least); the sixth version's own section keeps them
+    as it wrote them. The bound on the work counts the table of range maxima as what it is: at
+    most 48 steps a pixel of the picture, 256 an edge pixel, and 6e times the number of binary
+    digits of 6e for e edge pixels; a test holds it on every family, the costly masks and whole
+    pictures of 16,384 by 16, 13,107 by 20, 21,845 by 12, 32,768 by 8, 8,192 by 32 and 4,096
+    by 64.
+  - **The default run.** The studio crate's default tests took 155 s to over five minutes in
+    release on a busy machine; the advice and the corpus are now swept every thirty degrees in
+    it (every nine before), every degree in their ignored runs, and no rule is held by a
+    sweep's step alone: on the final code the studio crate's default tests ran in 108 s of test time on a busy machine (the module's own 31 s, the families' file 66 s, the rest 11 s), where the same run had taken 64 s and 337 s for those two before the change.
+  - **Every rule is held by a default test.** Each rule's fault was seeded alone, one run at a
+    time, against `cargo test --release -p specula-studio` as it is left; the test that failed:
+
+    | rule | fault seeded | default tests that failed |
+    |---|---|---|
+    | the median of five on the thickness | off | `a_shape_reads_the_same_at_every_size_it_is_read_at` |
+    | each part smoothed at its own thickness | every part smoothed as the whole | `families_hold_their_claims_every_fifteen_degrees` |
+    | `STRAIGHT_DEG` (3, 6) | (4, 8) | `rules_that_move_few_readings_are_held_by_the_one_they_move_most` |
+    | `LEVEL_FROM` 1 | 4 | families |
+    | `TRIM_TURN` 120 | 0 (no trim) | families |
+    | `TRIM_TURN` 120 | 181 (trim at tips) | `a_blades_tip_is_kept_at_every_degree` |
+    | `JOINT_EDGE` 15 | 5 | families |
+    | `JOINT_MARGIN` 0.33 | 0 | families |
+    | `LADDER` 1.05 | 1.3 | sizes, families, corpus |
+    | `KINK_SMOOTH` 0.6 | 0 | sizes, families, corpus, `known_shapes_speak_their_language_however_they_are_turned` |
+    | `THINNER` 0.5 | 0 | `a_short_stalk_is_not_its_rims_corner`, families |
+    | `SIDED` 0.2 | 0.4 | families, `a_corners_rounding_moves_the_answer_smoothly` |
+    | `SOFT_DEG` (70, 110) | (60, 100) | families, `an_oval_goes_from_round_to_pointed_and_is_never_square`, known shapes |
+    | `CORNER_DEG` 60 | 45 | `corners_are_counted_from_sixty_degrees` (new) |
+    | `THIN_LEVEL` 24 | 12 | `built::a_thin_outline_is_read_as_what_it_is`, known shapes |
+    | `PLATEAU_RISE` 0.1 | 0.2 | the rules test (new: a grass tuft) |
+    | `JOINT_DEG` 30 | 40 | families |
+    | `STRAIGHTEN_PX` 1.5 | 2 | sizes, families |
+    | `BOW_PX` 0.2 | 0.4 | the rules test (new: a hedgehog) |
+    | `TRIM_PX` 0.5 | 1.0 | families |
+    | `STRAIGHT_RUN` 0.1 | 0.15 | the rules test (new: a star of sixteen shallow points) |
+    | `PLATEAU` 6 | 5 | families, known shapes |
+    | `MIN_THICK` 4 | 3 | the rules test (a grass tuft), `a_piece_under_the_least_thickness_is_not_read` (new) |
+    | `CURVING_DEG` (3, 7) | (2, 5) | the rules test (new: a lens with tips of 90°) |
+    | `POINT_WEIGHT` 2 | 1.75 | families, corpus |
+    | `WINDOW` 0.6 | 0.5 | sizes, families, corpus, known shapes, the oval, the cut corner, `built::nothing_jumps_where_shortening_begins` |
+    | `KINK` 0.18 | 0.14 | families, corpus |
+    | `SPAN` 2.5 | 2.0 | sizes, families, corpus |
+    | `CHORD` 0.02 | 0.015 | families, corpus |
+    | `SMOOTH` 0.012 | 0.009 | sizes, families, corpus |
+    | `ROUND_DEG` (45, 80) | (50, 80) | families |
+    | `POINTED_DEG` (96, 116) | (100, 120) | sizes, families, corpus, `built::the_shapes_a_recipe_names_read_as_what_they_are` |
+    | `apart`: the cut window | none cut | families, corpus, `the_checks_advice_leads_to_a_pass` |
+    | `apart`: two peaks are one corner unless the turn between falls under half the lesser | a quarter | families |
+    | `apart`: peaks within 0.6 of the smoothing's deviation | 1.2 | corpus |
+    | `apart`: the window cut short of the farther corner | reaching it | families, corpus, advice |
+    | `apart`: the blend by `s` | a step (wholly cut wherever `s` > 0) | families, `a_corner_cut_off_flat_is_a_corner_until_the_cut_is_a_side` |
+    | `apart`: each corner square at its own scale | not asked (`s` = 1) | sizes, families, corpus, advice, the cut corner, `built::nothing_jumps_where_shortening_begins` |
+    | `apart`: its own turn within half the distance to its nearer neighbour | the whole distance | the same six |
+    | `apart`: no pair closer than the smoothing spreads either | any pair | `a_short_stalk_is_not_its_rims_corner`, families |
+    | `apart`: the window's middle cut with it | not cut | sizes, families, corpus, advice |
+    | `apart`: the weight read in the cut window | the whole window's | the rules test (new: a lantern, a lighthouse) |
+    | `apart`: both corners of a pair turn outward | any pair | nothing: it moved no reading of 548 shapes, and is gone |
+
+    ("families" is `families_hold_their_claims_every_fifteen_degrees`, "sizes"
+    `a_shape_reads_the_same_at_every_size_it_is_read_at`, "corpus"
+    `the_corpus_reads_as_a_person_would`, "the rules test"
+    `rules_that_move_few_readings_are_held_by_the_one_they_move_most`; "known shapes", "the
+    oval", "the cut corner" and "a corner's rounding" are the module's own tests.)
+
+    Seven faults passed every default test when first seeded: `CORNER_DEG` 45, `PLATEAU_RISE`
+    0.2, `STRAIGHT_RUN` 0.15, `MIN_THICK` 3, `CURVING_DEG` (2, 5), the weight read in the cut
+    window, and the test that both corners of a pair turn outward. The last moved nothing and
+    is gone; each other now has a test that fails without it (the table). Most of them move
+    few readings by little: the most any moves a share of the families and the corpus, every
+    fifteen degrees, is 0.05 (`STRAIGHT_RUN`), 0.11 (`PLATEAU_RISE`, `MIN_THICK`), 0.03
+    (`CURVING_DEG`) and 0.08 (the weight), so they are held by the reading each moves most,
+    with a bound between the two readings. Two claims were loosened to what the measure reads
+    at every degree (the dog and the club, above), which left `STRAIGHT_DEG` (4, 8) and
+    `BOW_PX` 0.4 caught by nothing; they are held the same way now, and every fault the
+    families' claims had caught alone was seeded again against them.
 - **From what the recipe is built of: the second measure, built** (2026-11-19;
   `specula-model` `made`, `specula-studio` `built`). The modeller records, for every shape a
   recipe names, **that shape's own outlines along its own axes and the surface it has in the

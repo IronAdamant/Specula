@@ -1163,10 +1163,22 @@ mod tests {
     /// Panics when a step leaves its render still in flight and answers anything but
     /// [`Step::Wait`]: a job that asked to be stepped again at once spun on the GPU's fence for
     /// its whole step credit (the third review).
+    ///
+    /// After every step it holds the job's answer to [`StepJob::on_gpu`] (what the window's
+    /// pulses are for: light review 5 found it held by nothing) to whether its render is on the
+    /// GPU: a render sent and not landed is the engine's flight of this job's slot, or its
+    /// result is in the slot unread; and a step that waits with the view loaded waits on it.
     fn step_once(e: &mut Engine, job: &mut LightJob, reply: &crate::jobs::Reply) -> Option<ToolOutput> {
         loop {
             let flying = job.flying;
             let step = job.step(e, reply);
+            let in_flight = e.captures.step_flight.as_ref().is_some_and(|(s, _)| std::ptr::eq(s.as_ptr(), std::rc::Rc::as_ptr(&job.slot))) || job.slot.borrow().is_some();
+            if !matches!(step, Step::Done(_)) {
+                assert_eq!(job.on_gpu(), in_flight, "the job says its render is{} on the GPU, and it is{}", if job.on_gpu() { "" } else { " not" }, if in_flight { "" } else { " not" });
+                if matches!(step, Step::Wait) && job.waited.is_some() {
+                    assert!(job.on_gpu(), "a step that waited with the view loaded did not wait on its render");
+                }
+            }
             match step {
                 Step::Done(o) => return Some(o),
                 Step::Handed => panic!("it answers itself"),
@@ -1263,9 +1275,12 @@ mod tests {
         let (reply, rx) = crate::jobs::channel();
         let owner = crate::jobs::JobOwner { name: e.swarm.agent_name(&session), key: e.swarm.key(&session) };
         e.step_job(StepStart { owner, session: session.id.clone(), call: 7, reply, deadline: far, class: schedule::Class::Render }, Box::new(job));
-        assert!(e.steps_busy() && rx.try_recv().is_err(), "it waits, queued, for the picture");
+        // (A job that answered in its call is not queued: queued, it has not answered. And the
+        // first answer waited for below is the one the session's closing sent, so nothing was
+        // answered before it: no peek at the channel, which `reply_wait_guard` forbids here.)
+        assert!(e.steps_busy(), "it waits, queued, for the picture");
         e.drop_closed_steps(&std::collections::BTreeSet::from(["bbbbbb22".to_owned()]));
-        let out = rx.try_recv().expect("an answer when the session closed");
+        let out = rx.recv_timeout(crate::project_tools::DEFERRED_WAIT).expect("an answer when the session closed");
         assert!(out.is_error && format!("{:?}", out.content).contains("session_closed") && !e.steps_busy(), "{:?}", out.content);
     }
 
