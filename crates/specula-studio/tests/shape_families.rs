@@ -1771,14 +1771,14 @@ fn rules_that_move_few_readings_are_held_by_the_one_they_move_most() {
 }
 
 /// **A piece thinner than [`MIN_THICK`] is not read; one a little thicker is** (its seventh
-/// version: no test held the floor). A bar 400 pixels long and 5 wide (its largest disc 3 pixels
-/// across the middle) is not read at any angle; one 9 wide is.
+/// version: no test held the floor). A bar 400 pixels long and 8 wide is not read at any angle
+/// (with a floor of three pixels it is, at every one); one 10 wide is.
 #[test]
 fn a_piece_under_the_least_thickness_is_not_read() {
     for deg in [0.0f32, 20.0, 45.0] {
         let bar = |w: f32| move |x: f32, y: f32| x.abs() < 0.39 && y.abs() < w / 1024.0;
-        assert!(of_mask(&render(512, &bar(5.0), deg, false, (0.37, 0.71))).is_none(), "a bar 5 pixels wide is read at {deg}");
-        assert!(of_mask(&render(512, &bar(9.0), deg, false, (0.37, 0.71))).is_some(), "a bar 9 pixels wide is not read at {deg}");
+        assert!(of_mask(&render(512, &bar(8.0), deg, false, (0.37, 0.71))).is_none(), "a bar 8 pixels wide is read at {deg}");
+        assert!(of_mask(&render(512, &bar(10.0), deg, false, (0.37, 0.71))).is_some(), "a bar 10 pixels wide is not read at {deg}");
     }
 }
 
