@@ -238,9 +238,11 @@ short step that crosses it).
   it would be `1/2`, and the partials would step). The partials tend to `(1, 0)` or
   `(0, 1)` from both sides, which are the lesser's own.
 - *Second derivatives.* Write `t = b − a`; then `F = (a + b)/2 − ψ(t)` with
-  `ψ(t) = |t|/2 + k φ(h)` and `h = (1 − |t|/k) ∨ 0`. For `0 < |t| < k`,
-  `ψ″(t) = φ″(1 − |t|/k) / k`, an even function, so it tends to one limit at `t = 0` and
-  `ψ` is twice differentiable there. At `|t| = k` it tends to `φ″(0)/k`, and beyond it
+  `ψ(t) = |t|/2 + k φ(h)` and `h = (1 − |t|/k) ∨ 0`. `ψ′` is continuous everywhere (it is
+  `∂F/∂b − 1/2`, which the two points above made continuous), so the same fact about a line
+  can be used once more, on `ψ′`. For `0 < |t| < k`, `ψ″(t) = φ″(1 − |t|/k) / k`, an even
+  function, so it tends to one limit at `t = 0` and `ψ` is twice differentiable there. At
+  `|t| = k` it tends to `φ″(0)/k`, and beyond it
   `ψ″ = 0`: for the quadratic join `φ″(0) = 1/2`, a step, so it is once differentiable and
   no more; for `n ≥ 3`, `φ″(0) = 0`, so the join is twice differentiable. It is no
   smoother than that: `ψ‴` is an odd function tending to `∓ φ‴(1)/k²` at `t = 0`, and
@@ -273,10 +275,12 @@ point. Then use that `f` and `g` each change by at most `|x − y|`. ∎
      join once it is widened by `D` on every side.
    - **If a field is only a bound outside, the join can reach further.** Where
      `f ≥ ρ · d(x, A)` outside `A` for a ratio `0 < ρ ≤ 1`, the set where `f ≤ D` lies
-     within `D / ρ` of `A`. An unevenly scaled part has `ρ = σ_min / σ_max` (2.5). A
-     meeting or a cut has no such ratio at all (3.3): joined smoothly to another part, the
-     edge of a wedge of half angle `α` can grow by `D / sin α`, which is as large as one
-     likes.
+     within `D / ρ` of `A`. A part that was exact outside and is then scaled unevenly has
+     `ρ = σ_min / σ_max` (2.5). A meeting or a cut has no ratio that holds for every one
+     (3.3): it depends on the angle at which its surfaces meet. A lens of two unit discs
+     whose centres are 1 apart has `ρ = 0.875`; the edge of a wedge of half angle `α` has
+     `ρ = sin α`, so joined smoothly to another part it can grow by `D / sin α`, which is
+     as large as one likes.
 3. For the polynomial joins, `u = f ∧ g` wherever `|f − g| ≥ k`: **the join changes the
    field only where the two fields are within `k` of each other in value.** That is about
    values, not places: the fields of two discs with one centre differ by the same amount
@@ -288,11 +292,13 @@ bound, `f(x) ≤ D` with `f(x) ≥ ρ · d(x, A)` gives `d(x, A) ≤ D / ρ`. Fo
 axis beyond its edge the meeting's field is `sin α` times the distance to the edge (3.3),
 so it stays under `D` out to `D / sin α`. 3 is 5.1. ∎
 
-**It is a bound and not the distance.** Where the join is at work the field's slope is a
-mix of the two fields' slopes by the shares of 5.2. For two unit slopes at an angle `θ` to
-each other and equal shares, the mixed slope has length `cos(θ/2)`: two walls meeting
-square give `0.707`. A slope under one is a field that reads short. So `u` is safe and
-slack through the join, and the mesher is told so.
+**In general it is a bound and not the distance.** Where the join is at work the field's
+slope is a mix of the two fields' slopes by the shares of 5.2. For two unit slopes at an
+angle `θ` to each other and equal shares, the mixed slope has length `cos(θ/2)`: two walls
+meeting square give `0.707`. A slope under one is a field that reads short. So wherever
+the two slopes are not parallel, `u` is safe and slack through the join, and the mesher is
+told so. (Where they are parallel it can stay exact: two discs with one centre join into
+the exact field of a slightly larger disc.)
 
 **5.5. Several at once.** The exponential join of `n` fields,
 `−k ln(Σ exp(−aᵢ/k))`, lies between `(∧ aᵢ) − k ln n` and `∧ aᵢ`, reaching the lower limit
@@ -302,9 +308,25 @@ order (with `k = 1`, the quadratic join of `0` and `0` and then `0.5` is `−0.2
 `0.5` and `0` and then `0` is `−0.2822265625`), and `n` fields joined so, which takes
 `n − 1` joins, dip by at most `(n − 1) D`: at most one `D` for each join made.
 
+**A chain does better: joined one after another with one width `k`, any number of fields
+dip by less than `k` in all** (which is `4D` for the quadratic join and `6D` for the
+cubic). A chain is: join the first two, then the result with the third, and so on. **A tree
+does not**: `2ʲ` equal fields joined in pairs, the pairs in pairs and so on, dip by `j · D`
+(32 equal fields joined quadratically dip by `1.25 k`).
+
 *Proof.* The greatest term of the sum lies between the sum over `n` and the sum itself. For
 the nesting: each join is at least the lesser of its two inputs less `D`, and joins rise
-with their inputs (5.2), so each further field costs at most one more `D`. ∎
+with their inputs (5.2), so each further field costs at most one more `D`.
+
+For the chain, let `r` be the running value and `m` the least field so far, and suppose
+`r ≥ m − k` (true at the start, where `r = m`). Join the next field `y`, and let `m′` be
+the lesser of `m` and `y`. If `r ≥ y`, the result is at least `y − D`, which is at least
+`m′ − k`. If `r < y`, write `r = m′ − k + α`, with `α ≥ 0` by the supposition. Then
+`y − r ≥ m′ − r = k − α`, so `h ≤ α/k`, and since `h ≤ 1` the dip `k hⁿ/(2n)` is at most
+`k h/(2n) ≤ α/(2n)`. So the result is at least `m′ − k + α (1 − 1/(2n))`, which is at
+least `m′ − k`. So the supposition holds for the next step, and for every step. For the
+tree: equal fields `a` join to `a − D`; two such results, equal again, join to `a − 2D`;
+and so on. ∎
 
 **5.6. The smooth meeting and the smooth cut.** `G(a, b) = −F(−a, −b)` lies between `a ∨ b`
 and `a ∨ b + D`; its two slopes are `F`'s, taken at `(−a, −b)`, so they too are shares of
@@ -314,9 +336,10 @@ bound for that solid.
 
 **How much it eats.** It keeps every point where `a ∨ b ≤ −D`. If both fields are exact
 inside, `a ∨ b` is minus the meeting's depth (3.3), so the smooth meeting eats the meeting
-back by at most `D`; and it eats wherever the two fields are within `k` of each other,
-which need not be near where the surfaces cross (two discs with one centre are eaten all
-round). **If a field is only a bound inside, as a union's is (3.2), a point deeper than `D`
+back by at most `D`. Where it eats is along the meeting's surface, wherever the two
+fields are close in value there (within `k` for the polynomial joins; the exponential one
+eats a little everywhere), which need not be near where the surfaces cross: two discs with
+one centre and radii within `k` are eaten all round. **If a field is only a bound inside, as a union's is (3.2), a point deeper than `D`
 can be cut away.** A smooth cut is the smooth meeting with `−s_B`, and the same holds.
 
 **5.7. One width that means what it says.** With `k` replaced by `4k` in the quadratic join,
@@ -336,12 +359,15 @@ as the two fields are `4k` or `6k` apart.
 - **A tree of unions, meetings, cuts and smooth joins of 1-Lipschitz fields is 1-Lipschitz**
   (3.1, 5.3, 5.6), so it never exceeds the distance to the surface it makes (2.3). That is
   all pruning needs.
-- **It is exact only on the sides named in 3.2 to 3.4, and slack through every smooth join**
-  (5.4). A node that needs a true distance (a swelling, a shell) is given one where the tree
-  has one, and otherwise says what it was given.
+- **It is exact for certain only on the sides named in 3.2 to 3.4, and in general slack
+  through a smooth join** (5.4). A node that needs a true distance (a swelling, a shell) is
+  given one where the tree has one, and otherwise says what it was given.
 - **Bounds grow by each join's dip, where the parts' fields are exact outside** (5.4, 5.5):
   a box about the parts, widened by `D` for each polynomial join made (`(n − 1) D` for `n`
-  parts joined two at a time), or by `k ln n` for `n` parts joined at once exponentially.
+  parts joined two at a time in any arrangement), or by `k ln n` for `n` parts joined at
+  once exponentially. **A chain of polynomial joins with one width `k` needs `k` and no
+  more, however many parts it has** (5.5); a group nested inside a group is a tree, and
+  the widenings of the two add.
 - **A part that is only a bound outside needs more, and a box cannot say how much** (5.4): a
   part scaled unevenly reaches `D` over the ratio of its scales; a meeting or a cut can
   reach any distance along a thin edge. So the modeller takes a joined part's reach from
@@ -397,5 +423,34 @@ seeded faults into the test (2026-11-20). It found the numbered statements 2.1 t
 It also found two proofs with a step missing (3.3: that no point of the meeting's surface
 is nearer; 5.2: that the slopes exist on the two lines, not only their limits), now
 written in, and that the mirror image, the smooth meeting, joins in space and the count of
-nested joins were held by no real test: they are now. Nothing on the page follows a
-source's wording.
+nested joins were held by no real test: they are now. Smaller errors it found, all
+corrected: the join's `ψ` written wrongly beyond `|t| = k`; degree 1 not excluded; a
+sentence that implied higher degrees are smoother than twice differentiable; a gloss in
+5.4 that read "values" as "places"; a slip of sign in 4.1; a sentence on the wedge that
+contradicted itself; and a credit to a paper whose text had not been read (section 7 now
+says which text was).
+
+**A second model, which wrote neither the page nor the first review, then checked the
+corrected page** (2026-11-20) and found it sound: no numbered statement false, every proof
+proving its statement, and each of the first review's findings mended at its cause. It
+held the page against probes of its own (among them 3,000 random trees of every operation
+with bounds for leaves, whose field never changed faster than 0.999995 for one) and seeded
+eleven faults into the test, one at a time. What it found, all minor and all taken up
+above:
+
+- **Three sentences said less than is true** (on the safe side): that a join "is a bound
+  and not the distance" (two discs with one centre join into an exact disc), that a
+  meeting or a cut "has no such ratio at all" (each has one; no one ratio serves all), and
+  that a smooth meeting eats "wherever the two fields are within `k`" (it eats along the
+  meeting's surface, where they are).
+- **A fact the modeller leans on was missing**: a chain of polynomial joins with one width
+  dips by less than that width however long it is, where a tree of them does not. It is
+  5.5's second part now, with its proof and a test.
+- **5.2's step to the second derivative** used the fact about a line on `ψ′` without saying
+  that `ψ′` is continuous.
+- **One test could not fail for the fault it was named for**: the slope through a join was
+  measured across the line of equal fields, where any function that treats its two fields
+  alike reads the same. It is measured from each side now, and the test shows that the
+  plain lesser fails it.
+
+Nothing on the page follows a source's wording.

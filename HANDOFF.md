@@ -353,7 +353,21 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       bound outside (a join onto a meeting can bridge a gap of any width along a thin
       edge), and `n` fields joined two at a time dip by up to `n − 1` dips, not one. All
       are corrected, two proofs had a step written in, and the tests the review found
-      missing are added (21 in all). **The corrected page is with a second reviewer.**
+      missing are added. **A second model, which wrote neither the page nor the first
+      review, found the corrected page sound** (2026-11-20; section 8): no numbered
+      statement false, every proof proving its statement, each earlier finding mended
+      at its cause. Its seven minor findings are taken up: three sentences that said
+      less than is true; a missing fact, now 5.5's second part with its proof (**a
+      chain of polynomial joins with one width dips by less than that width however
+      long it is; a tree of them does not**); a step in 5.2 said aloud; and one test
+      that could not fail for its fault, measured from each side now (22 tests).
+      **Reading the sculpt modeller beside the page, it said the box the modeller
+      meshes inside is too small in two cases** (a smooth join onto an intersection or
+      a cut with an edge thinner than about 29 degrees, or onto an unevenly scaled
+      part; and a smooth group inside a smooth group, whose dips add where the box
+      takes the larger). It ran nothing for that. **A fresh agent is investigating
+      whether surface is really lost** (`.swarmnotes/m6/part4/bounds/`); the mend
+      waits for the rounded field's mend on the same file.
       What it means for the sculpt stage is written into the page's section 6: a joined
       part's reach is taken from its field, not from its box.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
@@ -931,8 +945,29 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       have always done the same, which is why nothing caught it. Also standing: the
       crate's default tests run over their time; a form's work weight is a guess; a
       solid's record of what it is built of is its hull (a torus reads as a disc).
-      Those are the next builder's first jobs. **Stage 3, the engine's side, is being
-      built** by a fresh agent.
+      Those are the next builder's first jobs. **Stage 3, the engine's side: built**
+      (2026-11-20, `7b8c710e`): a `shape2d` item by a form's name (a plane figure or a
+      curve; a solid drawn in a named view, each face shaded; a solid cut into layers),
+      saved and hashed as its name and numbers; two read-only tools, `formae_list` (the
+      catalogue, with the measured figure) and `formae_get` (one form: parameters,
+      measures, anchors, snippets to paste), served on the caller's thread;
+      `docs/design/FORMAE.md` with a table of every form held by a test. The outline
+      fault is mended (an outline by name is built closed or refused), and a cost fault
+      it found on the way (a spiral's own check took 65 s; 0.3 s now). **Claude's review
+      drove it from a shell as an agent would**: every one of the 65 plane figures, 82
+      solids and 12 curves spawns in the 2D world by name and is pictured
+      (`gallery-full/part4/formae/`, with notes; the picture check by another model
+      holds for the figures and the curves and says the solids' sheet is too small to
+      judge each drawing: a large picture pass is owed at the library's end); its three
+      earlier probes hold on the new code. **It found**: the library's full run fails on
+      one stepped trapezoid (a closed area and a build 1.4 parts in ten million apart)
+      and takes 800 s where it took 18; the whole catalogue is 39 KB from a shell, too
+      much for a first look; and, not this library's, **an engine test that fails on a
+      busy machine** (`a_stalls_event_carries_the_threads_own_time`: it asserts that a
+      thread which spun for 40 ms of wall time worked, and under load the thread was
+      given 16 ms of 81). All are the next builder's first jobs. **Stage 3b, the path by
+      which an agent finds the library cheaply, is being built** by a fresh agent; then
+      the sculpt primitives (stage 5), then further families (stage 4).
       Stage 3 is the engine's 2D item with two read-only tools and
       `docs/design/FORMAE.md`; then further families. Each stage is reviewed by Claude, who
       did not write it; the whole is pictured in the engine and gated before it is merged.
@@ -1086,9 +1121,18 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       its rate either way. Everything else held (the orders' table by the reviewer's own
       simulation; nothing carried from one render to the next in 2,300 raw frames an
       adapter; costs as the third review's; every seeded fault caught). **A fresh agent
-      is mending it** (a waiting job is looked at again within the frame's wait, as the
-      headless loop already does), with the timeline's preview job's spin in the same
-      change.
+      mended it** (2026-11-20, merged; LIGHT.md, "What was mended, fourth round"): while a
+      step job has a render on the graphics card, the window's own wait between frames
+      wakes about every millisecond to look at it (`Schedule::serve_with`, `StepJob::on_gpu`),
+      sleeping between looks, starting a look only when it fits before the frame's
+      deadline, and making no extra wake when nothing waits; held by tests on a simulated
+      clock that count looks. By its own runs with a window at 20 frames a second a
+      report takes 0.6 to 1.5 s where the round before took 4.0 (the old spin: 1.1 to
+      1.6), the window keeping its rate; at the display's own rate on a busy machine no
+      look fits the one-millisecond wait and a report lands one render a frame as before.
+      The timeline's preview job waits the same way now (its previews byte for byte the
+      same). **A short review of that change is running; the window check is owed with
+      the live checks, since the window's loop changed.**
     - **The rounded shape's levelled weights: reviewed, not to merge** (2026-11-20;
       PROCEDURAL_MODELLING.md, tier 3, "An eighth"). By counting the solve's steps in real
       builds: a large thin rounded cutter set a metre past the corner of what it cuts

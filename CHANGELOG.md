@@ -430,7 +430,17 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       of (LIGHT.md, "What was mended, third round"). A short review of that said not to
       merge for one finding: with a window held to 20 frames a second a report takes 3.7
       times as long, since a waiting job lands one render a frame (LIGHT.md, "Its fourth
-      review").
+      review"). Mended: while a step job has a render on the graphics card, the window's
+      wait between frames wakes about every millisecond to look at it, without spinning
+      and with no extra wake when nothing waits; the timeline's preview job waits the same
+      way (LIGHT.md, "What was mended, fourth round"; WORKERS.md).
+    - **The shape library, three stages on its branch** (2026-11-19 and 20; not merged yet):
+      plane figures, curves and solids as a table of named forms with exact pieces, closed
+      measures and a known error (`specula-formae`); 2.5D (a figure raised five ways, a solid
+      drawn flat with hidden surfaces removed, a solid cut into layers); recipes that name a
+      form as an outline, a solid or a raised figure; `shape2d` items by name and two
+      catalogue tools in the engine. Each stage was held by a probe of the lead's own and
+      its faults mended by the next builder (HANDOFF has each).
     - **The rounded shape's levelled weights, reviewed** (2026-11-20): not to merge. A large
       thin rounded cutter set past the corner of what it cuts costs four times its charge
       by count, so the work limit does not bound such a build's time; other roundnesses

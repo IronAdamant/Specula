@@ -457,11 +457,15 @@ fn a_smooth_join_of_two_solids_thickens_their_union_by_at_most_its_dip() {
         }
     }
     // The slope through a join of two walls meeting square, with equal shares: cos 45 degrees.
+    // Taken from one side and from the other, since a difference across the line of equal fields
+    // would read the same for any function that treats its two fields alike, the plain lesser too.
     let k = 0.5;
     let walls = |p: P2| poly(p[0], p[1], k, 2);
-    let (at, e) = ([0.3, 0.3], 1e-6);
-    let slope = len2([(walls([at[0] + e, at[1]]) - walls([at[0] - e, at[1]])) / (2.0 * e), (walls([at[0], at[1] + e]) - walls([at[0], at[1] - e])) / (2.0 * e)]);
-    assert!((slope - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6, "the slope through a square join is {slope}");
+    let at = [0.3, 0.3];
+    for e in [1e-6, -1e-6] {
+        let slope = len2([(walls([at[0] + e, at[1]]) - walls(at)) / e, (walls([at[0], at[1] + e]) - walls(at)) / e]);
+        assert!((slope - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-4, "the slope through a square join, from the side {e}, is {slope}");
+    }
 }
 
 /// 5.5: several fields joined at once exponentially, and two at a time by a polynomial join.
@@ -698,13 +702,55 @@ fn the_slope_through_a_join_is_the_cosine_of_half_the_angle() {
         // Two walls through the origin whose slopes are `angle` apart, alike about the y axis.
         let (first, second) = (|p: P2| sn * p[0] + cs * p[1], |p: P2| -sn * p[0] + cs * p[1]);
         let at = [0.0, 0.3];
+        // The slope from one side of the line of equal fields, and from the other. (A difference
+        // taken across the line reads cos of half the angle for any function that treats its two
+        // fields alike; from one side, the plain lesser reads 1.)
+        let one_sided = |field: &dyn Fn(P2) -> f64, e: f64| len2([(field([at[0] + e, at[1]]) - field(at)) / e, (field([at[0], at[1] + e]) - field(at)) / e]);
         for (name, join) in joins {
             let field = |p: P2| join(first(p), second(p), k);
-            let e = 1e-6;
-            let slope = len2([(field([at[0] + e, at[1]]) - field([at[0] - e, at[1]])) / (2.0 * e), (field([at[0], at[1] + e]) - field([at[0], at[1] - e])) / (2.0 * e)]);
-            assert!((slope - cs).abs() < 1e-6, "{name}: walls {angle} apart: the slope through the join is {slope}, and cos of half the angle is {cs}");
+            for e in [1e-6, -1e-6] {
+                let slope = one_sided(&field, e);
+                assert!((slope - cs).abs() < 1e-4, "{name}: walls {angle} apart: the slope through the join, from the side {e}, is {slope}, and cos of half the angle is {cs}");
+            }
+        }
+        // The check can fail: the plain lesser has a crease there, and its slope is 1.
+        let lesser = |p: P2| first(p).min(second(p));
+        assert!((one_sided(&lesser, 1e-6) - 1.0).abs() < 1e-6 && (1.0 - cs) > 1e-3, "the plain lesser's slope from one side is {}", one_sided(&lesser, 1e-6));
+    }
+}
+
+/// 5.5: a chain of polynomial joins with one width `k` never falls more than `k` below the least
+/// field, however long it is; a balanced tree of them has no such limit.
+#[test]
+fn a_chain_of_joins_dips_by_less_than_its_width_and_a_tree_does_not() {
+    let mut s = Seq(0x5eed_d157_0013);
+    let mut deepest = [0.0f64; 2];
+    for _ in 0..40_000 {
+        let k = dmath::exp_f64(s.span(-3.0, 3.0));
+        let n = 2 + (s.unit() * 60.0) as usize;
+        // Near one another in value, where joins are at work; some chains of equal fields.
+        let (equal, spread) = (s.unit() < 0.1, s.unit() * s.unit() * 2.0);
+        let fields: Vec<f64> = (0..n).map(|_| if equal { 0.0 } else { s.span(-spread, spread) * k }).collect();
+        for (slot, degree) in [(0usize, 2u32), (1, 3)] {
+            let (mut running, mut least) = (fields[0], fields[0]);
+            for &y in &fields[1..] {
+                running = poly(running, y, k, degree);
+                least = least.min(y);
+                let dip = (least - running) / k;
+                assert!((-1e-12..=1.0 + 1e-12).contains(&dip), "degree {degree}: a chain of {n} joins is {dip} widths below its least field");
+                deepest[slot] = deepest[slot].max(dip);
+            }
         }
     }
+    // Far more than one dip is reached (a quarter and a sixth of the width: "one dip" would be
+    // too little), and the width is not.
+    assert!(deepest[0] > 0.75 && deepest[1] > 0.5, "the deepest chains found dip {deepest:?} widths");
+    // Forty equal fields in a chain: under one width, where a dip for each join would allow 9.75.
+    let chain = (1..40).fold(0.0, |acc, _| poly(acc, 0.0, 1.0, 2));
+    assert!(-chain > 0.9 && -chain < 1.0, "forty equal fields in a chain dip {}", -chain);
+    // Thirty-two equal fields in a balanced tree: five levels, five dips, 1.25 widths.
+    let tree = (0..5).fold(0.0, |level, _| poly(level, level, 1.0, 2));
+    assert_eq!(tree, -1.25);
 }
 
 /// 2.4: moved, turned and scaled evenly, an exact field stays exact.
