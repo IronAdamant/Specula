@@ -10,7 +10,7 @@
 use specula_core::Json;
 
 use super::procgen::{GENERATORS, SDF_NODES, SDF_SHARED};
-use super::{Field, Kind, OPS, OUTLINE, PART_FIELDS, SHAPES, TOP_FIELDS};
+use super::{Field, Kind, OPS, OUTLINE, SHAPES};
 
 /// The most the first answer may be, as compact JSON (held by a test).
 pub const SCHEMA_FIRST_BYTES: usize = 6 * 1024;
@@ -201,6 +201,7 @@ pub fn schema(of: Option<&str>) -> Result<Json, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{PART_FIELDS, TOP_FIELDS};
     use super::*;
     use crate::{build, BuildParams, Style};
 
