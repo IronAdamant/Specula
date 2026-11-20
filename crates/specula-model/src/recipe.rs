@@ -1432,6 +1432,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     // A cancel during the fit (it stops early) fails here.
     charge(&tally, "collider", 0)?;
     notes.extend(note);
+    notes.extend(tally.notes.take());
     let mut materials = Vec::new();
     for p in &lods[0].parts {
         if !materials.iter().any(|(n, _): &(String, MaterialPreset)| n == &p.material) {
@@ -1616,6 +1617,9 @@ struct Tally {
     includes: std::cell::Cell<usize>,
     /// What booleans, sculpts and generators did (for the report), bounded.
     stats: std::cell::RefCell<Vec<(String, Json)>>,
+    /// What the build says beside its levels and collider ([`Model::notes`]), at most
+    /// [`MAX_BUILD_NOTES`].
+    notes: std::cell::RefCell<Vec<String>>,
     /// The first terrain built, and its transform in the model (`None`: reshaped).
     terrain: std::cell::RefCell<Option<std::sync::Arc<crate::terrain::Terrain>>>,
     terrain_transform: std::cell::Cell<Option<Affine>>,
@@ -1648,7 +1652,18 @@ struct Tally {
     cutting: std::cell::Cell<u32>,
 }
 
+/// Most notes the parts of one build add to its model's ([`Tally::note`]).
+const MAX_BUILD_NOTES: usize = 16;
+
 impl Tally {
+    /// Something the model's notes are to say (past [`MAX_BUILD_NOTES`], not kept).
+    fn note(&self, text: String) {
+        let mut notes = self.notes.borrow_mut();
+        if notes.len() < MAX_BUILD_NOTES {
+            notes.push(text);
+        }
+    }
+
     /// The shape at `path` is built as `s`: what was noted of it is kept, and every triangle of
     /// `s` is its.
     fn made_now(&self, path: &str, s: &mut Shape) {

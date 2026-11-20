@@ -829,6 +829,19 @@ impl Ctx<'_> {
             j.push(("owners_work", Json::from(work)));
             j.push(("owners_unanswered", Json::from(unanswered)));
         }
+        // Where a part is thinner than a cell, edges more than two triangles share
+        // ([`sdf::SdfStats::thin_edges`]): said with where, and in the model's notes.
+        if let Some((lo, hi)) = st.thin_at {
+            let at = |v: [f32; 3]| Json::arr(v.map(|x| Json::Num(dmath::round_f64(f64::from(x) * 1e4) / 1e4)));
+            j.push(("thin_edges", Json::from(st.thin_edges)));
+            j.push(("thin_at", Json::arr([at(lo), at(hi)])));
+            if !self.coarse {
+                self.tally.note(format!(
+                    "{}: {} edges are shared by more than two triangles, between {:?} and {:?}: something there is thinner than a cell ({:.4} m), so the mesh is not a surface there; raise \"resolution\" or thicken it",
+                    n.path, st.thin_edges, lo, hi, st.cell
+                ));
+            }
+        }
         self.stat(&n.path, Json::obj(j));
         check_extent(&shape, &n.path)?;
         Ok(shape)

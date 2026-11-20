@@ -285,6 +285,13 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     before they left ("Please request permissions for removal for those before I go").
     Waiting for them: every scratch worktree whose branch is merged or whose review comes
     in after that.
+  - **One or two subagents at a time** (the owner, 2026-11-20, evening, by remote, with six
+    running): "Once your sub agents are done, and if possible, I'd like you to reduce how many
+    is them down to just 1 or two as to conserve my usage and to extend it." So what is
+    running finishes, and nothing is started in its place until at most one is left. From
+    then, two slots (*Claude's reading*): one for the shape library's next stage, which the
+    owner wants built first; one for the next review or mend in line. The measured
+    comparison's builders and judges are counted in the same two slots, one cell at a time.
   - **The silhouette's rounds go on, and the library gets built** (the owner, 2026-11-20,
     awake again, shown Claude's recommendation that the seventh silhouette version be the
     last round that chases the reading: "Rounds continue. I want that library built. So
@@ -387,7 +394,29 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       such a recipe needs explicit `bounds` (PROCEDURAL_MODELLING.md, tier 3, "A known
       fault"). Two facts it proved went into the page (5.4: a meeting stays by its
       operands; a pair needs one exact part), with a test (23 in all). Found on the
-      way and **not yet investigated: two crescents joined smoothly meshed open.**
+      way: two crescents joined smoothly meshed open. **A fresh agent then made the
+      mend and investigated that** (2026-11-20, merged; PROCEDURAL_MODELLING.md, tier
+      3). *The box*: a reach passed down the tree (how far the set where a node's
+      field is at most a level lies from its box), each rule resting on a stated
+      inclusion, and the mesher's box moved out only where that reach passes the old
+      box by more than a quarter cell, so that **no mesh that was right changes by a
+      byte** (the box is asserted unchanged for every sculpt of the repository and
+      for figures at their limits; the pinned hashes pass). A truth test samples 240
+      drawn trees by the field alone: on the old box 18 had solid outside it (the
+      worst by 19 m: **a twisted or bent node was not held by the old box either**);
+      on the new, none. Every mended case costs less work. By its own account each
+      seeded fault was caught, one only after it added a test. *The open mesh*: the
+      cause is the mesher's, and older than this work: **where a sheet is thinner
+      than a cell, four of the mesher's quads share one edge** (one crescent is
+      enough: 436 such edges at the default resolution). The mesh is closed in the
+      directed sense and no check said a word. **Six sculpts of the repository have 1
+      to 18 such edges, three approved props among them** (`grave_rock` 1,
+      `statue_angel` 3, `statue_mourner` 2). The build now counts them and says where
+      (`thin_edges`, `thin_at`, a sentence in the model's notes). **The mesher itself
+      is not mended**: the mend (a vertex for each sheet through a cell) is written
+      down, about a day's work, and it changes the meshes of those six, so it waits
+      for the owner's word ("Open owner decisions"). **The box mend's review is
+      queued** (`.swarmnotes/m6/part4/reviews/brief-bounds.md`).
       What it means for the sculpt stage is written into the page's section 6: a joined
       part's reach is taken from its field, not from its box.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
@@ -2153,7 +2182,19 @@ Not decisions of this kind, and also with the owner: the seven items of
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-Nothing is open (2026-11-20).
+1. **May the sculpt mesher be mended where a part is thinner than a cell, though it moves
+   the meshes of three approved props?** (2026-11-20.) Where a sheet of a sculpt is thinner
+   than one cell of its grid, the mesher makes an edge shared by four triangles. Six
+   sculpts of the repository have 1 to 18 such edges: `grave_rock` (1), `statue_angel` (3)
+   and `statue_mourner` (2), which the owner approved at the window in M4, and three of the
+   fidelity set. Nothing visible is known to be wrong with them; the fault is that such an
+   edge is not a proper surface (the level-of-detail check keeps no volume for that part,
+   and a collider or a boolean made from it can go wrong). The build now says where they
+   are. The mend is about a day's work and changes those six meshes by a few triangles
+   each, so their pinned hashes move and the props are looked at again before and after, as
+   was done for the turned sculpt nodes on 2026-11-19. *Claude's recommendation:* mend it,
+   with before-and-after pictures of the three Sepulcra props checked by a model that did
+   not take them. Until the owner says, the mesher stays as it is.
 
 (An empty folder a reviewer made by mistake, `C:\sr-k2t`, was removed on 2026-11-20 at the
 owner's word. The reviewer had been refused the permission and asked the lead to do it; the
