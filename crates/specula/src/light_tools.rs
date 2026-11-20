@@ -220,11 +220,12 @@ pub fn definitions() -> Vec<ToolDef> {
                       has it, then again with each light feature that is on left out (the sun's shadows, ambient occlusion, \
                       bloom, anti-aliasing, fog, the sky, grading, baked GI, the point lights in view), and once with all of \
                       them out. Answers the GPU time of each (the median of `frames` renders, by the adapter's own \
-                      timestamps, in rounds that alternate the variants, every second one backwards), each feature's cost \
+                      timestamps, in rounds that alternate the variants, every second one backwards, in an order that \
+                      changes from pair to pair), each feature's cost \
                       (from frames drawn in the same round) and whether it is told from the noise (their own scatter), \
                       whether the machine was steady while it was measured, whether the view holds `budget_ms`, and which \
-                      features to give up, costliest first, when it does not (no advice from too few rounds or on a machine \
-                      busy by turns, and it says why). Waits for what the view is still loading first, as sight_frame does; \
+                      features to give up, costliest first, when it does not (no advice from too few rounds or from frames too \
+                      uneven to advise on, and it says why). Waits for what the view is still loading first, as sight_frame does; \
                       a call whose time runs short answers with the whole rounds it has (`partial`). Also \
                       what the engine's light has and has not, whatever the machine (it never uses ray-tracing hardware). \
                       Changes nothing in the world and writes nothing; a render per step, between frames. The numbers are \
@@ -365,7 +366,7 @@ fn report(variants: &[Variant], on: Without, budget_ms: f64) -> Json {
                 (
                     "what",
                     Json::from(if busy {
-                        "the machine was busy by turns while this was measured (a fifth or more of the frames over a twentieth later than their variant's quick ones: another program on the GPU, or a clock that moved): costs are read from frames drawn together, and no advice for a budget is given; measure again when it is quieter"
+                        "not steady: a fifth or more of the frames were over a twentieth later than their variant's quick ones. That may be another program on the GPU, a clock that moved, or this machine's own unevenness from frame to frame; the frames alone do not say which. Costs are still read from frames drawn together, and no advice for a budget is given; measure again when the machine is quieter"
                     } else {
                         "steady: fewer than a fifth of the frames were over a twentieth later than their variant's quick ones"
                     }),
@@ -402,7 +403,7 @@ fn advice(costs: &[(Feature, f64, bool)], bare: Option<&Variant>, total: f64, bu
         return Json::obj([
             ("advised", Json::from(false)),
             ("why", Json::from("busy")),
-            ("note", Json::from(format!("the machine was busy by turns while this was measured ({late} of {frames} frames late): no advice for the budget, which could name a feature that costs nothing. Measure again when it is quieter"))),
+            ("note", Json::from(format!("the frames were too uneven while this was measured ({late} of {frames} over a twentieth late: load from another program, a clock that moved, or this machine's own unevenness): no advice for the budget, which could name a feature that costs nothing. Measure again when the machine is quieter"))),
         ]);
     }
     // What to give up, the costliest first, until the sum of what was measured apart says
@@ -515,6 +516,9 @@ pub(crate) struct LightJob {
     asked: bool,
     /// It ended before its rounds were done.
     cut_short: bool,
+    /// What the view as it is was warned of when its first render landed, as `sight_frame`
+    /// warns ([`Engine::drawn_view_warnings`]).
+    drawn_warnings: Vec<Json>,
 }
 
 impl LightJob {
@@ -552,10 +556,11 @@ impl LightJob {
             wait_limit: LOADING_WAIT,
             asked: false,
             cut_short: false,
+            drawn_warnings: Vec::new(),
         })
     }
 
-    /// The variant drawn at this place of this round (every second round backwards).
+    /// The variant drawn at this place of this round ([`crate::light_noise::variant_at`]).
     fn drawn_now(&self) -> usize {
         crate::light_noise::variant_at(self.round, self.next, self.variants.len())
     }
@@ -598,10 +603,10 @@ impl LightJob {
         };
         // (Its place in the flash watch is dropped unrun: a render with light left out is not
         // what the view shows.)
-        let rend = landed.map_err(ToolOutput::error)?;
+        let mut rend = landed.map_err(ToolOutput::error)?;
         self.flying = false;
         self.renders += 1;
-        let Some(gpu) = rend.gpu else {
+        let Some(gpu) = rend.gpu.take() else {
             return Err(error(
                 "no_gpu_timings",
                 "this adapter's queue gave no timestamps for the render, so what the light costs cannot be measured here (engine_info and perf_frame say whether timestamps are supported)",
@@ -615,6 +620,10 @@ impl LightJob {
             self.lights = rend.lights;
             self.dropped_lights = rend.dropped_lights;
             self.gi_error = rend.gi_error.clone();
+            // What `sight_frame` would have warned of in this view as it is (a picture that
+            // failed to load, models not drawn, lights left out, the camera's): the same code.
+            let waited_since = (self.waited != Some(WaitEnd::NotNeeded)).then_some(self.started);
+            self.drawn_warnings = e.drawn_view_warnings(&rend, self.camera, self.size, self.include_ui, waited_since, self.waited == Some(WaitEnd::CallTime), self.warning.take());
             let mut all = Without::NOTHING;
             for f in FEATURES.into_iter().filter(|f| self.on.has(*f)) {
                 self.variants.push(Variant::new(Without::only(f), Some(f)));
@@ -700,14 +709,13 @@ impl LightJob {
         out.set(
             "measured",
             Json::from(
-                "GPU time of an offscreen frame of this view at this size, first pass start to last pass end, by the adapter's timestamps: the median of the frames counted, the variants drawn in alternating rounds, one round first that is not counted. A cost is the median of the differences of frames drawn in the same round (every second round backwards). The ID buffer is not drawn and the image is not copied back, on the GPU or by the host. Other programs use the same GPU: a cost inside noise_ms is not told from nothing. A window's frame also pays for presenting (perf_frame, whose `offscreen` record is now the last of these measuring renders, drawn without its light).",
+                "GPU time of an offscreen frame of this view at this size, first pass start to last pass end, by the adapter's timestamps: the median of the frames counted, the variants drawn in alternating rounds, one round first that is not counted. A cost is the median of the differences of frames drawn in the same round (every second round the one before it backwards; the order changes from pair to pair of rounds, by a fixed sequence). The ID buffer is not drawn and the image is not copied back, on the GPU or by the host. Other programs use the same GPU: a cost inside noise_ms is not told from nothing. A window's frame also pays for presenting (perf_frame, whose `offscreen` record is now the last of these measuring renders, drawn without its light).",
             ),
         );
         out.set("engine_light", engine_light());
-        let mut warnings = Vec::new();
-        if let Some(w) = self.warning.take() {
-            warnings.push(Json::from(w));
-        }
+        // (The camera's warning and the lights left out are among what the view as it is was
+        // warned of, as `sight_frame` says them.)
+        let mut warnings = std::mem::take(&mut self.drawn_warnings);
         if let Some(g) = self.gi_error.take() {
             warnings.push(Json::from(format!("baked GI was not drawn: {g}")));
         }
@@ -722,9 +730,6 @@ impl LightJob {
                 if counted < MIN_FRAMES as usize { "; with so few frames no cost is said to be told from the noise" } else { "" }
             )));
         }
-        if self.dropped_lights > 0 {
-            warnings.push(Json::from(format!("{} point lights in view were left out of the frame: it draws {} at most", self.dropped_lights, specula_gpu::MAX_POINT_LIGHTS)));
-        }
         if !warnings.is_empty() {
             out.set("warnings", Json::Arr(warnings));
         }
@@ -737,10 +742,21 @@ impl StepJob for LightJob {
         "perf_light"
     }
 
+    fn on_gpu(&self) -> bool {
+        self.flying
+    }
+
     fn step(&mut self, e: &mut Engine, _reply: &crate::jobs::Reply) -> Step {
         if self.flying {
             return match self.land(e) {
-                Ok(_) => Step::More,
+                Ok(true) => Step::More,
+                // Still on the GPU: the job waits at the back of the queue, and the pass ends
+                // when every job there is waiting, so it is looked at again a pass later (the
+                // third review: answering `More` here asked to be stepped again at once, and a
+                // job alone spun on the GPU's fence for its whole step credit, up to 12 ms a
+                // pass). With a window, a pass comes about every millisecond while it does
+                // (`on_gpu`; the fourth review: once a frame, one render landed a frame).
+                Ok(false) => Step::Wait,
                 Err(out) => Step::Done(out),
             };
         }
@@ -1000,17 +1016,9 @@ mod tests {
         let started = Instant::now();
         while out.is_none() {
             assert!(started.elapsed() < std::time::Duration::from_secs(120), "the report took over two minutes");
-            match job.step(&mut e, &reply) {
-                Step::Done(o) => out = Some(o),
-                Step::More | Step::Wait => {}
-                Step::Handed => panic!("it answers itself"),
-            }
+            out = step_once(&mut e, &mut job, &reply);
             if out2.is_none() {
-                match second.step(&mut e, &reply2) {
-                    Step::Done(o) => out2 = Some(o),
-                    Step::More | Step::Wait => {}
-                    Step::Handed => panic!("it answers itself"),
-                }
+                out2 = step_once(&mut e, &mut second, &reply2);
             }
             if !warmed && job.renders >= 1 && second.renders >= 1 {
                 e.gpu.mark_warm();
@@ -1020,9 +1028,7 @@ mod tests {
         }
         while out2.is_none() {
             assert!(started.elapsed() < std::time::Duration::from_secs(120), "the second report took over two minutes");
-            if let Step::Done(o) = second.step(&mut e, &reply2) {
-                out2 = Some(o);
-            }
+            out2 = step_once(&mut e, &mut second, &reply2);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let out2 = out2.unwrap();
@@ -1077,7 +1083,7 @@ mod tests {
             if hurried.round == 4 && hurried.next == 2 && !hurried.flying {
                 hurried.deadline = Instant::now();
             }
-            if let Step::Done(o) = hurried.step(&mut e, &reply) {
+            if let Some(o) = step_once(&mut e, &mut hurried, &reply) {
                 break o;
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1133,13 +1139,14 @@ mod tests {
     }
 
     /// Steps a job to its answer, as the engine's passes would (a millisecond apart), and the
-    /// answer's report.
+    /// answer's report. A step that finds its render still on the GPU must wait
+    /// ([`Step::Wait`]), never ask to be stepped again at once ([`step_once`]).
     fn run_job(e: &mut Engine, job: &mut LightJob) -> (ToolOutput, Option<Json>) {
         let (reply, _rx) = crate::jobs::channel();
         let started = Instant::now();
         let out = loop {
             assert!(started.elapsed() < std::time::Duration::from_secs(120), "the report took over two minutes");
-            if let Step::Done(o) = job.step(e, &reply) {
+            if let Some(o) = step_once(e, job, &reply) {
                 break o;
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1149,6 +1156,25 @@ mod tests {
             _ => None,
         });
         (out, r)
+    }
+
+    /// One step of a job, and, when it has just submitted a render, the next at once, as a pass
+    /// of the engine goes round its queue (the render is then nearly always still on the GPU).
+    /// Panics when a step leaves its render still in flight and answers anything but
+    /// [`Step::Wait`]: a job that asked to be stepped again at once spun on the GPU's fence for
+    /// its whole step credit (the third review).
+    fn step_once(e: &mut Engine, job: &mut LightJob, reply: &crate::jobs::Reply) -> Option<ToolOutput> {
+        loop {
+            let flying = job.flying;
+            let step = job.step(e, reply);
+            match step {
+                Step::Done(o) => return Some(o),
+                Step::Handed => panic!("it answers itself"),
+                Step::More if flying && job.flying => panic!("a step found its render still on the GPU and asked to be stepped again at once"),
+                Step::More if !flying && job.flying => continue,
+                Step::More | Step::Wait => return None,
+            }
+        }
     }
 
     /// The second review's finding 1 (by reading): a view with a sprite nobody has loaded kept
@@ -1193,6 +1219,88 @@ mod tests {
         assert!(!out.is_error && cut.waited == Some(WaitEnd::Limit) && cut.loading > 0, "{r}");
         assert_eq!(r.get("waited").and_then(Json::as_str), Some("limit"));
         assert!(r.get("warnings").and_then(Json::as_array).is_some_and(|w| w.iter().any(|x| x.as_str().is_some_and(|s| s.contains("still loading")))), "{r}");
+
+        // A call whose time would not hold a whole wait does not wait: it measures the view as
+        // it is at once and says why, where waiting would have spent its time and answered
+        // `measured_nothing` (the third review: no test held this). By the job's state: its
+        // deadline is under a whole wait from now at its first step (and past the margin, so
+        // the step does not end it), then moved far, so that the measuring is not cut.
+        spawn_json(&mut e, r#"{"name": "dot3", "shape": "sprite", "sprite": {"texture": "sprites/dot3.png", "size": [2, 2]}, "position": [-0.5, 0, 0]}"#);
+        let spec = parse(&args(r#"{"width": 128, "height": 128, "frames": 5, "budget_ms": 1000, "eye": [0, 0, 6], "target": [0, 0, 0]}"#)).unwrap();
+        let mut short = LightJob::new(&mut e, spec, &crate::timeline::tests::session("aaaaaa11"), far).unwrap();
+        let (reply, _rx) = crate::jobs::channel();
+        short.deadline = Instant::now() + LOADING_WAIT / 2;
+        assert!(step_once(&mut e, &mut short, &reply).is_none(), "its first step ends nothing");
+        assert_eq!((short.waited, short.loading > 0, short.cut_short), (Some(WaitEnd::CallTime), true, false), "a picture nobody has loaded is loading at the first look");
+        short.deadline = far;
+        let (out, r) = run_job(&mut e, &mut short);
+        let r = r.unwrap();
+        assert!(!out.is_error && r.get("partial").is_none(), "{r}");
+        assert_eq!(r.get("waited").and_then(Json::as_str), Some("call_time"), "{r}");
+        assert_eq!(r.get("as_it_is").and_then(|a| a.get("frames")).and_then(Json::as_u64), Some(5), "{r}");
+
+        // A picture that failed to load is warned of as `sight_frame` warns of it (the third
+        // review: `sight_frame` said "texture ...: The system cannot find the file specified"
+        // and `perf_light` of the same view said nothing). Its wait ends when the load has
+        // failed: nothing is still loading then.
+        let spec = parse(&args(r#"{"width": 128, "height": 128, "frames": 5, "budget_ms": 1000, "eye": [0, 0, 6], "target": [0, 0, 0]}"#)).unwrap();
+        let mut failed = LightJob::new(&mut e, spec, &crate::timeline::tests::session("aaaaaa11"), far).unwrap();
+        let (out, r) = run_job(&mut e, &mut failed);
+        let r = r.unwrap();
+        assert!(!out.is_error && matches!(failed.waited, Some(WaitEnd::Ready | WaitEnd::NotNeeded)) && failed.loading == 0, "{r}");
+        let warnings: Vec<&str> = r.get("warnings").and_then(Json::as_array).map(|w| w.iter().filter_map(Json::as_str).collect()).unwrap_or_default();
+        for missing in ["sprites/dot2.png", "sprites/dot3.png"] {
+            assert!(warnings.iter().any(|w| w.starts_with(&format!("texture {missing}")) && !w.contains("still loading")), "{missing} is warned of: {r}");
+        }
+
+        // A job queued while it waits for a view still loading is dropped when its session
+        // closes, and answers why (by state: it is queued and waiting, then its session is
+        // seen to be gone; the third review did not check it).
+        spawn_json(&mut e, r#"{"name": "dot4", "shape": "sprite", "sprite": {"texture": "sprites/dot4.png", "size": [2, 2]}, "position": [0, 0.5, 0]}"#);
+        let spec = parse(&args(r#"{"width": 128, "height": 128, "frames": 5, "budget_ms": 1000, "eye": [0, 0, 6], "target": [0, 0, 0]}"#)).unwrap();
+        let session = crate::timeline::tests::session("aaaaaa11");
+        let job = LightJob::new(&mut e, spec, &session, far).unwrap();
+        let (reply, rx) = crate::jobs::channel();
+        let owner = crate::jobs::JobOwner { name: e.swarm.agent_name(&session), key: e.swarm.key(&session) };
+        e.step_job(StepStart { owner, session: session.id.clone(), call: 7, reply, deadline: far, class: schedule::Class::Render }, Box::new(job));
+        assert!(e.steps_busy() && rx.try_recv().is_err(), "it waits, queued, for the picture");
+        e.drop_closed_steps(&std::collections::BTreeSet::from(["bbbbbb22".to_owned()]));
+        let out = rx.try_recv().expect("an answer when the session closed");
+        assert!(out.is_error && format!("{:?}", out.content).contains("session_closed") && !e.steps_busy(), "{:?}", out.content);
+    }
+
+    /// A model still building when a report is asked for is waited for, as `sight_frame` waits
+    /// for it, and the view is measured with it built (the third review did not check this).
+    /// By state: spawned with no pump between, it is building at the job's first look.
+    #[test]
+    fn a_view_whose_model_is_building_waits_for_it() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        spawn_json(&mut e, r#"{"name": "stone", "shape": "model", "recipe": "recipes/tombstone.json", "seed": 77, "position": [0, 0, 0]}"#);
+        let spec = parse(&args(r#"{"width": 128, "height": 128, "frames": 5, "budget_ms": 1000, "eye": [0, 1, 4], "target": [0, 0.5, 0]}"#)).unwrap();
+        let far = Instant::now() + std::time::Duration::from_secs(600);
+        let mut job = LightJob::new(&mut e, spec, &crate::timeline::tests::session("aaaaaa11"), far).unwrap();
+        let (reply, _rx) = crate::jobs::channel();
+        assert!(step_once(&mut e, &mut job, &reply).is_none());
+        assert_eq!((job.waited, job.loading > 0, job.renders), (None, true, 0), "the case under test: the model is building at the first look, and nothing is drawn");
+        let started = Instant::now();
+        let out = loop {
+            assert!(started.elapsed() < std::time::Duration::from_secs(120), "the report took over two minutes");
+            // (The engine's loop takes finished builds between passes.)
+            e.pump_builds(None);
+            if let Some(o) = step_once(&mut e, &mut job, &reply) {
+                break o;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert!(!out.is_error, "{:?}", out.content);
+        let r = out.content.iter().find_map(|c| match c {
+            specula_protocol::Content::Text(t) => Json::parse(t).ok(),
+            _ => None,
+        });
+        let r = r.unwrap();
+        assert_eq!((job.waited, job.loading), (Some(WaitEnd::Ready), 0), "{r}");
+        assert_eq!(r.get("as_it_is").and_then(|a| a.get("frames")).and_then(Json::as_u64), Some(5), "{r}");
+        assert!(r.get("warnings").is_none(), "measured with the model built and drawn: {r}");
     }
 
     #[test]

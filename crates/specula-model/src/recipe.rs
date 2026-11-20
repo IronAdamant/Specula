@@ -1220,12 +1220,15 @@ pub struct ModelExtras {
     pub stats: Vec<(String, Json)>,
     /// The shapes the recipe names round, and how coarsely each was built, measured in the
     /// finished model ([`Round`], [`crate::facet`]): those with a triangle of their own left,
-    /// at most [`MAX_ROUND`], kept in the order the answer is read by (the ones not measured
-    /// first, then every shape that is the coarsest seen at some size, then the rest).
+    /// at most [`MAX_ROUND`] but for every shape that is the coarsest seen at some size (all of
+    /// those are kept), in the order the answer is read by (up to eight of the ones not
+    /// measured first, then those that are the coarsest seen at some size, then the rest).
     pub round: Vec<Round>,
-    /// How many round shapes have a triangle of their own in the finished model (`round` keeps
-    /// at most [`MAX_ROUND`] of them).
+    /// How many round shapes have a triangle of their own in the finished model, whatever
+    /// `round` keeps.
     pub round_total: usize,
+    /// How many of them were not measured, whatever `round` keeps.
+    pub round_not_measured: usize,
     /// What the recipe is built of ([`crate::Made`]): each shape it names with its own outlines
     /// and its own surface in the finished model, measured on the triangles that carry it
     /// ([`crate::Shape::owners`]: what its operations, a boolean and a scatter left of it), one
@@ -1511,7 +1514,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         .sum();
     let finished: Vec<&Shape> = built.iter().map(|b| &b.shape).collect();
     // (Round shapes first: `made_of` takes the record.)
-    let (round, round_total) = {
+    let (round, round_total, round_not_measured) = {
         let paths: Vec<String> = tally.made.borrow().iter().map(|r| r.path.clone()).collect();
         crate::facet::finish(&tally.rounds.borrow(), &paths, &finished)
     };
@@ -1529,7 +1532,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         budget: (min_t, max_t),
         notes,
         rig: rig.map(|(r, _)| r),
-        extras: ModelExtras { textures, terrain, terrain_transform, stats, round, round_total, made, made_rest_m2 },
+        extras: ModelExtras { textures, terrain, terrain_transform, stats, round, round_total, round_not_measured, made, made_rest_m2 },
         wind,
     })
 }
@@ -1690,20 +1693,21 @@ impl Tally {
             s.own(slot);
             drop((records, slots));
             for note in notes {
-                self.round_on(note, slot, crate::facet::phase_of(s));
+                let ring = note.ring.map(|sides| crate::facet::Ring::of(s, note.what, sides, note.radius));
+                self.round_on(note, slot, ring);
             }
         }
     }
 
     /// A round shape's note, on its slot.
-    fn round_on(&self, note: crate::facet::Note, slot: u32, phase: f64) {
+    fn round_on(&self, note: crate::facet::Note, slot: u32, ring: Option<crate::facet::Ring>) {
         if !(note.turn_deg.is_finite() && note.radius.is_finite() && note.turn_deg > 0.0 && note.radius > 0.0) {
             return;
         }
         let record = self.slots.borrow().get(slot as usize).map_or(0, |s| s.record);
         let mut recs = self.rounds.borrow_mut();
         if recs.len() < crate::facet::MAX_RECS {
-            recs.push(crate::facet::Rec { note, record, slot, phase, maps: vec![crate::facet::IDENTITY], many: None, displaced: 0.0, unknown: None });
+            recs.push(crate::facet::Rec { note, record, slot, ring, maps: vec![crate::facet::IDENTITY], many: None, displaced: 0.0, unknown: None });
         }
     }
 
@@ -1757,7 +1761,7 @@ impl Tally {
         s.owners = of.iter().map(|&p| slot_of.get(p as usize).copied().unwrap_or(crate::shape::NO_OWNER)).collect();
         drop((records, slots));
         for (note, slot) in round_slots {
-            self.round_on(note, slot, 0.0);
+            self.round_on(note, slot, None);
         }
     }
 

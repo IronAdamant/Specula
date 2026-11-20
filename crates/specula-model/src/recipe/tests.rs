@@ -589,15 +589,23 @@ fn what_a_recipe_names_round_says_how_coarsely_it_was_built() {
     // Six sides: sixty degrees a side, at half a metre. Twelve unless said: thirty.
     assert!(matches!(of("parts[0].shape")[..], [r] if r.what == "cylinder" && near(r.turn_deg, 60.0) && near(r.radius_m, 0.5)), "{round:?}");
     assert!(matches!(of("parts[1].shape")[..], [r] if near(r.turn_deg, 30.0) && near(r.radius_m, 0.1)));
-    assert!(matches!(of("parts[2].shape")[..], [r] if r.what == "cone" && near(r.turn_deg, 15.0)));
+    // A sloped band of faces turns less than a wall: 2·asin(a·sin(half a step)), `a` how far its
+    // faces lean out from the axis (their normal's outward part), from its edge between rims
+    // (the chords at the rims: rho·cos(half a step)).
+    let slope = |dr: f64, dy: f64, step: f64| {
+        let (s, c) = crate::dmath::sin_cos_f64((0.5 * step).to_radians());
+        let a = dy / crate::dmath::hypot_f64(dr * c, dy);
+        (2.0 * crate::dmath::asin_f64(a * s).to_degrees()) as f32
+    };
+    assert!(matches!(of("parts[2].shape")[..], [r] if r.what == "cone" && near(r.turn_deg, slope(-0.3, 1.0, 15.0))), "{round:?}");
     assert!(matches!(of("parts[3].shape")[..], [r] if r.what == "sphere" && r.turn_deg > 41.81 / 4.0 - 0.01 && r.turn_deg < 1.2 * 41.81 / 4.0 && near(r.radius_m, 0.4)));
     // A torus turns twice: round its ring and round its tube.
     let ring = of("parts[4].shape");
-    assert!(ring.len() == 2 && ring.iter().any(|r| near(r.turn_deg, 15.0) && near(r.radius_m, 0.75)) && ring.iter().any(|r| near(r.turn_deg, 60.0) && near(r.radius_m, 0.05)), "{ring:?}");
+    assert!(ring.len() == 2 && ring.iter().any(|r| near(r.turn_deg, slope(0.05 * (0.5 - 1.0), 0.05 * 0.866_025_4, 15.0)) && near(r.radius_m, 0.75)) && ring.iter().any(|r| near(r.turn_deg, 60.0) && near(r.radius_m, 0.05)), "{ring:?}");
     // A capsule turns twice too: round its axis (by its segments) and over its ends (by its rings).
     let pill = of("parts[5].shape");
     assert!(pill.len() == 2 && pill.iter().any(|r| r.count == "segments" && near(r.turn_deg, 22.5)) && pill.iter().any(|r| r.count == "rings" && near(r.turn_deg, 45.0) && near(r.radius_m, 0.2)), "{pill:?}");
-    assert!(matches!(of("parts[6].shape")[..], [r] if r.what == "lathe" && near(r.turn_deg, 36.0) && near(r.radius_m, 0.3)));
+    assert!(matches!(of("parts[6].shape")[..], [r] if r.what == "lathe" && near(r.turn_deg, slope(-0.1, 0.4, 36.0)) && near(r.radius_m, 0.3)));
     // A prism and a box are what they are named: nothing is said of them.
     assert!(of("parts[7].shape").is_empty() && of("parts[8].shape").is_empty());
     // A sculpt: its cells against its tightest radius.

@@ -53,6 +53,13 @@ pub(crate) enum Step {
 pub(crate) trait StepJob {
     fn kind(&self) -> &'static str;
     fn step(&mut self, engine: &mut Engine, reply: &Reply) -> Step;
+    /// Whether it has a render on the GPU that a step lands (and answers [`Step::Wait`] for
+    /// until the GPU is done). While a queued job does, the window looks at the step jobs about
+    /// every millisecond within its serve wait, where it otherwise looks once a frame
+    /// (`schedule`, "Step jobs waiting on the GPU"; light review 4: one render landed a frame).
+    fn on_gpu(&self) -> bool {
+        false
+    }
 }
 
 struct Entry {
@@ -82,6 +89,11 @@ pub struct Steps {
 impl Steps {
     pub fn busy(&self) -> bool {
         !self.queue.is_empty()
+    }
+
+    /// Whether a queued job has a render on the GPU ([`StepJob::on_gpu`]).
+    pub fn gpu_waiting(&self) -> bool {
+        self.queue.iter().any(|e| e.job.on_gpu())
     }
 
     pub fn to_json(&self) -> Json {
@@ -152,16 +164,22 @@ impl Engine {
         if self.steps.last_session_check.is_none_or(|t| now - t >= SESSION_CHECK) {
             self.steps.last_session_check = Some(now);
             let alive = self.open_session_ids(server.all_sessions());
-            for e in std::mem::take(&mut self.steps.queue) {
-                if e.cancel_on_close && !alive.contains(&e.session) {
-                    let _ = e.reply.send(stopped("session_closed", &format!("the session closed; its {} was dropped", e.job.kind())));
-                } else {
-                    self.steps.queue.push_back(e);
-                }
-            }
+            self.drop_closed_steps(&alive);
         }
         self.steps.credit_ms = (self.steps.credit_ms + earned).min(MAX_CREDIT_MS);
         self.run_steps();
+    }
+
+    /// Drops the queued jobs of sessions not in `alive` (`session_closed`), whatever they were
+    /// doing: one that waits ([`Step::Wait`]) is dropped as one with more to do is.
+    pub(crate) fn drop_closed_steps(&mut self, alive: &BTreeSet<String>) {
+        for e in std::mem::take(&mut self.steps.queue) {
+            if e.cancel_on_close && !alive.contains(&e.session) {
+                let _ = e.reply.send(stopped("session_closed", &format!("the session closed; its {} was dropped", e.job.kind())));
+            } else {
+                self.steps.queue.push_back(e);
+            }
+        }
     }
 
     /// The queued jobs' slices for this pass, within the credit earned.
@@ -311,6 +329,56 @@ mod tests {
     }
 
     use super::*;
+
+    /// A job with a render on the GPU for `looks` looks, then done.
+    struct Renders {
+        looks: usize,
+    }
+
+    impl StepJob for Renders {
+        fn kind(&self) -> &'static str {
+            "renders"
+        }
+
+        fn step(&mut self, _: &mut Engine, _: &Reply) -> Step {
+            if self.looks == 0 {
+                return Step::Done(ToolOutput::text("{}"));
+            }
+            self.looks -= 1;
+            Step::Wait
+        }
+
+        fn on_gpu(&self) -> bool {
+            self.looks > 0
+        }
+    }
+
+    /// Light review 4: the window pulses (looks at the step jobs about every millisecond) only
+    /// while a queued job has a render on the GPU: not for a job that waits for a worker, and
+    /// not once the render has landed.
+    #[test]
+    fn only_a_job_with_a_render_on_the_gpu_asks_for_pulses() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        let start = |name: &'static str| {
+            let (reply, answer) = crate::jobs::channel();
+            let owner = crate::jobs::JobOwner { name: name.into(), key: name.into() };
+            (StepStart { owner, session: name.into(), call: 0, reply, deadline: Instant::now() + Duration::from_secs(120), class: crate::schedule::Class::Render }, answer)
+        };
+        assert!(!e.steps.gpu_waiting(), "nothing queued");
+        let (s, _worker) = start("film");
+        e.step_job(s, Box::new(Waits { left: 1_000_000 }));
+        assert!(e.steps.busy() && !e.steps.gpu_waiting(), "a job waiting for a worker asks for none");
+        let (s, rendered) = start("light");
+        e.step_job(s, Box::new(Renders { looks: 3 }));
+        assert!(e.steps.gpu_waiting(), "a job with its render on the GPU does");
+        let give_up = Instant::now() + Duration::from_secs(60);
+        while rendered.try_recv().is_err() {
+            assert!(Instant::now() < give_up, "the render never landed");
+            e.steps.credit_ms = MAX_CREDIT_MS;
+            e.run_steps();
+        }
+        assert!(e.steps.busy() && !e.steps.gpu_waiting(), "landed and answered: no more pulses");
+    }
 
     /// Review of 998af3d (major 1): twenty agents looping world_hash {verify} filled the slots and
     /// a playtest's own verify steps all failed with job_busy. A playtest's step always queues; a

@@ -2874,14 +2874,25 @@ impl Engine {
             }
             let window = if minimized { schedule::MINIMIZED_SERVE } else { schedule.window() };
             let serve_start = Instant::now();
-            let ended = schedule.serve(
+            // While a step job's render is on the GPU, the window also looks at the step jobs
+            // about every millisecond (`schedule`, "Step jobs waiting on the GPU"), where the
+            // frame's own pump looks once a frame.
+            let waiting = self.steps.gpu_waiting();
+            let ended = schedule.serve_with(
                 &mut inbox,
                 &mut held,
                 serve_start + window,
+                waiting,
                 |r| call_class(&r.command),
-                |r| {
-                    let _z = profile::zone("requests");
-                    self.handle_traced(r, server);
+                |w| {
+                    match w {
+                        schedule::Work::Call(r) => {
+                            let _z = profile::zone("requests");
+                            self.handle_traced(r, server);
+                        }
+                        schedule::Work::Pulse => self.pump_steps(steps::WINDOW_SHARE, server),
+                    }
+                    self.steps.gpu_waiting()
                 },
                 || interrupt::requested() || ui.close_requested(),
             );

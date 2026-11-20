@@ -815,6 +815,19 @@ impl Engine {
         warnings
     }
 
+    /// [`Engine::capture_warnings`] for a view drawn by something other than a capture
+    /// (`perf_light`'s first render, the view as it is): what `sight_frame` would have said of
+    /// it, by the same code (the third review: a 2D picture that failed to load was warned of
+    /// by `sight_frame` and not by `perf_light`). `waited_since` is when its wait for what was
+    /// loading began (`None`: it did not wait), `cut` whether the call's time cut that wait.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn drawn_view_warnings(&mut self, r: &Rendered, camera: Camera, size: (u32, u32), include_ui: bool, waited_since: Option<Instant>, cut: bool, warning: Option<String>) -> Vec<Json> {
+        let view = ViewReq { camera, width: size.0, height: size.1, include_ui, lod: None, source: Json::Null, warning };
+        let building = self.building_in(std::slice::from_ref(&view));
+        let wait = CaptureWait { presented_at: None, parked_at: waited_since, cut_by_deadline: cut };
+        self.capture_warnings(&r.stats, &r.two_d_problems, r.dropped_lights, wait, building, &view)
+    }
+
     /// The GPU's validation messages since the last capture, as warnings (and traced).
     fn validation_warnings(&mut self) -> Vec<Json> {
         let mut warnings = Vec::new();

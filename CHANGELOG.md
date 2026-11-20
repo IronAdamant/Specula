@@ -423,7 +423,24 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       drawn backwards, with the answer saying when the machine was too busy to advise
       (`light_noise.rs`; LIGHT.md, "What was mended, second round"). Its review said not to
       merge for one missing test, and found the tool sound in every run on both adapters
-      (LIGHT.md, "Its third review").
+      (LIGHT.md, "Its third review"). Mended (2026-11-20): the test; a round's variants
+      drawn in an order that changes from pair to pair by a fixed sequence, so that a load
+      in step with the rounds cannot pass for a cost; the job waits while its render is
+      on the graphics card, where it had spun; a 2D picture that failed to load is warned
+      of (LIGHT.md, "What was mended, third round"). A short review of that said not to
+      merge for one finding: with a window held to 20 frames a second a report takes 3.7
+      times as long, since a waiting job lands one render a frame (LIGHT.md, "Its fourth
+      review"). Mended: while a step job has a render on the graphics card, the window's
+      wait between frames wakes about every millisecond to look at it, without spinning
+      and with no extra wake when nothing waits; the timeline's preview job waits the same
+      way (LIGHT.md, "What was mended, fourth round"; WORKERS.md).
+    - **The shape library, three stages on its branch** (2026-11-19 and 20; not merged yet):
+      plane figures, curves and solids as a table of named forms with exact pieces, closed
+      measures and a known error (`specula-formae`); 2.5D (a figure raised five ways, a solid
+      drawn flat with hidden surfaces removed, a solid cut into layers); recipes that name a
+      form as an outline, a solid or a raised figure; `shape2d` items by name and two
+      catalogue tools in the engine. Each stage was held by a probe of the lead's own and
+      its faults mended by the next builder (HANDOFF has each).
     - **The rounded shape's levelled weights, reviewed** (2026-11-20): not to merge. A large
       thin rounded cutter set past the corner of what it cuts costs four times its charge
       by count, so the work limit does not bound such a build's time; other roundnesses
@@ -433,12 +450,24 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       along a guessed normal (beside a thin sheet's rim it had started millions of times
       short), and a build is charged for the powers its solve takes past what the weight
       covers, so the work limit bounds the time whatever the shape. One weight; the
-      thinness grading is gone. Not reviewed yet.
+      thinness grading is gone. Its review said not to merge it: the new start leaves the
+      field up to 56 times short of the distance just past a thin face beside its rim,
+      with a step; and nested unions are pruned at each level and charged once
+      (PROCEDURAL_MODELLING.md, "A ninth"). Not mended yet.
     - **Shape language, after its third review** (2026-11-19): not to merge, again: a crate
       with wide bevels read as round and a ball on a string as pointed. It is not written a
       fourth time on a guess: the shares stay a reported fact, the check stays for a style
       that names it (its advice made true, its faults said), no preset asks for it, and what
       it should become is the owner's to say (HANDOFF, "Open owner decisions").
+    - **Distance fields, proved here** (2026-11-20;
+      [docs/design/DISTANCE_FIELDS.md](docs/design/DISTANCE_FIELDS.md)): every fact the sculpt
+      modeller leans on, stated and proved from first principles in the repository's own
+      words and under its licence: a distance never changes faster than one for one; a field
+      with that property never exceeds the distance to its own surface; on which side a
+      union, a meeting and a cut are exact; a plane figure raised or turned stays exact; how
+      far each smooth join dips, and that a join of safe fields is safe. The cubic join's
+      sixth of its width, stated in no paper found, is proved there. A test holds each
+      statement in numbers against a nearest point found by search.
     - **Faceting, from what a recipe names round** (2026-11-19; FORM.md): the form check that
       three tries could not make from a mesh. The modeller records how coarsely each shape
       a recipe names round was built (the turn between its faces, its radius); the facts
@@ -455,7 +484,15 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       the asset's size is its greatest width; the advice names the right count. Its
       review said not to merge it: a ring whose axis is no longer square to it (a lean; an
       odd turn then an uneven scale) is measured wrongly and called measured, and the
-      sphere's advice names too few subdivisions (FORM.md, "Its second review").
+      sphere's advice names too few subdivisions (FORM.md, "Its second review"). Mended
+      (2026-11-20): a ring is measured face by face round its axis from the profile read
+      off the built mesh, normals carried by the map's inverse transpose; advice names a
+      count only after measuring the shape again at it; the reviewer's kind of truth is a
+      permanent test (`tests/facet_truth.rs`, 400 random chains); the greatest width is
+      exact; every shape not measured is said at once. Its review found the ring's measure
+      sound and said not to merge for the advice: a count can be named that the build
+      refuses; and a sloped band's rim shows more from above than its faces turn (FORM.md,
+      "Its third review").
     - **The light report** (2026-11-19; [docs/design/LIGHT.md](docs/design/LIGHT.md)): `perf_light`
       measures what each light feature of a view costs on the machine the engine runs on, at
       the size asked, by the GPU's own timestamps: the view as the world has it, each feature

@@ -940,5 +940,11 @@ mod tests {
             let p = noisy(30.0, pp, 1.0);
             assert_eq!(places(&at_most_long(&p)), places(&p), "a rod wobbling by {pp} is pressed, not cut");
         }
+        // The line held from below too: within it (1.8%, at each wavelength) the length is cut
+        // out, its points meeting where it was.
+        for wl in [0.5f32, 1.0, 2.0] {
+            let p = noisy(30.0, 0.018, wl);
+            assert!(places(&at_most_long(&p)) < places(&p), "a rod wobbling by 1.8% every {wl} widths is cut, not pressed");
+        }
     }
 }
