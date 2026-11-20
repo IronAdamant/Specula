@@ -118,7 +118,7 @@ pub fn light_window(cx: &mut Cx) -> Result<String, String> {
         let p_before = cx.call(port, lead, "perf_frame", "{}")?;
         let preview = cx.call(port, lead, "timeline_preview", r#"{"path": "orbit", "frames": 16, "tile": 320}"#)?;
         let p_after = cx.call(port, lead, "perf_frame", "{}")?;
-        let tiles = at(&preview, "frames").and_then(Json::as_array).map_or(0, Vec::len);
+        let tiles = at(&preview, "frames").and_then(Json::as_array).map_or(0, <[Json]>::len);
         expect(tiles == 16, "the preview does not have its sixteen tiles", &preview)?;
         let preview_frames = read(&p_after, "windows").unwrap_or(0.0) - read(&p_before, "windows").unwrap_or(0.0);
         let preview_pulses = read(&p_after, "step_pulses").unwrap_or(0.0) - read(&p_before, "step_pulses").unwrap_or(0.0);
