@@ -311,6 +311,52 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     file with it and without, and whether what was there was reused. **It is the library
     slot's next stage** (it does not wait for the sculpt's box, as the sculpt primitives
     do).
+  - **Paused, and the builders were blind: the library's and part 4's work waits behind
+    three steps and three items** (the owner, 2026-11-21, shown that the library made four
+    pickups no cheaper): "I'm starting to think that it may be better to just develop games
+    in Rust without the engine ... I'm concerned that I'm pretty much wasted time for nothing
+    on this one"; then: "We'll stick to zero-dependency ... I want you to keep building it
+    but right now, I need to think on this carefully ... there are factors that leading to
+    increases in costs, even though we already have library and materials available that
+    should reduce time ... What I need you to prove to me is that whether we have both
+    fucked up or not. Or if there's something missing here. For now, don't deploy the sub
+    agents, and kill the shells ... What I'm concerned is, that these builders you've been
+    deploying, have been doing so blind." **Everything was stopped; no subagent runs until
+    the owner says.** Claude went through the comparison's runs request by request and the
+    engine's code, by hand (`.swarmnotes/m6/part4/blind/FINDINGS.md`):
+    - **The builders could not see what they needed.** No answer of the engine's said
+      whether a model is closed, and their brief said `model_build` did (a subagent's
+      sentence, never checked): every builder wrote its own check on an exported file,
+      about 90,000 of 509,000 tokens in one run. There was no reference for writing a
+      recipe but a design document of 62 KB (one builder carried it for 134,000 tokens) or
+      one refused build a field: 30 to 146 builds a run for four props, up to 77 refused.
+      The shape the job asked for (a heart with soft edges) cannot be raised with one.
+    - **Correctness had been verified and use never had**: until that comparison nobody had
+      made one prop a game wants with the library. Building games through the engine had
+      six passes of exactly this treatment (6.8 to 1.6 times a plain build); building
+      models had none, and was measured cold.
+    - The owner: "go through all 1-3 before we proceed any further with Part 4, library and
+      recipe building, and then part 5 and onwards. It will be worth fixing this up. At this
+      point, it was a good thing we caught this, because if this engine was up and running
+      and released and is used in someone else's system, that person will not understand
+      and be angry at your instance for costing so much tokens and not using it, without
+      realising this blindness was a factor."
+    - **Step 1, done**: the job done cold by hand (`blind/STUMBLES.md`: four tries for one
+      prop). **Step 2, done on the branch `m6-usus`** (in `C:/sf-harness`, from the engine
+      the comparison measured; `blind/FIXES.md`): every build's answer says `closed` and
+      `open_edges`; **`model_schema`** says a recipe's format in one answer from the
+      parser's own tables, with an example that builds, and a sculpt's nodes with a soft
+      heart that builds; a new project has **`notes/models.md`**, one page, held against
+      the engine by a test; a raise that cannot go deeper says what to do. By hand again
+      with the fixes: all four props built on the first try, each closed
+      (`gallery-full/part4/blind/`). Not reviewed by another model yet (no subagents).
+      **Step 3, running**: the same job measured again on the fixed engine.
+    - **Three things not fixed, which the owner has put before any more library work**
+      ("These will need to be reviewed first before we continue with library work"): the
+      library's raise cannot put a soft edge on a figure with a point or a notch (a heart,
+      a crescent, a lune: it stops where an inset first closes an edge); no one call
+      builds every recipe of a project with a line each; the shell prints JSON with a
+      third of it spaces.
   - **The shape library's comparison, the small job: found, and not cheaper** (2026-11-20,
     at the owner's "go for it. And save the comparison where needed";
     [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Results (2026-11-20: the shape
