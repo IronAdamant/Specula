@@ -343,8 +343,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       A test holds every statement in numbers against a nearest point found by search
       (`crates/specula-model/tests/distance_field_facts.rs`, using none of the modeller's
       code). The owner on it: "First Principles is the way to go, both with this engine
-      and with the library we're building". **Its proofs are being checked by a model
-      that did not write them.**
+      and with the library we're building". **A model that did not write it checked every
+      proof and found it not sound as first written** (2026-11-20; the page's own section
+      8 says what): the numbered statements up to 5.5 and 5.7 were true, and four things
+      were wrong. One statement was false (a smooth meeting does not eat "by at most the
+      dip where they cross" unless both fields are exact inside); and three sentences of
+      the summary the modeller is to rely on, two of them on the unsafe side: a box
+      widened by one dip does **not** bound a smooth join when a part's field is only a
+      bound outside (a join onto a meeting can bridge a gap of any width along a thin
+      edge), and `n` fields joined two at a time dip by up to `n − 1` dips, not one. All
+      are corrected, two proofs had a step written in, and the tests the review found
+      missing are added (21 in all). **The corrected page is with a second reviewer.**
+      What it means for the sculpt stage is written into the page's section 6: a joined
+      part's reach is taken from its field, not from its box.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
