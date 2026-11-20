@@ -215,8 +215,8 @@ citing rightly) and delivered within the hour.
 |---|---|---|
 | [I6](I6-distance-fields-citations.md) | Citations, working links, licences and what each source claims, for: Quilez's 2D and 3D distance functions (a 2D field that is exact stays exact when extruded or revolved; unions, differences and intersections give bounds); Bærentzen and Aanæs 2005 (the sign of a mesh's distance by the angle-weighted pseudonormal, for a closed, orientable mesh); Jacobson, Kavan and Sorkine-Hornung 2013 and Barill et al. 2018 (inside and outside by winding numbers, for meshes with defects); Hart 1996 (a field may fall short of the distance and must never exceed it); the smooth minimum (Quilez: in its normalised form the blend's `k` is the most a shape is thickened, and the polynomial family never overstates the distance; Barbier et al. 2025, CC BY, the best peer-reviewed use of it) | the licence of Quilez's article text and figures (only his code snippets are stated MIT); MIT headers inside his Shadertoy shaders; whether the free copy of Hart's paper matches the journal's text; whether Dekkers et al. 2004 states a blend's error bound; no peer-reviewed paper was found that states the smooth minimum's deviation bound as a result |
 
-- **It was brought up to date twice the same day** (five more passes, two of them with a second
-  check, all in the one file): the gaps of the first pass followed up, and modern free sources found for what
+- **It was brought up to date three times the same day** (six more passes, three of them with a
+  second check, all in the one file): the gaps of the first pass followed up, and modern free sources found for what
   sat behind paywalls.
   - *A proof that a distance field never rises faster than one in one*: Bálint, Valasek and Gergó
     2019 (Acta Cybernetica, free), from the triangle inequality, not by quoting Hart. The same
@@ -239,16 +239,24 @@ citing rightly) and delivered within the hour.
     quadratic one, a quarter of `k`: stated in Li et al. 2026 (a journal article; read in its
     preprint only, which was revised before acceptance). For the cubic one, a sixth of `k`: still
     in no peer-reviewed paper found, and one line of arithmetic from its formula.
+  - *A seventh pass, for what was left*: a working official copy of Igel's paper; two free notes
+    that say the quadratic one's quarter of `k` in words (neither peer-reviewed); and still no
+    paper, note or thesis that states the cubic one's sixth.
   - *Still not settled*: Hart's journal wording against the free manuscript copies; the wording of
     Li et al.'s published article.
-- **Its last two passes each have a second check inside them** (the fifth: six of eight sources
+- **The engine does not wait for those**: every fact the sculpt work leans on is stated and
+  proved from first principles in the repository's own words, the cubic join's sixth of `k`
+  among them, in [docs/design/DISTANCE_FIELDS.md](../../design/DISTANCE_FIELDS.md), and held in
+  numbers by a test. This file is its credits and further reading.
+- **Its last three passes each have a second check inside them** (the fifth: six of eight sources
   confirmed, two corrected on their licences, one whose free copy could not be re-opened; the
-  sixth: all confirmed, one licence corrected); the earlier passes have none. Nothing in it has
+  sixth: all confirmed, one licence corrected; the seventh: confirmed); the earlier passes have
+  none. Nothing in it has
   been re-opened against its sources here yet. It is a list of where to read,
   not of numbers: each formula is derived and written here, and held by a test against a nearest
   point found by search, whatever its source says.
 - **Kept as delivered but for a few words**: the phrases naming the time zone it was compiled in
-  were taken out of seven heading lines.
+  were taken out of nine heading lines.
 - **What it says for the design** (FORMAE's sculpt stage, when it is built): raise and turn the
   library's plane figures from an exact distance in the plane, which stays exact; a boolean or a
   blend of fields is a bound, so the mesher is told a slack and bounds are widened by the blend's

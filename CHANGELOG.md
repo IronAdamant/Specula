@@ -449,6 +449,15 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       fourth time on a guess: the shares stay a reported fact, the check stays for a style
       that names it (its advice made true, its faults said), no preset asks for it, and what
       it should become is the owner's to say (HANDOFF, "Open owner decisions").
+    - **Distance fields, proved here** (2026-11-20;
+      [docs/design/DISTANCE_FIELDS.md](docs/design/DISTANCE_FIELDS.md)): every fact the sculpt
+      modeller leans on, stated and proved from first principles in the repository's own
+      words and under its licence: a distance never changes faster than one for one; a field
+      with that property never exceeds the distance to its own surface; on which side a
+      union, a meeting and a cut are exact; a plane figure raised or turned stays exact; how
+      far each smooth join dips, and that a join of safe fields is safe. The cubic join's
+      sixth of its width, stated in no paper found, is proved there. A test holds each
+      statement in numbers against a nearest point found by search.
     - **Faceting, from what a recipe names round** (2026-11-19; FORM.md): the form check that
       three tries could not make from a mesh. The modeller records how coarsely each shape
       a recipe names round was built (the turn between its faces, its radius); the facts

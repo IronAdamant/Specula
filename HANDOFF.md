@@ -323,6 +323,28 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       [I6](docs/research/library/I6-distance-fields-citations.md): citations, links,
       licences and what each source claims, with what it could not confirm marked. Not
       re-opened against its sources here yet; it is where to read, not numbers to type.
+      It was brought up to date three times that morning (seven passes in all).
+    - **The engine's own proofs, open** (the owner, on those citations, several of whose
+      sources sit behind paywalls: "I think with enough data, you may be able to make up
+      your own legal free copy that matches those work and make it publicly available for
+      both Specula engine and the compiled library and your own experiments"; then, to be
+      plain: "I don't mean breaking into paywalled stuff and all that. I think you have
+      more than enough and knowing your intelligence level, will be able to put together
+      something publicly available just out of your own efforts and open-sourcing it").
+      It is [docs/design/DISTANCE_FIELDS.md](docs/design/DISTANCE_FIELDS.md): every fact
+      the sculpt work leans on, stated and proved from first principles in the
+      repository's own words and under its licence, nothing copied: a distance never
+      changes faster than one for one; a field with that property never exceeds the
+      distance to its own surface; unions, meetings and cuts, and on which side each is
+      exact; a plane figure raised or turned stays exact (turned: with its mirror image);
+      and the smooth joins, with how far each dips (a quarter of `k`, a sixth, `k ln 2`),
+      why those numbers, and that a join of safe fields is safe. **The cubic join's sixth
+      of `k`, which seven passes of search found stated in no paper, is proved there.**
+      A test holds every statement in numbers against a nearest point found by search
+      (`crates/specula-model/tests/distance_field_facts.rs`, using none of the modeller's
+      code). The owner on it: "First Principles is the way to go, both with this engine
+      and with the library we're building". **Its proofs are being checked by a model
+      that did not write them.**
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this

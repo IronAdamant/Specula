@@ -628,3 +628,138 @@ This is exactly the two-input form of Theorem 4 / (32), Proposition 1, and Igel 
 ## Bottom line of this check
 
 R6.1, R6.2 and R6.3 can be used as written for the exponential / log-sum-exp bound, including the mapping `k = 1/kappa = 1/rho = 1/beta` and the two-input form `smin_k >= min - k ln 2`, sharp at a = b. Use the addendum's corrected licence for Molnar arXiv v2 (CC BY 4.0), not the original R6.1 licence sentence. R6.6 is a published, peer-reviewed journal article on the same work as arXiv:2605.22009, and the May preprint does state the quadratic k/4 drop in equation (13) and in the accompanying sentence. Until a copy of the December article can be opened, keep the caveat that those sentences have been checked only in the preprint, which predates the 21 Aug 2026 revision.
+
+
+---
+
+# Round 7: alternatives (20 Nov 2026)
+
+Narrow question: free, legal alternatives for the three remaining gaps after Rounds 1-6 and the Round 6 second check. (1) A peer-reviewed paper, or failing that an independent free derivation, that states the cubic polynomial smin drop of k/6 (Quilez form: min(a,b) - h^3 k/6, h = max(k-|a-b|,0)/k), plus any general polynomial-family bound, and any peer-reviewed k/4 statement besides SDFStent. (2) A free copy of the published SDFStent article wording (Li et al., CMPB 287:109645, DOI 10.1016/j.cmpb.2026.109645), not only the May preprint. (3) A working official PDF link for Igel, ICML 2024, PMLR 235:20908-20923, with equations (5)-(6) confirmed there. Sources already used as hits in earlier rounds were not reused as new hits. Shadow libraries were not used. Local copies: `/workspace/specula-research/raw/round7/`.
+
+Short answer: the Igel PDF gap is closed. The cubic k/6 drop is still without a peer-reviewed source, and no independent free write-up found today states that figure in words. No second peer-reviewed k/4 source was found besides Li et al. 2026. Two independent, free, not-peer-reviewed notes do state the quadratic peak as a quarter of k, which can stand in for the wording if the December article stays closed. A legal free copy of that December article (or of the post-revision accepted manuscript) was not found.
+
+## R7.1 Cubic polynomial smin, k/6
+
+Still not found: a peer-reviewed paper that states the unnormalised cubic drop k/6, or an equivalent sandwich such as smin >= min - k/6. Still not found: an independent thesis, course notes, arXiv preprint, technical report, or reputable blog-with-maths that states that k/6 peak in words (as opposed to reprinting Quilez's cubic formula, from which the peak is immediate arithmetic: at a = b, h = 1, the subtracted term is k/6).
+
+Angles checked this pass, with no hit under that standard:
+
+- Exact-phrase and bibliographic searches for k/6, sminCubic, "cubic smooth minimum", "cubic polynomial" smin, and "C^2" / "C2" smooth min in graphics, robotics, medical SDF, lattice/TPMS, and optimisation. Hits were Quilez's own article (already in item 6a), code copies of that article, and tutorials that print the cubic formula without stating the peak.
+- Blender: the Math node's Smooth Minimum is the unnormalised cubic (as already recorded from the Stack Exchange derivation in earlier informal mentions). The official Blender 5.3 manual page "Math Node" (https://docs.blender.org/manual/en/latest/modeling/geometry_nodes/utilities/math/math.html, fetched today, CC BY-SA 4.0) describes the operator only as a smooth blend whose width is the Distance input. It does not print the cubic formula and does not state a k/6 (or Distance/6) peak.
+- Salivity, "Polynomial Smooth Minimum for SDF Blending in GLSL", https://salivity.github.io/glsl/article/polynomial-smooth-minimum-for-sdf-blending-in-glsl (fetched today). Attributes the quadratic form to Quilez and, for the quadratic only, says the term h(1-h) "peaks at h = 0.5 (where it equals 0.25)", so the subtracted term is k/4 by arithmetic. It then prints the cubic code `min(a,b) - h*h*h*k*(1.0/6.0)` and says this is C^2. It does not state that the cubic peak is k/6. No author, date, or content licence is given on the page. Treated as a weak informal page, not as an independent derivation of the cubic bound.
+- Fran Piaggio, "Lesson 03, Combining shapes: SDF booleans", https://franpiaggio.github.io/interactive-shader-course/lessons/0003-combining-shapes-sdf-booleans.html (fetched today). Explains the quadratic form and says the second term is "biggest at h=0.5", without giving the value k/4 or any cubic bound.
+- General polynomial-family bounds (k/(2(n+1)), k/(2n), C^n smooth min/max approximation error with compact support). No paper was found that states a bound of that kind for the Quilez polynomial smin family. For the record, Quilez's own article (already in 6a) is the place that treats the family and says the normalisation factor comes from the deviation at a = b. His current quartic is not a simple h^n k/(2n) kernel (it uses the k *= 16/3, h^3 (4-h) k/16 form), so a single "degree n implies k/(2n)" theorem would not cover that quartic anyway.
+- Robotics "smooth distance" and differentiable collision papers, opened or abstract-checked enough to classify the operator: Bartelt, Kaypak, Tzes, Khorrami, Pimenta and Goncalves, "Holder Signed Distance: A Differentiable, Signed, Parallelizable Metric for Robotics," arXiv:2608.07707 (PDF fetched today). This defines a Holder minimum / maximum (Definition 2.1), not Quilez polynomial smin, and does not state k/4 or k/6. Escande-style convex-hull smoothing, Montaut-style randomised smoothing, and Tracy/Gilles-style differentiable collision for convex primitives likewise use other constructions (iterative projection, sampling, or log-sum-exp / smooth distances already covered in Round 6 via Madan and Levin). None of the abstracts or the Holder paper supplied a polynomial smin k/6 (or k/4) statement.
+- Vascular / lattice / TPMS / neural-CSG searches for a second k/4 paper (see R7.2) also did not surface a cubic k/6 statement.
+
+Until a source is found, the design doc should keep citing Quilez's smin article for cubic k/6, and can note that the figure is the value of the subtracted term at a = b.
+
+## R7.2 Quadratic k/4 besides SDFStent
+
+No additional peer-reviewed paper was found that states the quadratic peak deviation k/4 (or smin >= min - k/4) in its own text. SDFStent (R6.6) remains the only peer-reviewed work identified for that figure, with the wording still checked only in the May preprint (see R7.3).
+
+Two independent, free, not-peer-reviewed notes do state the quadratic peak in words. They are alternatives for the wording, not replacements for the journal citation.
+
+### R7.2a Ollin guide, Chapter 33 "Sculpting with fields". Not peer-reviewed.
+
+- Citation: Ollin, "33. Sculpting with fields," ollin.art guide (no date on the chapter). URL: https://ollin.art/guide/33-sculptingwithfields.html (HTTP 200 today).
+- Licence / access: the chapter and the site footer, and the About page (https://ollin.art/about.html, fetched today), say "Ollin is MIT licensed and built in public," with the repository at https://github.com/eaviles/Ollin. Treat the guide text as MIT-licensed along with the project, as the site itself states.
+- Claim, copied from the fetched chapter, in the section "Melting: the smooth minimum," after describing the quadratic-style smooth min with parameter k: "At an exact tie the dip is a quarter of k, and it shrinks to nothing where the two answers are k apart." This is an explicit statement of the unnormalised quadratic peak: at a = b the smooth min lies k/4 below the plain min. The chapter does not treat the cubic operator or k/6.
+- Peer-reviewed: no.
+
+### R7.2b SuzumiyaAoba, "Smooth Union / Smooth Minimum". Not peer-reviewed.
+
+- Citation: SuzumiyaAoba, "Smooth Union / Smooth Minimum," Ex falso sequitur quodlibet. URL: https://suzumiyaaoba.com/en/keywords/graphics/fields/smooth-union/ (HTTP 200 today). Site footer: "© 2023-2026 SuzumiyaAoba." No content licence is stated; treat the prose as all rights reserved.
+- Claim: the page writes the usual Quilez quadratic form, h = clamp(1/2 + (d_B - d_A)/(2k), 0, 1), d = mix(d_B, d_A, h) - k h(1-h), attributed to Inigo Quilez, and then states, copied from the fetched page: "盛られる量は h = 0.5 のとき最大で k/4 です." (the amount added / built up is largest at h = 0.5, and is then k/4). This is an explicit statement of the same quadratic peak. No cubic k/6 statement. One caution, not needed for the peak figure itself: a later note says the blended value can be smaller or larger than the true distance, which is sloppy for the conservative polynomial family; the k/4 sentence is still clear.
+- Peer-reviewed: no.
+
+Santos 2016 (R5.7) remains the earlier independent derivation of the quadratic formula, with the k/4 peak left implicit. It is not restated here as a new hit.
+
+## R7.3 Free copy of the published SDFStent article wording
+
+Not found. The only free legal full text opened today is still arXiv:2605.22009v1 (21 May 2026 UTC), which predates the 21 Aug 2026 revision. No later arXiv version exists. The December 2026 version of record remains subscription-only.
+
+Places checked today, all legal:
+
+- Unpaywall (API, 20 Nov 2026) for DOI 10.1016/j.cmpb.2026.109645: is_oa false, oa_status closed, oa_locations empty, has_repository_copy false, no embargoed locations listed. Published_date 2026-09-21.
+- OpenAlex work W7213941160: is_oa false, oa_status closed, any_repository_has_fulltext false. Locations are the journal DOI and PubMed PMID 42777594 only, no PDF.
+- Semantic Scholar paper 5466fcd09e822434fcce51f343abc7417bd3c5ba: isOpenAccess false, openAccessPdf status CLOSED, empty URL.
+- Europe PMC / PubMed for PMID 42777594: isOpenAccess N, inEPMC N, inPMC N, hasPDF N, no PMCID, no NIHMS id. PublicationStatus ppublish; received 14 May 2026, revised 21 Aug 2026, accepted 8 Sep 2026. Full-text URL is the subscription DOI only.
+- PMC record PMC13229078 (https://pmc.ncbi.nlm.nih.gov/articles/PMC13229078/, HTTP 200 today) is not the journal article. It is the arXiv preprint stub (citation_publication_date 2026 May 21; links to https://arxiv.org/abs/2605.22009v1). The page states: "The license terms selected by the author(s) for this preprint version do not permit archiving in PMC. The full text is available from the preprint server." and still describes the work as "Under review at Computer Methods and Programs in Biomedicine". The `/pdf/` path returns HTTP 404. OpenAIRE lists this PMC id, which is why it appeared; it does not host the December wording.
+- SSRN / Elsevier preprint DOI 10.2139/ssrn.6773968, Crossref type posted-content, subtype preprint, publisher Elsevier BV, created 16 May 2026 14:47:10Z, title and author list matching SDFStent, resource URL https://www.ssrn.com/abstract=6773968. Unpaywall for this DOI marks it green, but the only PDF it lists is the same arXiv submittedVersion (https://arxiv.org/pdf/2605.22009); the SSRN location has url_for_pdf null and is also classified as submittedVersion. The SSRN landing pages returned a bot check (HTTP 403) to curl and timed out in WebFetch, so the SSRN file itself was not opened. Given the 16 May 2026 deposit date and Unpaywall's mapping, this is the submitted preprint, not a copy of the post-21 Aug revision or of the December article.
+- Author pages: Doug L. James publications (https://graphics.stanford.edu/~djames/publications/, HTTP 200) lists the CMPB 2026 article, but both "Project Page" and "View PDF" point to the ScienceDirect abstract, https://www.sciencedirect.com/science/article/abs/pii/S0169260726003949, not a free PDF. The Stanford Cardiovascular Biomechanics Computation Lab publications page (https://cbcl.stanford.edu/publications-2) is a set of outbound links to Marsden's Google Scholar, Stanford CAP, and arXiv search; it does not host a paper PDF. Crossref funders include NIH R01HL167516 and NSF 2310909 and 2320757, but a legal free accepted manuscript was not found in PMC, in a working NSF PAR search URL (the search paths tried today returned the repository's "Not Found" page), or via OpenAlex / Unpaywall repository locations.
+- Queen's Scholaris / QSpace and a Penn repository search were tried; the Scholaris discover URL returned a site "Page not found" shell, and the Penn search returned no usable hit. They are recorded as inconclusive lookups, not as proof of absence.
+- Crossref licence records for the journal article remain Elsevier TDM / STM-ASF terms, not Creative Commons. There is no Elsevier "share link" or institutional green-OA PDF among the OA indexes above.
+
+Until a copy of the December article or a later accepted manuscript can be opened, keep the R6.6 caveat: cite the journal for the publication, and say that the "reduced by exactly k/4 mm" sentence and equation (13) have been checked in the May preprint.
+
+## R7.4 Igel 2024, working official PDF and equations (5)-(6)
+
+The official proceedings PDF path on proceedings.mlr.press is still 404, as the Round 6 second check found. The official item page now points the download at the PMLR GitHub copy, and that file works. An arXiv version also works and carries the same numbered inequalities. OpenReview does not, today, provide a fetchable PDF.
+
+### Official proceedings file (working)
+
+- Citation: unchanged from R6.3: Christian Igel, "Smooth Min-Max Monotonic Networks," Proceedings of the 41st International Conference on Machine Learning, Proceedings of Machine Learning Research 235:20908-20923, 2024. Official page: https://proceedings.mlr.press/v235/igel24a.html (HTTP 200 today). ISSN 2640-3498. No Crossref DOI.
+- Verified free official PDF: https://raw.githubusercontent.com/mlresearch/v235/main/assets/igel24a/igel24a.pdf (HTTP 200, 595057 bytes, 16 pages, MD5 44636cca66495eac632332e0397836ea, matching the Round 6 second check). The official item page lists this exact URL as "Download PDF" and as the `pdf` field in the page's BibTeX. The same bytes are also served from https://github.com/mlresearch/v235/raw/main/assets/igel24a/igel24a.pdf (redirects to the raw URL). This is the official proceedings file; it is just no longer hosted under the historic `/v235/igel24a/igel24a.pdf` path.
+- Still 404 today: https://proceedings.mlr.press/v235/igel24a/igel24a.pdf and https://proceedings.mlr.press/v235/igel24a.pdf (both HTTP 404, HTML error page).
+- Licence: first-page footer of the official PDF, as already recorded: "Proceedings of the 41st International Conference on Machine Learning, Vienna, Austria. PMLR 235, 2024. Copyright 2024 by the author(s)." No Creative Commons line on that page. Open proceedings copy.
+- Equations (5)-(6), re-read today from official page 4 after "It holds:":
+  max_{1 <= i <= n} x_i  <  LSE_beta(x_1, ..., x_n)  <=  max_{1 <= i <= n} x_i + (1/beta) ln(n)     (5)
+  min_{1 <= i <= n} x_i - (1/beta) ln(n)  <=  LSE_{-beta}(x_1, ..., x_n)  <  min_{1 <= i <= n} x_i     (6)
+  These match R6.3 and the Round 6 second check.
+
+### Alternative free copies (also working; confirm the same inequalities)
+
+- arXiv:2306.01147v3, 25 May 2024 UTC, https://arxiv.org/pdf/2306.01147 (HTTP 200 today, 724260 bytes). Abs page: https://arxiv.org/abs/2306.01147. Journal ref on the abs page and in the arXiv API: "Proceedings of the 41st International Conference on Machine Learning (ICML), Vienna, Austria. PMLR 235, 2024." Licence on the abs page: CC BY-NC-ND 4.0 (http://creativecommons.org/licenses/by-nc-nd/4.0/). Banner in the PDF: "arXiv:2306.01147v3 [cs.LG] 25 May 2024". Equations (5) and (6) appear on page 4 of this file with the same wording and numbering as the official proceedings PDF, including the strict inequalities. This is a free, legal alternative if the GitHub raw URL is inconvenient; quotes from v3 are under CC BY-NC-ND 4.0, which is more restrictive than the proceedings "Copyright 2024 by the author(s)" line (no commercial reuse, no derivatives).
+- University of Copenhagen / CURIS institutional copy: https://curis.ku.dk/ws/portalfiles/portal/409988038/Smooth_Min_Max_Monotonic_Networks.pdf (HTTP 200 today, 712966 bytes, 17 pages of paper plus a cover sheet). The cover sheet calls this "Publisher's PDF, also known as Version of record," "Document license: Other," and cites PMLR 235, 20908-20923, with the official item-page URL. Equations (5)-(6) appear on file page 5 (cover sheet plus official page 4) and match. Useful as a second official-file host, not as a new result.
+
+### OpenReview, not usable today
+
+- https://openreview.net/pdf?id=m8t1yzfBsJ returned HTTP 403 to curl and to WebFetch. https://openreview.net/forum?id=m8t1yzfBsJ redirected to an OpenReview challenge page. Not a working official link on this pass. The GitHub official file and the arXiv v3 PDF make it unnecessary.
+
+## Bottom line for the design doc
+
+- Cubic k/6: still cite Quilez's smin article. No peer-reviewed alternative, and no independent free write-up found that states the k/6 peak in words.
+- Quadratic k/4: Li et al., CMPB 287:109645, 2026, remains the only peer-reviewed source. Cite the journal and keep the caveat that the quoted sentences are from the May preprint. If a wording-only backup is wanted while the December article stays closed, Ollin Chapter 33 ("the dip is a quarter of k") or SuzumiyaAoba ("最大で k/4") are free, explicit, and not peer-reviewed.
+- Igel 2024: use https://raw.githubusercontent.com/mlresearch/v235/main/assets/igel24a/igel24a.pdf as the official PDF (it is the URL the PMLR item page itself gives). Equations (5)-(6) are on page 4. The arXiv v3 PDF is a working alternative, CC BY-NC-ND 4.0.
+
+
+---
+
+# Round 7 second check (20 Nov 2026)
+
+Independent re-fetch and re-read. The Round 7 write-up was not trusted. Fresh copies are in `/workspace/specula-research/raw/round7-check/`.
+
+## R7.4 Igel official PDF and equations (5)-(6). CONFIRMED.
+
+- Official item page `https://proceedings.mlr.press/v235/igel24a.html` loads and lists `https://raw.githubusercontent.com/mlresearch/v235/main/assets/igel24a/igel24a.pdf` as "Download PDF". Title, author, and pages 20908-20923 match.
+- That official PDF loads (HTTP 200, 595057 bytes, MD5 `44636cca66495eac632332e0397836ea`), matching the Round 6 second check and the first Round 7 fetch.
+- Historic path `https://proceedings.mlr.press/v235/igel24a/igel24a.pdf` is still HTTP 404 (HTML error page).
+- Equations (5)-(6) were re-read from official page 4 after "It holds:" and match R7.4 / R6.3, including the strict inequalities and the `(1/beta) ln(n)` gap.
+- arXiv v3 (`https://arxiv.org/pdf/2306.01147`, HTTP 200, MD5 `6ad27a215f55a387fcc10378686ebb30`, not the same bytes as the official file) has the same numbered inequalities on page 4. The abs page is v3, dated 25 May 2024, journal ref PMLR 235, 2024, licence CC BY-NC-ND 4.0. Confirmed.
+- The CURIS copy loads and still describes itself as the publisher PDF / version of record, with pages 20908-20923, and contains the same "It holds" block. Confirmed as a second host of the official text, not as a new result.
+
+## R7.2a Ollin Chapter 33. CONFIRMED.
+
+- `https://ollin.art/guide/33-sculptingwithfields.html` loads (HTTP 200). The sentence is present: "At an exact tie the dip is a quarter of k, and it shrinks to nothing where the two answers are k apart." (rendered HTML has a space before the comma after k; the wording is the same.) The page also restates that Ollin is MIT licensed.
+
+## R7.2b SuzumiyaAoba. CONFIRMED.
+
+- `https://suzumiyaaoba.com/en/keywords/graphics/fields/smooth-union/` loads (HTTP 200). Visible text of the しくみ section: "盛られる量は h = 0.5 のとき最大で k / 4 k/4 です." The source has the same sentence with `k/4` in a KaTeX span, i.e. "のとき最大で k/4 です." Footer "SuzumiyaAoba" is present. The formula is still attributed to Inigo Quilez.
+
+## R7.3 Published SDFStent wording. CONFIRMED as still unavailable.
+
+- Unpaywall for DOI 10.1016/j.cmpb.2026.109645: is_oa false, oa_status closed, has_repository_copy false, no OA locations.
+- OpenAlex: is_oa false, oa_status closed, any_repository_has_fulltext false.
+- PMC13229078 is still the May arXiv preprint stub ("do not permit archiving in PMC"; "Under review at Computer Methods and Programs in Biomedicine"); it does not mention 109645.
+- arXiv API still lists only `2605.22009v1` (updated 21 May 2026 UTC). No v2.
+- Unpaywall for the SSRN DOI 10.2139/ssrn.6773968 is still green only because it points at the same arXiv submittedVersion PDF, not at a later accepted manuscript.
+
+## R7.1 Cubic k/6. No correction.
+
+The second check did not turn up a missed peer-reviewed or independent k/6 statement among the files re-opened above. The "still not found" conclusion stands.
+
+## Bottom line of this check
+
+R7.4 can be used as written: the official Igel PDF is the GitHub raw URL given by the PMLR item page, and equations (5)-(6) are on page 4 of that file and of arXiv v3. R7.2a and R7.2b can be used as free, not-peer-reviewed wording for the quadratic k/4 peak. R7.3 stands: there is still no free legal copy of the December SDFStent article wording. Cubic k/6 remains Quilez only.
+
