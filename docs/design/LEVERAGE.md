@@ -1243,3 +1243,88 @@ nothing for not knowing what the world will do.
 whole (600 to 1,800 lines); nothing here measures a game too large for that, several agents
 in one world, or a frame rate. The bridge's fault is a judge's finding and has not yet been
 reproduced by hand.
+
+## Results (2026-11-22: the same six jobs after the mends, with directed builders)
+
+After the comparison of 2026-11-21 the owner took the results to a second reader, lifted the
+pause and asked for the mends and then the same six jobs again, the engine against none. What
+was built between the two (FIRST_HOUR.md, sections 14 and 15): a guide that says "write the
+game whole, then run it"; a world page corrected on bounce and friction; a slab that carries;
+a run that speaks a brief's own input words and is read at many ticks in one command
+(`--at`, `--keys`), with the world's places and the sounds in the report; a number the rules
+read from the run (`Cx::param`, `--set`), `specula tune` and `specula find`; every sound as a
+file in one command (`--sounds`). Builders Sonnet 5.5, judges Opus 5.5, two runs a cell, 24
+runs, all ended `done`, all judged
+([perf/leverage/2026-11-22-2d](../../perf/leverage/2026-11-22-2d/report.md),
+[perf/leverage/2026-11-22-3d](../../perf/leverage/2026-11-22-3d/report.md)).
+
+**The engine builders of this pass are directed, not cold.** Each engine brief carries a few
+lines "from the lead" (a job's `lead` in its file) that say which of the engine's aids fit the
+job: for the 2D jobs that nothing needs a search, write whole and read with `--at`; for the 3D
+jobs that the bridge is a slab that `.carries()`, that a board is chosen with `--set board=N`
+through `cx.param`, that the sounds come from `--sounds`, and the `find` command for a winning
+script. The owner decided that the lead chooses the aid for a builder before it works. A run's
+record says `led`, and the report names the runs.
+
+| Job | Plain (weighted tokens) | Engine | Times plain | On 2026-11-21 | Requests, times plain | Checks, plain | Checks, engine |
+|---|---|---|---|---|---|---|---|
+| small | 64,391 | 109,050 | 1.69 | 1.77 | 1.75 | 14.0 / 14 | 14.0 / 14 |
+| medium | 143,556 | 206,722 | 1.44 | 1.22 | 2.11 | 18.5 / 19 | 18.5 / 19 |
+| change | 91,320 | 170,723 | 1.87 | 1.18 | 1.90 | 9.0 / 9 | 8.5 / 9 |
+| small3d | 113,730 | 134,867 | 1.19 | 1.62 | 1.63 | 14.0 / 15 | 15.0 / 15 |
+| medium3d | 553,980 | 487,484 | 0.88 | 1.71 | 1.98 | 23.0 / 24 | 23.0 / 24 |
+| change3d | 261,708 | 209,644 | 0.80 | 1.24 | 1.02 | 11.0 / 11 | 11.0 / 11 |
+
+**In 3D the engine arm came level with a plain build or under it; in 2D it did not move, and
+on two jobs it was worse.** What each half says, and how far it can be trusted:
+
+- **Two runs a cell is noise of the size of the differences.** The plain medium3d builds were
+  413,532 and 694,428; the engine's 334,931 and 640,038: the two ranges lie over each other,
+  and 0.88 is not a finding that the engine is cheaper there. The change3d engine runs
+  (188,062 and 231,227) are both under both plain runs (241,494 and 281,921), but each change
+  run starts from its own arm's medium game, so the starts differ. The plain arm alone moved
+  between the two passes by up to 29% (medium3d 430,514 to 553,980; change 103,624 to 91,320)
+  with nothing changed for it. Read the table as: 3D went from clearly dearer to about level;
+  2D stayed clearly dearer.
+- **3D, small: 1.62 to 1.19.** Both engine runs took 13 requests and the same shape: four
+  reads, the game written whole, the sounds in one command, one search, two checks. They
+  passed the item both plain builds failed (score and lives in the picture: the engine draws
+  the HUD). What is left of the gap is the first meeting (834 lines of project read before a
+  line is written, against none).
+- **3D, medium: 1.71 to 0.88, and one run of the two met a fault of the engine.** The second
+  run took 27 requests and 334,931. The first took 52 and 640,038: 25 of its requests went to
+  board 3, where its ball would not cross on the bridge. The bridge carried what was at rest
+  on it from the start, and gave nothing to a ball that rolled onto it while it moved: as
+  first built, a carrier handed on only its changes of speed, so the ball had none of the
+  bridge's speed and was thrown back by twice it at the turn. The builder read the physics
+  sources, found a script by hand, and said in its README that `find` had not found one (it
+  had not, in 90 s and again in 500 s). **Mended after the runs and not measured**: what comes
+  to rest on a carrier is given its speed (PHYSICS.md); on that builder's own game the mended
+  engine's search takes the ball across to the far slab, and still finds no winning script
+  for board 3 in 90 s. A search that finds nothing costs the requests spent asking; say so in a
+  brief before pointing a builder at it for a board of that kind.
+- **3D, change: 1.24 to 0.80.** 21 requests each, as many as plain. Both used `find` for the
+  new board and it found (the judges note the found scripts lose two lives on the way).
+- **A fault found by the first engine builder of the pass, mended before the rest ran.** A
+  game put back from a save lost the events the rules had still to be told ("the run
+  begins"), so a script `find` answered as winning did not win in a run of its own. That run
+  (259,647 weighted tokens, 29 requests) is kept apart and is not in the table; the six 3D
+  engine runs are on the engine with the mend (`bafa9b7d`). The 2D engine runs were made on
+  the engine before it (`d663616f`); a 2D game of these jobs uses no save.
+- **2D: more ways to check brought more checking.** The engine builders did what the
+  direction said (the game written whole, no wrapper, no probing of physics), and then spent
+  about twice the plain builders' requests on verifying: reading states at many ticks, one
+  more run for each thing the brief names. The brief's line that says the engine can search
+  invited searches the direction had said were not needed (one change builder ran `find`
+  three times and wrote a driver script: 232,978 against its pair's 108,468). At these sizes
+  a plain build is five to eleven requests, and a project that must be read first cannot be
+  cheaper than that; the 2D jobs are below the size at which the engine pays.
+- **Checks passed are level** on every job (the engine one better on small3d, half an item
+  worse on change).
+
+**What it cost**: 38.65 USD at the runner's list prices (2D lane 13.70, 3D lane 23.91, the
+run kept apart 1.04); the judging is about two thirds of it.
+
+**What this pass does not show.** A cold engine builder on the mended engine (every engine
+run here was directed); the carrying mend; more than two runs a cell; any job larger than
+medium3d, which is where the engine's share of the work should grow.

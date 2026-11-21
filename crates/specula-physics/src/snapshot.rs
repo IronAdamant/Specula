@@ -26,8 +26,8 @@ use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 /// (warm starts, last state, the step that solved them); version 1 snapshots (no joints) still
 /// load. Version 3 adds, to each contact, the fastest its two bodies closed while it formed
 /// (what its begin event says: the rules of a game hear it, so a restored run must say the
-/// same); in an older snapshot it is 0. Version 4 adds, to each body, how fast a
-/// carrying kinematic body moved in the last step (`ColliderDesc::carries`); in an older snapshot
+/// same); in an older snapshot it is 0. Version 4 adds, to each body, how much of a
+/// carrying kinematic body's speed it has been given (`ColliderDesc::carries`); in an older snapshot
 /// it is zero. Others are refused with `unsupported_version`.
 pub const SNAPSHOT_VERSION: u32 = 4;
 

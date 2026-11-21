@@ -2,7 +2,7 @@
 
 Notes from Claude (Fable 5.2 since 2026-11-12) to whoever picks up Specula next, most likely a new
 Claude conversation with no memory of the earlier ones. This page is **current state and what's
-next** only. Last updated **2026-11-21**.
+next** only. Last updated **2026-11-22**.
 
 **The full record is [HANDOFF_HISTORY.md](HANDOFF_HISTORY.md)**: this page as it stood on
 2026-11-21 before it was cut down (the owner's words by date, every review round of M6 part 4,
@@ -11,7 +11,7 @@ need. Older history is in [CHANGELOG.md](CHANGELOG.md). The page was cut because
 full at the start of every session and had grown to 228 KB, most of it the history of review
 rounds.
 
-## Right now (2026-11-21)
+## Right now (2026-11-22)
 
 - **By hand only, and lean.** The owner: "Only by hand working", then "For now we'll stick to 1
   agent". No subagent, and no paid measurement (`examen leverage` builders and judges) beyond what they ask for, until they
@@ -30,32 +30,43 @@ rounds.
   run that passed: that points at the machine and not at the window's loop, and it is a
   reading, not a proof. Run the checks whole again on a quiet machine before calling the
   window's loop clean.
-- **Paused by the owner (2026-11-21) until the cost is dealt with:** "We're on the pause right now,
-  because cost increase issue is going to likely expotentially increase if we don't fix this now."
-  Part 4, the libraries and every later part wait on it. The owner is taking the comparison to Grok
-  before deciding how to proceed. Added to the plan the same day, for M6 and not designed: a library
-  of effects (lightning, fire, explosions, fire spread, laser, freeze, wind) across "any part of the
-  system" (ROADMAP M6).
-- **The six-job comparison of 2026-11-21 (the owner asked for it; the paid runs are done): the
-  engine costs more on every job, 3D included.** Weighted tokens, engine over plain: small
-  1.77, medium 1.22, change 1.18; small3d 1.62, medium3d 1.71, change3d 1.24, with the same
-  checks passed but for medium3d (22 of 24 against 23.5)
-  ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), the results of 2026-11-21; the 3D jobs
-  are `evals/leverage-3d`). The cause read from the runs: three times the requests, each
-  reading the whole context again; the requests go to learning the engine, to probing what its
-  physics will do (about forty runs that read a few numbers), and to a wrapper that turns the
-  brief's command line into the engine's. **The owner is rethinking the whole approach
-  ("I need to re-think the whole thing") and nothing further is built until they say.** On the
-  table, proposed by Claude and not agreed: (1) many experiments in one request (a checks file
-  with values at chosen ticks, one command that builds, runs it and says only what changed);
-  (2) a run that speaks the game's own inputs and state, so no wrapper; (3) starting from the
-  nearest working game (`specula new --from`); (4) words that do what a brief means (a platform
-  that carries, a push of a stated acceleration) and the bridge's fault reproduced by hand
-  (a ball on a kinematic body moved at twice its speed: a judge's finding, not yet proved);
-  (5) rules of thumb on the world page. The owner asked whether hooks could replace turns:
-  yes for Claude Code (session start, after a save, before stopping), written by `specula new`
-  as data and calling `specula` itself; other harnesses need the same through `AGENTS.md`, the
-  one command, and results attached to the next answer.
+- **The pause of 2026-11-21 is lifted** (the owner, after a second reader's reports on the
+  comparison: "Pause is now off. Build a plan around our findings and what you'd do, then
+  execute it."). The reading both agreed on: the engine's cost is the number of requests after
+  the first code, each reading the whole context again; the bridge's "fault" was a brief asking
+  more than friction gives; the world page was wrong on bounce and friction; the guide
+  prescribed "edit, run, read".
+- **Built since, by hand, gated, not reviewed** (FIRST_HOUR.md, sections 14 and 15): the guide
+  says "write the game whole, then run it"; the world page corrected; a slab that carries
+  (`Spawn::carries`, snapshot version 4); a run that speaks a brief's own input words
+  (game.json `inputs`) and is read on its way (`specula run --at T,T --keys a,b`), with the
+  world's places and the sounds in the report; a number the rules read from the run
+  (`Cx::param`, `--set NAME=v,v`); `specula tune` (a number bisected to a condition) and
+  `specula find` (a script of inputs searched over the game's saves, played again from the
+  start before it is answered; 90 s unless told); `specula run --sounds DIR`; the live check
+  `search_check`. The owner's rule for the searches: whether a builder uses one is decided per
+  task by the lead, who monitors the builder and may decide in its brief before it works (a
+  job's `lead` lines in `evals/`; the report marks such runs as directed).
+- **Three faults of the engine found on the way, all mended:** a test that passed by the
+  machine's speed (`261e8d60`, the cause of CI's red on `349c9e64`); a save that lost the events
+  the rules had still to be told, so a game put back from a save of its start ran a tick apart
+  (found by the comparison's first builder: a script `find` called winning did not win); a
+  carrier that gave nothing to what came to rest on it while it moved (found by a medium3d
+  builder; mended after the runs, **not measured**).
+- **The second six-job comparison (2026-11-22; the owner asked for it; the paid runs are
+  done, 38.65 USD at list prices).** Engine over plain, weighted tokens, with the figure of
+  2026-11-21 in brackets: small 1.69 (1.77), medium 1.44 (1.22), change 1.87 (1.18); small3d
+  1.19 (1.62), medium3d 0.88 (1.71), change3d 0.80 (1.24); checks passed level on every job
+  ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), the results of 2026-11-22). **In 3D the
+  engine came level with a plain build; in 2D it did not move.** Two runs a cell: the 3D
+  ranges of the two arms lie over each other, and the plain arm alone moved by up to 29%
+  between the two passes, so "level" is what the 3D figures support, not "cheaper". The engine
+  builders were directed by the lead, not cold. In 2D, more ways to check brought more
+  checking (twice the requests), and a plain build of that size is five to eleven requests: a
+  project that must be read first cannot be cheaper than that. `specula find` found the change
+  job's new board and did not find a winning script for the bridge board (in 90 s or 500 s).
+  **Nothing further is paid for until the owner says.** Not built: hooks. Not measured: a
+  cold engine builder on the mended engine, the carrying mend, a job larger than medium3d.
 - **The gate passed on `14c0d08c`** (2026-11-21, everything: 3,585 tests, repeats, slow workers, speed, clippy, both builds; the live checks were not run again). In it: `53985a95` (a module pushes a
   body and tells it to bounce: `Cx::push`, `Cx::place_at_rest`, `Spawn::bounce`, `friction`),
   `7f2167f8` (the 3D jobs). The mends are on the engine without the library (`C:/sf-base`,
@@ -84,7 +95,7 @@ rounds.
      twelve at the first try) and **not measured**; (c) a job that needs what the engine has: 3D,
      physics and sound were done by hand from a module, cold, and what was dark was mended
      (below); **not measured**.
-- **Next by hand, in order:** the mends onto the engine without the library; soft edges, both
+- **Next by hand, in order** (set before the pause; the owner has not said what follows the second comparison)**:** the mends onto the engine without the library; soft edges, both
   routes; then, when the owner allows spending, the measurements of 3 (a) to (c) with a cost said
   first.
 
@@ -96,6 +107,7 @@ the working branch.
 | Work | State | Owed |
 |---|---|---|
 | By hand, 2026-11-21 (`m6-usus`): the schema's words, the two project pages, typed `Spawn` words, a run's warnings, what physics tells a module, the contact speed's mend (snapshot version 3) | merged, gated | a first review |
+| By hand, 2026-11-21 and 22 (`m6-una`): the carrying slab and its mend, the corrected pages, a run that speaks a brief and is read on its way, `Cx::param`, `specula tune` and `find`, the save that keeps waiting events, `--sounds`, `search_check` | merged, gated | a first review; `search_check` shown to fail on a seeded fault (the engine before the save's mend failed it on a builder's game, which is the evidence so far) |
 | Sculpt mesher: a vertex for each sheet through a cell | merged; twelve meshes changed by a few triangles | a first review; close-ups of the changed places |
 | Sculpt's box (a reach passed down the tree) | merged; **review said do not merge**: the box also grows on ordinary sculpts with nothing stretched | the mend, stopped mid-work in `C:/sr-k30` (`d8b7a407` and one uncommitted file) |
 | Rounded shape's field (`roundness`) | merged; tenth review: the field is sound; "the sure way cannot fail" is false at its 64-step cap, and three rules are held by no test | small mends (`.swarmnotes/m6/part4/reviews/weights-review3.md`) |

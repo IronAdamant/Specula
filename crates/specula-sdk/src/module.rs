@@ -310,9 +310,10 @@ impl Spawn {
     pub fn friction(self, friction: f32) -> Spawn {
         self.in_collider("friction", friction)
     }
-    /// On a kinematic body (a platform, a lift, a bridge that slides): what rests on it takes
-    /// its changes of speed, so a thing at rest on it stays at rest on it, and a thing that
-    /// rolls on it rolls as it would on the ground. After a collider word.
+    /// On a kinematic body (a platform, a lift, a bridge that slides): what rests on it moves
+    /// with it. A thing that comes to rest on it is given its speed (as a step onto a moving
+    /// walkway), and its changes of speed after; a thing that rolls on it rolls as it would on
+    /// the ground, and one that leaves keeps the speed it left with. After a collider word.
     pub fn carries(self) -> Spawn {
         self.in_collider("carries", true)
     }

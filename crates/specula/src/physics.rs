@@ -113,8 +113,8 @@ pub struct Collider {
     pub mask: Option<Vec<String>>,
     pub friction: f32,
     pub restitution: f32,
-    /// On a kinematic body: what rests on it takes its changes of speed (a platform, a lift, a
-    /// sliding bridge), so a thing at rest on it stays at rest on it.
+    /// On a kinematic body: what rests on it moves with it (a platform, a lift, a sliding
+    /// bridge): a thing that comes to rest on it is given its speed, and its changes after.
     pub carries: bool,
 }
 

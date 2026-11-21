@@ -1,0 +1,1139 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "small",
+    "arm": "engine",
+    "kind": "engine",
+    "led": true,
+    "data": "evals/leverage",
+    "n": 1,
+    "phase": "judge",
+    "prepared": "2026-11-21T13:31:28Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 600000,
+        "wall_s": 3600
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      },
+      "baseline": "plain"
+    },
+    "started_with": {
+      "files": 23,
+      "bytes": 47283,
+      "text_lines": 832,
+      "lines_by_kind": {
+        ".json": 369,
+        ".md": 335,
+        ".rs": 109,
+        ".toml": 19
+      }
+    },
+    "engine_build": "d663616f43",
+    "port": 7700
+  },
+  "costs": {
+    "engine_stopped": true,
+    "engine": {
+      "calls": 8,
+      "refused": 1,
+      "args_bytes": 588,
+      "answer_bytes": 2575,
+      "by_tool": {
+        "(run)": 8
+      }
+    },
+    "left": {
+      "files": 23,
+      "bytes": 47544,
+      "text_lines": 871,
+      "lines_by_kind": {
+        ".json": 322,
+        ".md": 370,
+        ".rs": 160,
+        ".toml": 19
+      }
+    },
+    "finished": "2026-11-21T13:33:15Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "s01",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "README command `leverage play <runs>/small-engine-1/work --ticks 600 --seed 1 --inputs 0:right,60:left,200:none,500:restart` printed {\"tick\":600,\"score\":20,\"misses\":3,\"over\":true,\"paddle_x\":0,\"fall_speed\":4,\"pieces\":[{x,y}...]}: all of the brief's keys; seed, ticks and the left/right/none/restart script are all taken."
+        },
+        {
+          "id": "s02",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "README frame command (--ticks 300 --inputs 0:left --frame frame.png --size 480x640) wrote frame.png: PNG 480 x 640 RGBA. I opened it and it shows the game view."
+        },
+        {
+          "id": "s03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "--ticks 200 --inputs 0:left gave paddle_x 0; 0:right gave paddle_x 9. With 0:left,100:right, paddle_x was 0 at 100, 4.0 at 130 and 9 at 200 (it never goes past the edges)."
+        },
+        {
+          "id": "s04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Starting from paddle_x 0 at tick 100, 30 ticks of right gave 3.9999999999999996 at 130. From the start at 4.5, 0:right gave 8.5 at tick 30. That is 4 units, 0.1333 a tick."
+        },
+        {
+          "id": "s05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "No input, --at 1,72,73,144,145,...: one piece at tick 1 (y 15.5), new pieces at ticks 73, 145, 217, 289 and 361, none between them. Over at 432, and the pieces were unchanged up to 1000 (no new spawns). In a longer scripted run, spawns continued at 505, 577 and 649."
+        },
+        {
+          "id": "s06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Two identical runs (seed 1, 400 ticks, same script) gave output with the same md5. At tick 300, seed 7 gave piece columns 6.5/11.5/7.5 and seed 1 gave 0.5/1.5/9.5."
+        },
+        {
+          "id": "s07",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Paddle held at 9: tick 218 score 0 with the 11.5 piece at y 1.033. At tick 219 the score was 10, that piece was gone and misses stayed 0. Again at 290 to 291: score 20, misses 0."
+        },
+        {
+          "id": "s08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Paddle at 0 with a piece at x 11.5: at tick 226 the piece was at y 0.5 (score 0, misses 0). At tick 227 the piece was gone, misses 1 and score 0."
+        },
+        {
+          "id": "s09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "No-input run: misses 3 and over true at tick 432. At 433, 499, 500 and 1000 the score (0), misses (3) and pieces (1.5/5.233, 9.5/10.033, 9.5/14.833) were the same."
+        },
+        {
+          "id": "s10",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Script 0:right,292:left,436:right,580:left,620:none: the 5th catch came at tick 507 (score 50), with fall_speed 4.2. From then on pieces fell 0.07 a tick (5.7633 -> 5.6933 -> 5.6233) where before it was 0.0667."
+        },
+        {
+          "id": "s11",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "0:right,700:restart,701:none: at 690 score 40, misses 3, over. At 701 score 0, misses 0, over false, one piece at 11.5/15.5. A no-input run restarted at 500 spawned columns 11.5, 11.5, 0.5, 1.5, 9.5 at 501/573/645/717/789, the same as the first run."
+        },
+        {
+          "id": "s12",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "play.png (250 ticks, state: paddle_x 9, pieces 11.5/3.7, 0.5/8.5, 1.5/13.3, score 10). At 40 px a unit the squares sat at 440-480 x 472-512, 0-40 x 280-320 and 40-80 x 88-128, and the paddle at 360-480 along the bottom. The HUD read 'Score: 10  Misses left: 3'."
+        },
+        {
+          "id": "s13",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "over.png (700 ticks with right held, over true, score 40) shows a panel with 'Game over', 'Final score: 40' and a 'Restart (Enter)' button. The HUD shows 'Misses left: 0'."
+        },
+        {
+          "id": "s14",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "README has a Play section (Left/Right or A/D, catches, misses, Enter to restart) and the exact headless and frame commands. I ran both as written and they worked."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "A restart given during a run that is not over is ignored (README run with 500:restart in play: nothing reset). The brief does not require it, but the README's own example command implies it.",
+        "On the tick of the 5th catch, pieces handled later in that same tick already move at the new speed (the speed is re-read per piece in the loop). This is minor."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 33864,
+      "tool_uses": 18,
+      "duration_s": 105.6,
+      "by_kind": {
+        "input": 24,
+        "cache_write": 28519,
+        "cache_read": 279220,
+        "output": 10099,
+        "requests": 12,
+        "context_at_end": 33864
+      },
+      "weighted": 114090,
+      "cost_usd": 0.243036,
+      "turns": 19,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 41415,
+      "tool_uses": 19,
+      "duration_s": 201.8,
+      "by_kind": {
+        "input": 34,
+        "cache_write": 36070,
+        "cache_read": 449370,
+        "output": 9816,
+        "requests": 17,
+        "context_at_end": 41415
+      },
+      "weighted": 139138,
+      "cost_usd": 0.5748899999999999,
+      "turns": 20,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "engine": {
+        "calls": 21,
+        "refused": 0,
+        "args_bytes": 1867,
+        "answer_bytes": 14377,
+        "by_tool": {
+          "(run)": 21
+        }
+      }
+    },
+    "where": {
+      "run": "small-engine-1",
+      "requests": 12,
+      "steps": 18,
+      "steps_before_the_first_code": 4,
+      "weighted": 114090,
+      "weighted_by_kind": {
+        "read_again": 27922,
+        "written_out": 50495,
+        "new_in_context": 35673
+      },
+      "builds": {
+        "steps": 1,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "read its own files": {
+          "steps": 4,
+          "answered_tokens": 8257,
+          "written_tokens": 111
+        },
+        "write code": {
+          "steps": 5,
+          "answered_tokens": 184,
+          "written_tokens": 2494
+        },
+        "call the engine": {
+          "steps": 6,
+          "answered_tokens": 716,
+          "written_tokens": 730
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 557
+        },
+        "build the module": {
+          "steps": 1,
+          "answered_tokens": 111,
+          "written_tokens": 37
+        },
+        "look at a frame": {
+          "steps": 2,
+          "answered_tokens": 0,
+          "written_tokens": 26
+        }
+      }
+    },
+    "trace": {
+      "run": "small-engine-1",
+      "who": "builder",
+      "complete": true,
+      "requests": 12,
+      "weighted": 114090,
+      "in_the_ledger": 114090,
+      "reading": 63595,
+      "writing": 50495,
+      "written_out": 10099,
+      "of_which_unseen": 6362,
+      "start": {
+        "context": 7930,
+        "carried": 12493
+      },
+      "context_at_end": 33864,
+      "by_kind": {
+        "read its own files": {
+          "requests": 4,
+          "steps": 4,
+          "answered": 8257,
+          "written_out": 4043,
+          "writing": 20216,
+          "carried": 32136
+        },
+        "call the engine": {
+          "requests": 6,
+          "steps": 9,
+          "answered": 749,
+          "written_out": 3038,
+          "writing": 15191,
+          "carried": 9465
+        },
+        "build the module": {
+          "requests": 1,
+          "steps": 5,
+          "answered": 262,
+          "written_out": 2707,
+          "writing": 13535,
+          "carried": 9500
+        },
+        "words only": {
+          "requests": 1,
+          "steps": 0,
+          "answered": 0,
+          "written_out": 311,
+          "writing": 1553,
+          "carried": 0
+        }
+      },
+      "files": [
+        {
+          "file": "<run>\\BRIEF.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 1673,
+          "written": 0
+        },
+        {
+          "file": "<run>/work/modules/work/src/lib.rs",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 1489
+        },
+        {
+          "file": "<run>/work/README.md",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 559
+        },
+        {
+          "file": "<run>/work/game.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 171
+        },
+        {
+          "file": "<run>/work/assets/ui/hud.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 159
+        },
+        {
+          "file": "<run>/work/modules/work/actions.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 116
+        },
+        {
+          "file": "<run>/work/frame.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>/work/over.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        }
+      ],
+      "rows": [
+        {
+          "n": 1,
+          "context": 7930,
+          "new": 2587,
+          "read_again": 5343,
+          "written_out": 527,
+          "of_which_unseen": 515,
+          "cost": 6402,
+          "cost_so_far": 6402,
+          "carried": 5784,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\BRIEF.md",
+              "written": 12,
+              "answered": 1673
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "context": 10500,
+          "new": 2572,
+          "read_again": 7928,
+          "written_out": 2258,
+          "of_which_unseen": 2207,
+          "cost": 15299,
+          "cost_so_far": 21700,
+          "carried": 20577,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && ls -R . | head -50 && cat notes/how.md game.json modules/*/src/lib.rs modules/*/actions.js...",
+              "written": 51,
+              "answered": 5725
+            }
+          ]
+        },
+        {
+          "n": 3,
+          "context": 20070,
+          "new": 9572,
+          "read_again": 10498,
+          "written_out": 1075,
+          "of_which_unseen": 1045,
+          "cost": 18388,
+          "cost_so_far": 40089,
+          "carried": 5039,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && cat assets/ui/lost.json; cat checks/runs.json | head -20; ls modules/work",
+              "written": 30,
+              "answered": 627
+            }
+          ]
+        },
+        {
+          "n": 4,
+          "context": 22527,
+          "new": 2459,
+          "read_again": 20068,
+          "written_out": 2707,
+          "of_which_unseen": 735,
+          "cost": 18615,
+          "cost_so_far": 58703,
+          "carried": 9500,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "build the module",
+              "what": "cd <run>/work && rm -rf checks && cat modules/work/Cargo.toml | head -20; sed -n 1,200p assets/ui/pause.jso...",
+              "written": 37,
+              "answered": 111
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/modules/work/actions.json",
+              "written": 116,
+              "answered": 39
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/modules/work/src/lib.rs",
+              "written": 1489,
+              "answered": 39
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/game.json",
+              "written": 171,
+              "answered": 35
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/assets/ui/hud.json",
+              "written": 159,
+              "answered": 38
+            }
+          ]
+        },
+        {
+          "n": 5,
+          "context": 27398,
+          "new": 4873,
+          "read_again": 22525,
+          "written_out": 291,
+          "of_which_unseen": 82,
+          "cost": 9797,
+          "cost_so_far": 68500,
+          "carried": 1079,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"<run>/work\" --ticks 300 --at 1,2,72,73,100,300",
+              "written": 195,
+              "answered": 87
+            }
+          ]
+        },
+        {
+          "n": 6,
+          "context": 27980,
+          "new": 584,
+          "read_again": 27396,
+          "written_out": 500,
+          "of_which_unseen": 277,
+          "cost": 5971,
+          "cost_so_far": 74471,
+          "carried": 1853,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"<run>/work\" --ticks 300 --at 1,2,72,73,100,300",
+              "written": 223,
+              "answered": 206
+            }
+          ]
+        },
+        {
+          "n": 7,
+          "context": 29038,
+          "new": 1060,
+          "read_again": 27978,
+          "written_out": 458,
+          "of_which_unseen": 326,
+          "cost": 6413,
+          "cost_so_far": 80884,
+          "carried": 1842,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play $P --ticks 700 --at 450,500,520,521,700 --keys tick,score,misses,over,pieces echo ---;...",
+              "written": 132,
+              "answered": 335
+            }
+          ]
+        },
+        {
+          "n": 8,
+          "context": 30153,
+          "new": 1117,
+          "read_again": 29036,
+          "written_out": 858,
+          "of_which_unseen": 774,
+          "cost": 8590,
+          "cost_so_far": 89474,
+          "carried": 2308,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play $P --ticks 500 --frame $P/over.png --size 480x640 --keys tick,over >/dev/null; ls -la ...",
+              "written": 58,
+              "answered": 27
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>/work/frame.png",
+              "written": 13,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>/work/over.png",
+              "written": 13,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 9,
+          "context": 31641,
+          "new": 1490,
+          "read_again": 30151,
+          "written_out": 795,
+          "of_which_unseen": 183,
+          "cost": 8853,
+          "cost_so_far": 98327,
+          "carried": 2058,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play $PWD --ticks 5 --keys tick,over",
+              "written": 53,
+              "answered": 31
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/README.md",
+              "written": 559,
+              "answered": 33
+            }
+          ]
+        },
+        {
+          "n": 10,
+          "context": 33059,
+          "new": 1420,
+          "read_again": 31639,
+          "written_out": 183,
+          "of_which_unseen": 165,
+          "cost": 5855,
+          "cost_so_far": 104182,
+          "carried": 736,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && cat assets/ui/lost.json",
+              "written": 18,
+              "answered": 232
+            }
+          ]
+        },
+        {
+          "n": 11,
+          "context": 33603,
+          "new": 546,
+          "read_again": 33057,
+          "written_out": 136,
+          "of_which_unseen": 53,
+          "cost": 4666,
+          "cost_so_far": 108848,
+          "carried": 326,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play $PWD --ticks 500 --frame $PWD/o.png --size 480x640 --keys tick,over && rm o.png; ls",
+              "written": 69,
+              "answered": 30
+            }
+          ]
+        },
+        {
+          "n": 12,
+          "context": 33864,
+          "new": 263,
+          "read_again": 33601,
+          "written_out": 311,
+          "of_which_unseen": 0,
+          "cost": 5242,
+          "cost_so_far": 114090,
+          "carried": 0,
+          "steps": []
+        }
+      ],
+      "how": "context, new, read_again and how far the context grew are the run's own records. written_out a request is its growth less its answers (characters / 4), scaled to the run's exact total; of_which_unseen is that less the visible text (thinking). cost is what the request read and wrote, weighted; carried is what reading again what it added cost at every later request (start.carried: the same for what every request starts from). reading + writing is in_the_ledger"
+    },
+    "judge_trace": {
+      "run": "small-engine-1",
+      "who": "judge",
+      "complete": true,
+      "requests": 17,
+      "weighted": 139138,
+      "in_the_ledger": 139139,
+      "reading": 90059,
+      "writing": 49080,
+      "written_out": 9816,
+      "of_which_unseen": 7161,
+      "start": {
+        "context": 8226,
+        "carried": 17301
+      },
+      "context_at_end": 41415,
+      "by_kind": {
+        "call the engine": {
+          "requests": 10,
+          "steps": 11,
+          "answered": 3738,
+          "written_out": 5078,
+          "writing": 25388,
+          "carried": 30873
+        },
+        "read its own files": {
+          "requests": 3,
+          "steps": 4,
+          "answered": 7181,
+          "written_out": 2787,
+          "writing": 13934,
+          "carried": 35790
+        },
+        "write code": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 32,
+          "written_out": 992,
+          "writing": 4959,
+          "carried": 2841
+        },
+        "look at a frame": {
+          "requests": 1,
+          "steps": 2,
+          "answered": 0,
+          "written_out": 537,
+          "writing": 2684,
+          "carried": 1882
+        },
+        "other commands": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 427,
+          "written_out": 260,
+          "writing": 1299,
+          "carried": 1371
+        },
+        "words only": {
+          "requests": 1,
+          "steps": 0,
+          "answered": 0,
+          "written_out": 163,
+          "writing": 817,
+          "carried": 0
+        }
+      },
+      "files": [
+        {
+          "file": "<run>\\JUDGE.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 1062,
+          "written": 0
+        },
+        {
+          "file": "<run>\\verdict.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 1033
+        },
+        {
+          "file": "<run>\\judge-scratch\\play.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\over.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\readme.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        }
+      ],
+      "rows": [
+        {
+          "n": 1,
+          "context": 8226,
+          "new": 2883,
+          "read_again": 5343,
+          "written_out": 1191,
+          "of_which_unseen": 1143,
+          "cost": 10092,
+          "cost_so_far": 10092,
+          "carried": 13634,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\JUDGE.md",
+              "written": 12,
+              "answered": 1062
+            },
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "ls -la <run>; ls -laR <run>/work | head -100",
+              "written": 36,
+              "answered": 1204
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "context": 13183,
+          "new": 4959,
+          "read_again": 8224,
+          "written_out": 747,
+          "of_which_unseen": 692,
+          "cost": 10758,
+          "cost_so_far": 20850,
+          "carried": 11254,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>; cat BRIEF.md; cat run.json; cat work/README.md; cat work/game.json; ls work/notes work/modules wo...",
+              "written": 55,
+              "answered": 2557
+            }
+          ]
+        },
+        {
+          "n": 3,
+          "context": 17429,
+          "new": 4248,
+          "read_again": 13181,
+          "written_out": 848,
+          "of_which_unseen": 787,
+          "cost": 10870,
+          "cost_so_far": 31720,
+          "carried": 10903,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; ls modules/work modules/work/src; cat modules/work/src/*.rs modules/work/actions.json; cat n...",
+              "written": 61,
+              "answered": 2358
+            }
+          ]
+        },
+        {
+          "n": 4,
+          "context": 21704,
+          "new": 4277,
+          "read_again": 17427,
+          "written_out": 184,
+          "of_which_unseen": 100,
+          "cost": 8009,
+          "cost_so_far": 39729,
+          "carried": 1158,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"<run>/work\" --ticks 600 --seed 1 --inputs 0:right,60:left,200:none,500:restart 2>&1 |...",
+              "written": 84,
+              "answered": 56
+            }
+          ]
+        },
+        {
+          "n": 5,
+          "context": 22176,
+          "new": 474,
+          "read_again": 21702,
+          "written_out": 633,
+          "of_which_unseen": 541,
+          "cost": 5929,
+          "cost_so_far": 45658,
+          "carried": 5151,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"$G\" --ticks 700 --seed 1 --inputs 0:right,60:left,200:none,500:restart,501:none --at ...",
+              "written": 92,
+              "answered": 760
+            }
+          ]
+        },
+        {
+          "n": 6,
+          "context": 24367,
+          "new": 2193,
+          "read_again": 22174,
+          "written_out": 652,
+          "of_which_unseen": 456,
+          "cost": 8218,
+          "cost_so_far": 53875,
+          "carried": 4450,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"$G\" --ticks 200 --seed 1 --inputs 0:left --keys tick,paddle_x 2>&1; \"$E\" leverage pla...",
+              "written": 162,
+              "answered": 504
+            }
+          ]
+        },
+        {
+          "n": 7,
+          "context": 26344,
+          "new": 1979,
+          "read_again": 24365,
+          "written_out": 725,
+          "of_which_unseen": 572,
+          "cost": 8537,
+          "cost_so_far": 62412,
+          "carried": 4061,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"$G\" --ticks 300 --seed 1 --inputs 0:right,100:none --at 220,225,226,227,300 --keys ti...",
+              "written": 153,
+              "answered": 249
+            }
+          ]
+        },
+        {
+          "n": 8,
+          "context": 28232,
+          "new": 1890,
+          "read_again": 26342,
+          "written_out": 555,
+          "of_which_unseen": 429,
+          "cost": 7771,
+          "cost_so_far": 70183,
+          "carried": 3803,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"$G\" --ticks 300 --seed 1 --inputs 0:right,100:none --at 217,218,219,290,291,292 --key...",
+              "written": 126,
+              "answered": 600
+            }
+          ]
+        },
+        {
+          "n": 9,
+          "context": 30086,
+          "new": 1856,
+          "read_again": 28230,
+          "written_out": 762,
+          "of_which_unseen": 657,
+          "cost": 8951,
+          "cost_so_far": 79133,
+          "carried": 4633,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"$G\" --ticks 700 --seed 1 --inputs 0:right,292:left,436:right,580:left,620:none --at 3...",
+              "written": 105,
+              "answered": 654
+            }
+          ]
+        },
+        {
+          "n": 10,
+          "context": 32461,
+          "new": 2377,
+          "read_again": 30084,
+          "written_out": 483,
+          "of_which_unseen": 389,
+          "cost": 8393,
+          "cost_so_far": 87527,
+          "carried": 2734,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"$G\" --ticks 1000 --seed 1 --inputs 0:none,500:restart,501:none --at 432,499,500,501,5...",
+              "written": 94,
+              "answered": 386
+            }
+          ]
+        },
+        {
+          "n": 11,
+          "context": 33938,
+          "new": 1479,
+          "read_again": 32459,
+          "written_out": 418,
+          "of_which_unseen": 248,
+          "cost": 7185,
+          "cost_so_far": 94712,
+          "carried": 2147,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"$G\" --ticks 800 --seed 1 --inputs 0:right,700:restart,701:none --at 690,701,800 --key...",
+              "written": 170,
+              "answered": 281
+            }
+          ]
+        },
+        {
+          "n": 12,
+          "context": 35164,
+          "new": 1228,
+          "read_again": 33936,
+          "written_out": 401,
+          "of_which_unseen": 292,
+          "cost": 6933,
+          "cost_so_far": 101645,
+          "carried": 1601,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"$G\" --ticks 700 --seed 1 --inputs 0:right --frame over.png --size 480x640 2>&1; file ...",
+              "written": 80,
+              "answered": 63
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\play.png",
+              "written": 16,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 13,
+          "context": 36133,
+          "new": 971,
+          "read_again": 35162,
+          "written_out": 537,
+          "of_which_unseen": 504,
+          "cost": 7414,
+          "cost_so_far": 109059,
+          "carried": 1882,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\over.png",
+              "written": 16,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\readme.png",
+              "written": 17,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 14,
+          "context": 37346,
+          "new": 1215,
+          "read_again": 36131,
+          "written_out": 264,
+          "of_which_unseen": 158,
+          "cost": 6452,
+          "cost_so_far": 115511,
+          "carried": 1136,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "examen leverage play \"<run>/work\" --ticks 300 --seed 1 --inputs 0:left --frame frame.png --size 480x640; fi...",
+              "written": 106,
+              "answered": 185
+            }
+          ]
+        },
+        {
+          "n": 15,
+          "context": 38128,
+          "new": 784,
+          "read_again": 37344,
+          "written_out": 260,
+          "of_which_unseen": 192,
+          "cost": 6013,
+          "cost_so_far": 121524,
+          "carried": 1371,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "powershell -NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object { \\$_.Name -match 'examen|spec...",
+              "written": 68,
+              "answered": 427
+            }
+          ]
+        },
+        {
+          "n": 16,
+          "context": 39142,
+          "new": 1016,
+          "read_again": 38126,
+          "written_out": 992,
+          "of_which_unseen": 0,
+          "cost": 10041,
+          "cost_so_far": 131565,
+          "carried": 2841,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\verdict.json",
+              "written": 1033,
+              "answered": 32
+            }
+          ]
+        },
+        {
+          "n": 17,
+          "context": 41415,
+          "new": 2275,
+          "read_again": 39140,
+          "written_out": 163,
+          "of_which_unseen": 0,
+          "cost": 7574,
+          "cost_so_far": 139138,
+          "carried": 0,
+          "steps": []
+        }
+      ],
+      "how": "context, new, read_again and how far the context grew are the run's own records. written_out a request is its growth less its answers (characters / 4), scaled to the run's exact total; of_which_unseen is that less the visible text (thinking). cost is what the request read and wrote, weighted; carried is what reading again what it added cost at every later request (start.carried: the same for what every request starts from). reading + writing is in_the_ledger"
+    }
+  }
+}

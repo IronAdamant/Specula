@@ -251,13 +251,18 @@ sweep there (pushing what they meet) unless the jump is over 2 m (a teleport). T
 **What rests on a moving kinematic body** (2026-11-21). Contact alone moves it by friction: a box is dragged
 along, and a ball is spun up and settles at 2/7 of the body's speed, so it rolls behind and off the end. That is
 right, and it is not what a game means by a platform. A collider with `carries: true` (the SDK's
-`Spawn::carries`) on a kinematic body hands its changes of speed to what rests on it: each step, after the
-contacts are found, every dynamic body that touches it with a contact normal within 45 degrees of straight up takes
-the carrier's change of velocity since the step before. A thing at rest on it stays at rest on it, through a turn
-at the far end too; a thing that rolls on it rolls as on the ground; a thing that leaves keeps the speed it had.
-Only straight motion is handed on (not a turn), and only to what touches the carrier itself. The carrier's last
-speed is hidden state: it is in the physics snapshot (version 4) and in the hash when it is not zero, so a world
-with no carrier hashes as before. A comparison's builders met the plain behaviour as a fault and each wrote a
+`Spawn::carries`) on a kinematic body makes what rests on it move with it: each step, after the
+contacts are found, every dynamic body that rests on it (a contact normal within 45 degrees of straight up, touching
+or landing in this step) is given the carrier's velocity less what it was given of it before. So a thing that comes
+to rest on a carrier already moving is given its whole speed, as a step onto a moving walkway, and its changes
+after. A thing at rest on it stays at rest on it, through a turn at the far end too; a thing that rolls on it
+rolls as on the ground; a thing that bounces on it is given the speed once (it keeps it in the air); a thing that
+leaves keeps the speed it had, and owes the carrier nothing once it rests on something else or is told to be at
+rest. Only straight motion is handed on (not a turn), and only to what touches the carrier itself. How much of a
+carrier's speed a body has been given is hidden state: it is in the physics snapshot (version 4) and in the hash
+when it is not zero, so a world with no carrier hashes as before. (As first built, on 2026-11-21, only a
+carrier's changes of speed were handed on: a ball that rolled onto a bridge already moving had none of its speed
+and was thrown back by twice it at the turn, which the second comparison's builder met on 2026-11-22.) A comparison's builders met the plain behaviour as a fault and each wrote a
 carry rule over it (LEVERAGE.md, the results of 2026-11-21).
 
 **Determinism.** Twin runs (two engine processes, same calls) end in the same world hash and physics hash

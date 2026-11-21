@@ -158,8 +158,9 @@ pub struct ColliderDesc {
     pub mask: u64,
     pub friction: f32,
     pub restitution: f32,
-    /// On a kinematic body: what rests on it takes its changes of speed (a platform, a lift, a
-    /// bridge that slides), so a thing at rest on it stays at rest on it. Without it only
+    /// On a kinematic body: what rests on it moves with it (a platform, a lift, a bridge that
+    /// slides): a thing that comes to rest on it is given its speed, and its changes of speed
+    /// after, so a thing at rest on it stays at rest on it. Without it only
     /// friction moves what rests there: a box is dragged along, a ball rolls behind.
     pub carries: bool,
 }
@@ -247,8 +248,8 @@ struct Body {
     /// Kinematic: where to be at the end of the next step, and the velocity to return to.
     target: Option<Pose>,
     declared_velocity: (Vec3, Vec3),
-    /// A carrying kinematic body: how fast it moved in the last step (what rests on it has
-    /// that much of its speed already). Zero for every other body.
+    /// A dynamic body: how much of a carrying body's speed it has been given (`Space::carry`).
+    /// Zero for a body that rests on no carrier and came off none.
     carried: Vec3,
     inner_radius: f32,
     outer_radius: f32,
@@ -992,6 +993,11 @@ impl Space {
         b.desc.velocity = v;
         b.desc.angular_velocity = w;
         b.declared_velocity = (v, w);
+        // A body told to be at rest has nothing of a carrier's speed left: put back on a
+        // bridge that moves, it is given the bridge's speed as one that lands there.
+        if v == Vec3::ZERO {
+            b.carried = Vec3::ZERO;
+        }
     }
 
     /// A kinematic body arrives at `target` at the end of the next step, moving there at the
@@ -1606,7 +1612,7 @@ impl Space {
         self.find_pairs();
         lap(&mut times.pairs_us);
         self.narrowphase();
-        self.carry();
+        self.carry(dt);
         lap(&mut times.narrowphase_us);
         // What this step moves: kinematic bodies and awake dynamic ones, in key order.
         let mut active = std::mem::take(&mut self.active);
@@ -1664,59 +1670,84 @@ impl Space {
         &self.report
     }
 
-    /// What rests on a carrying kinematic body takes that body's change of speed since the last
-    /// step ([`ColliderDesc::carries`]). "Rests on" is a touching contact whose normal, from
+    /// What rests on a carrying kinematic body moves with it ([`ColliderDesc::carries`]): it is
+    /// given the carrier's speed when it comes to rest there, and every change of that speed
+    /// after (`Body::carried` is how much of a carrier's speed a body has been given). A thing
+    /// that lands on a bridge already moving is carried as one that was there from the start; a
+    /// thing that bounces on it is given the speed once, since it keeps it in the air; one that
+    /// rolls off keeps the speed it left with, and owes the carrier nothing once it rests on
+    /// something else. "Rests on" is a touching contact whose normal, from
     /// the carrier to the other body, points against gravity (within 45 degrees): a thing
     /// beside the carrier, or under it, is pushed by contact as ever and never dragged. Only
     /// the straight motion is passed on, not a turn, and only to what touches the carrier
     /// itself: a thing stacked on a carried thing is held by friction alone. Pairs are walked
-    /// in key order, and only in a step where a carrier's speed changed.
-    fn carry(&mut self) {
-        let mut changed: Vec<(u32, Vec3)> = Vec::new();
-        for k in self.awake.iter().copied().collect::<Vec<_>>() {
-            let s = self.by_key[&k];
-            let b = self.slot_mut(s);
-            let carries = b.desc.kind == BodyKind::Kinematic && b.desc.collider.as_ref().is_some_and(|c| c.carries);
-            if !carries && b.carried == Vec3::ZERO {
-                continue;
+    /// in key order, and only while a carrier moves or a body still has a carrier's speed.
+    fn carry(&mut self, dt: f32) {
+        let carrier = |b: &Body| b.desc.kind == BodyKind::Kinematic && b.desc.collider.as_ref().is_some_and(|c| c.carries);
+        // Anything to do: a carrier that moves, or a body that still has a carrier's speed.
+        let mut riders: Vec<u32> = Vec::new();
+        let mut moving = false;
+        for k in &self.awake {
+            let s = self.by_key[k];
+            let b = self.slot(s);
+            if b.carried != Vec3::ZERO {
+                riders.push(s);
             }
-            let now = if carries { b.desc.velocity } else { Vec3::ZERO };
-            let dv = now - b.carried;
-            b.carried = now;
-            if dv != Vec3::ZERO {
-                changed.push((s, dv));
-            }
+            moving |= carrier(b) && b.desc.velocity != Vec3::ZERO;
         }
         let g = self.settings.gravity;
         let weight = g.length();
-        if changed.is_empty() || weight == 0.0 {
+        if (riders.is_empty() && !moving) || weight == 0.0 {
             return;
         }
         let up = g * (-1.0 / weight);
-        let plane = self.settings.plane_2d;
-        let mut moved: Vec<(u32, Vec3)> = Vec::new();
+        // What each dynamic body rests on: a carrier (the first in key order, and its speed),
+        // or something else.
+        let mut on: BTreeMap<u32, Vec3> = BTreeMap::new();
+        let mut grounded: BTreeSet<u32> = BTreeSet::new();
         for &slot in self.pairs.values() {
             let c = self.contact(slot);
-            if !c.touching || c.trigger || c.cosmetic || c.len == 0 {
+            if c.trigger || c.cosmetic || c.len == 0 {
                 continue;
             }
-            for &(carrier, dv) in &changed {
-                // The points' normal runs from `a` to `b`.
-                let (other, n) = if c.a == carrier {
-                    (c.b, c.points[0].normal)
-                } else if c.b == carrier {
-                    (c.a, -c.points[0].normal)
-                } else {
+            let gap = c.points[..c.len].iter().map(|p| p.separation).fold(f32::INFINITY, f32::min);
+            // The points' normal runs from `a` to `b`.
+            for (under, over, n) in [(c.a, c.b, c.points[0].normal), (c.b, c.a, -c.points[0].normal)] {
+                if !self.slot(over).is_dynamic() || n.dot(up) <= std::f32::consts::FRAC_1_SQRT_2 {
                     continue;
-                };
-                if self.slot(other).is_dynamic() && n.dot(up) > std::f32::consts::FRAC_1_SQRT_2 {
-                    moved.push((other, dv));
+                }
+                let u = self.slot(under);
+                // It rests there, or lands there in this step (its gap closes to within the
+                // slop, with this step's fall): the solver's friction acts on a contact from
+                // that step, one before it is `touching`, and a ball given the carrier's speed
+                // a step late had been dragged first. A step early does no harm.
+                if !c.touching && gap + ((self.slot(over).desc.velocity - u.desc.velocity).dot(n) - weight * dt) * dt >= self.settings.linear_slop {
+                    continue;
+                }
+                if carrier(u) {
+                    on.entry(over).or_insert(u.desc.velocity);
+                } else {
+                    grounded.insert(over);
                 }
             }
         }
-        for (s, mut dv) in moved {
+        // Off the carrier and at rest on something else: its speed is its own again. (In the
+        // air it is still the carrier's until it lands.) A body that is no longer dynamic has
+        // none.
+        for s in riders {
+            if !on.contains_key(&s) && (grounded.contains(&s) || !self.slot(s).is_dynamic()) {
+                self.slot_mut(s).carried = Vec3::ZERO;
+            }
+        }
+        let plane = self.settings.plane_2d;
+        for (s, now) in on {
+            let mut dv = now - self.slot(s).carried;
+            if dv == Vec3::ZERO {
+                continue;
+            }
             self.wake_slot(s);
             let b = self.slot_mut(s);
+            b.carried = now;
             let (ll, _) = locks(b, plane);
             mask(&mut dv, ll);
             b.desc.velocity = b.desc.velocity + dv;

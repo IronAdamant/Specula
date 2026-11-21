@@ -1,0 +1,1354 @@
+{
+  "leverage": 1,
+  "baseline": "plain",
+  "against_baseline": [
+    {
+      "job": "change3d",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 209645,
+      "baseline_weighted": 261708,
+      "times": 0.8,
+      "requests_times": 1.02,
+      "passed": "11.0 / 11",
+      "baseline_passed": "11.0 / 11"
+    },
+    {
+      "job": "medium3d",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 487485,
+      "baseline_weighted": 553980,
+      "times": 0.88,
+      "requests_times": 1.98,
+      "passed": "23.0 / 24",
+      "baseline_passed": "23.0 / 24"
+    },
+    {
+      "job": "small3d",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 134867,
+      "baseline_weighted": 113730,
+      "times": 1.19,
+      "requests_times": 1.63,
+      "passed": "15.0 / 15",
+      "baseline_passed": "14.0 / 15"
+    }
+  ],
+  "runs": [
+    {
+      "run": "change3d-engine-1",
+      "job": "change3d",
+      "arm": "engine",
+      "n": 1,
+      "from": "medium3d-engine-1",
+      "engine_build": "bafa9b7d43",
+      "builder": {
+        "tokens": 60495,
+        "tool_uses": 22,
+        "duration_s": 256.3,
+        "by_kind": {
+          "input": 42,
+          "cache_write": 55150,
+          "cache_read": 795179,
+          "output": 16546,
+          "requests": 21,
+          "context_at_end": 60495
+        },
+        "weighted": 231227,
+        "cost_usd": 0.46566189999999996,
+        "turns": 23,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 30,
+        "refused": 2,
+        "args_bytes": 4256,
+        "answer_bytes": 20126,
+        "by_tool": {
+          "(run)": 27,
+          "(find)": 2,
+          "(check)": 1
+        }
+      },
+      "left": {
+        "files": 36,
+        "bytes": 350868,
+        "text_lines": 1541,
+        "lines_by_kind": {
+          ".json": 789,
+          ".md": 415,
+          ".rs": 318,
+          ".toml": 19
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 10,
+          "of": 10
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 11,
+          "of": 11
+        }
+      },
+      "defects": [
+        "README's file list still says strings are 'en.json, es.json: every word, both languages' (fr.json not named) and 'Both are kept between runs' for what are now three settings.",
+        "Language: menu_right/menu_left stop at the ends (en..fr) instead of wrapping; only Enter cycles fr back to en.",
+        "With the Light ball a sustained push cannot move the crate wall on board 2 at all (crate displacement 0.12 m in total), so board 2's middle coin route may be blocked for a light ball.",
+        "The README scripts for board 4 lose two lives on the way (found by search), so neither is a clean play-through.",
+        "After the lost screen the ball is left falling forever; the engine prints 'ball has fallen out of the world' on stderr.",
+        "Title frame shows the red ball peeking out beside the title panel (the ball spawned at board 1's start before play)."
+      ],
+      "judge": {
+        "tokens": 118461,
+        "tool_uses": 65,
+        "duration_s": 698.8,
+        "by_kind": {
+          "input": 110,
+          "cache_write": 113116,
+          "cache_read": 3878297,
+          "output": 36460,
+          "requests": 55,
+          "context_at_end": 118461
+        },
+        "weighted": 711635,
+        "cost_usd": 2.4102274,
+        "turns": 66,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 89,
+          "refused": 3,
+          "args_bytes": 28436,
+          "answer_bytes": 903928,
+          "by_tool": {
+            "(run)": 89
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "change3d-engine-2",
+      "job": "change3d",
+      "arm": "engine",
+      "n": 2,
+      "from": "medium3d-engine-2",
+      "engine_build": "bafa9b7d43",
+      "builder": {
+        "tokens": 47715,
+        "tool_uses": 23,
+        "duration_s": 376,
+        "by_kind": {
+          "input": 42,
+          "cache_write": 42370,
+          "cache_read": 689479,
+          "output": 13222,
+          "requests": 21,
+          "context_at_end": 47715
+        },
+        "weighted": 188062,
+        "cost_usd": 0.3707318999999999,
+        "turns": 24,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 18,
+        "refused": 4,
+        "args_bytes": 2825,
+        "answer_bytes": 9812,
+        "by_tool": {
+          "(run)": 13,
+          "(find)": 4,
+          "(check)": 1
+        }
+      },
+      "left": {
+        "files": 34,
+        "bytes": 280299,
+        "text_lines": 1204,
+        "lines_by_kind": {
+          ".json": 405,
+          ".md": 412,
+          ".rs": 368,
+          ".toml": 19
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 10,
+          "of": 10
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 11,
+          "of": 11
+        }
+      },
+      "defects": [
+        "ball_kind in the state lags the Ball setting: on the title and Settings screens it keeps the previous run's value (Settings shows Ball: Heavy while ball_kind is normal) and only changes one tick after a run starts.",
+        "README's line under the board-3 script still says it ends at screen won, score 30; it now ends on board 4 in play.",
+        "README's Files section names only en.json and es.json; fr.json is not listed.",
+        "The ramp is a tilted slab with open space under its high end: a ball rolled back from +x wedges under it and rests at x 1.06 (solid, but it gets stuck there).",
+        "The board-4 clearing script given in the README loses two lives on the way (allowed by the brief, but no lossless win is offered)."
+      ],
+      "judge": {
+        "tokens": 108131,
+        "tool_uses": 60,
+        "duration_s": 770.8,
+        "by_kind": {
+          "input": 106,
+          "cache_write": 102786,
+          "cache_read": 3427148,
+          "output": 31702,
+          "requests": 53,
+          "context_at_end": 108131
+        },
+        "weighted": 629813,
+        "cost_usd": 2.1421816,
+        "turns": 61,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 86,
+          "refused": 4,
+          "args_bytes": 21129,
+          "answer_bytes": 374414,
+          "by_tool": {
+            "(run)": 84,
+            "(find)": 2
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "change3d-plain-1",
+      "job": "change3d",
+      "arm": "plain",
+      "n": 1,
+      "from": "medium3d-plain-1",
+      "engine_build": null,
+      "builder": {
+        "tokens": 57558,
+        "tool_uses": 25,
+        "duration_s": 194.5,
+        "by_kind": {
+          "input": 40,
+          "cache_write": 52213,
+          "cache_read": 745225,
+          "output": 20333,
+          "requests": 20,
+          "context_at_end": 57558
+        },
+        "weighted": 241494,
+        "cost_usd": 0.4867845,
+        "turns": 26,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 17,
+        "bytes": 205350,
+        "text_lines": 1513,
+        "lines_by_kind": {
+          ".md": 57,
+          ".py": 1456
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 10,
+          "of": 10
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 11,
+          "of": 11
+        }
+      },
+      "defects": [
+        "Board 4 frame: the ball's ground shadow is drawn on top of the ramp at floor level (shows through the ramp under the ball).",
+        "A push held when a board ends stays held on the next board (a held down push carries into board 2; the builder noted it as pre-existing).",
+        "Coins on boards 3 and 4 render as dark brown discs, much darker than the gold coins of board 2."
+      ],
+      "judge": {
+        "tokens": 95103,
+        "tool_uses": 60,
+        "duration_s": 559.9,
+        "by_kind": {
+          "input": 104,
+          "cache_write": 89758,
+          "cache_read": 3202961,
+          "output": 35195,
+          "requests": 52,
+          "context_at_end": 95103
+        },
+        "weighted": 608573,
+        "cost_usd": 2.0629722,
+        "turns": 61,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "change3d-plain-2",
+      "job": "change3d",
+      "arm": "plain",
+      "n": 2,
+      "from": "medium3d-plain-2",
+      "engine_build": null,
+      "builder": {
+        "tokens": 68792,
+        "tool_uses": 26,
+        "duration_s": 168.8,
+        "by_kind": {
+          "input": 42,
+          "cache_write": 63447,
+          "cache_read": 919849,
+          "output": 22117,
+          "requests": 21,
+          "context_at_end": 68792
+        },
+        "weighted": 281921,
+        "cost_usd": 0.5670268999999999,
+        "turns": 27,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 12,
+        "bytes": 176018,
+        "text_lines": 2016,
+        "lines_by_kind": {
+          ".md": 134,
+          ".py": 1882
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 10,
+          "of": 10
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 11,
+          "of": 11
+        }
+      },
+      "defects": [
+        "Board 2: after the ball strikes the wall, the upper crates sink into the lower ones and stay there. In all three ball weights, pairs of crates end with centres 0.01-0.10 apart (cubes are 0.5), so the frame shows 3 boxes for 6 crates. This likely followed the builder's crate-wake change, since the crates now really move.",
+        "README file table still says sim.py holds 'texts in both languages' and font.py has 'accents for Spanish'; the game now has three languages.",
+        "The flying coin (2.2, 1.2, 0) is taken with the ball at (1.79, 1.01), 0.45 away, before the ball reaches the coin's x."
+      ],
+      "judge": {
+        "tokens": 74358,
+        "tool_uses": 55,
+        "duration_s": 410.8,
+        "by_kind": {
+          "input": 96,
+          "cache_write": 69013,
+          "cache_read": 2108666,
+          "output": 29536,
+          "requests": 48,
+          "context_at_end": 74358
+        },
+        "weighted": 444909,
+        "cost_usd": 1.5649411999999998,
+        "turns": 56,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "medium3d-engine-1",
+      "job": "medium3d",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "bafa9b7d43",
+      "builder": {
+        "tokens": 99322,
+        "tool_uses": 53,
+        "duration_s": 889.7,
+        "by_kind": {
+          "input": 104,
+          "cache_write": 93977,
+          "cache_read": 3158982,
+          "output": 41313,
+          "requests": 52,
+          "context_at_end": 99322
+        },
+        "weighted": 640038,
+        "cost_usd": 1.1051442,
+        "turns": 54,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 37,
+        "refused": 6,
+        "args_bytes": 4581,
+        "answer_bytes": 26084,
+        "by_tool": {
+          "(run)": 31,
+          "(find)": 6
+        }
+      },
+      "left": {
+        "files": 33,
+        "bytes": 311851,
+        "text_lines": 1381,
+        "lines_by_kind": {
+          ".json": 706,
+          ".md": 386,
+          ".rs": 270,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 47456,
+        "text_lines": 834,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 337,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 20,
+          "of": 21
+        },
+        "checkable": {
+          "passed": 3,
+          "of": 3
+        },
+        "all": {
+          "passed": 23,
+          "of": 24
+        }
+      },
+      "defects": [
+        "Title frame shows the 3D ball as a red blob over the left edge of the menu panel (the ball is drawn while on the title).",
+        "On the lost screen the ball is left falling out of the world; the engine prints a warning (ball has fallen out of the world) on stderr in every lost run.",
+        "The README says the engine's find could not find a board-3 winning script; the script given was found by hand.",
+        "One fixed camera for all boards, so board 1 is off-centre (README admits it).",
+        "A ball that rolls onto the bridge moving at a speed other than the bridge's keeps that relative speed (the bridge passes on only its changes of speed); a ball at rest relative to the bridge is carried."
+      ],
+      "judge": {
+        "tokens": 93855,
+        "tool_uses": 46,
+        "duration_s": 432.9,
+        "by_kind": {
+          "input": 72,
+          "cache_write": 88510,
+          "cache_read": 1871961,
+          "output": 23214,
+          "requests": 36,
+          "context_at_end": 93855
+        },
+        "weighted": 413976,
+        "cost_usd": 1.5470401999999996,
+        "turns": 47,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 51,
+          "refused": 2,
+          "args_bytes": 9821,
+          "answer_bytes": 90595,
+          "by_tool": {
+            "(run)": 51
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "m23",
+          "evidence": "Volume set to 0: sounds still listed (bounce, coin, fall). But the game code calls cx.sound(name, None, 1.0) and the README never says how volume scales playback. The only statement is the engine's own note work/notes/world.md:61 (master bus), which the builder did not write. Silence could not be heard in a headless run."
+        }
+      ]
+    },
+    {
+      "run": "medium3d-engine-2",
+      "job": "medium3d",
+      "arm": "engine",
+      "n": 2,
+      "from": null,
+      "engine_build": "bafa9b7d43",
+      "builder": {
+        "tokens": 68539,
+        "tool_uses": 27,
+        "duration_s": 302.5,
+        "by_kind": {
+          "input": 54,
+          "cache_write": 63194,
+          "cache_read": 1149594,
+          "output": 28185,
+          "requests": 27,
+          "context_at_end": 68539
+        },
+        "weighted": 334931,
+        "cost_usd": 0.6496934,
+        "turns": 28,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 19,
+        "refused": 1,
+        "args_bytes": 2064,
+        "answer_bytes": 15822,
+        "by_tool": {
+          "(run)": 17,
+          "(find)": 2
+        }
+      },
+      "left": {
+        "files": 32,
+        "bytes": 272980,
+        "text_lines": 1086,
+        "lines_by_kind": {
+          ".json": 363,
+          ".md": 384,
+          ".rs": 320,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 47456,
+        "text_lines": 834,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 337,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 20,
+          "of": 21
+        },
+        "checkable": {
+          "passed": 3,
+          "of": 3
+        },
+        "all": {
+          "passed": 23,
+          "of": 24
+        }
+      },
+      "defects": [
+        "With --set board=N and no input the run sits on the title showing board 1. The brief says the board option starts the run in play on that board; here it takes effect only after 0:enter.",
+        "bridge_x is null at the tick play begins (tick 0) on board 3; it becomes a number from tick 1.",
+        "A crate or ball that drops below y=-5 is removed or reset one tick later: it appears in the state once with y below -5.",
+        "After a run ends and Enter returns to the title, the state still reports the old score, lives, ball and crates until Start is chosen. Start does reset them to score 0 and lives 3.",
+        "On the settings screen texts also lists the title's texts beneath it (Roll, Start, Settings, Quit).",
+        "Bounce plays at most once per tick (README admits it)."
+      ],
+      "judge": {
+        "tokens": 87887,
+        "tool_uses": 56,
+        "duration_s": 642.6,
+        "by_kind": {
+          "input": 92,
+          "cache_write": 82542,
+          "cache_read": 2400976,
+          "output": 24863,
+          "requests": 46,
+          "context_at_end": 87887
+        },
+        "weighted": 467682,
+        "cost_usd": 1.6381592000000003,
+        "turns": 57,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 65,
+          "refused": 1,
+          "args_bytes": 10336,
+          "answer_bytes": 137575,
+          "by_tool": {
+            "(run)": 63,
+            "(find)": 2
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "m23",
+          "evidence": "At volume 0 the sounds list still fills, but a headless run plays nothing aloud, so silence cannot be heard here. The README says nothing about volume scaling. The code calls cx.sound(name, None, 1.0) with a fixed gain. Only the engine note notes/world.md says the engine scales the master bus by volume."
+        }
+      ]
+    },
+    {
+      "run": "medium3d-plain-1",
+      "job": "medium3d",
+      "arm": "plain",
+      "n": 1,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 68912,
+        "tool_uses": 16,
+        "duration_s": 420.1,
+        "by_kind": {
+          "input": 26,
+          "cache_write": 63567,
+          "cache_read": 592926,
+          "output": 54951,
+          "requests": 13,
+          "context_at_end": 68912
+        },
+        "weighted": 413532,
+        "cost_usd": 0.8631226,
+        "turns": 17,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 13,
+        "bytes": 171466,
+        "text_lines": 1401,
+        "lines_by_kind": {
+          ".md": 39,
+          ".py": 1362
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 20,
+          "of": 21
+        },
+        "checkable": {
+          "passed": 3,
+          "of": 3
+        },
+        "all": {
+          "passed": 23,
+          "of": 24
+        }
+      },
+      "defects": [
+        "Windowed game is silent: sound.play uses SND_MEMORY|SND_ASYNC, which winsound rejects with a RuntimeError that the game swallows, so no sound is ever heard.",
+        "The ball can fall through a slab: landing is only tested when the previous y was >= 0.25, so a ball that dips even one tick over the small gap between the bridge edge and slab 2 then passes through the slab top (seen at x 3.2..3.6, y 0.17 -> -0.17). This makes crossing to board 3's second slab need frame-exact timing (1 of 40 start ticks tried worked).",
+        "Ball landing on the bridge takes the bridge's velocity for free (velocity is not converted to the bridge frame when it lands).",
+        "The settings screen hint '< >' draws as '? ?' because the bitmap font has no glyphs for < and >.",
+        "Coins on board 2 are drawn in a dark brown close to the crate colour, so they are hard to see."
+      ],
+      "judge": {
+        "tokens": 84150,
+        "tool_uses": 60,
+        "duration_s": 612,
+        "by_kind": {
+          "input": 104,
+          "cache_write": 78805,
+          "cache_read": 2688209,
+          "output": 30720,
+          "requests": 52,
+          "context_at_end": 84150
+        },
+        "weighted": 521031,
+        "cost_usd": 1.7828978000000009,
+        "turns": 61,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "m23",
+          "evidence": "sound.play returns at volume 0 and wav_bytes scales the amplitude by volume/10, and sounds is still listed at volume 0. But play calls winsound.PlaySound(bytes, SND_MEMORY|SND_ASYNC), which on this Python (3.13) raises 'RuntimeError: Cannot play asynchronously from memory' (tested with silent bytes). The error is swallowed, so the game plays no sound at any volume and the volume scaling never reaches the player."
+        }
+      ]
+    },
+    {
+      "run": "medium3d-plain-2",
+      "job": "medium3d",
+      "arm": "plain",
+      "n": 2,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 99825,
+        "tool_uses": 34,
+        "duration_s": 574.5,
+        "by_kind": {
+          "input": 54,
+          "cache_write": 94480,
+          "cache_read": 1786435,
+          "output": 79526,
+          "requests": 27,
+          "context_at_end": 99825
+        },
+        "weighted": 694428,
+        "cost_usd": 1.3519315,
+        "turns": 35,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 11,
+        "bytes": 162591,
+        "text_lines": 1820,
+        "lines_by_kind": {
+          ".md": 78,
+          ".py": 1742
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 20,
+          "of": 21
+        },
+        "checkable": {
+          "passed": 3,
+          "of": 3
+        },
+        "all": {
+          "passed": 23,
+          "of": 24
+        }
+      },
+      "defects": [
+        "Crates sink into each other: after a strike or a push from the +z side the top crates fall into the bottom ones and sit at almost the same centres (e.g. two crates at (0.01,0.25,-0.49)). Two crates fill the same space, against the brief's 'push one another'.",
+        "The crates are very hard to move: the ball wedges against the pile and gets turned aside, so I could not push a crate off an edge with any input I tried.",
+        "Without --settings the run reads and writes settings_data inside the game folder, so a settings change in an earlier no-folder run would carry over to later no-folder runs.",
+        "In the frame the lost screen's title 'FIN DEL JUEGO' fills the width almost edge to edge."
+      ],
+      "judge": {
+        "tokens": 80363,
+        "tool_uses": 61,
+        "duration_s": 485.4,
+        "by_kind": {
+          "input": 66,
+          "cache_write": 75018,
+          "cache_read": 1661101,
+          "output": 26436,
+          "requests": 33,
+          "context_at_end": 80363
+        },
+        "weighted": 392129,
+        "cost_usd": 1.4613481999999998,
+        "turns": 62,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "m13",
+          "evidence": "I could not get any crate off the board: I tried a straight push right, a steering controller through the wall along 4 z lanes x 3 speeds, a push from the +z side, and a crate-chasing controller (3000 ticks). The crates moved at most ~2.3 m and the count stayed at 6, so crate removal below y=-5 was never seen."
+        }
+      ]
+    },
+    {
+      "run": "small3d-engine-1",
+      "job": "small3d",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "bafa9b7d43",
+      "builder": {
+        "tokens": 41102,
+        "tool_uses": 18,
+        "duration_s": 354.1,
+        "by_kind": {
+          "input": 26,
+          "cache_write": 35757,
+          "cache_read": 347087,
+          "output": 11523,
+          "requests": 13,
+          "context_at_end": 41102
+        },
+        "weighted": 137046,
+        "cost_usd": 0.29301869999999997,
+        "turns": 19,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 9,
+        "refused": 1,
+        "args_bytes": 951,
+        "answer_bytes": 4752,
+        "by_tool": {
+          "(run)": 7,
+          "(find)": 2
+        }
+      },
+      "left": {
+        "files": 31,
+        "bytes": 203914,
+        "text_lines": 932,
+        "lines_by_kind": {
+          ".json": 363,
+          ".md": 377,
+          ".rs": 173,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 47456,
+        "text_lines": 834,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 337,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 3,
+          "of": 3
+        },
+        "all": {
+          "passed": 15,
+          "of": 15
+        }
+      },
+      "defects": [
+        "On the end screen, inputs such as up/down move focus among the 'Play again'/'Title' buttons. After 'down' was held there, a later restart (Enter) did not restart the run (t1100 in my run), though the screen says 'press Enter to restart'.",
+        "`sounds` is not cleared on restart: it keeps the sounds of the earlier run, while the brief says 'every sound played so far in this run'. This is ambiguous, because the headless run is the same run.",
+        "After the third fall the ball stays frozen at y=1.2483, one physics step past the start, instead of at exactly (0,1.25,0). This is minor."
+      ],
+      "judge": {
+        "tokens": 45209,
+        "tool_uses": 25,
+        "duration_s": 201.4,
+        "by_kind": {
+          "input": 42,
+          "cache_write": 39864,
+          "cache_read": 622884,
+          "output": 9552,
+          "requests": 21,
+          "context_at_end": 45209
+        },
+        "weighted": 159920,
+        "cost_usd": 0.6346968,
+        "turns": 26,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 23,
+          "refused": 0,
+          "args_bytes": 2806,
+          "answer_bytes": 21724,
+          "by_tool": {
+            "(run)": 23
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "small3d-engine-2",
+      "job": "small3d",
+      "arm": "engine",
+      "n": 2,
+      "from": null,
+      "engine_build": "bafa9b7d43",
+      "builder": {
+        "tokens": 38522,
+        "tool_uses": 19,
+        "duration_s": 137.6,
+        "by_kind": {
+          "input": 26,
+          "cache_write": 33177,
+          "cache_read": 336355,
+          "output": 11511,
+          "requests": 13,
+          "context_at_end": 38522
+        },
+        "weighted": 132688,
+        "cost_usd": 0.28150549999999996,
+        "turns": 20,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 7,
+        "refused": 0,
+        "args_bytes": 583,
+        "answer_bytes": 2950,
+        "by_tool": {
+          "(run)": 6,
+          "(find)": 1
+        }
+      },
+      "left": {
+        "files": 30,
+        "bytes": 174574,
+        "text_lines": 937,
+        "lines_by_kind": {
+          ".json": 341,
+          ".md": 384,
+          ".rs": 193,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 47456,
+        "text_lines": 834,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 337,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 3,
+          "of": 3
+        },
+        "all": {
+          "passed": 15,
+          "of": 15
+        }
+      },
+      "defects": [
+        "After a run ends, pressing down (S) moves the end screen's focus from 'Press Enter to restart' to 'Title', and a following restart no longer restarts: inputs 100:right,640:down,700:restart stays over at tick 720 (lives 0, score 10).",
+        "Restart in mid-run does nothing (150:restart in the README's own example leaves score 10, lives 2); the brief only asks for restart after the end, but the README's example implies otherwise.",
+        "The ball rests at y = 0.24993, slightly below 0.25 (within tolerance).",
+        "After the final fall the ball is left frozen below the board at y -5.28 instead of being reset; the engine prints a 'fallen out of the world' warning on stderr."
+      ],
+      "judge": {
+        "tokens": 51516,
+        "tool_uses": 26,
+        "duration_s": 231.2,
+        "by_kind": {
+          "input": 46,
+          "cache_write": 46171,
+          "cache_read": 780749,
+          "output": 9751,
+          "requests": 23,
+          "context_at_end": 51516
+        },
+        "weighted": 184590,
+        "cost_usd": 0.7207218000000001,
+        "turns": 27,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 26,
+          "refused": 0,
+          "args_bytes": 3826,
+          "answer_bytes": 27666,
+          "by_tool": {
+            "(run)": 26
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "small3d-plain-1",
+      "job": "small3d",
+      "arm": "plain",
+      "n": 1,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 24533,
+        "tool_uses": 6,
+        "duration_s": 102.7,
+        "by_kind": {
+          "input": 12,
+          "cache_write": 19188,
+          "cache_read": 89289,
+          "output": 14170,
+          "requests": 6,
+          "context_at_end": 24533
+        },
+        "weighted": 103776,
+        "cost_usd": 0.22740490000000002,
+        "turns": 7,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 6,
+        "bytes": 74151,
+        "text_lines": 538,
+        "lines_by_kind": {
+          ".md": 36,
+          ".py": 502
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 11,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 3,
+          "of": 3
+        },
+        "all": {
+          "passed": 14,
+          "of": 15
+        }
+      },
+      "defects": [
+        "The PNG frame has no HUD at all: no score, no lives, and no end-of-run message (only the untested tkinter window draws text).",
+        "The interactive window mode was never run by its builder, and I did not open it (it would take the keyboard).",
+        "Once the ball's centre passes the board's edge, nothing stops it hitting the slab's side: there is no side collision, and the README says so."
+      ],
+      "judge": {
+        "tokens": 40635,
+        "tool_uses": 22,
+        "duration_s": 160,
+        "by_kind": {
+          "input": 34,
+          "cache_write": 35290,
+          "cache_read": 472169,
+          "output": 8075,
+          "requests": 17,
+          "context_at_end": 40635
+        },
+        "weighted": 131738,
+        "cost_usd": 0.5383898,
+        "turns": 23,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "s14",
+          "evidence": "No frame shows score or lives: play.png, over.png (game over at 1200 ticks) and won.png (win at 1763 ticks) have no text at all, so there is no 'Game over' / 'You win', score or restart hint. The README admits this ('No score text in the PNG frame')."
+        }
+      ]
+    },
+    {
+      "run": "small3d-plain-2",
+      "job": "small3d",
+      "arm": "plain",
+      "n": 2,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 26633,
+        "tool_uses": 10,
+        "duration_s": 117.5,
+        "by_kind": {
+          "input": 20,
+          "cache_write": 21288,
+          "cache_read": 184540,
+          "output": 15720,
+          "requests": 10,
+          "context_at_end": 26633
+        },
+        "weighted": 123684,
+        "cost_usd": 0.26084599999999997,
+        "turns": 11,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 8,
+        "bytes": 78845,
+        "text_lines": 510,
+        "lines_by_kind": {
+          ".md": 39,
+          ".py": 470,
+          ".txt": 1
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 11,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 3,
+          "of": 3
+        },
+        "all": {
+          "passed": 14,
+          "of": 15
+        }
+      },
+      "defects": [
+        "sounds is not cleared on restart, so after a restart the printed sounds list still holds sounds from the previous run (brief: every sound played so far in this run).",
+        "On a loss the ball is left where it fell (y about -5.05, off screen) rather than visible; the game-over frame shows an empty board with no message.",
+        "The interactive window uses a separate simple polygon renderer; the README says it was never opened by the builder."
+      ],
+      "judge": {
+        "tokens": 38499,
+        "tool_uses": 18,
+        "duration_s": 104,
+        "by_kind": {
+          "input": 24,
+          "cache_write": 33154,
+          "cache_read": 290345,
+          "output": 7758,
+          "requests": 12,
+          "context_at_end": 38499
+        },
+        "weighted": 109291,
+        "cost_usd": 0.47855700000000007,
+        "turns": 19,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "s14",
+          "evidence": "No frame has any text: play.png, play2.png show no score or lives; over.png (lives 0, over true) and won.png (won true) show only the board, no 'Game over'/'You win', score or restart hint. render() in roll.py draws no HUD; text exists only in the unopened tkinter window."
+        }
+      ]
+    }
+  ]
+}
