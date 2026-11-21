@@ -158,11 +158,15 @@ pub struct ColliderDesc {
     pub mask: u64,
     pub friction: f32,
     pub restitution: f32,
+    /// On a kinematic body: what rests on it takes its changes of speed (a platform, a lift, a
+    /// bridge that slides), so a thing at rest on it stays at rest on it. Without it only
+    /// friction moves what rests there: a box is dragged along, a ball rolls behind.
+    pub carries: bool,
 }
 
 impl ColliderDesc {
     pub fn new(shape: Shape) -> ColliderDesc {
-        ColliderDesc { shape, offset: Pose::IDENTITY, is_trigger: false, layer: 1, mask: u64::MAX, friction: 0.6, restitution: 0.0 }
+        ColliderDesc { shape, offset: Pose::IDENTITY, is_trigger: false, layer: 1, mask: u64::MAX, friction: 0.6, restitution: 0.0, carries: false }
     }
 }
 
@@ -243,6 +247,9 @@ struct Body {
     /// Kinematic: where to be at the end of the next step, and the velocity to return to.
     target: Option<Pose>,
     declared_velocity: (Vec3, Vec3),
+    /// A carrying kinematic body: how fast it moved in the last step (what rests on it has
+    /// that much of its speed already). Zero for every other body.
+    carried: Vec3,
     inner_radius: f32,
     outer_radius: f32,
     /// Solver index this step.
@@ -759,6 +766,7 @@ impl Space {
             in_static_tree: false,
             target: None,
             declared_velocity: (Vec3::ZERO, Vec3::ZERO),
+            carried: Vec3::ZERO,
             inner_radius: 0.0,
             outer_radius: 0.0,
             solver: NONE,
@@ -1598,6 +1606,7 @@ impl Space {
         self.find_pairs();
         lap(&mut times.pairs_us);
         self.narrowphase();
+        self.carry();
         lap(&mut times.narrowphase_us);
         // What this step moves: kinematic bodies and awake dynamic ones, in key order.
         let mut active = std::mem::take(&mut self.active);
@@ -1653,6 +1662,65 @@ impl Space {
         times.total_us = (Instant::now() - t_start).as_secs_f64() * 1e6;
         self.report.times = times;
         &self.report
+    }
+
+    /// What rests on a carrying kinematic body takes that body's change of speed since the last
+    /// step ([`ColliderDesc::carries`]). "Rests on" is a touching contact whose normal, from
+    /// the carrier to the other body, points against gravity (within 45 degrees): a thing
+    /// beside the carrier, or under it, is pushed by contact as ever and never dragged. Only
+    /// the straight motion is passed on, not a turn, and only to what touches the carrier
+    /// itself: a thing stacked on a carried thing is held by friction alone. Pairs are walked
+    /// in key order, and only in a step where a carrier's speed changed.
+    fn carry(&mut self) {
+        let mut changed: Vec<(u32, Vec3)> = Vec::new();
+        for k in self.awake.iter().copied().collect::<Vec<_>>() {
+            let s = self.by_key[&k];
+            let b = self.slot_mut(s);
+            let carries = b.desc.kind == BodyKind::Kinematic && b.desc.collider.as_ref().is_some_and(|c| c.carries);
+            if !carries && b.carried == Vec3::ZERO {
+                continue;
+            }
+            let now = if carries { b.desc.velocity } else { Vec3::ZERO };
+            let dv = now - b.carried;
+            b.carried = now;
+            if dv != Vec3::ZERO {
+                changed.push((s, dv));
+            }
+        }
+        let g = self.settings.gravity;
+        let weight = g.length();
+        if changed.is_empty() || weight == 0.0 {
+            return;
+        }
+        let up = g * (-1.0 / weight);
+        let plane = self.settings.plane_2d;
+        let mut moved: Vec<(u32, Vec3)> = Vec::new();
+        for &slot in self.pairs.values() {
+            let c = self.contact(slot);
+            if !c.touching || c.trigger || c.cosmetic || c.len == 0 {
+                continue;
+            }
+            for &(carrier, dv) in &changed {
+                // The points' normal runs from `a` to `b`.
+                let (other, n) = if c.a == carrier {
+                    (c.b, c.points[0].normal)
+                } else if c.b == carrier {
+                    (c.a, -c.points[0].normal)
+                } else {
+                    continue;
+                };
+                if self.slot(other).is_dynamic() && n.dot(up) > std::f32::consts::FRAC_1_SQRT_2 {
+                    moved.push((other, dv));
+                }
+            }
+        }
+        for (s, mut dv) in moved {
+            self.wake_slot(s);
+            let b = self.slot_mut(s);
+            let (ll, _) = locks(b, plane);
+            mask(&mut dv, ll);
+            b.desc.velocity = b.desc.velocity + dv;
+        }
     }
 
     /// Kinetic and potential energy of the dynamic bodies this step moves (sleeping bodies
@@ -2573,6 +2641,12 @@ impl Space {
         h.write_bool(b.desc.sleeping);
         h.write_f32(b.sleep_time);
         h.write_bool(b.target.is_some());
+        // Written only when there is one, so that a world with no carrier hashes as it did.
+        if b.carried != Vec3::ZERO {
+            for c in [b.carried.x, b.carried.y, b.carried.z] {
+                h.write_f32(c);
+            }
+        }
     }
 
     fn hash_contact(h: &mut StableHasher, (a, b): (u64, u64), c: &Contact) {

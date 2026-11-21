@@ -26,8 +26,10 @@ use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 /// (warm starts, last state, the step that solved them); version 1 snapshots (no joints) still
 /// load. Version 3 adds, to each contact, the fastest its two bodies closed while it formed
 /// (what its begin event says: the rules of a game hear it, so a restored run must say the
-/// same); in an older snapshot it is 0. Others are refused with `unsupported_version`.
-pub const SNAPSHOT_VERSION: u32 = 3;
+/// same); in an older snapshot it is 0. Version 4 adds, to each body, how fast a
+/// carrying kinematic body moved in the last step (`ColliderDesc::carries`); in an older snapshot
+/// it is zero. Others are refused with `unsupported_version`.
+pub const SNAPSHOT_VERSION: u32 = 4;
 
 /// Why a joint wasn't solved, as saved (index + 1; 0: it was).
 const INACTIVE: [&str; 4] = ["missing_body", "asleep", "no_dynamic_body", "cosmetic_link"];
@@ -257,6 +259,7 @@ struct BodyState {
     island: u32,
     target: Option<Pose>,
     declared_velocity: (Vec3, Vec3),
+    carried: Vec3,
     inner_radius: f32,
     outer_radius: f32,
     c0: Vec3,
@@ -301,6 +304,7 @@ impl Space {
             }
             w.vec3(b.declared_velocity.0);
             w.vec3(b.declared_velocity.1);
+            w.vec3(b.carried);
             w.f32(b.inner_radius);
             w.f32(b.outer_radius);
             w.vec3(b.c0);
@@ -429,6 +433,7 @@ impl Space {
             let island = r.u32(f).map_err(d)?;
             let target = if r.bool(f).map_err(d)? { Some(r_pose(r, f).map_err(d)?) } else { None };
             let declared_velocity = (r.vec3(f).map_err(d)?, r.vec3(f).map_err(d)?);
+            let carried = if version >= 4 { r.vec3(f).map_err(d)? } else { Vec3::ZERO };
             let inner_radius = r.f32(f).map_err(d)?;
             let outer_radius = r.f32(f).map_err(d)?;
             let c0 = r.vec3(f).map_err(d)?;
@@ -454,7 +459,7 @@ impl Space {
             let q_ok = |q: Quat| q.x.is_finite() && q.y.is_finite() && q.z.is_finite() && q.w.is_finite();
             let fat_ok = fat.is_none_or(|(_, f)| finite3(f.min) && finite3(f.max) && f.min.x <= f.max.x && f.min.y <= f.max.y && f.min.z <= f.max.z);
             let target_ok = target.is_none_or(|t| finite3(t.p) && q_ok(t.q));
-            let all = [pose.p, velocity, angular_velocity, com, center, declared_velocity.0, declared_velocity.1, c0];
+            let all = [pose.p, velocity, angular_velocity, com, center, declared_velocity.0, declared_velocity.1, carried, c0];
             if !(all.iter().all(|v| finite3(*v)) && q_ok(pose.q) && q_ok(q0) && fat_ok && target_ok && sleep_time.is_finite() && inv_mass.is_finite() && inner_radius.is_finite() && outer_radius.is_finite()) {
                 return Err(decode(r.error("invalid", f, format!("body {key} has a number that isn't finite (or an inside-out box)"))));
             }
@@ -474,6 +479,7 @@ impl Space {
                 island,
                 target,
                 declared_velocity,
+                carried,
                 inner_radius,
                 outer_radius,
                 c0,
@@ -642,6 +648,7 @@ impl Space {
             b.island = st.island;
             b.target = st.target;
             b.declared_velocity = st.declared_velocity;
+            b.carried = st.carried;
             b.inner_radius = st.inner_radius;
             b.outer_radius = st.outer_radius;
             b.c0 = st.c0;
@@ -799,6 +806,57 @@ mod tests {
         let mut c = jointed(&keys, false);
         c.remove_joint(102);
         assert_eq!(c.restore_state(&mut ByteReader::new(&bytes)).unwrap_err().code, "snapshot_mismatch");
+    }
+
+    /// A ball on a slab that carries, the slab sliding.
+    fn carrier() -> Space {
+        let mut s = Space::default();
+        let mut slab = ColliderDesc::new(Shape::cuboid(Vec3::new(2.0, 0.1, 1.0)));
+        slab.carries = true;
+        s.insert(1, BodyDesc::new(BodyKind::Kinematic, Pose::at(Vec3::new(0.0, -0.1, 0.0)), Some(slab))).unwrap();
+        s.insert(2, BodyDesc::new(BodyKind::Dynamic, Pose::at(Vec3::new(0.0, 0.25, 0.0)), Some(ColliderDesc::new(Shape::sphere(0.25))))).unwrap();
+        s
+    }
+
+    #[test]
+    fn a_carriers_last_speed_is_saved_so_what_it_carries_stops_with_it() {
+        let slide = |s: &mut Space, steps: std::ops::Range<u32>| {
+            for i in steps {
+                s.move_kinematic(1, Pose::at(Vec3::new(0.01 * (i + 1) as f32, -0.1, 0.0)));
+                s.step(1.0 / 60.0);
+            }
+        };
+        let mut a = carrier();
+        slide(&mut a, 0..60);
+        let mut w = ByteWriter::new();
+        a.save_state(&mut w);
+        let bytes = w.into_bytes();
+        // Rebuilt as a load rebuilds it: the bodies where the world has them, nothing hidden.
+        let rebuilt = |restore: bool| {
+            let mut b = carrier();
+            let (slab, ball) = (a.body(1).unwrap(), a.body(2).unwrap());
+            b.set_pose(1, slab.pose);
+            b.set_pose(2, ball.pose);
+            b.set_velocity(2, ball.velocity, ball.angular_velocity);
+            if restore {
+                let mut r = ByteReader::new(&bytes);
+                b.restore_state(&mut r).unwrap();
+                r.finish().unwrap();
+            }
+            b
+        };
+        let (mut b, mut plain) = (rebuilt(true), rebuilt(false));
+        assert_eq!(a.hash(), b.hash());
+        // The slab stops: nobody moves it any more. What it carried stops with it.
+        for t in 0..60 {
+            a.step(1.0 / 60.0);
+            b.step(1.0 / 60.0);
+            plain.step(1.0 / 60.0);
+            assert_eq!(a.hash(), b.hash(), "diverged {t} steps after the restore");
+        }
+        let x = |s: &Space| s.body(2).unwrap().pose.p.x;
+        assert!((x(&a) - 0.6).abs() < 0.02, "the ball stopped with the slab: {}", x(&a));
+        assert!(x(&plain) - x(&a) > 0.3, "without the saved speed the ball rolls on: {} against {}", x(&plain), x(&a));
     }
 
     #[test]

@@ -882,3 +882,38 @@ fn a_begin_says_how_fast_the_two_closed_and_a_restored_run_says_the_same() {
         assert_eq!((taken + later, again.to_bits()), (at, speed.to_bits()), "restored after {taken} steps");
     }
 }
+
+/// The bridge of the comparison's 3D game (2026-11-21): a ball at rest on a slab that slides 2 m
+/// in 3 s and back. Returns the ball's place less the slab's, at the end of each leg.
+fn ball_on_a_sliding_slab(carries: bool) -> [f32; 2] {
+    let mut s = Space::default();
+    let mut slab = ColliderDesc::new(Shape::cuboid(v3(1.0, 0.1, 1.0)));
+    slab.carries = carries;
+    s.insert(5, BodyDesc::new(BodyKind::Kinematic, Pose::at(v3(0.0, -0.1, 0.0)), Some(slab))).unwrap();
+    dynamic(&mut s, 2, Shape::sphere(0.25), v3(0.0, 0.25, 0.0));
+    for _ in 0..30 {
+        s.step(DT);
+    }
+    let mut off = [0.0; 2];
+    for i in 1..=360 {
+        let x = if i <= 180 { i as f32 / 90.0 } else { (360 - i) as f32 / 90.0 };
+        s.move_kinematic(5, Pose::at(v3(x, -0.1, 0.0)));
+        s.step(DT);
+        if i % 180 == 0 {
+            off[i / 180 - 1] = s.body(2).unwrap().pose.p.x - x;
+        }
+    }
+    off
+}
+
+#[test]
+fn a_ball_on_a_sliding_slab_rolls_behind_it_unless_the_slab_carries() {
+    // Honest contact: friction spins the ball up, and it settles at 2/7 of the slab's speed. It
+    // is left behind (and off the slab's end, 1 m back) well before the first leg ends.
+    let [first, _] = ball_on_a_sliding_slab(false);
+    assert!(first < -1.0, "left behind: {first}");
+    // A slab that carries: what rests on it takes the slab's changes of speed, so a ball at rest
+    // on it stays at rest on it, through the turn at the far end too.
+    let [first, second] = ball_on_a_sliding_slab(true);
+    assert!(first.abs() < 0.02 && second.abs() < 0.02, "carried: {first} {second}");
+}

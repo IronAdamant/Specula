@@ -340,10 +340,10 @@ a screen, a screen that moves settings, the words). In a new project they are a 
 tap game: replace them. The other screens (`title`, `pause`, `won`, `lost`) have the same
 form and are read when they are changed; `assets/ui/theme.json` is the look, and needs no
 reading. Delete the sample's `checks/` folder: it checks the tap game. Every call of the SDK
-that a game of this size needs is on this page.
+that a game of this size needs is on this page (3D, physics, sound: `notes/world.md`).
 
-**The loop: edit, run, read.** One command builds the modules as they are on disk, plays the
-game from its start with no window, and prints how it stands as one JSON object:
+**Write the game whole, then run it** (the pages say what the engine will do). One command
+builds the modules, plays the game with no window and prints how it stands as JSON:
 
     specula run . --ticks 40 --inputs "0:enter,5:tap,6:none,10:tap" [--seed 1]
                   [--settings FOLDER] [--frame out.png --size 800x480] [--follow]
@@ -507,20 +507,35 @@ All of it is a spawn, in the module's `start` or `tick` (`use specula_sdk::{Spaw
 - **Physics**: `.collider_box(size)`, `.collider_sphere(radius)`, `.collider_capsule(radius,
   height)` are in the thing's own units (a cube's own box is 1, 1, 1 whatever its scale). A
   collider alone stands still; `.dynamic(mass_kg)` makes it fall, roll and be pushed;
-  `.kinematic()` is moved by the rules only. **Nothing bounces unless told**: `.bounce(0.5)`
-  after a collider word (on both things that meet); `.friction(0.3)` likewise. Gravity is
-  9.81 m/s2 down. **Push a body** with `cx.push(id, dv)?` (it adds to its velocity: a force
+  `.kinematic()` is moved by the rules: set its position each tick (`cx.set`), and it pushes
+  what it meets; it reads a velocity of zero, so keep its speed yourself. **A platform, a
+  lift, a bridge that slides**: `.carries()` after its collider word, and what rests on it
+  rides with it; without it friction alone moves what is on top (a box is dragged along, a
+  ball rolls behind and off the end). **Nothing bounces unless told**: `.bounce(0.5)` after a
+  collider word, on either of the two things that meet (the larger counts). `.friction(0.3)`
+  likewise; it is 0.6 unless given, and two things that meet grip by the geometric mean of
+  theirs (0.6 against 0.15 is 0.3). Gravity is 9.81 m/s2 down. **Push a body** with `cx.push(id, dv)?` (it adds to its velocity: a force
   held is `acceleration * cx.dt()` each tick; never set the whole `body` to push, which
   stops its spin). Read a body with `cx.entity(id)?` (`.position()`, `.velocity()`,
   `.rotation_deg()`); what is near with `cx.query_near("tag", at, radius, 16)?`; **what
   touches any thing now** with `cx.touching(id)?` (ids; "is it on the ground").
+- **What it will do, so that it need not be measured**: a ball on a surface rolls, and
+  rolling takes its share: a push of `a` moves a resting ball on the ground at `a * 5/7`
+  (push by `a * 7/5` there for `a`; in the air a push of `a` is `a`). Nothing slows a thing
+  in the air; on the ground a rolling ball slows only gently and a sliding box stops by
+  friction. A thing slower than 0.05 m/s for half a second sleeps until it is touched or
+  pushed. **Order in a tick**: the rules run, then physics moves things. So what the rules
+  read (`cx.entity`) is where the last tick left things, a thing spawned or placed in a tick
+  is first moved after it, and what the rules keep in their state is one step behind a
+  thing's place at the end of that tick.
 - **What physics tells the rules**, among `cx.events()` at the next tick (`e.from ==
   "engine"`, values by `e.data.get("key")`): `contact`, for a thing tagged `contacts` or
   under a group that is (`.tags(&["contacts"])` on the game's root hears of everything): `kind`
   is `begin` or `end` (`enter`, `exit` for a trigger), `a` and `b` the two things' paths
   (when only one is heard it is `a`), `speed` how fast they met (m/s), `point`, `normal`.
-  And `fell`, when a body has dropped 5 m below everything it could land on:
-  `entity` (its path), `position`. Put it back at rest (`cx.place_at_rest(id, v)?`) or
+  And `fell`, when a body has dropped 5 m below the lowest thing it could land on (under a
+  board whose underside is at -0.2 that is -5.2: for "below y = -5" compare its place
+  yourself): `entity` (its path), `position`. Put it back at rest (`cx.place_at_rest(id, v)?`) or
   delete it; a run that ends with one out there says so.
 - **Light**: `.light(intensity, range_m)` on any spawn (1 lights a white surface 1 m away
   fully). The camera of a 3D game is `game.json`'s `"view": {"eye": [x, y, z], "target": [x,
@@ -530,7 +545,9 @@ All of it is a spawn, in the module's `start` or `tick` (`use specula_sdk::{Spaw
   "layers": [{"name": "thump", "source": {"wave": "sine", "freq": {"points": [[0, 220], [0.2,
   90]], "curve": "exp"}}, "env": {"attack": 0.002, "decay": 0.18, "sustain": 0, "release":
   0.04}}]}`. `specula call audio_preview '{"path": "assets/sounds/bounce.json"}'` measures one without
-  playing it (with `"wav": true` it also writes it as a WAV file). A sound with no file plays nothing and changes nothing: `specula run` names it.
+  playing it (with `"wav": true` it also writes it as a WAV file). A sound with no file plays nothing and changes nothing: `specula run` names it. The player's
+  `volume` setting scales everything played (the engine does it, on the master bus: no rule is
+  needed, and 0 is silence); a run with no window plays nothing aloud.
 - **Seeing it**: `specula run . --ticks 40 --frame out.png --size 800x480` writes what the
   camera sees at that tick. Any other field of a spawn (`specula tools world_spawn` lists
   them) goes in by `.field("name", value)`.
@@ -794,12 +811,14 @@ mod tests {
         // The world's page (2026-11-21): one page, pointed at, and every word of the SDK and
         // every tool it names exists; its sound is a recipe the synthesiser renders.
         let world = text("notes/world.md");
-        assert!(world.len() <= 9 * 512, "notes/world.md is {} bytes: it is one page", world.len());
+        // Eleven half-kilobytes since 2026-11-21 (nine before): what physics will do is said on
+        // it, because each line left out was paid for in runs that measured it.
+        assert!(world.len() <= 11 * 512, "notes/world.md is {} bytes: it is one page", world.len());
         // What physics tells the rules is told under the names and the tag the engine uses.
         assert!(world.contains(&format!(".tags(&[\"{}\"])", crate::physics_told::CONTACTS_TAG)) && world.contains("`contact`") && world.contains("`fell`") && world.contains(&format!("dropped {} m below", crate::physics_told::FELL_BELOW_M)), "notes/world.md and physics_told differ");
         assert!(notes.brief().contains("notes/world.md") && text("notes/how.md").contains("notes/world.md"), "the world's page is not pointed at");
         let sdk = include_str!("../../specula-sdk/src/module.rs");
-        for word in ["model", "rotation_deg", "collider_box", "collider_sphere", "collider_capsule", "dynamic", "kinematic", "light", "query_near", "touching", "push", "place_at_rest", "bounce", "friction", "velocity", "sound", "entity"] {
+        for word in ["model", "rotation_deg", "collider_box", "collider_sphere", "collider_capsule", "dynamic", "kinematic", "light", "query_near", "touching", "push", "place_at_rest", "bounce", "friction", "carries", "velocity", "sound", "entity"] {
             assert!(world.contains(&format!("{word}(")) && sdk.contains(&format!("pub fn {word}(")), "notes/world.md and the SDK differ on {word}");
         }
         for tool in ["audio_preview", "world_spawn"] {

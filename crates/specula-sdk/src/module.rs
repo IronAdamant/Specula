@@ -287,7 +287,9 @@ impl Spawn {
         self.field("body", Value::map().with("kind", "dynamic").with("mass", mass_kg))
     }
     /// A body the rules move and physics does not (a platform, a door): it pushes dynamic
-    /// bodies and nothing pushes it.
+    /// bodies and nothing pushes it. Move it by its position each tick; it then reads a
+    /// velocity of zero (the rules know its speed). What rests on it is moved by friction
+    /// alone (a box is dragged along, a ball rolls behind) unless it [`Spawn::carries`].
     pub fn kinematic(self) -> Spawn {
         self.field("body", "kinematic")
     }
@@ -297,15 +299,24 @@ impl Spawn {
         self.field("light", Value::map().with("intensity", intensity).with("range", range_m))
     }
     /// How much of its speed a thing keeps when it bounces, 0 to 1 (0 unless given: nothing
-    /// bounces). The lesser of the two things that meet counts. After a collider word.
+    /// bounces). The larger of the two things that meet counts, so one of them is enough.
+    /// After a collider word.
     pub fn bounce(self, restitution: f32) -> Spawn {
         self.in_collider("restitution", restitution)
     }
-    /// How much the collider grips, 0 (ice) to about 1 (rubber). After a collider word.
+    /// How much the collider grips, 0 (ice) to about 1 (rubber); 0.6 unless given. Two things
+    /// that meet grip by the geometric mean of theirs (0.6 against 0.15 is 0.3). After a
+    /// collider word.
     pub fn friction(self, friction: f32) -> Spawn {
         self.in_collider("friction", friction)
     }
-    fn in_collider(mut self, key: &str, value: f32) -> Spawn {
+    /// On a kinematic body (a platform, a lift, a bridge that slides): what rests on it takes
+    /// its changes of speed, so a thing at rest on it stays at rest on it, and a thing that
+    /// rolls on it rolls as it would on the ground. After a collider word.
+    pub fn carries(self) -> Spawn {
+        self.in_collider("carries", true)
+    }
+    fn in_collider(mut self, key: &str, value: impl Into<Value>) -> Spawn {
         let mut collider = self.0.get("collider").cloned().unwrap_or_else(Value::map);
         collider.insert(key, value);
         self.0.insert("collider", collider);

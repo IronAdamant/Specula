@@ -2270,7 +2270,9 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
                      hull, its fields, offset, rotation_deg}: one body of several shapes), offset?, is_trigger? \
                      (reports enter/exit, never blocks), \
                      layer? (a name, default \"default\"), mask? (layer names it collides with; default all), \
-                     friction? (default 0.6), restitution? (bounce 0..1)}; false removes it",
+                     friction? (default 0.6; two that meet grip by the geometric mean of theirs), restitution? (bounce 0..1; the \
+                     larger of the two that meet counts), carries? (on a kinematic body: what rests on it takes \
+                     its changes of speed, so a thing at rest on a moving platform stays on it)}; false removes it",
                 ),
             ),
             (
