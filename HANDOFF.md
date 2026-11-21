@@ -21,8 +21,15 @@ rounds.
   (stages 1a to 5a), the mesher's mend, the sculpt's box mend, the light and faceting rounds, and
   the fixes of `m6-usus`. **The full gate passed on `2da88f08`** (3,584 tests, repeats, slow
   workers, speed budgets, clippy for both targets, both builds): the first full gate since
-  `bec48409`. **The live checks are owed** (the window's loop changed; a run was started on
-  2026-11-21 in `C:/sf-una`: read its result before saying anything of it).
+  `bec48409`. **The live checks: 71 of 72 passed on it** (2026-11-21, `C:/lv/live1`), the
+  window's own among them. **`m3_exit` failed once and its cause is not proved**: on the
+  integrated GPU the boss wave's frame pacing was 23.7 ms at the 95th percentile against a
+  budget of 20.9. Run alone straight after, it passed with 7.6 ms (`C:/lv/live2`). In the run
+  that failed the GPU's own time for the same scene was 1.7 times higher (9.8 ms a frame
+  against 6.0) and a system process (`csrss`) was drawing on that GPU, which it was not in the
+  run that passed: that points at the machine and not at the window's loop, and it is a
+  reading, not a proof. Run the checks whole again on a quiet machine before calling the
+  window's loop clean.
 - **Nothing is pushed since `origin/main` = `7345f320`.** Push only when the owner asks.
 - **Part 4, the libraries and everything after them wait** behind what the owner set on
   2026-11-20, when a measured comparison showed the shape library made four props no cheaper and
