@@ -56,11 +56,11 @@ rounds.
   yes for Claude Code (session start, after a save, before stopping), written by `specula new`
   as data and calling `specula` itself; other harnesses need the same through `AGENTS.md`, the
   one command, and results attached to the next answer.
-- **After `2da88f08`, not gated** (suites and clippy passed): `53985a95` (a module pushes a
+- **The gate passed on `14c0d08c`** (2026-11-21, everything: 3,585 tests, repeats, slow workers, speed, clippy, both builds; the live checks were not run again). In it: `53985a95` (a module pushes a
   body and tells it to bounce: `Cx::push`, `Cx::place_at_rest`, `Spawn::bounce`, `friction`),
   `7f2167f8` (the 3D jobs). The mends are on the engine without the library (`C:/sf-base`,
   `4eb20e9e`), without the push words; that arm is not measured again.
-- **Nothing is pushed since `origin/main` = `7345f320`.** Push only when the owner asks.
+- **Pushed on 2026-11-21 at the owner's word: `origin/main` = `349c9e64`** (a plain fast-forward from `7345f320`). Anything after it is not pushed. Push only when the owner asks.
 - **Part 4, the libraries and everything after them wait** behind what the owner set on
   2026-11-20, when a measured comparison showed the shape library made four props no cheaper and
   the cause turned out to be that the builders could not see what they needed ("the builders
