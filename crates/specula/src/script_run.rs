@@ -51,6 +51,8 @@ const MAX_WIDGETS: usize = 2000;
 const HOLD_TICKS: u64 = 18_000;
 /// Most steps a followed run reads (each prints the state).
 pub const MAX_STEPS: u64 = 100_000;
+/// Most things one line of a report lists (`world.#TAG.positions`).
+const WORLD_LINE: u64 = 200;
 /// Most characters of one step's line.
 const MAX_STEP_LINE: usize = 200;
 /// Most of a module's own log lines an answer carries (the last ones).
@@ -75,8 +77,32 @@ pub struct Spec {
     /// After the script: steps read from standard input, a line each, the state printed after
     /// each (`specula run --follow`).
     pub follow: bool,
+    /// Ticks on the way at which the state is printed too, in order (`--at 90,180,270`): what
+    /// a thing does over a run, read from one run.
+    pub at: Vec<u64>,
+    /// The report's lines that are printed, by name (`--keys ball,score`); empty: all of them.
+    pub keys: Vec<String>,
     /// Where the answer goes.
     pub out: PathBuf,
+}
+
+/// Most ticks on the way one run prints the state at.
+pub const MAX_AT: usize = 256;
+
+/// The ticks of `--at`: whole numbers that rise, at most [`MAX_AT`] of them.
+pub fn check_at(at: &[u64]) -> Result<(), String> {
+    if at.len() > MAX_AT || at.iter().any(|t| *t > MAX_TICKS) || at.windows(2).any(|w| w[1] <= w[0]) {
+        return Err(format!("at: at most {MAX_AT} ticks, each later than the one before (90,180,270), none past {MAX_TICKS}"));
+    }
+    Ok(())
+}
+
+/// The names of `--keys`: at most as many as a report has lines.
+pub fn check_keys(keys: &[String]) -> Result<(), String> {
+    if keys.len() > specula_ludus::game::MAX_REPORT || keys.iter().any(|k| k.is_empty() || k.len() > 64 || k.chars().any(|c| c.is_whitespace() || c.is_control())) {
+        return Err(format!("keys: at most {} names of the report's lines (ball,score)", specula_ludus::game::MAX_REPORT));
+    }
+    Ok(())
 }
 
 impl Spec {
@@ -96,6 +122,12 @@ impl Spec {
         if self.follow {
             j.set("follow", Json::Bool(true));
         }
+        if !self.at.is_empty() {
+            j.set("at", Json::arr(self.at.iter().map(|t| Json::from(*t))));
+        }
+        if !self.keys.is_empty() {
+            j.set("keys", Json::arr(self.keys.iter().map(|k| Json::from(k.as_str()))));
+        }
         j
     }
 
@@ -110,6 +142,19 @@ impl Spec {
             inputs.push((tick, word.to_owned()));
         }
         check_inputs(&inputs)?;
+        let at: Vec<u64> = match j.get("at") {
+            None => Vec::new(),
+            Some(at) => at.as_array().and_then(|a| a.iter().map(Json::as_u64).collect()).ok_or("at: a list of ticks")?,
+        };
+        check_at(&at)?;
+        if at.last().is_some_and(|last| *last > ticks) {
+            return Err("at: no tick is later than the run's last".to_owned());
+        }
+        let keys: Vec<String> = match j.get("keys") {
+            None => Vec::new(),
+            Some(keys) => keys.as_array().and_then(|k| k.iter().map(|k| k.as_str().map(str::to_owned)).collect()).ok_or("keys: a list of names")?,
+        };
+        check_keys(&keys)?;
         let side = |i: usize| j.get("size").and_then(Json::as_array).and_then(|s| s.get(i)).and_then(Json::as_u64).and_then(|n| u32::try_from(n).ok()).filter(|n| FRAME_SIDE.contains(n));
         let size = match j.get("size") {
             None => (960, 540),
@@ -125,6 +170,8 @@ impl Spec {
             frame: j.get("frame").and_then(Json::as_str).map(PathBuf::from),
             size,
             follow: j.get("follow").and_then(Json::as_bool).unwrap_or(false),
+            at,
+            keys,
             out: j.get("out").and_then(Json::as_str).map(PathBuf::from).ok_or("out: where the answer is written")?,
         })
     }
@@ -302,6 +349,21 @@ struct Run<'t> {
     /// after a run's end, so the two counts part; what a module's failure and its log lines
     /// carry is the game's, and what the script's writer counts is the script's.
     spans: Vec<(u64, u64, u64)>,
+    /// The game file's own words for inputs (`"inputs"`): each with what it stands for.
+    words: Vec<(String, String)>,
+    /// The report's lines that are printed (`--keys`); empty: all.
+    keys: Vec<String>,
+}
+
+/// `word` with the game file's own words replaced by what they stand for, part by part
+/// (`menu_down` is `down`; `fire+left` is `up+shoot+left`). One pass: what a word stands for is
+/// an input of the engine's or a module's, never another such word.
+fn in_game_words(word: &str, words: &[(String, String)]) -> String {
+    if words.is_empty() {
+        return word.to_owned();
+    }
+    let parts: Vec<&str> = word.split('+').map(|part| words.iter().find(|(w, _)| w == part).map_or(part, |(_, means)| means.as_str())).collect();
+    parts.join("+")
 }
 
 impl Run<'_> {
@@ -377,6 +439,7 @@ impl Run<'_> {
     /// One input: what was held is let go, then each of its parts does what it is.
     fn input(&mut self, word: &str) -> Result<(), Json> {
         self.release()?;
+        let word = &in_game_words(word, &self.words);
         for (name, value) in parts(word).map_err(|why| refusal("bad_input", why))? {
             if name == "none" {
                 continue;
@@ -407,6 +470,7 @@ impl Run<'_> {
     /// so that a misspelt input is not a run that did nothing.
     fn check_word(&self, word: &str, at: Option<u64>) -> Result<(), Json> {
         let place = at.map_or(String::new(), |t| format!(" (at tick {t})"));
+        let word = &in_game_words(word, &self.words);
         for (name, value) in parts(word).map_err(|why| refusal("bad_input", why))? {
             let module = self.modules.iter().find(|(_, actions)| actions.iter().any(|a| a == name)).map(|(module, _)| module.clone());
             let press = matches!(value, Json::Bool(true)) && press_of(name).is_some();
@@ -414,6 +478,7 @@ impl Run<'_> {
                 let mut e = refusal("unknown_input", format!("'{name}'{place} is not an input of this game"));
                 let mut words: Vec<Json> = ["up", "down", "left", "right", "enter", "escape", "none"].map(Json::from).to_vec();
                 words.extend(self.modules.iter().flat_map(|(_, actions)| actions.iter().map(|a| Json::from(a.as_str()))));
+                words.extend(self.words.iter().map(|(w, _)| Json::from(w.as_str())));
                 e.set("inputs", Json::Arr(words));
                 e.set("also", Json::from("words joined by + are held together (up+shoot); an action that is not a button takes a value (throttle=0.5, move=1/0); a source such as Key.Enter presses the interface only, never a module's action: name the action"));
                 return Err(e);
@@ -422,7 +487,7 @@ impl Run<'_> {
             if let Some(module) = module {
                 if let Err(mut e) = self.call("logic_input", Json::obj([("module", Json::from(module.as_str())), ("actions", Json::obj([(name, value)])), ("ticks", Json::from(0u64))])) {
                     e.set("error", Json::from("bad_input"));
-                    e.set("input", Json::from(word));
+                    e.set("input", Json::from(word.as_str()));
                     if let Some(at) = at {
                         e.set("at_tick", Json::from(at));
                     }
@@ -511,13 +576,68 @@ impl Run<'_> {
             states.set(name, module.get("state").cloned().unwrap_or(Json::Null));
         }
         let unfilled = unfilled_texts(&ui);
+        // What a line reads from the engine itself and no module keeps: a thing's place as
+        // physics left it this tick (`world.PATH.position`), the sounds the rules asked for.
+        let mut beyond = Json::obj::<&str>([]);
+        for (_, key) in game.report.iter().filter(|(name, _)| self.keys.is_empty() || self.keys.contains(name)) {
+            if key == "run.sounds" {
+                let info = self.call("engine_info", Json::obj([("response_format", Json::from("detailed"))]))?;
+                beyond.set(key, info.get("module_sounds").and_then(|s| s.get("order")).cloned().unwrap_or_else(|| Json::Arr(Vec::new())));
+            } else if let Some(asked) = key.strip_prefix("world.") {
+                beyond.set(key, self.of_world(asked)?);
+            }
+        }
         let report = if game.report.is_empty() {
             Json::obj([("tick", Json::from(tick)), ("game", state.clone()), ("ui", ui), ("state", states)])
         } else {
-            Json::Obj(game.report.iter().map(|(name, key)| (name.clone(), value_of(key, tick, seed, &state, &ui, &states))).collect())
+            Json::Obj(game.report.iter().filter(|(name, _)| self.keys.is_empty() || self.keys.contains(name)).map(|(name, key)| (name.clone(), value_of(key, tick, seed, &state, &ui, &states, &beyond))).collect())
         };
         log_in_order(&mut log);
         Ok(Stand { report, state, log, unfilled })
+    }
+
+    /// A report's line that reads the world itself, as it stands when the state is read (after
+    /// this tick's physics; what a module copies into its state in its own tick is a step
+    /// behind that). `PATH.position` (`{x, y, z}`, in the world), `PATH.x` (`y`, `z`),
+    /// `PATH.velocity`, `PATH.exists`; and of everything with a tag, in the order of their
+    /// paths: `#TAG.positions` (the first [`WORLD_LINE`]) and `#TAG.count`. `null`: no such thing.
+    fn of_world(&self, asked: &str) -> Result<Json, Json> {
+        let Some((which, field)) = asked.rsplit_once('.') else { return Ok(Json::Null) };
+        let xyz = |v: Option<&Json>| match v.and_then(Json::as_array) {
+            Some([x, y, z]) => Json::obj([("x", x.clone()), ("y", y.clone()), ("z", z.clone())]),
+            _ => Json::Null,
+        };
+        let fields = Json::arr(["path", "world_position", "body"].map(Json::from));
+        if let Some(tag) = which.strip_prefix('#') {
+            let found = self.call("world_query", Json::obj([("tags", Json::arr([Json::from(tag)])), ("limit", Json::from(WORLD_LINE)), ("fields", fields)]))?;
+            let items = found.get("items").and_then(Json::as_array).unwrap_or(&[]);
+            return Ok(match field {
+                "positions" => Json::arr(items.iter().map(|i| xyz(i.get("world_position")))),
+                "count" => found.get("total").cloned().unwrap_or(Json::Null),
+                _ => Json::Null,
+            });
+        }
+        // (A path nothing is at is "no such thing", as a tag nothing has is an empty list.)
+        let found = match self.call("world_query", Json::obj([("path_prefix", Json::from(which)), ("limit", Json::from(1u64)), ("fields", fields)])) {
+            Err(e) if e.get("error").and_then(Json::as_str) == Some("not_found") => Json::Null,
+            other => other?,
+        };
+        let item = found.get("items").and_then(Json::as_array).and_then(|i| i.first()).filter(|i| i.get("path").and_then(Json::as_str) == Some(which));
+        let Some(item) = item else { return Ok(if field == "exists" { Json::Bool(false) } else { Json::Null }) };
+        let at = xyz(item.get("world_position"));
+        Ok(match field {
+            "position" => at,
+            "x" | "y" | "z" => at.get(field).cloned().unwrap_or(Json::Null),
+            "velocity" => match item.get("body").filter(|b| !b.is_null()) {
+                Some(body) => match xyz(body.get("velocity")) {
+                    Json::Null => Json::obj([("x", Json::Num(0.0)), ("y", Json::Num(0.0)), ("z", Json::Num(0.0))]),
+                    v => v,
+                },
+                None => Json::Null,
+            },
+            "exists" => Json::Bool(true),
+            _ => Json::Null,
+        })
     }
 
     /// A failure or a log line of a module, with the script's tick it happened at
@@ -616,10 +736,12 @@ fn interface(run: &Run) -> Result<Json, Json> {
 }
 
 /// The value a report's line shows (`null`: nothing has that key).
-fn value_of(key: &str, ticks: u64, seed: Option<u64>, game: &Json, ui: &Json, states: &Json) -> Json {
+fn value_of(key: &str, ticks: u64, seed: Option<u64>, game: &Json, ui: &Json, states: &Json, beyond: &Json) -> Json {
     let Some((head, rest)) = key.split_once('.') else { return Json::Null };
     let found = match head {
+        "world" => beyond.get(key).cloned(),
         "run" => match rest {
+            "sounds" => beyond.get(key).cloned(),
             "ticks" => Some(Json::from(ticks)),
             "seed" => seed.map(Json::from),
             _ => None,
@@ -642,7 +764,7 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     if gate.wait(START_WAIT).is_err() {
         return Err(refusal("no_engine", "the engine did not start"));
     }
-    let mut run = Run { tools, session: session(), modules: Vec::new(), held: Vec::new(), hold_left: 0, at: 0, spans: Vec::new() };
+    let mut run = Run { tools, session: session(), modules: Vec::new(), held: Vec::new(), hold_left: 0, at: 0, spans: Vec::new(), words: game.inputs.clone(), keys: spec.keys.clone() };
     for dir in game.modules.iter().take(crate::run_modules::MAX_MODULES) {
         let name = run.build(dir, spec.seed)?;
         run.modules.push((name, Vec::new()));
@@ -663,21 +785,38 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
             probed.push(word);
         }
     }
+    // A name of `--keys` that the report has no line of is said before a tick is played.
+    if let Some(name) = spec.keys.iter().find(|k| !game.report.iter().any(|(name, _)| name == *k)) {
+        let mut e = refusal("unknown_key", format!("'{name}' is not a line of this game's report (game.json, \"report\")"));
+        e.set("lines", Json::arr(game.report.iter().map(|(name, _)| Json::from(name.as_str()))));
+        return Err(e);
+    }
     let mut tick = 0u64;
     let mut next = 0usize;
-    while tick < spec.ticks {
+    // The state at each tick of `--at`, in order: read as the run passes it, with the inputs
+    // of that tick done first, exactly as a run that ended there would read it.
+    let mut on_the_way: Vec<Json> = Vec::new();
+    let mut stops = spec.at.iter().copied().filter(|t| *t < spec.ticks).peekable();
+    loop {
+        let stop = stops.peek().copied().unwrap_or(spec.ticks);
+        while tick < stop {
+            while let Some((_, word)) = spec.inputs.get(next).filter(|(at, _)| *at <= tick) {
+                run.input(word)?;
+                next += 1;
+            }
+            let until = spec.inputs.get(next).map_or(stop, |(at, _)| (*at).min(stop));
+            run.play(until - tick)?;
+            tick = until;
+        }
+        // (Inputs at the tick itself are done before the state is read.)
         while let Some((_, word)) = spec.inputs.get(next).filter(|(at, _)| *at <= tick) {
             run.input(word)?;
             next += 1;
         }
-        let until = spec.inputs.get(next).map_or(spec.ticks, |(at, _)| (*at).min(spec.ticks));
-        run.play(until - tick)?;
-        tick = until;
-    }
-    // (Inputs at the last tick itself are done before the state is read.)
-    while let Some((_, word)) = spec.inputs.get(next).filter(|(at, _)| *at <= tick) {
-        run.input(word)?;
-        next += 1;
+        if stops.next().is_none() {
+            break;
+        }
+        on_the_way.push(run.stand(&game, tick, spec.seed)?.report);
     }
 
     let mut stand = run.stand(&game, tick, spec.seed)?;
@@ -754,6 +893,14 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
         crate::disk::book().copy(crate::disk::Category::Captures, "script", Path::new(made), frame, crate::disk::Need::Essential).map_err(|e| refusal("no_frame", format!("{}: {}", frame.display(), e.to_json())))?;
     }
     let mut answer = Json::obj([("report", report)]);
+    if !spec.at.is_empty() {
+        // (The last tick of `--at` may be the run's last: that state is the report itself.)
+        if spec.at.last() == Some(&spec.ticks) {
+            on_the_way.push(answer.get("report").cloned().unwrap_or(Json::Null));
+            answer.set("at_is_all", Json::Bool(true));
+        }
+        answer.set("at", Json::Arr(on_the_way));
+    }
     if let Some(steps) = followed {
         answer.set("followed", Json::from(steps));
     }
@@ -966,15 +1113,29 @@ mod tests {
 
     #[test]
     fn a_spec_is_read_back_as_it_was_written() {
-        let spec = Spec { ticks: 600, seed: Some(7), inputs: vec![(0, "enter".into()), (5, "up".into())], frame: Some(PathBuf::from("out/f.png")), size: (800, 480), follow: true, out: PathBuf::from("answer.json") };
+        let spec = Spec { ticks: 600, seed: Some(7), inputs: vec![(0, "enter".into()), (5, "up".into())], frame: Some(PathBuf::from("out/f.png")), size: (800, 480), follow: true, at: vec![90, 180], keys: vec!["ball".into()], out: PathBuf::from("answer.json") };
         assert_eq!(Spec::from_json(&spec.to_json()).unwrap(), spec);
-        let bare = Spec { ticks: 0, seed: None, inputs: Vec::new(), frame: None, size: (960, 540), follow: false, out: PathBuf::from("a") };
+        let bare = Spec { ticks: 0, seed: None, inputs: Vec::new(), frame: None, size: (960, 540), follow: false, at: Vec::new(), keys: Vec::new(), out: PathBuf::from("a") };
         assert_eq!(Spec::from_json(&Json::parse(r#"{"ticks": 0, "out": "a"}"#).unwrap()).unwrap(), bare);
         let bad = |text: &str| Spec::from_json(&Json::parse(text).unwrap()).unwrap_err();
         assert!(bad(r#"{"ticks": 2000000, "out": "a"}"#).contains("ticks"));
         assert!(bad(r#"{"ticks": 1, "out": "a", "size": [10, 480]}"#).contains("size"));
         assert!(bad(r#"{"ticks": 1}"#).contains("out"));
+        assert!(bad(r#"{"ticks": 9, "out": "a", "at": [5, 5]}"#).contains("at:"));
+        assert!(bad(r#"{"ticks": 9, "out": "a", "at": [5, 10]}"#).contains("later than the run"));
+        assert!(bad(r#"{"ticks": 9, "out": "a", "keys": ["a b"]}"#).contains("keys"));
         assert!(bad(r#"{"ticks": 1, "out": "a", "inputs": [[5, "up"], [1, "down"]]}"#).contains("order"));
+    }
+
+    #[test]
+    fn a_games_own_words_stand_for_inputs_part_by_part() {
+        let words = vec![("menu_down".to_owned(), "Key.Down".to_owned()), ("fire".to_owned(), "up+shoot".to_owned())];
+        assert_eq!(in_game_words("menu_down", &words), "Key.Down");
+        assert_eq!(in_game_words("fire+left", &words), "up+shoot+left");
+        assert_eq!(in_game_words("down", &words), "down", "a word of the engine's is itself");
+        assert_eq!(in_game_words("throttle=0.5", &[]), "throttle=0.5");
+        // What a word stands for is given as it is: a press of the interface alone here.
+        assert_eq!(parts(&in_game_words("menu_down", &words)).unwrap().iter().map(|(name, _)| press_of(name)).collect::<Vec<_>>(), [Some("Key.Down")]);
     }
 
     #[test]
@@ -1044,7 +1205,9 @@ mod tests {
         let game = j(r#"{"game": "Hold", "phase": "running", "score": 30, "screens": ["hud", "pause"], "settings": {"volume": 7, "language": "es"}}"#);
         let ui = j(r#"{"screen": "pause", "focus_index": 1, "texts": ["Paused", "Resume"]}"#);
         let states = j(r#"{"gate": {"wave": 2, "walkers": [{"x": 3.5, "y": 2, "health": 1}]}}"#);
-        let v = |key: &str| value_of(key, 120, Some(4), &game, &ui, &states).to_string();
+        let beyond = j(r#"{"world./gate/door.position": {"x": 1, "y": 2, "z": 3}, "run.sounds": ["coin", "bounce"]}"#);
+        let v = |key: &str| value_of(key, 120, Some(4), &game, &ui, &states, &beyond).to_string();
+        assert_eq!((v("world./gate/door.position"), v("run.sounds"), v("world./gate/none.x")), (r#"{"x":1,"y":2,"z":3}"#.into(), r#"["coin","bounce"]"#.into(), "null".into()));
         assert_eq!((v("run.ticks"), v("run.seed"), v("game.phase"), v("game.screen"), v("game.title")), ("120".into(), "4".into(), "\"running\"".into(), "\"pause\"".into(), "\"Hold\"".into()));
         assert_eq!((v("setting.volume"), v("ui.focus_index"), v("ui.texts"), v("gate.wave")), ("7".into(), "1".into(), "[\"Paused\",\"Resume\"]".into(), "2".into()));
         assert_eq!(v("gate.walkers"), r#"[{"x":3.5,"y":2,"health":1}]"#);

@@ -192,6 +192,10 @@ pub struct GameFile {
     /// What a headless run prints (`specula run`): each line a name and the key whose value
     /// it shows, in this order. Empty: the run prints everything it can see.
     pub report: Vec<(String, String)>,
+    /// Words a headless run's script may use beside the game's own, each with the input it
+    /// stands for (`"menu_down": "down"`, `"restart": "enter"`, `"fire": "up+shoot"`): a game
+    /// whose brief names its inputs is run in the brief's words, with no program between.
+    pub inputs: Vec<(String, String)>,
 }
 
 impl Default for GameFile {
@@ -207,6 +211,7 @@ impl Default for GameFile {
             outcome: Outcome::default(),
             view: None,
             report: Vec::new(),
+            inputs: Vec::new(),
         }
     }
 }
@@ -232,7 +237,7 @@ impl GameFile {
     }
 
     pub fn from_json(json: &Json) -> Result<GameFile, Problem> {
-        unknown_keys(json, &["format", "title", "tick_hz", "modules", "start", "screens", "locale", "settings", "outcome", "view", "report"], "")?;
+        unknown_keys(json, &["format", "title", "tick_hz", "modules", "start", "screens", "locale", "settings", "outcome", "view", "report", "inputs"], "")?;
         if json.get("format").and_then(Json::as_str) != Some(FORMAT) {
             return Err(Problem::new("format", "bad_format", format!("a game file says \"format\": \"{FORMAT}\"")));
         }
@@ -316,6 +321,18 @@ impl GameFile {
                 game.report.push((name.clone(), key.to_owned()));
             }
         }
+        if let Some(inputs) = json.get("inputs") {
+            let words = inputs.as_object().filter(|w| w.len() <= MAX_REPORT).ok_or_else(|| Problem::new("inputs", "bad_inputs", format!("\"inputs\" is an object of at most {MAX_REPORT} words: a word a script may use, and the input it stands for (\"menu_down\": \"down\")")))?;
+            let word_ok = |w: &str| key_ok(w) && !w.contains([',', ':']);
+            for (word, means) in words {
+                let here = format!("inputs.{word}");
+                if !word_ok(word) || word.contains(['+', '=']) {
+                    return Err(Problem::new(&here, "bad_name", "a word is 1 to 64 characters with no blank, comma, colon, + or ="));
+                }
+                let means = means.as_str().filter(|m| word_ok(m)).ok_or_else(|| Problem::new(&here, "bad_input", "a word stands for an input: \"down\", \"enter\", an action of a module, or several joined by + (\"up+shoot\")"))?;
+                game.inputs.push((word.clone(), means.to_owned()));
+            }
+        }
         Ok(game)
     }
 
@@ -381,6 +398,9 @@ impl GameFile {
         if !self.report.is_empty() {
             file.set("report", Json::Obj(self.report.iter().map(|(name, key)| (name.clone(), Json::Str(key.clone()))).collect()));
         }
+        if !self.inputs.is_empty() {
+            file.set("inputs", Json::Obj(self.inputs.iter().map(|(word, means)| (word.clone(), Json::Str(means.clone()))).collect()));
+        }
         file
     }
 }
@@ -433,6 +453,12 @@ mod tests {
         assert_eq!(bad(r#""view": {"center": [1, 2], "height": 3, "zoom": 2}"#), "unknown_key");
         assert_eq!(bad(r#""view": {"eye": [1, 2, 3], "target": [1, 2, 3]}"#), "bad_view");
         assert_eq!(bad(r#""report": ["tick"]"#), "bad_report");
+        let words = GameFile::parse(r#"{"format": "specula.game.v1", "title": "Hold", "inputs": {"menu_down": "down", "fire": "up+shoot"}}"#).unwrap();
+        assert_eq!(words.inputs, vec![("menu_down".to_owned(), "down".to_owned()), ("fire".to_owned(), "up+shoot".to_owned())]);
+        assert_eq!(GameFile::from_json(&words.to_json()).unwrap(), words);
+        assert_eq!(bad(r#""inputs": ["down"]"#), "bad_inputs");
+        assert_eq!(bad(r#""inputs": {"a+b": "down"}"#), "bad_name");
+        assert_eq!(bad(r#""inputs": {"go": 5}"#), "bad_input");
         assert_eq!(bad(r#""report": {"tick": 5}"#), "bad_key");
         assert_eq!(bad(r#""report": {"a b": "run.ticks"}"#), "bad_name");
     }

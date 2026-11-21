@@ -44,6 +44,10 @@ pub struct RunArgs {
     pub size: Option<(u32, u32)>,
     /// After the script, steps are read from standard input (`--follow`).
     pub follow: bool,
+    /// Ticks on the way at which the state is printed too (`--at 90,180,270`).
+    pub at: Vec<u64>,
+    /// The report's lines that are printed (`--keys ball,score`); empty: all.
+    pub keys: Vec<String>,
 }
 
 /// What `specula check` was asked.
@@ -126,6 +130,7 @@ specula play NAME|FOLDER|--last [--as-is] [-- engine flags]
                                  module is native code with your user's rights
 specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,T:WORD,... | --inputs @FILE] [--seed N]
             [--settings FOLDER] [--frame FILE.png [--size WxH]] [--follow]
+            [--at T,T,...] [--keys NAME,NAME,...]
                                  play a project's game with no window, from its start, and
                                  print how it stands as one JSON object (the game file's
                                  \"report\", or everything). Its modules are built first, as
@@ -144,8 +149,12 @@ specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,T:WORD,... | --inputs @FILE
                                  line each: TICKS, or TICKS WORD (10 up+shoot: the input,
                                  then ten ticks); the state is printed after each, and the
                                  run ends with the input: a player that reads the state and
-                                 answers it plays a whole game in one run. A run ends after
-                                 30 minutes at most
+                                 answers it plays a whole game in one run. --at 90,180,270:
+                                 the state is printed at each of those ticks, a line each, in
+                                 one run (--ticks may be left out: the run ends at the last;
+                                 given further, the last state is one line more). --keys: only
+                                 those lines of the report. A run ends after 30 minutes at
+                                 most
 specula check [NAME|FOLDER] [--only NAME] [--file FILE]
                                  play every run the project's checks/runs.json lists, each as
                                  `run` plays one (ticks, inputs, seed, a settings folder by
@@ -319,7 +328,7 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
         }
         // A headless run of a project's game by a script of inputs (docs/design/FIRST_HOUR.md).
         "run" => {
-            let mut run = RunArgs { which: None, ticks: None, seed: None, inputs: Vec::new(), frame: None, size: None, follow: false };
+            let mut run = RunArgs { which: None, ticks: None, seed: None, inputs: Vec::new(), frame: None, size: None, follow: false, at: Vec::new(), keys: Vec::new() };
             let mut i = 0;
             while i < rest.len() {
                 let w = rest[i].as_str();
@@ -335,7 +344,7 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
                     i += 1;
                     continue;
                 }
-                const TAKES: [&str; 5] = ["--ticks", "--seed", "--inputs", "--frame", "--size"];
+                const TAKES: [&str; 7] = ["--ticks", "--seed", "--inputs", "--frame", "--size", "--at", "--keys"];
                 if !TAKES.contains(&w) {
                     return Err(format!("'{w}' is not a flag of this command (it takes: {}, --follow, --settings)", TAKES.join(", ")));
                 }
@@ -352,6 +361,14 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
                         run.inputs = crate::script_run::parse_inputs(&text).map_err(|e| format!("'--inputs': {e}"))?;
                     }
                     "--frame" => run.frame = Some(PathBuf::from(value)),
+                    "--at" => {
+                        run.at = value.split(',').map(|t| t.trim().parse::<u64>().ok()).collect::<Option<Vec<u64>>>().ok_or_else(|| format!("'--at' is ticks with commas: 90,180,270 (got '{value}')"))?;
+                        crate::script_run::check_at(&run.at).map_err(|e| format!("'--at': {e}"))?;
+                    }
+                    "--keys" => {
+                        run.keys = value.split(',').map(|k| k.trim().to_owned()).collect();
+                        crate::script_run::check_keys(&run.keys).map_err(|e| format!("'--keys': {e}"))?;
+                    }
                     _ => {
                         let side = |s: &str| s.parse::<u32>().ok().filter(|n| crate::script_run::FRAME_SIDE.contains(n));
                         run.size = Some(value.split_once(['x', 'X']).and_then(|(w, h)| Some((side(w)?, side(h)?))).ok_or_else(|| format!("'--size' is WIDTHxHEIGHT, each 64 to 2048 (got '{value}')"))?);
@@ -359,12 +376,24 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
                 }
                 i += 2;
             }
+            // (A run that names ticks on the way plays to the last of them, unless told further.)
+            if run.follow && !run.at.is_empty() {
+                return Err("'--at' and '--follow' are two ways to read a run on its way: give one".to_owned());
+            }
+            if let (None, Some(last)) = (run.ticks, run.at.last()) {
+                run.ticks = Some(*last);
+            }
+            if let (Some(ticks), Some(last)) = (run.ticks, run.at.last()) {
+                if *last > ticks {
+                    return Err(format!("'--at': tick {last} is after the run's last tick ({ticks})"));
+                }
+            }
             // (A followed run's ticks are its steps': the script before them may be none.)
             if run.follow && run.ticks.is_none() {
                 run.ticks = Some(run.inputs.last().map_or(0, |(at, _)| *at));
             }
             if run.ticks.is_none() {
-                return Err("'specula run' needs --ticks N: how many ticks to play (0: only the start), or --follow: steps read from standard input".to_owned());
+                return Err("'specula run' needs --ticks N: how many ticks to play (0: only the start), or --at T,T,...: the ticks to print the state at, or --follow: steps read from standard input".to_owned());
             }
             if let Some(ticks) = run.ticks {
                 crate::script_run::check_span(&run.inputs, ticks).map_err(|e| format!("'--inputs': {e}"))?;
@@ -511,6 +540,16 @@ mod tests {
         let Ok(Some(Cli::Run(bare))) = p("run --ticks 0") else { panic!("not a run") };
         assert_eq!((bare.which, bare.ticks, bare.inputs.len(), bare.frame), (None, Some(0), 0, None));
         let no = |line: &str| p(line).unwrap_err();
+        // Ticks on the way: the run ends at the last of them unless told further, and the
+        // report's lines may be chosen.
+        let Ok(Some(Cli::Run(on_the_way))) = p("run crypt --at 90,180,270 --keys ball,score") else { panic!("not a run") };
+        assert_eq!((on_the_way.at.clone(), on_the_way.ticks, on_the_way.keys.clone()), (vec![90, 180, 270], Some(270), vec!["ball".to_owned(), "score".to_owned()]));
+        let Ok(Some(Cli::Run(further))) = p("run crypt --at 90 --ticks 100") else { panic!("not a run") };
+        assert_eq!((further.at, further.ticks), (vec![90], Some(100)));
+        assert!(no("run crypt --at 90,80").contains("later than the one before"));
+        assert!(no("run crypt --at 90 --ticks 50").contains("after the run's last tick"));
+        assert!(no("run crypt --at 90 --follow").contains("give one"));
+        assert!(no("run crypt --at x").contains("ticks with commas"));
         assert!(no("run crypt").contains("--ticks"), "how many ticks is always said");
         // A followed run's ticks are its steps': the script before them may be none, and
         // when there is one it runs to its last input.

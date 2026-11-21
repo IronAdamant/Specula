@@ -76,11 +76,20 @@ pub struct ModuleSounds {
     /// exist would go unsaid (a headless run reads this and says so: `script_run`).
     asked: BTreeMap<String, Asked>,
     asked_more: u64,
+    /// The names of the sounds asked for, in the order they were asked (the last
+    /// [`MAX_ORDER`]; `order_more` counts the ones before them): what a headless run prints
+    /// as `run.sounds`, so that "the coin sound played once, then the bounce" is read from
+    /// the run and kept by no rule.
+    order: std::collections::VecDeque<String>,
+    order_more: u64,
 }
+
+/// Most sounds whose order is kept.
+pub const MAX_ORDER: usize = 512;
 
 impl ModuleSounds {
     pub fn new(assets: &Path) -> ModuleSounds {
-        ModuleSounds { audio: None, assets: assets.to_owned(), cache: BTreeMap::new(), samples: 0, loading: 0, failed: 0, clock: 0, played: 0, skipped: 0, asked: BTreeMap::new(), asked_more: 0 }
+        ModuleSounds { audio: None, assets: assets.to_owned(), cache: BTreeMap::new(), samples: 0, loading: 0, failed: 0, clock: 0, played: 0, skipped: 0, asked: BTreeMap::new(), asked_more: 0, order: std::collections::VecDeque::new(), order_more: 0 }
     }
 
     pub fn set_audio(&mut self, audio: Arc<crate::audio_service::AudioService>) {
@@ -168,6 +177,8 @@ impl ModuleSounds {
                 })),
             ),
             ("asked_more", Json::from(self.asked_more)),
+            ("order", Json::arr(self.order.iter().map(|n| Json::from(n.as_str())))),
+            ("order_more", Json::from(self.order_more)),
             ("cached", Json::from(self.cache.len().saturating_sub(self.loading + self.failed))),
             ("loading", Json::from(self.loading())),
             ("failed_names", Json::from(self.failed)),
@@ -225,6 +236,11 @@ impl Engine {
     /// Remembers that a module asked for a sound, and where that sound is looked for (paths
     /// are put together here; nothing is read).
     fn note_asked(&mut self, cue: &SoundCue) {
+        if self.module_sounds.order.len() == MAX_ORDER {
+            self.module_sounds.order.pop_front();
+            self.module_sounds.order_more += 1;
+        }
+        self.module_sounds.order.push_back(cue.name.clone());
         let key = format!("{}/{}", cue.module, cue.name);
         if let Some(a) = self.module_sounds.asked.get_mut(&key) {
             a.times += 1;

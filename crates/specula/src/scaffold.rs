@@ -347,6 +347,7 @@ builds the modules, plays the game with no window and prints how it stands as JS
 
     specula run . --ticks 40 --inputs "0:enter,5:tap,6:none,10:tap" [--seed 1]
                   [--settings FOLDER] [--frame out.png --size 800x480] [--follow]
+                  [--at 10,20,40] [--keys taps,score]
 
 - The answer is one line: the state, or an error (exit code 1). A build that fails answers
   the compiler's errors (file, line, message). A module whose call fails, or that panics,
@@ -360,6 +361,13 @@ builds the modules, plays the game with no window and prints how it stands as JS
   joined by `+` are held together (`up+shoot`). An action that is not a button takes its
   value (`throttle=0.5`, `move=1/0`). In the rules read `cx.action("tap").pressed` for
   "once" and `.held` for "while held".
+  **Words of the game's own**: `"inputs": {"menu_down": "Key.Down", "restart": "enter"}` in
+  the game file lets a script say them (a source such as `Key.Down` presses the interface
+  only, where `down` would also hold a module's action of that name).
+- **A run read on its way**: `--at 90,180,270` prints the state at each of those ticks, a
+  line each, in one run (it ends at the last unless `--ticks` goes further); `--keys a,b`
+  prints only those lines of the report. What a thing does over time is one run, not one a
+  tick.
 - **Ticks.** The script counts every tick. The game's own clock ticks only while a run is
   under way: the title, a pause and an ended run hold it, as they do for a player.
 - **What is printed** is the game file's `"report"`: each line a name and the key whose value
@@ -368,6 +376,10 @@ builds the modules, plays the game with no window and prints how it stands as JS
   `run.seed`, `ui.screen` (the top screen's name), `ui.focus` and `ui.focus_index` (the
   focused button, and its place among its screen's buttons), `ui.texts` (every text on
   screen, in order) and `ui.top_texts` (the top screen's). No `"report"`: all of it.
+  **The world itself**, read after the tick's physics, so no rule need copy it:
+  `world./{{module}}/ball.position` (`{"x", "y", "z"}`), `.x`, `.velocity`, `.exists`; everything
+  with a tag, by path: `world.#coin.positions`, `world.#coin.count`. `run.sounds`: every
+  sound the rules asked for so far, in order.
 - `--seed N` (1 when left out) seeds `cx.random_*`: the same seed and inputs give the same
   run, and the rules never see a seed. `--settings FOLDER` is where the player's settings are
   read and kept (a file the engine writes in it: the same folder again finds them); without
@@ -409,7 +421,7 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
 - `view`: how the game is looked at, by the window and by a frame. A 2D game:
   `{"center": [x, y], "height": metres}` (straight on, +x right, +y up: draw with flat cubes
   at z 0). 3D: `{"eye": [x, y, z], "target": [x, y, z], "fov_y_deg": 50}`.
-- `report`: above.
+- `report`: above. `inputs`: words of the game's own for a script, above.
 
 **Screens** (`assets/ui/*.json`; widgets: box, panel, label, button, bar, list, spacer)
 

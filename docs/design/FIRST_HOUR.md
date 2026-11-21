@@ -41,6 +41,7 @@ remembers.**
 | 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built, reviewed, gated; measured on `d18e1131` (LEVERAGE.md, "Results (the fourth pass)": no build cheaper, the small game dearer; the checks came on top of single runs) |
 | 12 | What a first build is not asked for: the guide and the brief, cut (the fifth pass) | built, reviewed, gated; measured on `9450e0f4` in a clean shell (LEVERAGE.md, "Results (the fifth pass)": 1.85, 1.28 and 1.25 times; the gap is before the first line of code) |
 | 13 | The first meeting: one read that is enough, and a random stream that begins again (the sixth pass) | built, reviewed, gated; measured on `57f515d0` (LEVERAGE.md, "Results (2026-11-17: the sixth pass, the first meeting)"): 1.61, 1.22 and 1.47 times the plain build, and a quarter less spent before the first file |
+| 14 | What a second reading of the six-job comparison asked for: the pages say what physics will do, a slab that carries, a run that speaks a brief and is read on its way (2026-11-21) | built by hand, not reviewed, not measured |
 
 ## 1. The SDK comes from the engine
 
@@ -564,6 +565,41 @@ something up. The owner, shown it: "That gap needs to be looked at and fixed up.
 **What it is made of**: `logic/handler.rs` (`rng_restart`, undone with a call that fails),
 `specula-sdk` (`Cx::random_restart`), `scaffold.rs` (the guide, `notes/checks.md`, the sample's
 header), `launch_run.rs` (`read_first`), the harness's brief.
+
+## 14. What physics will do, and a run that is asked many things at once (2026-11-21)
+
+The six-job comparison of 2026-11-21 (LEVERAGE.md) was read a second time, by Grok, from the same
+ledgers and the code. The two readings agree on where the tokens go: the engine's builders make two
+to three times the requests, most of them after the first code and short, each paid for by the
+context read again. They go to finding out what the pages did not say or said wrong, to a wrapper
+between the brief's words and the engine's, and to reading one number a run. What was built for it:
+
+- **The pages say what physics will do, and the guide says to write the game whole.** `notes/world.md`
+  was wrong on two points (bounce takes the larger of the two things that meet, friction the
+  geometric mean; it said "on both") and silent on what the builders measured: the default friction,
+  that a rolling ball takes 5/7 of a push, when a thing sleeps, that the rules run before physics in
+  a tick (what they keep is a step behind), where `fell` fires, where the volume applies. The guide
+  opened with "The loop: edit, run, read"; it opens with "Write the game whole, then run it".
+- **A slab that carries** (`Spawn::carries`, PHYSICS.md). A ball at rest on a sliding bridge is left
+  behind by honest contact, and a brief that says "it carries the ball" could be met only by a rule
+  of the builder's over the engine's friction, which is what a judge then saw as twice the speed.
+- **A run in the brief's words.** The game file's `"inputs"` gives a script words of its own
+  (`"menu_down": "Key.Down"`). A report's line reads the world itself, after the tick's physics:
+  `world.PATH.position`, `.x`, `.velocity`, `.exists`, `world.#TAG.positions`, `.count`; and
+  `run.sounds` is every sound the rules asked for, in order. No rule copies places into its state
+  for the report, and nothing is a step behind.
+- **A run read on its way.** `--at 90,180,270` prints the state at each of those ticks in one run,
+  and `--keys` only the lines asked for. The state at the end is the same with or without it
+  (tried by hand: bit for bit).
+
+Not built in this pass: a search the engine makes itself (an input script that reaches a condition,
+a parameter that meets one), and results handed to a builder without a request (hooks). Not
+measured: no paid run has been made on it.
+
+**What it is made of**: `specula-physics` (`space.rs`, `carry`; the snapshot's version 4),
+`physics.rs` (`Collider::carries`), `specula-sdk` (`Spawn::carries`), `scaffold.rs` (the two pages),
+`specula-ludus` (`GameFile::inputs`), `script_run.rs` (`in_game_words`, `of_world`, `--at`, `--keys`),
+`module_sounds.rs` (the order of what was asked for), `launch_cli.rs`.
 
 ## As built
 

@@ -795,7 +795,7 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
                 continue;
             }
         };
-        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), frame, size: check.size, follow: false };
+        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), frame, size: check.size, follow: false, at: Vec::new(), keys: Vec::new() };
         // A check's settings are the folder it names, or none: never the folder the command
         // itself was given, which is some player's own.
         let named = check.settings.as_ref().map(|name| scratch.join(name));
@@ -919,6 +919,8 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
         frame: args.frame.as_ref().map(absolute),
         size: args.size.unwrap_or((960, 540)),
         follow: args.follow,
+        at: args.at.clone(),
+        keys: args.keys.clone(),
         out: scratch.join("answer.json"),
     };
     if let Some(parent) = spec.frame.as_ref().and_then(|f| f.parent()).filter(|p| !p.as_os_str().is_empty()) {
@@ -1060,7 +1062,7 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
         return done((1, answer.get("error").cloned().unwrap_or_else(|| refusal("no_answer", "the run's answer could not be read").1)));
     }
     let mut out = Json::obj([(RUN_REPORT, answer.get("report").cloned().unwrap_or(Json::Null))]);
-    for beside in ["problems", "log", RUN_FOLLOWED] {
+    for beside in ["problems", "log", RUN_FOLLOWED, RUN_AT, RUN_AT_IS_ALL] {
         if let Some(value) = answer.get(beside) {
             out.set(beside, value.clone());
         }
@@ -1073,6 +1075,10 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
 const RUN_REPORT: &str = "run_report";
 /// The key that says a run was followed: its states were printed as it went, by the engine.
 const RUN_FOLLOWED: &str = "followed";
+/// The states at the ticks `--at` named, in order; and whether the last of them is the run's
+/// last state (then that one is not printed twice).
+const RUN_AT: &str = "at";
+const RUN_AT_IS_ALL: &str = "at_is_all";
 
 /// The longest line of a followed run's engine that is still read as one (a state is far
 /// shorter: a module keeps a bounded number of bounded values).
@@ -1184,8 +1190,13 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
         for line in json.get("log").and_then(Json::as_array).unwrap_or(&[]) {
             eprintln!("{}", log_line(line));
         }
-        // (A followed run printed each state as it went: its last is not said twice.)
-        if json.get(RUN_FOLLOWED).is_none() {
+        // The states on the way (`--at`), a line each, in order.
+        for state in json.get(RUN_AT).and_then(Json::as_array).unwrap_or(&[]) {
+            put(&state.to_string());
+        }
+        // (A followed run printed each state as it went: its last is not said twice. Nor is
+        // the last of `--at` when the run ended there.)
+        if json.get(RUN_FOLLOWED).is_none() && json.get(RUN_AT_IS_ALL).is_none() {
             put(&report.to_string());
         }
         return code;
