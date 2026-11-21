@@ -67,6 +67,7 @@ rounds.
   job's new board and did not find a winning script for the bridge board (in 90 s or 500 s).
   **Nothing further is paid for until the owner says.** Not built: hooks. Not measured: a
   cold engine builder on the mended engine, the carrying mend, a job larger than medium3d.
+- **The gate passed on `8d172ace`** (2026-11-22, everything for an engine change: the workspace, repeats, slow workers, speed, clippy, both builds; the live checks were not run whole, `search_check` passed on the save mend). Before it:
 - **The gate passed on `14c0d08c`** (2026-11-21, everything: 3,585 tests, repeats, slow workers, speed, clippy, both builds; the live checks were not run again). In it: `53985a95` (a module pushes a
   body and tells it to bounce: `Cx::push`, `Cx::place_at_rest`, `Spawn::bounce`, `friction`),
   `7f2167f8` (the 3D jobs). The mends are on the engine without the library (`C:/sf-base`,
