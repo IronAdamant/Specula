@@ -1174,3 +1174,72 @@ same job cost 510,000 to 660,000 in the first comparison, earlier the same day, 
 
 One run's clock time was thirteen minutes where the others took two or three: its builder ran
 `python -` with a here-document, which hangs on this machine until its time limit. No tokens.
+
+## Results (2026-11-21: six jobs, three in 2D and three in 3D, the engine against none)
+
+The owner asked for the plain comparison again on the engine as it stands (`7f2167f8`: the
+blindness mended, typed `Spawn` words, what physics tells a module, a push and a bounce), and
+for three jobs that need what the engine has. The 3D jobs are a second data folder,
+`evals/leverage-3d`: **small3d** (a ball on a board with rigid-body physics, four coins, three
+lives, three sounds), **medium3d** (three boards, six crates to push, a moving bridge, a menu,
+saved settings, two languages) and **change3d** (a fourth board with a ramp, French, a setting
+for the ball's mass, by a builder who did not build the game). Builders Sonnet 5.5, judges
+Opus 5.5, two runs a cell, 24 runs, all ended `done`, all judged
+([perf/leverage/2026-11-21-2d](../../perf/leverage/2026-11-21-2d/report.md),
+[perf/leverage/2026-11-21-3d](../../perf/leverage/2026-11-21-3d/report.md)).
+
+| Job | Plain (weighted tokens) | Engine | Times plain | Requests, times plain | Checks, plain | Checks, engine |
+|---|---|---|---|---|---|---|
+| small | 67,724 | 120,172 | 1.77 | 1.73 | 14.0 / 14 | 14.0 / 14 |
+| medium | 150,926 | 183,690 | 1.22 | 1.83 | 19.0 / 19 | 19.0 / 19 |
+| change | 103,624 | 121,900 | 1.18 | 1.17 | 9.0 / 9 | 8.5 / 9 |
+| small3d | 136,317 | 220,499 | 1.62 | 2.53 | 15.0 / 15 | 15.0 / 15 |
+| medium3d | 430,514 | 736,712 | 1.71 | 2.85 | 23.5 / 24 | 22.0 / 24 |
+| change3d | 259,524 | 321,007 | 1.24 | 1.58 | 10.5 / 11 | 11.0 / 11 |
+
+**The engine costs more on every job, 3D included.** The 2D figures stand where the sixth pass
+left them (1.61, 1.22 and 1.47 on 2026-11-17): medium the same, change lower, small higher,
+each inside what two measurements of a cell have differed by. At the runner's list prices the
+builds cost 3.15 USD (2D) and 7.92 USD (3D), and the judging 9.58 and 15.83.
+
+**The items that failed.** `change-engine-1` c01: runners sent every 60 ticks where the brief
+says 90 (the builder's constant). `medium3d-plain-1` m22: a Spanish heading wider than the
+frame. `medium3d-engine-1` m10: board 2's crates appear in the state one tick after the board
+changes. `medium3d-engine-2` m16: a ball on the moving bridge is not carried at rest (it moves
+at about twice the bridge's speed, and a push against it speeds it up). Both `medium3d-engine`
+runs, m23: the judge could not see where the volume setting scales a sound (the engine does
+it; the README did not show it). `change3d-plain-1` c02: the hand-written ramp is only its top
+plane, and the ball passes through its sides. The engine's ramp was solid in both runs.
+
+**Where the extra goes: requests.** One `medium3d` run of each arm, by its ledger:
+
+| | Plain (`medium3d-plain-2`) | Engine (`medium3d-engine-2`) |
+|---|---|---|
+| Requests | 17 | 58 |
+| Read again (the context, at each request) | 72,206 | 365,762 |
+| New in the context | 74,218 | 118,582 |
+| Written out | 231,270 | 267,350 |
+
+The engine's builder wrote about what the plain one wrote. Four fifths of the difference is
+the context read again at three times as many requests. Its 58 requests, read one by one
+(`examen leverage trace`): seven to read the brief, the project's pages, the SDK's functions
+and the documents (107,000 weighted tokens); the whole game written at the eighth; first runs,
+frames and the four sounds, all working, by the seventeenth (221,000 so far, less than either
+plain build's whole cost); then **nine requests probing the bridge, seven writing a Python
+wrapper and a driver** so that a headless run takes the brief's inputs and prints the brief's
+state, and **eighteen tuning the ball and the crates** (spin, mass, sleep, bounce), each a run
+that reads a few numbers and changes one constant, at 10,000 to 15,000 weighted tokens a
+request because the context is read again each time.
+
+**What this says.** A plain builder writes its own physics and knows what it will do; the
+engine's builder has a better solver and has to measure it. The judges found the plain builds'
+physics crude (crates that never rotate, a crate at rest with nothing under its centre, a ramp
+with no sides), and little of that is on a list of checks. One judge wrote down as a defect
+that a 4 m/s2 push moved the rolling ball at 2.86: that is 4 x 5/7, what a solid ball that
+rolls without slipping does. Sight of the tools made the first working game cheap; it does
+nothing for not knowing what the world will do.
+
+**Not controlled, and not shown.** Two runs a cell. The jobs are of a size a model writes
+whole (600 to 1,800 lines); nothing here measures a game too large for that, several agents
+in one world, or a frame rate. The bridge's fault is a judge's finding and has not yet been
+reproduced by hand.

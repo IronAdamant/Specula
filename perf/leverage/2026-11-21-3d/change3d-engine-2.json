@@ -1,0 +1,2340 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "change3d",
+    "arm": "engine",
+    "kind": "engine",
+    "data": "evals/leverage-3d",
+    "n": 2,
+    "phase": "judge",
+    "prepared": "2026-11-21T04:10:28Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 1500000,
+        "wall_s": 7200
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      },
+      "baseline": "plain"
+    },
+    "from": "medium3d-engine-2",
+    "engine_build": "7f2167f8df",
+    "port": 7686
+  },
+  "costs": {
+    "engine_stopped": true,
+    "engine": {
+      "calls": 46,
+      "refused": 0,
+      "args_bytes": 3194,
+      "answer_bytes": 9251,
+      "by_tool": {
+        "(run --follow)": 25,
+        "(run)": 21
+      }
+    },
+    "left": {
+      "files": 43,
+      "bytes": 442610,
+      "text_lines": 1714,
+      "lines_by_kind": {
+        ".json": 723,
+        ".md": 386,
+        ".py": 173,
+        ".rs": 413,
+        ".toml": 19
+      }
+    },
+    "finished": "2026-11-21T04:16:21Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "c01",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "roll.py --board 3 with my script (judge-scratch/m17.script: positions at x -1.16, 347:right,355:none) takes coins at -2, 1 (over the gap, tick ~440) and 5; at tick 900 screen play, board 4, score 30, lives 3, texts 'Board 4 of 4', coins (-2,0),(2.2,0),(3.5,1.5), ball x -3 z 0 (y 1.11 at 740 falling from 1.25). --board 4 tick 5: board 4, ball (-3, 1.227, 0). Ramp is physical (ball climbs it, blocked by it) and seen in the frame."
+        },
+        {
+          "id": "c02",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Board 4, push_right held from start (--follow trace): y 0.55 at x -0.18, 0.89 at x 0.79 (rises above 0.5 between -1 and 1); y 0.96 at x 1.04, 0.83 at x 1.52, 0.67 at x 1.79, lands x ~2.3 (in flight with y>0.6 and x>1). Solid: pushing up (-z) into its side at x 0 the ball stops at z 1.25 (side at z 1, radius 0.25); pushing left into its high end from x 3 it stops at x 1.064 and stays; on top it rides at surface+0.26, never sinking."
+        },
+        {
+          "id": "c03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "roll.py --ticks 700 --board 4 --inputs '2:left,32:right,187:none,352:down,389:up,426:none,432:right,510:left,577:none': air coin taken at tick ~181 at (1.82, 0.92, 0), mid-flight beyond the ramp top (distance 0.47 to (2.2,1.2,0)); the run falls once off the far edge, then takes (3.5,0.25,1.5) by z 1.34 lane; final screen won, score 30, texts 'You win','Score: 30'. Same at 760 ticks with a push after: unchanged."
+        },
+        {
+          "id": "c04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Texts on --board 1..4: en 'Board 1 of 4','Board 3 of 4','Board 4 of 4' (board 2 in frame 'Board 2 of 4'); es 'Tablero 1..4 de 4'; fr 'Plateau 1..4 sur 4'."
+        },
+        {
+          "id": "c05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings, Language: menu_right en->es->fr (stops at fr), Enter cycles en->es->fr->en; language 'fr' in state. French texts: title ['Roll','Jouer','Réglages','Quitter'], settings ['Réglages','Volume : 8','Langue : Français','Balle : Normale','Retour'], play ['Plateau 1 sur 4','Score : 0','Vies : 3'], paused ['En pause','Reprendre','Retour au titre'], won ['Vous avez gagné','Score : 30','Appuyez sur Entrée ...'], lost ['Partie terminée', ...]; frames of all six viewed, all French ('Roll' is the game's name, as in Spanish)."
+        },
+        {
+          "id": "c06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings texts ['Settings','Volume: 8','Language: English','Ball: Normal','Back']; menu_down twice -> selected Ball, third -> Back. Ball default normal; menu_right -> heavy ('Ball: Heavy'), menu_left -> light, left then right -> normal; ball_kind follows each; es 'Bola: Normal', fr 'Balle : Normale'/'Lourde'."
+        },
+        {
+          "id": "c07",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Board 2, push_right ticks 0-60 then none, ball set via settings folders light/normal/heavy: ball x identical at ticks 30/50/60/70 (-2.5499,-1.8385,-1.3624,-0.8584), strike at tick 78 for all, x -0.5136 the tick before for all three; sum of six crates' displacements 120 ticks after strike: light 0.326, normal 1.024, heavy 3.957."
+        },
+        {
+          "id": "c08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Run setting volume 7, fr, heavy with --settings s8 wrote {volume 7, language fr, ball heavy}; next run with s8: title in French, volume 7, ball_kind heavy, board 2 'Plateau 2 sur 4'. A settings.json of mine with only volume 5 and language es (no ball) loads: es, volume 5, ball_kind normal, 'Bola: Normal'."
+        },
+        {
+          "id": "c09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Every old item that passed still holds (details below in m-notes): m01/m02 roll.py and 800x480 frames; m03 wav/ four WAVs 0.25-0.9 s, peaks 22166-29205, all different; m04 focus Start/Settings/Quit, enter -> board 1, 0, 3; m05 volume 8 en, 0..10 clamp, Back -> title; m06 Spanish all screens incl 'Tablero N de 4'; m07 README example keeps 7/es, none -> 8/en; m08 first y<=0.3 at play tick ~28, back above 0.3, y 0.2499 at 600, 2 bounces; m09 four directions, still moving 50 ticks after release; m10 four coins +10 each, board 2 with 3 coins, 6 crates, clear sound; m11 max crate drift 0.0006 over 300; m12 2 crates moved >0.3, ball reaches x=1 in 105 ticks vs 86 on an empty lane, none below 0.2 over board; m13 crate falls off and leaves crates (6->5) below -5; m14 fall: life lost, 'fall', ball to start, coin and crates kept, life lost on board 1 still lost on board 2; m15 bridge_x 1.01, 1.99, 0.99, 0.01 repeating; m17 board 3 script clears to board 4, then won at board 4, score 60, frozen until enter -> title; m18 lost frozen, enter -> title; m19 pause freezes ball, bridge, crates, score; resume/quit to title work; m20 identical states twice (crates after strike); m21/m22 frames viewed; m24 README commands work."
+        },
+        {
+          "id": "c10",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "roll.py --ticks 60 --board 4 --frame: 800x480 PNG; shows the slab, the ramp as a purple tilted slab (high end toward +x with its end face visible), the red shaded ball at left and three yellow coins; at tick 105 the frame shows the ball on the ramp and the taken coin gone."
+        },
+        {
+          "id": "c11",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "CHANGES.md lists each change with its file/function (lib.rs build_board/ball_start/coins_for/LAST_BOARD, fr.json, game.json setting, settings.json button), what was checked and how, and what was found wrong before."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 10,
+          "of": 10
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 11,
+          "of": 11
+        }
+      },
+      "defects": [
+        "README still says the 'You win' screen comes after board 3 and 'bot on 3 ends in won' (What I checked), out of date with four boards; CHANGES.md says drive.py 3 now ends lost.",
+        "The bridge on board 3 still flings a ball that rides it (ground speed rose to ~4 m/s while the bot pushed left), the m16 defect, unchanged.",
+        "roll.py holds only one push at a time, so diagonal pushes cannot be scripted through it.",
+        "A plain push right from board 4's start misses the air coin (closest pass 0.67 m from it, pick-up radius 0.5); a run-up is needed."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 61235,
+      "tool_uses": 28,
+      "duration_s": 352.8,
+      "by_kind": {
+        "input": 56,
+        "cache_write": 55890,
+        "cache_read": 1175546,
+        "output": 20517,
+        "requests": 28,
+        "context_at_end": 61235
+      },
+      "weighted": 290058,
+      "cost_usd": 0.5463966,
+      "turns": 29,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 104457,
+      "tool_uses": 65,
+      "duration_s": 1175.2,
+      "by_kind": {
+        "input": 116,
+        "cache_write": 99112,
+        "cache_read": 3866535,
+        "output": 39789,
+        "requests": 58,
+        "context_at_end": 104457
+      },
+      "weighted": 709604,
+      "cost_usd": 2.362447,
+      "turns": 66,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "engine": {
+        "calls": 186,
+        "refused": 0,
+        "args_bytes": 99962,
+        "answer_bytes": 62057,
+        "by_tool": {
+          "(run)": 161,
+          "(run --follow)": 25
+        }
+      }
+    },
+    "where": {
+      "run": "change3d-engine-2",
+      "requests": 28,
+      "steps": 28,
+      "steps_before_the_first_code": 8,
+      "weighted": 290058,
+      "weighted_by_kind": {
+        "read_again": 117555,
+        "written_out": 102585,
+        "new_in_context": 69918
+      },
+      "builds": {
+        "steps": 0,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "read its own files": {
+          "steps": 11,
+          "answered_tokens": 16980,
+          "written_tokens": 493
+        },
+        "write code": {
+          "steps": 5,
+          "answered_tokens": 1200,
+          "written_tokens": 3454
+        },
+        "call the engine": {
+          "steps": 4,
+          "answered_tokens": 141,
+          "written_tokens": 1444
+        },
+        "run its own checks": {
+          "steps": 6,
+          "answered_tokens": 661,
+          "written_tokens": 608
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 723
+        },
+        "other commands": {
+          "steps": 1,
+          "answered_tokens": 71,
+          "written_tokens": 24
+        },
+        "look at a frame": {
+          "steps": 1,
+          "answered_tokens": 0,
+          "written_tokens": 16
+        }
+      }
+    },
+    "trace": {
+      "run": "change3d-engine-2",
+      "who": "builder",
+      "complete": true,
+      "requests": 28,
+      "weighted": 290058,
+      "in_the_ledger": 290058,
+      "reading": 187473,
+      "writing": 102585,
+      "written_out": 20517,
+      "of_which_unseen": 14028,
+      "start": {
+        "context": 7934,
+        "carried": 25197
+      },
+      "context_at_end": 61235,
+      "by_kind": {
+        "read its own files": {
+          "requests": 10,
+          "steps": 11,
+          "answered": 16980,
+          "written_out": 9678,
+          "writing": 48392,
+          "carried": 115265
+        },
+        "write code": {
+          "requests": 5,
+          "steps": 5,
+          "answered": 1200,
+          "written_out": 4979,
+          "writing": 24893,
+          "carried": 23887
+        },
+        "call the engine": {
+          "requests": 4,
+          "steps": 4,
+          "answered": 141,
+          "written_out": 2716,
+          "writing": 13579,
+          "carried": 11634
+        },
+        "run its own checks": {
+          "requests": 6,
+          "steps": 6,
+          "answered": 661,
+          "written_out": 1800,
+          "writing": 8998,
+          "carried": 8544
+        },
+        "look at a frame": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 0,
+          "written_out": 761,
+          "writing": 3805,
+          "carried": 1880
+        },
+        "other commands": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 71,
+          "written_out": 195,
+          "writing": 973,
+          "carried": 1067
+        },
+        "words only": {
+          "requests": 1,
+          "steps": 0,
+          "answered": 0,
+          "written_out": 389,
+          "writing": 1945,
+          "carried": 0
+        }
+      },
+      "files": [
+        {
+          "file": "<run>\\work\\modules\\work\\src\\lib.rs",
+          "reads": 1,
+          "writes": 0,
+          "answered": 3699,
+          "written": 0
+        },
+        {
+          "file": "<run>\\BRIEF.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 1256,
+          "written": 0
+        },
+        {
+          "file": "<run>\\work\\out\\board4.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        }
+      ],
+      "rows": [
+        {
+          "n": 1,
+          "context": 7934,
+          "new": 2591,
+          "read_again": 5343,
+          "written_out": 450,
+          "of_which_unseen": 437,
+          "cost": 6021,
+          "cost_so_far": 6021,
+          "carried": 7783,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\BRIEF.md",
+              "written": 13,
+              "answered": 1256
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "context": 9955,
+          "new": 2023,
+          "read_again": 7932,
+          "written_out": 933,
+          "of_which_unseen": 879,
+          "cost": 7988,
+          "cost_so_far": 14008,
+          "carried": 15369,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && ls && cat notes/how.md README.md game.json modules/*/src/lib.rs modules/*/actions.json $(l...",
+              "written": 54,
+              "answered": 2510
+            }
+          ]
+        },
+        {
+          "n": 3,
+          "context": 14053,
+          "new": 4100,
+          "read_again": 9953,
+          "written_out": 2696,
+          "of_which_unseen": 2614,
+          "cost": 19602,
+          "cost_so_far": 33610,
+          "carried": 38115,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && cat README.md game.json modules/*/actions.json; ls assets/ui assets/strings checks modules...",
+              "written": 63,
+              "answered": 2155
+            },
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\work\\modules\\work\\src\\lib.rs",
+              "written": 19,
+              "answered": 3699
+            }
+          ]
+        },
+        {
+          "n": 4,
+          "context": 24495,
+          "new": 10444,
+          "read_again": 14051,
+          "written_out": 1280,
+          "of_which_unseen": 1230,
+          "cost": 20860,
+          "cost_so_far": 54470,
+          "carried": 18902,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && cat roll.py; cat assets/ui/settings.json assets/ui/hud.json assets/strings/*.json; cat ass...",
+              "written": 50,
+              "answered": 3146
+            }
+          ]
+        },
+        {
+          "n": 5,
+          "context": 29819,
+          "new": 5326,
+          "read_again": 24493,
+          "written_out": 692,
+          "of_which_unseen": 619,
+          "cost": 12565,
+          "cost_so_far": 67035,
+          "carried": 6888,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && grep -n \"pub fn\" crates/specula-sdk/src/*.rs | grep -i -E \"setting|dynamic|mass|rotation|e...",
+              "written": 73,
+              "answered": 819
+            }
+          ]
+        },
+        {
+          "n": 6,
+          "context": 31815,
+          "new": 1998,
+          "read_again": 29817,
+          "written_out": 1109,
+          "of_which_unseen": 1082,
+          "cost": 11024,
+          "cost_so_far": 78059,
+          "carried": 13355,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && sed -n 60,135p notes/how.md; sed -n 10,40p notes/world.md",
+              "written": 27,
+              "answered": 2099
+            }
+          ]
+        },
+        {
+          "n": 7,
+          "context": 35801,
+          "new": 3988,
+          "read_again": 31813,
+          "written_out": 1383,
+          "of_which_unseen": 1308,
+          "cost": 15080,
+          "cost_so_far": 93139,
+          "carried": 9583,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && sed -n 280,300p crates/specula-sdk/src/module.rs; cd <repo> && grep -rn '\"mass\"' --include...",
+              "written": 75,
+              "answered": 595
+            }
+          ]
+        },
+        {
+          "n": 8,
+          "context": 38749,
+          "new": 2950,
+          "read_again": 35799,
+          "written_out": 1927,
+          "of_which_unseen": 336,
+          "cost": 16902,
+          "cost_so_far": 110041,
+          "carried": 10359,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "cd <run>/work && python - <<'EOF' import re p='modules/work/src/lib.rs' s=open(p,encoding='utf8').read() de...",
+              "written": 1591,
+              "answered": 9
+            }
+          ]
+        },
+        {
+          "n": 9,
+          "context": 42037,
+          "new": 3290,
+          "read_again": 38747,
+          "written_out": 1007,
+          "of_which_unseen": 348,
+          "cost": 13020,
+          "cost_so_far": 123062,
+          "carried": 7401,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "cd <run>/work && python - <<'EOF' import json for loc,extra,board in ((\"en\",{\"settings.ball\":\"Ball: {settin...",
+              "written": 659,
+              "answered": 713
+            }
+          ]
+        },
+        {
+          "n": 10,
+          "context": 44463,
+          "new": 2428,
+          "read_again": 42035,
+          "written_out": 351,
+          "of_which_unseen": 276,
+          "cost": 8992,
+          "cost_so_far": 132054,
+          "carried": 2430,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work && rm -rf out/s1; python -I roll.py --ticks 5 --board 4 ; for t in 100 130 160; do python -I ...",
+              "written": 75,
+              "answered": 226
+            }
+          ]
+        },
+        {
+          "n": 11,
+          "context": 45286,
+          "new": 825,
+          "read_again": 44461,
+          "written_out": 279,
+          "of_which_unseen": 170,
+          "cost": 6873,
+          "cost_so_far": 138927,
+          "carried": 1760,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work && for r in 60 90 120 160; do for t in 240; do echo \"release $r\"; python -I roll.py --ticks $...",
+              "written": 76,
+              "answered": 142
+            }
+          ]
+        },
+        {
+          "n": 12,
+          "context": 45903,
+          "new": 619,
+          "read_again": 45284,
+          "written_out": 458,
+          "of_which_unseen": 181,
+          "cost": 7591,
+          "cost_so_far": 146518,
+          "carried": 2334,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "cd <run>/work && cat > /tmp/scan.py <<'EOF' import json,subprocess,sys E=\"<repo>/target/debug/examen.exe\" d...",
+              "written": 277,
+              "answered": 69
+            }
+          ]
+        },
+        {
+          "n": 13,
+          "context": 46751,
+          "new": 850,
+          "read_again": 45901,
+          "written_out": 195,
+          "of_which_unseen": 171,
+          "cost": 6625,
+          "cost_so_far": 153142,
+          "carried": 1067,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/work && python -I /tmp/scan.py 110 120 130 140 170 200",
+              "written": 24,
+              "answered": 71
+            }
+          ]
+        },
+        {
+          "n": 14,
+          "context": 47153,
+          "new": 404,
+          "read_again": 46749,
+          "written_out": 763,
+          "of_which_unseen": 473,
+          "cost": 8997,
+          "cost_so_far": 162139,
+          "carried": 3393,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "cd <run>/work && cat > /tmp/scan2.py <<'EOF' import json,subprocess,sys E=\"<repo>/target/debug/examen.exe\" ...",
+              "written": 290,
+              "answered": 31
+            }
+          ]
+        },
+        {
+          "n": 15,
+          "context": 48483,
+          "new": 1332,
+          "read_again": 47151,
+          "written_out": 672,
+          "of_which_unseen": 303,
+          "cost": 9738,
+          "cost_so_far": 171877,
+          "carried": 2839,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "cd <run>/work && cat > /tmp/full.py <<'EOF' import json,subprocess,sys E=\"<repo>/target/debug/examen.exe\" a...",
+              "written": 369,
+              "answered": 15
+            }
+          ]
+        },
+        {
+          "n": 16,
+          "context": 49641,
+          "new": 1160,
+          "read_again": 48481,
+          "written_out": 145,
+          "of_which_unseen": 107,
+          "cost": 7020,
+          "cost_so_far": 178898,
+          "carried": 669,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && sed -i 's/s\\[\"screen\"\\]==\"play\"/s[\"screen\"]==\"hud\"/' /tmp/full.py && python -I /tmp/full.py",
+              "written": 38,
+              "answered": 38
+            }
+          ]
+        },
+        {
+          "n": 17,
+          "context": 49925,
+          "new": 286,
+          "read_again": 49639,
+          "written_out": 516,
+          "of_which_unseen": 469,
+          "cost": 7901,
+          "cost_so_far": 186799,
+          "carried": 2709,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && sed -i 's/^ prev=b$/ prev=b\\n if t%60==0 and t>200: print(t,w,b,s[\"coins\"])/' /tmp/full.py...",
+              "written": 47,
+              "answered": 325
+            }
+          ]
+        },
+        {
+          "n": 18,
+          "context": 51128,
+          "new": 1205,
+          "read_again": 49923,
+          "written_out": 823,
+          "of_which_unseen": 315,
+          "cost": 10612,
+          "cost_so_far": 197411,
+          "carried": 3068,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "call the engine",
+              "what": "cd <run>/work && cat > /tmp/full2.py <<'EOF' import json,subprocess,sys E=\"<repo>/target/debug/examen.exe\" ...",
+              "written": 508,
+              "answered": 26
+            }
+          ]
+        },
+        {
+          "n": 19,
+          "context": 52554,
+          "new": 1428,
+          "read_again": 51126,
+          "written_out": 391,
+          "of_which_unseen": 220,
+          "cost": 8851,
+          "cost_so_far": 206262,
+          "carried": 1671,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work && rm -rf out/s; python -I roll.py --ticks 40 --inputs \"2:menu_down,5:enter,10:menu_down,13:m...",
+              "written": 171,
+              "answered": 149
+            }
+          ]
+        },
+        {
+          "n": 20,
+          "context": 53368,
+          "new": 816,
+          "read_again": 52552,
+          "written_out": 485,
+          "of_which_unseen": 305,
+          "cost": 8699,
+          "cost_so_far": 214961,
+          "carried": 1735,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work && for seq in \"menu_left\" \"menu_left,menu_left\" \"menu_right,menu_right\" \"menu_right,menu_righ...",
+              "written": 180,
+              "answered": 64
+            }
+          ]
+        },
+        {
+          "n": 21,
+          "context": 54257,
+          "new": 891,
+          "read_again": 53366,
+          "written_out": 188,
+          "of_which_unseen": 84,
+          "cost": 7390,
+          "cost_so_far": 222351,
+          "carried": 686,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work && for k in light normal heavy; do echo $k; python -I roll.py --ticks 200 --board 2 --inputs ...",
+              "written": 80,
+              "answered": 50
+            }
+          ]
+        },
+        {
+          "n": 22,
+          "context": 54627,
+          "new": 372,
+          "read_again": 54255,
+          "written_out": 715,
+          "of_which_unseen": 521,
+          "cost": 9466,
+          "cost_so_far": 231818,
+          "carried": 2793,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "cd <run>/work && python - <<'EOF' p='modules/work/src/lib.rs' s=open(p,encoding='utf8').read() a=' cx.set_s...",
+              "written": 194,
+              "answered": 378
+            }
+          ]
+        },
+        {
+          "n": 23,
+          "context": 56222,
+          "new": 1597,
+          "read_again": 54625,
+          "written_out": 475,
+          "of_which_unseen": 441,
+          "cost": 9833,
+          "cost_so_far": 241650,
+          "carried": 1893,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work && python -I tools/drive.py 3 2>&1| tail -3 | cut -c1-300; sed -n 50,100p tools/drive.py",
+              "written": 34,
+              "answered": 338
+            }
+          ]
+        },
+        {
+          "n": 24,
+          "context": 57368,
+          "new": 1148,
+          "read_again": 56220,
+          "written_out": 357,
+          "of_which_unseen": 274,
+          "cost": 8840,
+          "cost_so_far": 250490,
+          "carried": 1098,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "cd <run>/work && cp game.json /tmp/game.json.bak && python - <<'EOF' import json g=json.load(open('game.jso...",
+              "written": 83,
+              "answered": 100
+            }
+          ]
+        },
+        {
+          "n": 25,
+          "context": 58075,
+          "new": 709,
+          "read_again": 57366,
+          "written_out": 761,
+          "of_which_unseen": 745,
+          "cost": 10428,
+          "cost_so_far": 260918,
+          "carried": 1880,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\work\\out\\board4.png",
+              "written": 16,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 26,
+          "context": 59370,
+          "new": 1297,
+          "read_again": 58073,
+          "written_out": 973,
+          "of_which_unseen": 42,
+          "cost": 12291,
+          "cost_so_far": 273209,
+          "carried": 2236,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "cd <run>/work && python - <<'EOF' p='README.md' s=open(p,encoding='utf8').read() for a,b in [(\"three boards...",
+              "written": 927,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 27,
+          "context": 61025,
+          "new": 1657,
+          "read_again": 59368,
+          "written_out": 106,
+          "of_which_unseen": 80,
+          "cost": 8536,
+          "cost_so_far": 281746,
+          "carried": 262,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work && rm -rf out/s; python -I roll.py --ticks 3 | cut -c1-120",
+              "written": 26,
+              "answered": 30
+            }
+          ]
+        },
+        {
+          "n": 28,
+          "context": 61235,
+          "new": 212,
+          "read_again": 61023,
+          "written_out": 389,
+          "of_which_unseen": 0,
+          "cost": 8312,
+          "cost_so_far": 290058,
+          "carried": 0,
+          "steps": []
+        }
+      ],
+      "how": "context, new, read_again and how far the context grew are the run's own records. written_out a request is its growth less its answers (characters / 4), scaled to the run's exact total; of_which_unseen is that less the visible text (thinking). cost is what the request read and wrote, weighted; carried is what reading again what it added cost at every later request (start.carried: the same for what every request starts from). reading + writing is in_the_ledger"
+    },
+    "judge_trace": {
+      "run": "change3d-engine-2",
+      "who": "judge",
+      "complete": true,
+      "requests": 58,
+      "weighted": 709604,
+      "in_the_ledger": 709604,
+      "reading": 510659,
+      "writing": 198945,
+      "written_out": 39789,
+      "of_which_unseen": 28004,
+      "start": {
+        "context": 8230,
+        "carried": 51056
+      },
+      "context_at_end": 104457,
+      "by_kind": {
+        "read its own files": {
+          "requests": 14,
+          "steps": 17,
+          "answered": 20939,
+          "written_out": 12961,
+          "writing": 64803,
+          "carried": 261757
+        },
+        "other commands": {
+          "requests": 18,
+          "steps": 18,
+          "answered": 3362,
+          "written_out": 9480,
+          "writing": 47400,
+          "carried": 80813
+        },
+        "write code": {
+          "requests": 9,
+          "steps": 9,
+          "answered": 451,
+          "written_out": 8657,
+          "writing": 43286,
+          "carried": 61899
+        },
+        "run its own checks": {
+          "requests": 12,
+          "steps": 12,
+          "answered": 1572,
+          "written_out": 5121,
+          "writing": 25603,
+          "carried": 38014
+        },
+        "look at a frame": {
+          "requests": 4,
+          "steps": 9,
+          "answered": 0,
+          "written_out": 3281,
+          "writing": 16404,
+          "carried": 17120
+        },
+        "words only": {
+          "requests": 1,
+          "steps": 0,
+          "answered": 0,
+          "written_out": 290,
+          "writing": 1449,
+          "carried": 0
+        }
+      },
+      "files": [
+        {
+          "file": "<run>\\work\\modules\\work\\src\\lib.rs",
+          "reads": 1,
+          "writes": 0,
+          "answered": 4442,
+          "written": 0
+        },
+        {
+          "file": "<run>\\JUDGE.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 2877,
+          "written": 0
+        },
+        {
+          "file": "<run>\\verdict.json",
+          "reads": 0,
+          "writes": 2,
+          "answered": 0,
+          "written": 2669
+        },
+        {
+          "file": "<run>\\BRIEF.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 1256,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\b3.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 752
+        },
+        {
+          "file": "<run>\\judge-scratch\\goto.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 622
+        },
+        {
+          "file": "<run>\\judge-scratch\\sweep3.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 465
+        },
+        {
+          "file": "<run>\\judge-scratch\\trace.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 446
+        },
+        {
+          "file": "<run>\\judge-scratch\\mass.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 322
+        },
+        {
+          "file": "<run>\\judge-scratch\\sold\\settings.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 52
+        },
+        {
+          "file": "<run>\\judge-scratch\\b4.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\b4ramp.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\b2.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\b3.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_settings.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_won.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_lost.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_title.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_paused.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        }
+      ],
+      "rows": [
+        {
+          "n": 1,
+          "context": 8230,
+          "new": 2887,
+          "read_again": 5343,
+          "written_out": 862,
+          "of_which_unseen": 837,
+          "cost": 8451,
+          "cost_so_far": 8451,
+          "carried": 30779,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\JUDGE.md",
+              "written": 13,
+              "answered": 2877
+            },
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "ls -la <run>/",
+              "written": 12,
+              "answered": 91
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "context": 12723,
+          "new": 4495,
+          "read_again": 8228,
+          "written_out": 853,
+          "of_which_unseen": 816,
+          "cost": 10704,
+          "cost_so_far": 19156,
+          "carried": 22425,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\BRIEF.md",
+              "written": 13,
+              "answered": 1256
+            },
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>; cat run.json; find work engine -maxdepth 3 | head -100",
+              "written": 24,
+              "answered": 557
+            }
+          ]
+        },
+        {
+          "n": 3,
+          "context": 16045,
+          "new": 3324,
+          "read_again": 12721,
+          "written_out": 1058,
+          "of_which_unseen": 1028,
+          "cost": 10718,
+          "cost_so_far": 29874,
+          "carried": 30539,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; cat README.md CHANGES.md game.json; ls checks 2>&1; cat notes/checks.md",
+              "written": 30,
+              "answered": 2719
+            }
+          ]
+        },
+        {
+          "n": 4,
+          "context": 20637,
+          "new": 4594,
+          "read_again": 16043,
+          "written_out": 468,
+          "of_which_unseen": 442,
+          "cost": 9686,
+          "cost_so_far": 39559,
+          "carried": 12480,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; cat roll.py; wc -l modules/work/src/lib.rs tools/drive.py",
+              "written": 26,
+              "answered": 1077
+            }
+          ]
+        },
+        {
+          "n": 5,
+          "context": 22542,
+          "new": 1907,
+          "read_again": 20635,
+          "written_out": 2971,
+          "of_which_unseen": 2914,
+          "cost": 19299,
+          "cost_so_far": 58859,
+          "carried": 77892,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\work\\modules\\work\\src\\lib.rs",
+              "written": 19,
+              "answered": 4442
+            },
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; cat tools/drive.py; cat modules/work/actions.json; cat assets/strings/*.json; cat assets/ui/...",
+              "written": 38,
+              "answered": 2377
+            }
+          ]
+        },
+        {
+          "n": 6,
+          "context": 34618,
+          "new": 12078,
+          "read_again": 22540,
+          "written_out": 281,
+          "of_which_unseen": 219,
+          "cost": 18755,
+          "cost_so_far": 77614,
+          "carried": 4250,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "mkdir -p <run>/judge-scratch; cd <run>/work; time python -I roll.py --ticks 5 --board 4; python -I roll.py ...",
+              "written": 47,
+              "answered": 172
+            }
+          ]
+        },
+        {
+          "n": 7,
+          "context": 35287,
+          "new": 671,
+          "read_again": 34616,
+          "written_out": 230,
+          "of_which_unseen": 201,
+          "cost": 5450,
+          "cost_so_far": 83064,
+          "carried": 4264,
+          "steps": [
+            {
+              "tool": "Grep",
+              "kind": "read its own files",
+              "what": "follow",
+              "written": 29,
+              "answered": 275
+            }
+          ]
+        },
+        {
+          "n": 8,
+          "context": 35969,
+          "new": 684,
+          "read_again": 35285,
+          "written_out": 575,
+          "of_which_unseen": 129,
+          "cost": 7256,
+          "cost_so_far": 90320,
+          "carried": 6478,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\trace.py",
+              "written": 446,
+              "answered": 36
+            }
+          ]
+        },
+        {
+          "n": 9,
+          "context": 37022,
+          "new": 1055,
+          "read_again": 35967,
+          "written_out": 2549,
+          "of_which_unseen": 2446,
+          "cost": 17660,
+          "cost_so_far": 107980,
+          "carried": 42104,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/judge-scratch; python -I trace.py 4 300 \"0:push_right\" > c02.jsonl; python -I -c \" import json for...",
+              "written": 103,
+              "answered": 2448
+            }
+          ]
+        },
+        {
+          "n": 10,
+          "context": 43981,
+          "new": 6961,
+          "read_again": 37020,
+          "written_out": 1153,
+          "of_which_unseen": 531,
+          "cost": 18166,
+          "cost_so_far": 126146,
+          "carried": 12348,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\goto.py",
+              "written": 622,
+              "answered": 35
+            }
+          ]
+        },
+        {
+          "n": 11,
+          "context": 46056,
+          "new": 2077,
+          "read_again": 43979,
+          "written_out": 760,
+          "of_which_unseen": 628,
+          "cost": 10794,
+          "cost_so_far": 136940,
+          "carried": 10152,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; python -I goto.py 4 '[[\"go\",0,1.6],[\"hold\",\"push_up\",80],[\"wait\",40]]' > side_z.jso...",
+              "written": 132,
+              "answered": 390
+            }
+          ]
+        },
+        {
+          "n": 12,
+          "context": 47791,
+          "new": 1737,
+          "read_again": 46054,
+          "written_out": 576,
+          "of_which_unseen": 419,
+          "cost": 9655,
+          "cost_so_far": 146595,
+          "carried": 6143,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; for L in 30 40 50; do python -I trace.py 4 260 \"0:push_left,$L:push_right\" > air$L....",
+              "written": 130,
+              "answered": 49
+            }
+          ]
+        },
+        {
+          "n": 13,
+          "context": 48859,
+          "new": 1070,
+          "read_again": 47789,
+          "written_out": 531,
+          "of_which_unseen": 357,
+          "cost": 8772,
+          "cost_so_far": 155367,
+          "carried": 6341,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; python -I goto.py 4 '[[\"hold\",\"push_left\",30],[\"hold\",\"push_right\",150],[\"go\",3.5,1...",
+              "written": 174,
+              "answered": 182
+            }
+          ]
+        },
+        {
+          "n": 14,
+          "context": 49981,
+          "new": 1124,
+          "read_again": 48857,
+          "written_out": 875,
+          "of_which_unseen": 783,
+          "cost": 10667,
+          "cost_so_far": 166033,
+          "carried": 9775,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; python -I trace.py 4 400 \"0:push_left,30:push_right,185:push_left,260:none\" > p1.js...",
+              "written": 92,
+              "answered": 212
+            }
+          ]
+        },
+        {
+          "n": 15,
+          "context": 51742,
+          "new": 1763,
+          "read_again": 49979,
+          "written_out": 559,
+          "of_which_unseen": 442,
+          "cost": 9998,
+          "cost_so_far": 176031,
+          "carried": 7016,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; S=\"0:push_left,30:push_right,185:none,350:push_down,387:push_up,424:none,430:push_r...",
+              "written": 117,
+              "answered": 297
+            }
+          ]
+        },
+        {
+          "n": 16,
+          "context": 53029,
+          "new": 1289,
+          "read_again": 51740,
+          "written_out": 448,
+          "of_which_unseen": 332,
+          "cost": 9025,
+          "cost_so_far": 185056,
+          "carried": 5560,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; S=\"0:push_left,30:push_right,185:none,350:push_down,387:push_up,424:none,430:push_r...",
+              "written": 116,
+              "answered": 246
+            }
+          ]
+        },
+        {
+          "n": 17,
+          "context": 54068,
+          "new": 1041,
+          "read_again": 53027,
+          "written_out": 461,
+          "of_which_unseen": 363,
+          "cost": 8909,
+          "cost_so_far": 193965,
+          "carried": 6092,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work; S=\"2:left,32:right,187:none,352:down,389:up,426:none,432:right,510:left,577:none\"; echo \"$S\"...",
+              "written": 98,
+              "answered": 344
+            }
+          ]
+        },
+        {
+          "n": 18,
+          "context": 55228,
+          "new": 1162,
+          "read_again": 54066,
+          "written_out": 1861,
+          "of_which_unseen": 1087,
+          "cost": 16162,
+          "cost_so_far": 210128,
+          "carried": 17141,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\b3.py",
+              "written": 752,
+              "answered": 35
+            }
+          ]
+        },
+        {
+          "n": 19,
+          "context": 58556,
+          "new": 3330,
+          "read_again": 55226,
+          "written_out": 726,
+          "of_which_unseen": 688,
+          "cost": 13315,
+          "cost_so_far": 223443,
+          "carried": 11824,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/judge-scratch; python -I b3.py 3 -1.15 0.6667 1500 0.2 2>b3.err | tail -1; tail -25 b3.err",
+              "written": 38,
+              "answered": 1056
+            }
+          ]
+        },
+        {
+          "n": 20,
+          "context": 60897,
+          "new": 2343,
+          "read_again": 58554,
+          "written_out": 497,
+          "of_which_unseen": 479,
+          "cost": 11267,
+          "cost_so_far": 234710,
+          "carried": 7065,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/judge-scratch; head -40 b3.err",
+              "written": 18,
+              "answered": 548
+            }
+          ]
+        },
+        {
+          "n": 21,
+          "context": 62324,
+          "new": 1429,
+          "read_again": 60895,
+          "written_out": 1356,
+          "of_which_unseen": 863,
+          "cost": 14656,
+          "cost_so_far": 249366,
+          "carried": 11816,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\sweep3.py",
+              "written": 465,
+              "answered": 36
+            }
+          ]
+        },
+        {
+          "n": 22,
+          "context": 64760,
+          "new": 2438,
+          "read_again": 62322,
+          "written_out": 241,
+          "of_which_unseen": 194,
+          "cost": 10486,
+          "cost_so_far": 259851,
+          "carried": 2823,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "cd <run>/judge-scratch; python -I sweep3.py 345,355,365,375,385,395,405,415,425,435,445,455 8,20,40 2>&1 | ...",
+              "written": 47,
+              "answered": 167
+            }
+          ]
+        },
+        {
+          "n": 23,
+          "context": 65354,
+          "new": 596,
+          "read_again": 64758,
+          "written_out": 663,
+          "of_which_unseen": 541,
+          "cost": 10534,
+          "cost_so_far": 270386,
+          "carried": 6809,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch; S=$(grep WIN sweep3.out | head -1 | cut -d' ' -f2); echo \"$S\" > m17.script; cd ../w...",
+              "written": 122,
+              "answered": 291
+            }
+          ]
+        },
+        {
+          "n": 24,
+          "context": 66818,
+          "new": 1466,
+          "read_again": 65352,
+          "written_out": 359,
+          "of_which_unseen": 255,
+          "cost": 10161,
+          "cost_so_far": 280547,
+          "carried": 3837,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work; S=$(cat ../judge-scratch/m17.script); for T in 560 600 640 700 900; do python -I roll.py --t...",
+              "written": 104,
+              "answered": 208
+            }
+          ]
+        },
+        {
+          "n": 25,
+          "context": 67661,
+          "new": 845,
+          "read_again": 66816,
+          "written_out": 443,
+          "of_which_unseen": 260,
+          "cost": 9952,
+          "cost_so_far": 290499,
+          "carried": 3913,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work; python -I roll.py --ticks 60 --board 4 --frame ../judge-scratch/b4.png >/dev/null; python -I...",
+              "written": 164,
+              "answered": 95
+            }
+          ]
+        },
+        {
+          "n": 26,
+          "context": 68540,
+          "new": 881,
+          "read_again": 67659,
+          "written_out": 712,
+          "of_which_unseen": 679,
+          "cost": 11427,
+          "cost_so_far": 301926,
+          "carried": 5483,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\b4.png",
+              "written": 16,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\b4ramp.png",
+              "written": 17,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 27,
+          "context": 69800,
+          "new": 1262,
+          "read_again": 68538,
+          "written_out": 788,
+          "of_which_unseen": 756,
+          "cost": 12372,
+          "cost_so_far": 314298,
+          "carried": 5931,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\b2.png",
+              "written": 16,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\b3.png",
+              "written": 16,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 28,
+          "context": 71195,
+          "new": 1397,
+          "read_again": 69798,
+          "written_out": 776,
+          "of_which_unseen": 428,
+          "cost": 12605,
+          "cost_so_far": 326902,
+          "carried": 7040,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/work; R(){ python -I roll.py \"$@\" | python -I -c \"import json,sys; d=json.load(sys.stdin); print(d...",
+              "written": 330,
+              "answered": 323
+            }
+          ]
+        },
+        {
+          "n": 29,
+          "context": 72891,
+          "new": 1698,
+          "read_again": 71193,
+          "written_out": 378,
+          "of_which_unseen": 249,
+          "cost": 11131,
+          "cost_so_far": 338034,
+          "carried": 3307,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/work; R(){ python -I roll.py \"$@\" | python -I -c \"import json,sys; d=json.load(sys.stdin); print(d...",
+              "written": 129,
+              "answered": 147
+            }
+          ]
+        },
+        {
+          "n": 30,
+          "context": 73707,
+          "new": 818,
+          "read_again": 72889,
+          "written_out": 639,
+          "of_which_unseen": 423,
+          "cost": 11503,
+          "cost_so_far": 349537,
+          "carried": 5919,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; SF=../judge-scratch/sfr; rm -rf $SF; R(){ python -I roll.py \"$@\" | python -I -c \"import json...",
+              "written": 216,
+              "answered": 368
+            }
+          ]
+        },
+        {
+          "n": 31,
+          "context": 75205,
+          "new": 1500,
+          "read_again": 73705,
+          "written_out": 711,
+          "of_which_unseen": 471,
+          "cost": 12799,
+          "cost_so_far": 362337,
+          "carried": 6581,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; SF=../judge-scratch/sfr; R(){ python -I roll.py \"$@\" | python -I -c \"import json,sys; d=json...",
+              "written": 240,
+              "answered": 451
+            }
+          ]
+        },
+        {
+          "n": 32,
+          "context": 76914,
+          "new": 1711,
+          "read_again": 75203,
+          "written_out": 511,
+          "of_which_unseen": 369,
+          "cost": 12213,
+          "cost_so_far": 374549,
+          "carried": 3782,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; R(){ python -I roll.py \"$@\" | python -I -c \"import json,sys; d=json.load(sys.stdin); print(d...",
+              "written": 142,
+              "answered": 104
+            }
+          ]
+        },
+        {
+          "n": 33,
+          "context": 77922,
+          "new": 1010,
+          "read_again": 76912,
+          "written_out": 206,
+          "of_which_unseen": 154,
+          "cost": 9984,
+          "cost_so_far": 384534,
+          "carried": 1473,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\sold\\settings.json",
+              "written": 52,
+              "answered": 38
+            }
+          ]
+        },
+        {
+          "n": 34,
+          "context": 78325,
+          "new": 405,
+          "read_again": 77920,
+          "written_out": 275,
+          "of_which_unseen": 136,
+          "cost": 9674,
+          "cost_so_far": 394207,
+          "carried": 2022,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; R(){ python -I roll.py \"$@\" | python -I -c \"import json,sys; d=json.load(sys.stdin); print(d...",
+              "written": 119,
+              "answered": 82
+            }
+          ]
+        },
+        {
+          "n": 35,
+          "context": 78894,
+          "new": 571,
+          "read_again": 78323,
+          "written_out": 427,
+          "of_which_unseen": 259,
+          "cost": 10679,
+          "cost_so_far": 404886,
+          "carried": 2796,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work; for k in light normal heavy; do rm -rf ../judge-scratch/s_$k; done python -I roll.py --ticks...",
+              "written": 168,
+              "answered": 55
+            }
+          ]
+        },
+        {
+          "n": 36,
+          "context": 79704,
+          "new": 812,
+          "read_again": 78892,
+          "written_out": 376,
+          "of_which_unseen": 54,
+          "cost": 10785,
+          "cost_so_far": 415671,
+          "carried": 2350,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\mass.py",
+              "written": 322,
+              "answered": 35
+            }
+          ]
+        },
+        {
+          "n": 37,
+          "context": 80405,
+          "new": 703,
+          "read_again": 79702,
+          "written_out": 121,
+          "of_which_unseen": 102,
+          "cost": 9456,
+          "cost_so_far": 425127,
+          "carried": 1019,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; python -I mass.py m_",
+              "written": 19,
+              "answered": 98
+            }
+          ]
+        },
+        {
+          "n": 38,
+          "context": 80718,
+          "new": 315,
+          "read_again": 80403,
+          "written_out": 613,
+          "of_which_unseen": 462,
+          "cost": 11496,
+          "cost_so_far": 436623,
+          "carried": 4081,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; ls -la wav assets/sounds; python -I -c \" import wave,struct,hashlib,array for n in ['coin','...",
+              "written": 122,
+              "answered": 211
+            }
+          ]
+        },
+        {
+          "n": 39,
+          "context": 82013,
+          "new": 1297,
+          "read_again": 80716,
+          "written_out": 577,
+          "of_which_unseen": 337,
+          "cost": 12580,
+          "cost_so_far": 449203,
+          "carried": 3845,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/work; R(){ python -I roll.py \"$@\" | python -I -c \"import json,sys; d=json.load(sys.stdin); print(d...",
+              "written": 240,
+              "answered": 238
+            }
+          ]
+        },
+        {
+          "n": 40,
+          "context": 83273,
+          "new": 1262,
+          "read_again": 82011,
+          "written_out": 396,
+          "of_which_unseen": 194,
+          "cost": 11759,
+          "cost_so_far": 460962,
+          "carried": 2203,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/work; R(){ python -I roll.py \"$@\" | python -I -c \"import json,sys; d=json.load(sys.stdin); print(d...",
+              "written": 202,
+              "answered": 45
+            }
+          ]
+        },
+        {
+          "n": 41,
+          "context": 84019,
+          "new": 748,
+          "read_again": 83271,
+          "written_out": 436,
+          "of_which_unseen": 316,
+          "cost": 11443,
+          "cost_so_far": 472404,
+          "carried": 2607,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; for w in push_right push_left push_up push_down; do python -I trace.py 1 120 \"40:$w...",
+              "written": 120,
+              "answered": 142
+            }
+          ]
+        },
+        {
+          "n": 42,
+          "context": 84933,
+          "new": 916,
+          "read_again": 84017,
+          "written_out": 638,
+          "of_which_unseen": 457,
+          "cost": 12736,
+          "cost_so_far": 485140,
+          "carried": 4179,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; python -I goto.py 1 '[[\"go\",2,0],[\"go\",0,2],[\"go\",-2,0],[\"go\",0,-2],[\"wait\",30]]' >...",
+              "written": 181,
+              "answered": 390
+            }
+          ]
+        },
+        {
+          "n": 43,
+          "context": 86452,
+          "new": 1521,
+          "read_again": 84931,
+          "written_out": 974,
+          "of_which_unseen": 594,
+          "cost": 15262,
+          "cost_so_far": 500402,
+          "carried": 4896,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; python -I goto.py 2 '[[\"wait\",120],[\"hold\",\"push_right\",200]]' > m12.jsonl & python...",
+              "written": 380,
+              "answered": 124
+            }
+          ]
+        },
+        {
+          "n": 44,
+          "context": 88299,
+          "new": 1849,
+          "read_again": 86450,
+          "written_out": 542,
+          "of_which_unseen": 290,
+          "cost": 13668,
+          "cost_so_far": 514070,
+          "carried": 2932,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch; python -I goto.py 2 '[[\"wait\",120],[\"hold\",\"push_right\",200],[\"wait\",200]]' > m13.j...",
+              "written": 232,
+              "answered": 189
+            }
+          ]
+        },
+        {
+          "n": 45,
+          "context": 89448,
+          "new": 1151,
+          "read_again": 88297,
+          "written_out": 776,
+          "of_which_unseen": 641,
+          "cost": 14150,
+          "cost_so_far": 528220,
+          "carried": 3537,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work; rm -rf ../judge-scratch/rs; python -I roll.py --ticks 40 --inputs \"2:menu_down,5:enter,10:me...",
+              "written": 135,
+              "answered": 69
+            }
+          ]
+        },
+        {
+          "n": 46,
+          "context": 90891,
+          "new": 1445,
+          "read_again": 89446,
+          "written_out": 551,
+          "of_which_unseen": 297,
+          "cost": 13505,
+          "cost_so_far": 541725,
+          "carried": 2852,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/work; R(){ python -I roll.py \"$@\" | python -I -c \"import json,sys; d=json.load(sys.stdin); print(d...",
+              "written": 254,
+              "answered": 238
+            }
+          ]
+        },
+        {
+          "n": 47,
+          "context": 92104,
+          "new": 1215,
+          "read_again": 90889,
+          "written_out": 459,
+          "of_which_unseen": 267,
+          "cost": 12904,
+          "cost_so_far": 554629,
+          "carried": 2110,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch; python -I goto.py 1 '[[\"hold\",\"push_right\",60],[\"wait\",200],[\"go\",2,0],[\"go\",0,2],[...",
+              "written": 192,
+              "answered": 124
+            }
+          ]
+        },
+        {
+          "n": 48,
+          "context": 93041,
+          "new": 939,
+          "read_again": 92102,
+          "written_out": 148,
+          "of_which_unseen": 76,
+          "cost": 11124,
+          "cost_so_far": 565753,
+          "carried": 643,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work; S=$(cat ../judge-scratch/m17.script); for T in 740 750 760; do python -I roll.py --ticks $T ...",
+              "written": 72,
+              "answered": 36
+            }
+          ]
+        },
+        {
+          "n": 49,
+          "context": 93339,
+          "new": 300,
+          "read_again": 93039,
+          "written_out": 339,
+          "of_which_unseen": 201,
+          "cost": 11374,
+          "cost_so_far": 577126,
+          "carried": 1277,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work; S=$(cat ../judge-scratch/m17.script); C=$(cat ../judge-scratch/c03.script); for off in 727 7...",
+              "written": 138,
+              "answered": 22
+            }
+          ]
+        },
+        {
+          "n": 50,
+          "context": 93961,
+          "new": 624,
+          "read_again": 93337,
+          "written_out": 443,
+          "of_which_unseen": 177,
+          "cost": 12328,
+          "cost_so_far": 589455,
+          "carried": 1667,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work; SF=../judge-scratch/sfr; J=../judge-scratch; S=$(cat $J/m17.script); C=$(cat $J/c03.script);...",
+              "written": 241,
+              "answered": 70
+            }
+          ]
+        },
+        {
+          "n": 51,
+          "context": 94815,
+          "new": 856,
+          "read_again": 93959,
+          "written_out": 1067,
+          "of_which_unseen": 1013,
+          "cost": 15802,
+          "cost_so_far": 605257,
+          "carried": 3496,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_settings.png",
+              "written": 19,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_won.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_lost.png",
+              "written": 18,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 52,
+          "context": 96704,
+          "new": 1891,
+          "read_again": 94813,
+          "written_out": 713,
+          "of_which_unseen": 677,
+          "cost": 15410,
+          "cost_so_far": 620667,
+          "carried": 2210,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_title.png",
+              "written": 18,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_paused.png",
+              "written": 18,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 53,
+          "context": 97966,
+          "new": 1264,
+          "read_again": 96702,
+          "written_out": 322,
+          "of_which_unseen": 249,
+          "cost": 12857,
+          "cost_so_far": 633524,
+          "carried": 1083,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/work; python -I roll.py --ticks 5 --board 1 | grep -o '\"texts\": \\[[^]]*\\]'; python -I roll.py --ti...",
+              "written": 73,
+              "answered": 86
+            }
+          ]
+        },
+        {
+          "n": 54,
+          "context": 98621,
+          "new": 657,
+          "read_again": 97964,
+          "written_out": 144,
+          "of_which_unseen": 90,
+          "cost": 11335,
+          "cost_so_far": 644859,
+          "carried": 468,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"name='examen.exe' or name='specula....",
+              "written": 54,
+              "answered": 47
+            }
+          ]
+        },
+        {
+          "n": 55,
+          "context": 98922,
+          "new": 303,
+          "read_again": 98619,
+          "written_out": 2781,
+          "of_which_unseen": 163,
+          "cost": 24146,
+          "cost_so_far": 669005,
+          "carried": 7187,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\verdict.json",
+              "written": 2608,
+              "answered": 33
+            }
+          ]
+        },
+        {
+          "n": 56,
+          "context": 103877,
+          "new": 4957,
+          "read_again": 98920,
+          "written_out": 197,
+          "of_which_unseen": 123,
+          "cost": 17071,
+          "cost_so_far": 686076,
+          "carried": 478,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>; python -I -c \" import json,math json.load(open('verdict.json',encoding='utf-8')); print('ok') L=[...",
+              "written": 74,
+              "answered": 5
+            }
+          ]
+        },
+        {
+          "n": 57,
+          "context": 104230,
+          "new": 355,
+          "read_again": 103875,
+          "written_out": 108,
+          "of_which_unseen": 47,
+          "cost": 11370,
+          "cost_so_far": 697447,
+          "carried": 283,
+          "steps": [
+            {
+              "tool": "Edit",
+              "kind": "write code",
+              "what": "<run>\\verdict.json",
+              "written": 61,
+              "answered": 36
+            }
+          ]
+        },
+        {
+          "n": 58,
+          "context": 104457,
+          "new": 229,
+          "read_again": 104228,
+          "written_out": 290,
+          "of_which_unseen": 0,
+          "cost": 12158,
+          "cost_so_far": 709605,
+          "carried": 0,
+          "steps": []
+        }
+      ],
+      "how": "context, new, read_again and how far the context grew are the run's own records. written_out a request is its growth less its answers (characters / 4), scaled to the run's exact total; of_which_unseen is that less the visible text (thinking). cost is what the request read and wrote, weighted; carried is what reading again what it added cost at every later request (start.carried: the same for what every request starts from). reading + writing is in_the_ledger"
+    }
+  }
+}

@@ -14,7 +14,7 @@ rounds.
 ## Right now (2026-11-21)
 
 - **By hand only, and lean.** The owner: "Only by hand working", then "For now we'll stick to 1
-  agent". No subagent and no paid measurement (`examen leverage` builders and judges) until they
+  agent". No subagent, and no paid measurement (`examen leverage` builders and judges) beyond what they ask for, until they
   say. When subagents come back: one or two at a time, and always with `model` passed (Opus for
   reviews and builders, Sonnet for picture checks; never Fable).
 - **One line, gated.** The working branch `m6-first-hour` holds everything: the shape library
@@ -30,6 +30,30 @@ rounds.
   run that passed: that points at the machine and not at the window's loop, and it is a
   reading, not a proof. Run the checks whole again on a quiet machine before calling the
   window's loop clean.
+- **The six-job comparison of 2026-11-21 (the owner asked for it; the paid runs are done): the
+  engine costs more on every job, 3D included.** Weighted tokens, engine over plain: small
+  1.77, medium 1.22, change 1.18; small3d 1.62, medium3d 1.71, change3d 1.24, with the same
+  checks passed but for medium3d (22 of 24 against 23.5)
+  ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), the results of 2026-11-21; the 3D jobs
+  are `evals/leverage-3d`). The cause read from the runs: three times the requests, each
+  reading the whole context again; the requests go to learning the engine, to probing what its
+  physics will do (about forty runs that read a few numbers), and to a wrapper that turns the
+  brief's command line into the engine's. **The owner is rethinking the whole approach
+  ("I need to re-think the whole thing") and nothing further is built until they say.** On the
+  table, proposed by Claude and not agreed: (1) many experiments in one request (a checks file
+  with values at chosen ticks, one command that builds, runs it and says only what changed);
+  (2) a run that speaks the game's own inputs and state, so no wrapper; (3) starting from the
+  nearest working game (`specula new --from`); (4) words that do what a brief means (a platform
+  that carries, a push of a stated acceleration) and the bridge's fault reproduced by hand
+  (a ball on a kinematic body moved at twice its speed: a judge's finding, not yet proved);
+  (5) rules of thumb on the world page. The owner asked whether hooks could replace turns:
+  yes for Claude Code (session start, after a save, before stopping), written by `specula new`
+  as data and calling `specula` itself; other harnesses need the same through `AGENTS.md`, the
+  one command, and results attached to the next answer.
+- **After `2da88f08`, not gated** (suites and clippy passed): `53985a95` (a module pushes a
+  body and tells it to bounce: `Cx::push`, `Cx::place_at_rest`, `Spawn::bounce`, `friction`),
+  `7f2167f8` (the 3D jobs). The mends are on the engine without the library (`C:/sf-base`,
+  `4eb20e9e`), without the push words; that arm is not measured again.
 - **Nothing is pushed since `origin/main` = `7345f320`.** Push only when the owner asks.
 - **Part 4, the libraries and everything after them wait** behind what the owner set on
   2026-11-20, when a measured comparison showed the shape library made four props no cheaper and
