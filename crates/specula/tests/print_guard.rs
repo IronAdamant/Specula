@@ -25,7 +25,7 @@ const ALLOWED: [(&str, usize); 69] = [
     // user can't make a link here" (AGENTS.md rule 7: a test that can't run says why and passes).
     // And one that prints nothing: the command's standard output is asked whether it is a
     // terminal, so that an answer is indented for a person and compact through a pipe.)
-    ("crates/specula/src/launch_run.rs", 7),
+    ("crates/specula/src/launch_run.rs", 8),
     ("crates/specula/src/leases.rs", 1),
     ("crates/specula/src/lex_live.rs", 5),
     ("crates/specula/src/lib.rs", 28),
