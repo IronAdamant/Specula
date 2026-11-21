@@ -192,6 +192,9 @@ pub(crate) struct Shared {
     pub store_hash: std::cell::Cell<Option<u64>>,
 }
 
+/// Most parameters one run is given.
+pub const MAX_PARAMS: usize = 32;
+
 /// Most RNG streams one module keeps: a new name past it is refused with `rng_full`. Save games
 /// write at most this many (the handler allows no more) and read at most this many, so a save
 /// always loads.
@@ -330,6 +333,7 @@ struct CallParts<'a> {
     log: &'a mut VecDeque<LogLine>,
     pending_events: usize,
     fp: &'a mut FpLog,
+    params: &'a BTreeMap<String, f64>,
 }
 
 /// Runs one call of `code` as module `name`, with the world recorded in full. On failure the
@@ -349,6 +353,7 @@ fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input:
         pending_events: parts.pending_events,
         sounds: Vec::new(),
         log: parts.log,
+        params: parts.params,
         state_undo: Vec::new(),
         rng_undo: Vec::new(),
         traced: 0,
@@ -409,6 +414,10 @@ pub struct LogicHost {
     sounds_dropped: u64,
     /// Builders' modules waiting for the owner or a granted lead ([`proposals`]).
     pub(crate) proposals: proposals::Proposals,
+    /// Numbers a run was given for its rules to read (`specula run --set friction=0.3`;
+    /// `Cx::param`): the run's, as its script and its seed are, set once before a module loads
+    /// and never changed by one. A window's game has none, and every `param` answers its default.
+    params: BTreeMap<String, f64>,
 }
 
 impl Default for LogicHost {
@@ -426,6 +435,7 @@ impl Default for LogicHost {
             pads: None,
             pad_override: None,
             staged: None,
+            params: BTreeMap::new(),
             hash_scratch: Vec::new(),
             module_events: Vec::new(),
             fp: FpLog::default(),
@@ -529,6 +539,11 @@ fn describe(code: &ModuleCode, tick: u64) -> Result<(Info, ModuleInput), WorldEr
 }
 
 impl LogicHost {
+    /// The numbers this run's rules may read (`Cx::param`). Set before a module loads.
+    pub fn set_params(&mut self, params: impl IntoIterator<Item = (String, f64)>) {
+        self.params = params.into_iter().take(MAX_PARAMS).collect();
+    }
+
     pub fn new() -> LogicHost {
         LogicHost::default()
     }
@@ -576,10 +591,11 @@ impl LogicHost {
         mover: &'a mut Box<dyn CharacterMover>,
         log: &'a mut VecDeque<LogLine>,
         fp: &'a mut FpLog,
+        params: &'a BTreeMap<String, f64>,
         pending: usize,
         name: &str,
     ) -> CallParts<'a> {
-        CallParts { shared: shared.entry(name.to_owned()).or_default(), mover: &mut **mover, log, pending_events: pending, fp }
+        CallParts { shared: shared.entry(name.to_owned()).or_default(), mover: &mut **mover, log, pending_events: pending, fp, params }
     }
 
     /// An event from the engine itself (`from: "engine"`), delivered to every module with the
@@ -677,7 +693,7 @@ impl LogicHost {
             Phase::Hook => "hook",
             Phase::Stop => "stop",
         };
-        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, self.pending_events.len(), name);
+        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, &self.params, self.pending_events.len(), name);
         let result = match invoke(&slot.code, name, parts, call, input, world, tick, what) {
             Ok(mut done) => match commit(world, mark, &agent, phase) {
                 Ok(()) => {
@@ -751,7 +767,7 @@ impl LogicHost {
         let mut stop_error = None;
         if let Some(old) = self.slots.get(&name).filter(|s| s.disabled.is_none()) {
             let stop = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("reason", "reload");
-            let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, self.pending_events.len(), &name);
+            let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, &self.params, self.pending_events.len(), &name);
             match invoke(&old.code, &name, parts, entry::STOP, &stop, world, tick, "stop") {
                 Ok(done) => {
                     events.extend(done.events);
@@ -775,7 +791,7 @@ impl LogicHost {
             .with("reloaded", reloaded)
             .with("generation", generation);
         let t1 = Instant::now();
-        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, self.pending_events.len() + events.len(), &name);
+        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, &self.params, self.pending_events.len() + events.len(), &name);
         let started = invoke(&code, &name, parts, entry::START, &start, world, tick, "start");
         let start_ms = t1.elapsed().as_secs_f64() * 1000.0;
         // 3. Commit, or put everything back.

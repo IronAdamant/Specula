@@ -42,6 +42,7 @@ remembers.**
 | 12 | What a first build is not asked for: the guide and the brief, cut (the fifth pass) | built, reviewed, gated; measured on `9450e0f4` in a clean shell (LEVERAGE.md, "Results (the fifth pass)": 1.85, 1.28 and 1.25 times; the gap is before the first line of code) |
 | 13 | The first meeting: one read that is enough, and a random stream that begins again (the sixth pass) | built, reviewed, gated; measured on `57f515d0` (LEVERAGE.md, "Results (2026-11-17: the sixth pass, the first meeting)"): 1.61, 1.22 and 1.47 times the plain build, and a quarter less spent before the first file |
 | 14 | What a second reading of the six-job comparison asked for: the pages say what physics will do, a slab that carries, a run that speaks a brief and is read on its way (2026-11-21) | built by hand, not reviewed, not measured |
+| 15 | What the engine looks for itself: a number of the rules' given by a run (`Cx::param`, `--set`), a number tuned to a condition (`specula tune`), a script of inputs found (`specula find`) (2026-11-21) | built by hand, not reviewed; `search_check` holds it end to end |
 
 ## 1. The SDK comes from the engine
 
@@ -592,14 +593,79 @@ between the brief's words and the engine's, and to reading one number a run. Wha
   and `--keys` only the lines asked for. The state at the end is the same with or without it
   (tried by hand: bit for bit).
 
-Not built in this pass: a search the engine makes itself (an input script that reaches a condition,
-a parameter that meets one), and results handed to a builder without a request (hooks). Not
-measured: no paid run has been made on it.
+Not built in this pass: results handed to a builder without a request (hooks). The searches the
+engine makes itself are section 15.
 
 **What it is made of**: `specula-physics` (`space.rs`, `carry`; the snapshot's version 4),
 `physics.rs` (`Collider::carries`), `specula-sdk` (`Spawn::carries`), `scaffold.rs` (the two pages),
 `specula-ludus` (`GameFile::inputs`), `script_run.rs` (`in_game_words`, `of_world`, `--at`, `--keys`),
 `module_sounds.rs` (the order of what was asked for), `launch_cli.rs`.
+
+## 15. What the engine looks for itself (2026-11-21)
+
+The owner, on the two kinds of search: "Then we'll do both. And each use must be determined by you,
+or your builders, depending on a task." Three commands, none of which a game needs to be built, and
+no program of a builder's between them and the game. In the comparison both arms wrote such
+programs: the engine's builders a player over `--follow` (nine requests and about 135,000 weighted
+tokens in one run of the 3D game) and a tracer of their own; the plain builders a `bot.py` and a
+`search.py` over their own simulation.
+
+- **A number of the rules', given by a run.** `cx.param("grip", 0.6)?` reads a number a headless
+  run may set (`specula run --set grip=0.3`) and answers the rules' own default when it sets none: a
+  player's game has none set and plays as written. The numbers are the run's, as its script and
+  its seed are; a module cannot change them, reading one changes nothing, and a save does not keep
+  them (a search goes back to saves within one run, where they are the same). `--set grip=0.2,0.4,0.8`
+  plays the run once for each value and prints a line each (`{"set": .., "state": ..}`).
+- **`specula tune`**: `--vary grip=0.1..1 --until "ball.x>3"` finds where a condition over the
+  report's lines begins to hold at the run's end, by halving the range. Every try is a whole run
+  of its own from the game's start (about four seconds here), so a value found is one a plain run
+  plays again. It needs the condition to hold at one end and not at the other, and says so when it
+  holds at both or at neither; a condition that comes and goes inside the range is not one a
+  halving finds.
+- **`specula find`**: `--until "won==true" --words right,left,up,down,none --rise score` finds a
+  script of inputs that reaches a condition. It keeps the situations it has reached, each as a save
+  of the whole game with the script that led there, told apart by a cell (the report's lines that
+  say where the game is, rounded: `--cells`); it goes back to one (three times in four to one that
+  stands at the most of what `--rise` names; among those, to one tried less), plays on a few
+  stretches with an input held through each, and keeps what is new or a better way to a cell it
+  knows. `--never` names what must not happen on the way (a life lost, a fall): such a situation
+  is not kept. This is the first phase of Go-Explore (Ecoffet and others, "Go-Explore: a New
+  Approach for Hard-Exploration Problems", 2019). The search's choices come from the run's seed:
+  the same command finds the same script.
+
+**What it rests on, and how that is held.** A game put back from a save must play on as the game
+that was saved: the world, the modules' state and random streams, physics' hidden state, the
+project shell. So a script found is played again from the search's first situation, straight
+through, before it is answered, and one that no longer reaches the condition is answered as the
+fault it is (`not_reproduced`). And `search_check` (a live check, in Rust) takes the script a
+search answered, plays it in a run of its own, and holds the state against the search's: equal to
+the last bit, on a game with rigid bodies. The same check holds the sweep, the tuning, a range the
+condition holds nowhere in, and that the same search finds the same script.
+
+**What it cost to find, by hand** (a ball, a board 8 m square, three coins up to 5.4 m apart): the
+script was found after 3,295 stretches of 15 ticks, in 29 seconds, at about 10 ms a stretch. Two
+things had to be mended on the way. With no word for what is worthless, a ball that had left the
+board fell for ever through cells that were all new, and filled what the search may keep: hence
+`--never`, and the worst kept situation gives way when the search is full. And picking among all
+situations alike never played on from the best: hence the three picks in four.
+
+**What it does not do.** It searches by what the report prints, so a game whose report does not
+say where it stands gives it nothing to tell situations apart by. A sound asked for is no part of
+a save: the line `run.sounds` is left out of the state a search answers (a run of the script says
+it). It gives one input a stretch; a game that needs two things held at once takes a word that
+joins them (`up+shoot`) among `--words`. A press of the interface in `--words` is given again each
+stretch.
+
+**Found while trying it cold.** A module that built with a warning and did not load was answered
+as "did not build", with no error to read (`specula run` read the warnings as the failure); it is
+answered as the load's failure now, with the reason. The guide gave an action's fields and not the
+file's own form (`{"format": "specula.input.v1", "actions": [..]}`), and an actions file written
+from the page alone was an array; the page says the form now.
+
+**What it is made of**: `script_run/find.rs` (the search), `script_run.rs` (`Until`, the spec's
+`set` and `find`), `launch_run.rs` (`tune_game`, a run for each value), `logic` (`set_params`, the
+request `param`), `specula-sdk` (`Cx::param`), `launch_cli.rs`, `scaffold.rs` (the guide's "When
+the engine should look for you"), `tools/examen/src/native/search.rs` (`search_check`).
 
 ## As built
 

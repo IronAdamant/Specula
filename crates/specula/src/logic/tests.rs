@@ -957,3 +957,42 @@ fn a_push_keeps_the_bodys_spin_and_a_placing_takes_it() {
     r.ticks(1);
     assert_eq!(r.state("pusher", "refused").as_str(), Some("no_body"));
 }
+
+/// Keeps what two parameters read.
+#[derive(Default)]
+struct Tuned;
+impl Module for Tuned {
+    fn describe(&self) -> ModuleInfo {
+        ModuleInfo { name: "tuned", version: "1", description: "", order: 0, actions: "", hooks: Vec::new() }
+    }
+    fn start(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        // (Read in `start` too: a run's numbers are there before a module loads.)
+        let grip = cx.param("grip", 0.6)?;
+        cx.set_state("grip_at_start", grip)
+    }
+    fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        let (grip, reach) = (cx.param("grip", 0.6)?, cx.param("reach", 2.0)?);
+        cx.set_state("grip", grip)?;
+        cx.set_state("reach", reach)
+    }
+}
+
+/// `Cx::param` answers the number a run was given, and the rules' own default when it was
+/// given none; reading one changes nothing (a game with no parameter set plays as written).
+#[test]
+fn a_runs_parameter_is_read_by_the_rules_and_the_default_stands_without_one() {
+    let read = |r: &Run, key: &str| r.state("tuned", key).as_f64();
+    let mut plain = Run::new();
+    plain.load(ModuleCode::of::<Tuned>()).unwrap();
+    plain.ticks(1);
+    assert_eq!((read(&plain, "grip_at_start"), read(&plain, "grip"), read(&plain, "reach")), (Some(0.6), Some(0.6), Some(2.0)));
+    let mut set = Run::new();
+    set.host.set_params([("grip".to_owned(), 0.25)]);
+    set.load(ModuleCode::of::<Tuned>()).unwrap();
+    set.ticks(1);
+    assert_eq!((read(&set, "grip_at_start"), read(&set, "grip"), read(&set, "reach")), (Some(0.25), Some(0.25), Some(2.0)));
+    // No more are taken than a run may give.
+    let mut many = Run::new();
+    many.host.set_params((0..100).map(|i| (format!("p{i}"), 1.0)));
+    assert_eq!(many.host.params.len(), super::MAX_PARAMS);
+}

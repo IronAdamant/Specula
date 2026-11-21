@@ -33,6 +33,9 @@ use specula_ludus::game::{GameFile, View};
 use specula_protocol::{Content, SessionInfo, ToolHandler, ToolOutput};
 
 use crate::startgate::StartGate;
+
+mod find;
+pub use find::{Find, DEFAULT_FIND_TRIES, DEFAULT_STEP, MAX_SWEEP, MAX_TRIES};
 use crate::tools::{Command, TimeOp, Tools};
 
 /// Most ticks one run plays (at 60 Hz, about four and a half hours of game).
@@ -82,6 +85,10 @@ pub struct Spec {
     pub at: Vec<u64>,
     /// The report's lines that are printed, by name (`--keys ball,score`); empty: all of them.
     pub keys: Vec<String>,
+    /// Numbers the rules read with `Cx::param`, for this run (`--set grip=0.3`).
+    pub set: Vec<(String, f64)>,
+    /// `specula find`: after the script, the engine looks for inputs that reach a condition.
+    pub find: Option<Find>,
     /// Where the answer goes.
     pub out: PathBuf,
 }
@@ -93,6 +100,19 @@ pub const MAX_AT: usize = 256;
 pub fn check_at(at: &[u64]) -> Result<(), String> {
     if at.len() > MAX_AT || at.iter().any(|t| *t > MAX_TICKS) || at.windows(2).any(|w| w[1] <= w[0]) {
         return Err(format!("at: at most {MAX_AT} ticks, each later than the one before (90,180,270), none past {MAX_TICKS}"));
+    }
+    Ok(())
+}
+
+/// A run's parameters: at most [`crate::logic::MAX_PARAMS`], each a name (a letter, then
+/// letters, digits and `_`, 64 at most) and a number.
+pub fn check_set(set: &[(String, f64)]) -> Result<(), String> {
+    let name_ok = |n: &str| n.len() <= 64 && n.starts_with(|c: char| c.is_ascii_alphabetic()) && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if set.len() > crate::logic::MAX_PARAMS || set.iter().any(|(name, value)| !name_ok(name) || !value.is_finite()) {
+        return Err(format!("set: at most {} parameters, each NAME=NUMBER (grip=0.3), a name being a letter then letters, digits and _", crate::logic::MAX_PARAMS));
+    }
+    if let Some((name, _)) = set.iter().enumerate().find(|(i, (name, _))| set[..*i].iter().any(|(n, _)| n == name)).map(|(_, s)| s) {
+        return Err(format!("set: '{name}' is given twice"));
     }
     Ok(())
 }
@@ -128,6 +148,12 @@ impl Spec {
         if !self.keys.is_empty() {
             j.set("keys", Json::arr(self.keys.iter().map(|k| Json::from(k.as_str()))));
         }
+        if !self.set.is_empty() {
+            j.set("set", Json::Obj(self.set.iter().map(|(name, value)| (name.clone(), Json::Num(*value))).collect()));
+        }
+        if let Some(find) = &self.find {
+            j.set("find", find.to_json());
+        }
         j
     }
 
@@ -155,6 +181,11 @@ impl Spec {
             Some(keys) => keys.as_array().and_then(|k| k.iter().map(|k| k.as_str().map(str::to_owned)).collect()).ok_or("keys: a list of names")?,
         };
         check_keys(&keys)?;
+        let set: Vec<(String, f64)> = match j.get("set") {
+            None => Vec::new(),
+            Some(set) => set.as_object().and_then(|s| s.iter().map(|(name, value)| value.as_f64().map(|v| (name.clone(), v))).collect()).ok_or("set: an object of numbers")?,
+        };
+        check_set(&set)?;
         let side = |i: usize| j.get("size").and_then(Json::as_array).and_then(|s| s.get(i)).and_then(Json::as_u64).and_then(|n| u32::try_from(n).ok()).filter(|n| FRAME_SIDE.contains(n));
         let size = match j.get("size") {
             None => (960, 540),
@@ -172,8 +203,100 @@ impl Spec {
             follow: j.get("follow").and_then(Json::as_bool).unwrap_or(false),
             at,
             keys,
+            set,
+            find: j.get("find").map(Find::from_json).transpose()?,
             out: j.get("out").and_then(Json::as_str).map(PathBuf::from).ok_or("out: where the answer is written")?,
         })
+    }
+}
+
+/// What a search is told to reach, or a tuning to hold: comparisons over the report's lines,
+/// all of which must hold. `screen==won`, `score>=30`, `ball.y<-5` (a part of a line that is
+/// an object), `screen==won&&lives>=2`. A value is a number, `true`, `false`, or a word.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Until(pub Vec<(String, Op, Json)>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Op {
+    Eq,
+    Ne,
+    Ge,
+    Le,
+    Gt,
+    Lt,
+}
+
+const OPS: [(&str, Op); 6] = [("==", Op::Eq), ("!=", Op::Ne), (">=", Op::Ge), ("<=", Op::Le), (">", Op::Gt), ("<", Op::Lt)];
+/// Most comparisons one condition joins.
+const MAX_TERMS: usize = 8;
+
+impl Until {
+    pub fn parse(text: &str) -> Result<Until, String> {
+        let shape = || format!("'{}' is not a condition: LINE OP VALUE with == != >= <= > <, several joined by && (screen==won&&score>=30)", text.chars().take(80).collect::<String>());
+        let mut terms = Vec::new();
+        for term in text.split("&&").map(str::trim) {
+            let (at, (sign, op)) = OPS.iter().filter_map(|o| term.find(o.0).map(|at| (at, *o))).min_by_key(|(at, (sign, _))| (*at, std::cmp::Reverse(sign.len()))).ok_or_else(shape)?;
+            let (name, value) = (term[..at].trim(), term[at + sign.len()..].trim());
+            if name.is_empty() || value.is_empty() || name.len() > 128 || value.len() > 128 || name.chars().any(char::is_whitespace) {
+                return Err(shape());
+            }
+            let value = match value {
+                "true" => Json::Bool(true),
+                "false" => Json::Bool(false),
+                v => v.parse::<f64>().ok().filter(|n| n.is_finite()).map_or_else(|| Json::from(v), Json::Num),
+            };
+            if !matches!(op, Op::Eq | Op::Ne) && value.as_f64().is_none() {
+                return Err(format!("'{term}': only numbers are compared with > and <"));
+            }
+            terms.push((name.to_owned(), op, value));
+        }
+        if terms.is_empty() || terms.len() > MAX_TERMS {
+            return Err(shape());
+        }
+        Ok(Until(terms))
+    }
+
+    pub fn text(&self) -> String {
+        let sign = |op: Op| OPS.iter().find(|o| o.1 == op).map_or("", |o| o.0);
+        let word = |v: &Json| v.as_str().map_or_else(|| v.to_string(), str::to_owned);
+        self.0.iter().map(|(name, op, value)| format!("{name}{}{}", sign(*op), word(value))).collect::<Vec<_>>().join("&&")
+    }
+
+    /// The value a name reads in a report: a line, or a part of a line that is an object
+    /// (`ball.y`). A line whose own name has a dot in it is found first.
+    pub fn read<'r>(report: &'r Json, name: &str) -> Option<&'r Json> {
+        if let Some(v) = report.get(name) {
+            return Some(v);
+        }
+        let (line, part) = name.split_once('.')?;
+        part.split('.').try_fold(report.get(line)?, |v, key| v.get(key))
+    }
+
+    /// Whether every comparison holds of `report`. A line the report has not, or one that is
+    /// not a number where numbers are compared, holds nothing but `!=`.
+    pub fn holds(&self, report: &Json) -> bool {
+        self.0.iter().all(|(name, op, want)| {
+            let got = Until::read(report, name);
+            let same = match (got, want) {
+                (Some(g), w) if g.as_f64().is_some() && w.as_f64().is_some() => g.as_f64() == w.as_f64(),
+                (Some(g), w) => g == w,
+                (None, _) => false,
+            };
+            let numbers = got.and_then(Json::as_f64).zip(want.as_f64());
+            match op {
+                Op::Eq => same,
+                Op::Ne => !same,
+                Op::Ge => numbers.is_some_and(|(g, w)| g >= w),
+                Op::Le => numbers.is_some_and(|(g, w)| g <= w),
+                Op::Gt => numbers.is_some_and(|(g, w)| g > w),
+                Op::Lt => numbers.is_some_and(|(g, w)| g < w),
+            }
+        })
+    }
+
+    /// The names it reads that `report` has no value for: said before a search is begun.
+    pub fn unread(&self, report: &Json) -> Vec<String> {
+        self.0.iter().filter(|(name, _, _)| Until::read(report, name).is_none()).map(|(name, _, _)| name.clone()).collect()
     }
 }
 
@@ -388,9 +511,13 @@ impl Run<'_> {
         if let (false, Some(name)) = (out.is_error, name) {
             return Ok(name.to_owned());
         }
-        // A build that failed: how many errors, and the first of them, each where it is.
+        // A build that failed: how many errors, and the first of them, each where it is. One
+        // that built with warnings and did not load is a load that failed, and says why (it
+        // was said as "did not build", with no error to read, until a game tried by hand on
+        // 2026-11-21 had its actions file wrong and a warning in its rules).
+        let has_errors = |all: &[Json]| all.iter().any(|d| d.get("level").and_then(Json::as_str) != Some("warning"));
         let mut e = match answer.get("diagnostics").and_then(Json::as_array) {
-            Some(all) if !all.is_empty() => {
+            Some(all) if has_errors(all) || (!all.is_empty() && answer.get("reload_error").is_none()) => {
                 let errors = all.iter().filter(|d| d.get("level").and_then(Json::as_str) != Some("warning"));
                 let brief = |d: &Json| {
                     let mut one = Json::obj::<&str>([]);
@@ -796,9 +923,12 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     // The state at each tick of `--at`, in order: read as the run passes it, with the inputs
     // of that tick done first, exactly as a run that ended there would read it.
     let mut on_the_way: Vec<Json> = Vec::new();
-    let mut stops = spec.at.iter().copied().filter(|t| *t < spec.ticks).peekable();
+    // (A search begins where the script's last input leaves the game: the run's ticks are
+    // then the most a script found may be long.)
+    let play_to = if spec.find.is_some() { spec.inputs.last().map_or(0, |(at, _)| *at) } else { spec.ticks };
+    let mut stops = spec.at.iter().copied().filter(|t| *t < play_to).peekable();
     loop {
-        let stop = stops.peek().copied().unwrap_or(spec.ticks);
+        let stop = stops.peek().copied().unwrap_or(play_to);
         while tick < stop {
             while let Some((_, word)) = spec.inputs.get(next).filter(|(at, _)| *at <= tick) {
                 run.input(word)?;
@@ -817,6 +947,10 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
             break;
         }
         on_the_way.push(run.stand(&game, tick, spec.seed)?.report);
+    }
+    if let Some(asked) = &spec.find {
+        let answer = find::find(&mut run, &game, spec, asked, tick, &spec.inputs)?;
+        return Ok(Json::obj([("report", answer), ("searched", Json::Bool(true))]));
     }
 
     let mut stand = run.stand(&game, tick, spec.seed)?;
@@ -1113,9 +1247,9 @@ mod tests {
 
     #[test]
     fn a_spec_is_read_back_as_it_was_written() {
-        let spec = Spec { ticks: 600, seed: Some(7), inputs: vec![(0, "enter".into()), (5, "up".into())], frame: Some(PathBuf::from("out/f.png")), size: (800, 480), follow: true, at: vec![90, 180], keys: vec!["ball".into()], out: PathBuf::from("answer.json") };
+        let spec = Spec { ticks: 600, seed: Some(7), inputs: vec![(0, "enter".into()), (5, "up".into())], frame: Some(PathBuf::from("out/f.png")), size: (800, 480), follow: true, at: vec![90, 180], keys: vec!["ball".into()], set: vec![("grip".into(), 0.25)], find: None, out: PathBuf::from("answer.json") };
         assert_eq!(Spec::from_json(&spec.to_json()).unwrap(), spec);
-        let bare = Spec { ticks: 0, seed: None, inputs: Vec::new(), frame: None, size: (960, 540), follow: false, at: Vec::new(), keys: Vec::new(), out: PathBuf::from("a") };
+        let bare = Spec { ticks: 0, seed: None, inputs: Vec::new(), frame: None, size: (960, 540), follow: false, at: Vec::new(), keys: Vec::new(), set: Vec::new(), find: None, out: PathBuf::from("a") };
         assert_eq!(Spec::from_json(&Json::parse(r#"{"ticks": 0, "out": "a"}"#).unwrap()).unwrap(), bare);
         let bad = |text: &str| Spec::from_json(&Json::parse(text).unwrap()).unwrap_err();
         assert!(bad(r#"{"ticks": 2000000, "out": "a"}"#).contains("ticks"));
@@ -1125,6 +1259,22 @@ mod tests {
         assert!(bad(r#"{"ticks": 9, "out": "a", "at": [5, 10]}"#).contains("later than the run"));
         assert!(bad(r#"{"ticks": 9, "out": "a", "keys": ["a b"]}"#).contains("keys"));
         assert!(bad(r#"{"ticks": 1, "out": "a", "inputs": [[5, "up"], [1, "down"]]}"#).contains("order"));
+    }
+
+    #[test]
+    fn a_condition_is_comparisons_over_the_reports_lines() {
+        let report = Json::parse(r#"{"screen": "won", "score": 30, "over": true, "ball": {"x": 1.5, "y": -6}, "a.b": 2}"#).unwrap();
+        let holds = |text: &str| Until::parse(text).unwrap().holds(&report);
+        assert!(holds("screen==won") && holds("score>=30") && holds("score == 30") && holds("over==true") && holds("ball.y<-5") && holds("a.b==2"));
+        assert!(holds("screen==won&&score>=30 && ball.x>1") && !holds("screen==won&&score>30"));
+        assert!(!holds("screen==lost") && holds("screen!=lost") && !holds("score<30") && holds("score<=30") && !holds("ball.x<=1.4"));
+        // A line the report has not holds nothing but "is not".
+        assert!(!holds("lives>=1") && !holds("lives==3") && holds("lives!=3"));
+        assert_eq!(Until::parse("lives>=1&&ball.z<0").unwrap().unread(&report), ["lives", "ball.z"]);
+        assert_eq!(Until::parse(" screen == won && score>=30").unwrap().text(), "screen==won&&score>=30");
+        for bad in ["", "screen", "screen=won", "==won", "screen==", "screen>won", "a==1&&"] {
+            assert!(Until::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

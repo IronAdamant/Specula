@@ -127,6 +127,11 @@ pub fn report_in(root: &Path, data: Option<&Path>) -> R<String> {
     if given.is_none() && recorded.len() > 1 {
         seen.push(format!("- these runs were prepared with more than one baseline ({}); the report measures against {baseline} (`--data FOLDER` names another)", recorded.join(", ")));
     }
+    // A builder told the lead's choice for its job is not a cold builder: said, with which.
+    let led: Vec<String> = runs.iter().filter(|(_, r, _)| r.get("led").and_then(Json::as_bool) == Some(true)).filter_map(|(_, r, _)| Some(format!("{}-{}-{}", r.get("job")?.as_str()?, r.get("arm")?.as_str()?, r.get("n").and_then(Json::as_f64).map_or(0, |n| n as u64)))).collect();
+    if !led.is_empty() {
+        seen.push(format!("- {} of these builders' briefs carry the lead's choice for the job (which of the engine's aids fit it, under \"From the lead\"): they are directed builders, not cold ones ({})", led.len(), led.join(", ")));
+    }
     let default_weights = || given.clone().or_else(|| settings().ok()).and_then(|s| s.get("token_weights").cloned()).unwrap_or(Json::Null);
     let mut weight_sets: BTreeMap<String, Json> = BTreeMap::new();
     for (_, r, _) in &runs {

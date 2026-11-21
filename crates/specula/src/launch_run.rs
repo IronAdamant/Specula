@@ -264,6 +264,11 @@ pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
         }
         Cli::Open { which, front, engine_args } => open(ctx, &which, front, &engine_args),
         Cli::Run(args) => run_game(ctx, &args),
+        Cli::Tune(args) => tune_game(ctx, &args),
+        Cli::Find(args) => match game_folder(ctx, &args.which) {
+            Ok(folder) => run_in(ctx, &folder, &args, Kept::AsAsked),
+            Err(no) => no,
+        },
         Cli::Check(args) => check_game(ctx, &args),
         Cli::Stop { target } => {
             let (list, _) = ctx.store.load();
@@ -666,11 +671,115 @@ const RUN_LOCK_WAIT: Duration = Duration::from_secs(90);
 /// `specula run`: an engine of this run's own plays the script with no window and ends; its
 /// answer is read from a file in a folder of this run's own, which goes when it is read.
 fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
-    match game_folder(ctx, &args.which) {
-        Ok(folder) => run_in(ctx, &folder, args, Kept::AsAsked),
-        Err(no) => no,
+    let folder = match game_folder(ctx, &args.which) {
+        Ok(folder) => folder,
+        Err(no) => return no,
+    };
+    // One parameter with several values: the run is played once for each, a line each.
+    let Some(swept) = args.set.iter().position(|(_, values)| values.len() > 1) else { return run_in(ctx, &folder, args, Kept::AsAsked) };
+    let mut lines = Vec::new();
+    let mut failed = false;
+    for value in &args.set[swept].1 {
+        let mut one = args.clone();
+        one.set[swept].1 = vec![*value];
+        let (code, answer) = run_in(ctx, &folder, &one, Kept::AsAsked);
+        failed |= code != 0;
+        let set = Json::obj([(args.set[swept].0.as_str(), Json::Num(*value))]);
+        match (code, answer.get(RUN_AT).and_then(Json::as_array)) {
+            (0, Some(states)) => {
+                lines.extend(states.iter().map(|state| Json::obj([("set", set.clone()), ("state", state.clone())])));
+                if answer.get(RUN_AT_IS_ALL).is_none() {
+                    lines.push(Json::obj([("set", set), ("state", answer.get(RUN_REPORT).cloned().unwrap_or(Json::Null))]));
+                }
+            }
+            (0, None) => lines.push(Json::obj([("set", set), ("state", answer.get(RUN_REPORT).cloned().unwrap_or(Json::Null))])),
+            _ => {
+                // (A run that could not be made says why, and the values after it are not tried:
+                // a build that fails fails for every one.)
+                lines.push(Json::obj([("set", set), ("error", answer)]));
+                break;
+            }
+        }
+    }
+    (i32::from(failed), Json::obj([(CHECK_LINES, Json::Arr(lines))]))
+}
+
+/// The last state of a run made for a search, or why there is none.
+fn end_state(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs) -> Result<Json, Json> {
+    match run_in(ctx, folder, args, Kept::AsAsked) {
+        (0, answer) => Ok(answer.get(RUN_REPORT).cloned().unwrap_or(Json::Null)),
+        (_, why) => Err(why),
     }
 }
+
+/// `specula tune`: the value of one parameter at which a condition begins to hold, looked for
+/// by halving the range. Each try is a whole run of its own, from the game's start, with that
+/// value: nothing of one try is in the next, and a value found is one a plain `specula run
+/// --set` plays again. It needs the condition to hold at one end of the range and not at the
+/// other; where it holds at both, or at neither, it says so with the two states, and looks no
+/// further (a condition that comes and goes inside the range is not one a halving finds).
+fn tune_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
+    let folder = match game_folder(ctx, &args.which) {
+        Ok(folder) => folder,
+        Err(no) => return no,
+    };
+    let (Some((name, low, high)), Some(until)) = (args.vary.clone(), args.until.clone()) else { return refusal("usage", "specula tune needs --vary and --until") };
+    let tries = args.tries.unwrap_or(DEFAULT_TUNE_TRIES).max(2);
+    let mut lines = Vec::new();
+    let at = |value: f64, lines: &mut Vec<Json>| -> Result<bool, Json> {
+        let mut one = args.clone();
+        one.vary = None;
+        one.until = None;
+        one.set.push((name.clone(), vec![value]));
+        let state = end_state(ctx, &folder, &one)?;
+        if let Some(line) = until.unread(&state).first() {
+            let mut e = refusal("unknown_line", format!("'{line}' is read by --until and the game's report has no such line (game.json, \"report\")")).1;
+            e.set("state", state);
+            return Err(e);
+        }
+        let holds = until.holds(&state);
+        lines.push(Json::obj([("set", Json::obj([(name.as_str(), Json::Num(value))])), ("holds", Json::Bool(holds)), ("state", state)]));
+        Ok(holds)
+    };
+    let ends = at(low, &mut lines).and_then(|a| at(high, &mut lines).map(|b| (a, b)));
+    let (mut holds_at, mut fails_at) = match ends {
+        Err(why) => {
+            lines.push(why);
+            return (1, Json::obj([(CHECK_LINES, Json::Arr(lines))]));
+        }
+        Ok((true, false)) => (low, high),
+        Ok((false, true)) => (high, low),
+        Ok((both, _)) => {
+            let words = if both { "holds at both ends of the range: every value tried is one that does" } else { "holds at neither end of the range: widen it, or the condition is not one this number decides" };
+            lines.push(Json::obj([("found", Json::Bool(false)), ("until", Json::from(until.text().as_str())), ("why", Json::from(format!("the condition {words}").as_str())), ("tries", Json::from(lines.len() as u64))]));
+            return (i32::from(!both), Json::obj([(CHECK_LINES, Json::Arr(lines))]));
+        }
+    };
+    while (lines.len() as u64) < tries {
+        let middle = (holds_at + fails_at) / 2.0;
+        match at(middle, &mut lines) {
+            Ok(true) => holds_at = middle,
+            Ok(false) => fails_at = middle,
+            Err(why) => {
+                lines.push(why);
+                return (1, Json::obj([(CHECK_LINES, Json::Arr(lines))]));
+            }
+        }
+    }
+    lines.push(Json::obj([
+        ("found", Json::Bool(true)),
+        ("until", Json::from(until.text().as_str())),
+        ("parameter", Json::from(name.as_str())),
+        ("holds_at", Json::Num(holds_at)),
+        ("fails_at", Json::Num(fails_at)),
+        ("tries", Json::from(lines.len() as u64)),
+        ("note", Json::from("the condition begins to hold between the two: holds_at is the nearest value tried at which it does")),
+    ]));
+    (0, Json::obj([(CHECK_LINES, Json::Arr(lines))]))
+}
+
+/// The runs `specula tune` makes when it is not told how many.
+const DEFAULT_TUNE_TRIES: u64 = 10;
 
 /// Where a headless run's player settings are read and kept.
 #[derive(Clone, Copy)]
@@ -795,7 +904,7 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
                 continue;
             }
         };
-        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), frame, size: check.size, follow: false, at: Vec::new(), keys: Vec::new() };
+        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), frame, size: check.size, ..Default::default() };
         // A check's settings are the folder it names, or none: never the folder the command
         // itself was given, which is some player's own.
         let named = check.settings.as_ref().map(|name| scratch.join(name));
@@ -921,6 +1030,16 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
         follow: args.follow,
         at: args.at.clone(),
         keys: args.keys.clone(),
+        set: args.set.iter().map(|(name, values)| (name.clone(), values[0])).collect(),
+        find: args.until.clone().filter(|_| !args.words.is_empty()).map(|until| crate::script_run::Find {
+            until,
+            words: args.words.clone(),
+            rise: args.rise.clone(),
+            cells: args.cells.clone(),
+            step: args.step.unwrap_or(crate::script_run::DEFAULT_STEP),
+            tries: args.tries.unwrap_or(crate::script_run::DEFAULT_FIND_TRIES),
+            never: args.never.clone(),
+        }),
         out: scratch.join("answer.json"),
     };
     if let Some(parent) = spec.frame.as_ref().and_then(|f| f.parent()).filter(|p| !p.as_os_str().is_empty()) {
@@ -940,6 +1059,10 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
         let mut command = std::process::Command::new(&ctx.exe);
         command.arg("--project").arg(&folder).arg("--script").arg(&spec_file).arg("--port").arg(port.to_string());
         command.arg("--captures").arg(scratch.join("captures")).args(["--trace-file", "off"]);
+        // (A search keeps the situations it reached as saves: in this run's own folder, gone with it.)
+        if spec.find.is_some() {
+            command.arg("--saves").arg(scratch.join("saves"));
+        }
         // Where this run's player settings are read and kept: the folder the command named, or
         // nowhere (and then the engine is not listed either: it is this command's own).
         match kept {
@@ -1062,12 +1185,14 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
         return done((1, answer.get("error").cloned().unwrap_or_else(|| refusal("no_answer", "the run's answer could not be read").1)));
     }
     let mut out = Json::obj([(RUN_REPORT, answer.get("report").cloned().unwrap_or(Json::Null))]);
+    // (A search that found nothing made its run and has no script: an answer, and exit code 1.)
+    let unfound = answer.get("searched").is_some() && answer.get("report").and_then(|r| r.get("found")).and_then(Json::as_bool) != Some(true);
     for beside in ["problems", "log", RUN_FOLLOWED, RUN_AT, RUN_AT_IS_ALL] {
         if let Some(value) = answer.get(beside) {
             out.set(beside, value.clone());
         }
     }
-    done((0, out))
+    done((i32::from(unfound), out))
 }
 
 /// The key a headless run's answer has its report under ([`answer`] prints the report alone,
@@ -1169,7 +1294,7 @@ pub fn respawn(argv: &[String], folder: &Path, quiet: bool) -> Result<(), String
 /// The command line's whole answer: prints the JSON (stdout, or stderr for a failure to reach
 /// an engine) and returns the exit code. The one place the commands print.
 pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
-    let a_run = matches!(cli, Cli::Run(_) | Cli::Check(_));
+    let a_run = matches!(cli, Cli::Run(_) | Cli::Check(_) | Cli::Tune(_) | Cli::Find(_));
     let (code, json) = match Ctx::from_env(settings) {
         Ok(ctx) => run(cli, &ctx),
         Err(why) => refusal("no_per_user_folder", why),

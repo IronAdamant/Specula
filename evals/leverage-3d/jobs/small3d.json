@@ -2,6 +2,10 @@
   "leverage": 1,
   "id": "small3d",
   "title": "Roll: a ball on a board, in three dimensions, with physics and sound",
+  "lead": [
+    "The physics is the engine's, and notes/world.md says what it will do (bounce, friction, what a push does to a ball that rolls, the order in a tick): write the whole game in one go from the two pages, and do not measure what a page says.",
+    "The item that asks for a script that takes all four coins is a search the engine makes: `{tool} find {run} --ticks 2400 --until \"won==true\" --words right,left,up,down,none --rise score --cells score,ball --never \"lives<3\"`, with your report's own line names. Put the inputs it answers in your README. Write no player of your own."
+  ],
   "brief": [
     "Build a small game called Roll. It is in three dimensions and has one board.",
     "",

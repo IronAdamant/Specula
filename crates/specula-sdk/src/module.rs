@@ -529,6 +529,16 @@ impl<'a> Cx<'a> {
         Ok(v.as_u64().unwrap_or(0) as u32)
     }
 
+    /// A number of the game's that a run may be given another value of, and its value when it
+    /// is given none: `let grip = cx.param("grip", 0.6)?;`. A headless run sets it
+    /// (`specula run --set grip=0.3`; several values, `--set grip=0.2,0.4,0.6`, play the run
+    /// once for each), and `specula tune` looks for the value at which a condition holds. A
+    /// player's game is given none: it plays with the defaults written here.
+    pub fn param(&mut self, name: &str, default: f64) -> Result<f64, SdkError> {
+        let v = self.ask(Value::map().with("op", "param").with("name", name).with("default", default))?;
+        Ok(v.as_f64().unwrap_or(default))
+    }
+
     /// Uniform in `[0, 1)`.
     pub fn random_f32(&mut self, stream: &str) -> Result<f32, SdkError> {
         Ok((self.random_u32(stream)? >> 8) as f32 / (1u32 << 24) as f32)

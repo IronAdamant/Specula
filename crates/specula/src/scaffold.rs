@@ -368,6 +368,16 @@ builds the modules, plays the game with no window and prints how it stands as JS
   line each, in one run (it ends at the last unless `--ticks` goes further); `--keys a,b`
   prints only those lines of the report. What a thing does over time is one run, not one a
   tick.
+- **When the engine should look for you** (each is one command and no program of yours):
+  a number whose effect you want to see, `specula run . --ticks 120 --set grip=0.2,0.4,0.8`
+  (the rules read it with `cx.param("grip", 0.6)?`: a run for each value, a line each); a
+  number a brief gives only the result of ("the crates stand still", "it lands past x = 3"),
+  `specula tune . --ticks 120 --vary grip=0.1..1 --until "ball.x>3"` (it halves the range to
+  where the condition begins to hold); **"there is a script that wins"**, `specula find .
+  --ticks 1800 --inputs 0:enter --until "phase==won" --words left,right,up,down,none --rise
+  score --never "lives<3"` (it answers the inputs: put them in `checks/runs.json`; `--cells`
+  names the lines that say where the game is, such as `score,ball`). None of them is needed
+  to build a game: when nothing here fits, write the game and run it once.
 - **Ticks.** The script counts every tick. The game's own clock ticks only while a run is
   under way: the title, a pause and an ended run hold it, as they do for a player.
 - **What is printed** is the game file's `"report"`: each line a name and the key whose value
@@ -450,8 +460,9 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   everything there and nothing in the struct: what is kept is what screens show, what
   `outcome` reads and what `report` prints.
 - Input: `cx.action("name")` has `.pressed`, `.held`, `.released` and `.value` (`[f32; 2]`).
-  The actions are `modules/{{module}}/actions.json`: each `{"name", "kind": "button" (or
-  `"axis"`, `"axis2"`), "group", "description", "bindings": ["Key.Space", "Pad.South"]}`.
+  The actions are `modules/{{module}}/actions.json`, `{"format": "specula.input.v1", "actions":
+  [..]}`: each `{"name", "kind": "button" (or `"axis"`, `"axis2"`), "group", "description",
+  "bindings": ["Key.Space", "Pad.South"]}`.
   Sources, the ones most games bind: `Key.A` to `Key.Z`, `Key.0` to `Key.9`, `Key.Up`,
   `Key.Down`, `Key.Left`, `Key.Right`, `Key.Space`, `Key.Enter`, `Key.Escape`, `Key.Tab`,
   `Key.Shift`, `Key.Ctrl`; `Pad.South`, `Pad.East`, `Pad.West`, `Pad.North`, `Pad.DpadUp`

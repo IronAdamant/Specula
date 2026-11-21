@@ -2,6 +2,11 @@
   "leverage": 1,
   "id": "change3d",
   "title": "Three changes to Roll, by someone who did not build it",
+  "lead": [
+    "Make the three changes in one go, then run the game's own checks once (`{tool} check {run}`) if it has them.",
+    "Board 4's two scripts (the coin in the air; clearing the board) are searches the engine makes: `{tool} find {run} --ticks 2400 --until \"LINE OP VALUE\" --words right,left,up,down,none --rise score --cells score,ball`, started on board 4 the way this game starts on a board, with its report's own line names. Write no player of your own.",
+    "What the ball's mass does to the crates is three runs of one script read at the same ticks (--at), one for each ball."
+  ],
   "change_of": "medium3d",
   "brief": [
     "The folder you are given holds a finished game, Roll, built by someone else. You have no notes from them beyond what is in the folder. Make three changes to it, and break nothing that worked.",

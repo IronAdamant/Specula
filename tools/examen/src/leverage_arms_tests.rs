@@ -37,6 +37,10 @@ impl Drop for Scratch {
 }
 
 // ---- the brief as it was made before arms were data (copied unchanged, to hold it) ----------
+// Changed on purpose on 2026-11-21, here and in `leverage.rs` alike, after the six-job
+// comparison: the play line names `--at`, `--keys` and `--set`; two lines say that the brief's
+// headless run is the play command itself and that the engine makes the searches; and a job's
+// `"lead"` is said to an engine builder. Runs made before that day had the brief without them.
 
 fn before_arm_text(arm: &str, run: &Path, change: bool) -> Vec<String> {
     let (tool, rd) = lev::me(run);
@@ -55,7 +59,9 @@ fn before_arm_text(arm: &str, run: &Path, change: bool) -> Vec<String> {
         } else {
             "- You build it with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`): a small sample game that builds and plays, with every part in place. Start with one read, from that folder: `cat notes/how.md game.json modules/*/src/lib.rs modules/*/actions.json assets/ui/hud.json assets/ui/settings.json assets/strings/en.json` (how such a game is built and run; the sample's game file, rules, inputs, two of its screens and its words). That is the reading done: notes/how.md is complete for a game of this size. Replace the sample's rules, screens and words with your game's, and delete the sample's `checks` folder.".to_owned()
         },
-        format!("- Run the game with no window with `{tool} play {rd} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH] [--follow]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in."),
+        format!("- Run the game with no window with `{tool} play {rd} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH] [--at T,T,T] [--keys LINE,LINE] [--set NAME=NUMBER] [--follow]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in. `--at` prints the state at each of those ticks in one run: read what a thing does over a run from one run, never a run a tick."),
+        "- The headless run a brief asks for is this `play` command, and no program of yours around it: the brief's input words are the game file's `\"inputs\"`, its JSON is the game file's `\"report\"` (a line can read the world itself, and the sounds asked for: notes/how.md), and an option of the brief's such as a board to start on is `--set board=2`, read by the rules with `cx.param(\"board\", 1.0)?`.".to_owned(),
+        format!("- What the engine looks for itself, each one command (notes/how.md, \"When the engine should look for you\"): `{tool} find {rd} --ticks N --until \"LINE OP VALUE\" --words W,W,...` finds a script of inputs that reaches a condition; `{tool} tune {rd} --ticks N --vary NAME=LOW..HIGH --until \"LINE OP VALUE\"` finds the value of a number of the rules' at which one begins to hold. Write no player and no search of your own."),
         format!("- Also there, and not needed to build or run a game: `{tool} check {rd} [--only NAME]` (the engine's own `specula check`: it plays every run that `checks/runs.json` lists and says which did not hold; notes/how.md); and an engine left running, with its tools (`{tool} engine start {rd}`, `{tool} engine stop {rd}`, `{tool} tools {rd} [FILTER]`, `{tool} call {rd} TOOL '{{json}}'` or `TOOL @args.json`). Never run the engine's executable yourself."),
         format!("- notes/how.md is written to be enough for a game of this size. Where it is not, the engine's documents are in {} (design notes for each area in `docs/design/`), with {}.", posix(&repo.join("docs")), posix(&repo.join("README.md"))),
         "- The two checks the brief asks for can be the `play` command, with the game file's `report` saying what it prints; or small scripts of yours.".to_owned(),
@@ -70,6 +76,14 @@ fn before_brief_text(j: &Json, arm: &str, run: &Path, s: &Json) -> String {
     lines.extend(j.get("brief").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).map(str::to_owned));
     lines.push(String::new());
     lines.extend(before_arm_text(arm, run, j.get("change_of").is_some()));
+    // (2026-11-21: the lead's word on the job, for a builder who works through the engine.)
+    let lead: Vec<&str> = j.get("lead").and_then(Json::as_array).map(|l| l.iter().filter_map(Json::as_str).collect()).unwrap_or_default();
+    if arm != "plain" && !lead.is_empty() {
+        let (tool, rd) = lev::me(run);
+        lines.push(String::new());
+        lines.push("From the lead, who has read this brief and chosen for it".to_owned());
+        lines.extend(lead.iter().map(|l| format!("- {}", l.replace("{tool}", &tool).replace("{run}", &rd))));
+    }
     lines.push(String::new());
     lines.push("Limits and rules".to_owned());
     lines.push(format!(

@@ -587,6 +587,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         }
     };
     let scripted = script.is_some();
+    // (The numbers the run's rules may read: the host has them before a module loads.)
+    let script_params = script.as_ref().map(|s: &script_run::Spec| s.set.clone()).unwrap_or_default();
     let mut startup = Startup::begin();
     if args.project.is_some() {
         // `--project` makes that folder the working directory. Every other folder the command
@@ -992,6 +994,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         // state ([`Engine::serve_game_clock`]).
         engine.clock.set_paused(true);
         engine.script_clock = Some(false);
+        engine.logic.set_params(script_params);
     }
     engine.game = game.take();
     engine.start_game();

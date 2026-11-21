@@ -24,6 +24,7 @@ use crate::run::{said, stop_tree};
 mod form;
 mod launch;
 mod light;
+mod search;
 
 /// One native check.
 pub struct Check {
@@ -55,6 +56,11 @@ pub const CHECKS: &[Check] = &[
         name: "light_window_check",
         about: "a perf_light report with a window held to 20 fps, on each adapter: the serve wait looks at its render, so it lands more than a render a frame; no validation message (docs/design/LIGHT.md)",
         run: light::light_window,
+    },
+    Check {
+        name: "search_check",
+        about: "what the engine looks for itself: a run read on its way, a run for each value of a number, a number tuned to a condition, and a script found that a run of its own plays to the same state (docs/design/FIRST_HOUR.md)",
+        run: search::search,
     },
 ];
 
@@ -165,6 +171,26 @@ impl Cx {
         let json = Json::parse(answer.trim()).map_err(|e| format!("`specula {shown}` (exit {code}) did not answer JSON ({e}): {}", answer.chars().take(400).collect::<String>()))?;
         self.say(format!("$ specula {shown}\n  exit {code}: {}", short(&json)));
         Ok((code, json))
+    }
+
+    /// A command that answers a line a state (`specula run --at`, a run for each value,
+    /// `specula tune`): its exit code and each line of its output, as JSON.
+    pub fn cli_lines(&mut self, args: &[&str]) -> Result<(i32, Vec<Json>), String> {
+        let exe = self.exe.to_string_lossy().into_owned();
+        let mut cmd: Vec<&str> = vec![&exe];
+        cmd.extend(args);
+        let shown = args.join(" ");
+        let Some((code, bytes)) = said(&cmd, &self.out, COMMAND) else {
+            return Err(format!("`specula {shown}` could not be run, or did not end within {} s ({})", COMMAND.as_secs(), self.exe.display()));
+        };
+        let answer = String::from_utf8_lossy(&bytes);
+        let lines = answer.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| Json::parse(l).map_err(|e| format!("`specula {shown}` (exit {code}) printed a line that is not JSON ({e}): {}", l.chars().take(400).collect::<String>()))).collect::<Result<Vec<Json>, String>>()?;
+        if lines.is_empty() {
+            return Err(format!("`specula {shown}` (exit {code}) printed nothing"));
+        }
+        self.say(format!("$ specula {shown}
+  exit {code}: {} line(s), the last {}", lines.len(), lines.last().map(short).unwrap_or_default()));
+        Ok((code, lines))
     }
 
     /// One tool call as `who` (an agent's name; `role`: the role it says), on the engine at

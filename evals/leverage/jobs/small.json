@@ -2,6 +2,9 @@
   "leverage": 1,
   "id": "small",
   "title": "Catch: a one-screen game",
+  "lead": [
+    "Nothing in this job needs a search or a tuning. Write the whole game in one go from notes/how.md, then check it with a few runs that each read several ticks (--at)."
+  ],
   "brief": [
     "Build a small game called Catch. It has one screen.",
     "",

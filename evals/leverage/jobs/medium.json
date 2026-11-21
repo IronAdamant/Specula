@@ -2,6 +2,9 @@
   "leverage": 1,
   "id": "medium",
   "title": "Hold the gate: waves, a menu, saved settings, two languages",
+  "lead": [
+    "Nothing in this job needs a search or a tuning. Write the whole game in one go from notes/how.md (the game file, the rules, the screens, both languages), then check it with a few runs that each read several ticks (--at)."
+  ],
   "brief": [
     "Build a game called Hold the gate.",
     "",

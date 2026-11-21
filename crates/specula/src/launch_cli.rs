@@ -33,7 +33,7 @@ pub enum Target {
 }
 
 /// What `specula run` was asked.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunArgs {
     /// The project's name or folder (`None`: the folder the command is run in).
     pub which: Option<String>,
@@ -48,6 +48,25 @@ pub struct RunArgs {
     pub at: Vec<u64>,
     /// The report's lines that are printed (`--keys ball,score`); empty: all.
     pub keys: Vec<String>,
+    /// Numbers the rules read with `Cx::param` (`--set grip=0.3`); one of them may have several
+    /// values (`--set grip=0.2,0.4,0.6`): the run is played once for each.
+    pub set: Vec<(String, Vec<f64>)>,
+    /// `specula tune`: the parameter whose value is looked for, and the range (`--vary grip=0.1..1`).
+    pub vary: Option<(String, f64, f64)>,
+    /// `specula tune` and `specula find`: what must hold (`--until "screen==won"`).
+    pub until: Option<crate::script_run::Until>,
+    /// `specula tune`: most runs; `specula find`: most stretches tried.
+    pub tries: Option<u64>,
+    /// `specula find`: the inputs it may give (`--words left,right,up,down,none`).
+    pub words: Vec<String>,
+    /// `specula find`: the report's line that rises as the game goes well (`--rise score`).
+    pub rise: Option<String>,
+    /// `specula find`: how many ticks an input is held before the next is chosen (`--step 15`).
+    pub step: Option<u64>,
+    /// `specula find`: the report's lines that tell one situation from another (`--cells ball`).
+    pub cells: Vec<String>,
+    /// `specula find`: what the game is never to be in on the way (`--never "lives<3"`).
+    pub never: Option<crate::script_run::Until>,
 }
 
 /// What `specula check` was asked.
@@ -87,6 +106,10 @@ pub enum Cli {
     /// Plays a project's game with no window, by a script of inputs, and prints how it stands
     /// (docs/design/FIRST_HOUR.md, "A headless run").
     Run(RunArgs),
+    /// `specula tune`: the value of a parameter at which a condition begins to hold.
+    Tune(RunArgs),
+    /// `specula find`: a script of inputs that reaches a condition.
+    Find(RunArgs),
     Check(CheckArgs),
     /// The tools a running engine lists.
     Tools { target: Target, filter: Option<String> },
@@ -155,6 +178,32 @@ specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,T:WORD,... | --inputs @FILE
                                  given further, the last state is one line more). --keys: only
                                  those lines of the report. A run ends after 30 minutes at
                                  most
+                                 --set NAME=NUMBER: a number the rules read with cx.param
+                                 (theirs unless given); NAME=N,N,N plays the run once for
+                                 each value, a line each
+specula tune [NAME|FOLDER] --ticks N --vary NAME=LOW..HIGH --until \"LINE OP VALUE\" [--tries N]
+            [--inputs ...] [--seed N] [--set NAME=NUMBER] [--keys NAME,...]
+                                 find the value of a number the rules read (cx.param) at which
+                                 a condition over the report's lines begins to hold at the
+                                 run's end (score>=30, ball.x>1, screen==won; several joined
+                                 by &&): the range is halved, each try a whole run printed as
+                                 a line, and the last line says where it holds and where not.
+                                 The condition must hold at one end of the range and not at
+                                 the other
+specula find [NAME|FOLDER] --ticks N --until \"LINE OP VALUE\" --words W,W,... [--rise LINE]
+            [--cells LINE,...] [--never \"LINE OP VALUE\"] [--step N] [--tries N]
+            [--inputs ...] [--seed N] [--set NAME=NUMBER]
+                                 find a script of inputs that reaches a condition, for a
+                                 check that says there is one: after --inputs (how the game
+                                 is entered: 0:enter) the engine tries the --words, each
+                                 held --step ticks (15), going back to situations it has
+                                 reached and on from them, at most --ticks long. --rise: the
+                                 line that grows as the game goes well (score). --cells: the
+                                 lines that say where the game is (score,ball). --never: what
+                                 must not happen on the way (lives<3). It answers
+                                 {found, inputs, ticks, state}: the script is played again
+                                 from the start before it is answered, and specula run with
+                                 those --inputs and --ticks gives that state
 specula check [NAME|FOLDER] [--only NAME] [--file FILE]
                                  play every run the project's checks/runs.json lists, each as
                                  `run` plays one (ticks, inputs, seed, a settings folder by
@@ -327,8 +376,8 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
             Cli::Forget { which: f.rest[0].clone() }
         }
         // A headless run of a project's game by a script of inputs (docs/design/FIRST_HOUR.md).
-        "run" => {
-            let mut run = RunArgs { which: None, ticks: None, seed: None, inputs: Vec::new(), frame: None, size: None, follow: false, at: Vec::new(), keys: Vec::new() };
+        command @ ("run" | "tune" | "find") => {
+            let mut run = RunArgs::default();
             let mut i = 0;
             while i < rest.len() {
                 let w = rest[i].as_str();
@@ -344,7 +393,7 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
                     i += 1;
                     continue;
                 }
-                const TAKES: [&str; 7] = ["--ticks", "--seed", "--inputs", "--frame", "--size", "--at", "--keys"];
+                const TAKES: [&str; 16] = ["--ticks", "--seed", "--inputs", "--frame", "--size", "--at", "--keys", "--set", "--vary", "--until", "--tries", "--words", "--rise", "--step", "--cells", "--never"];
                 if !TAKES.contains(&w) {
                     return Err(format!("'{w}' is not a flag of this command (it takes: {}, --follow, --settings)", TAKES.join(", ")));
                 }
@@ -364,6 +413,31 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
                     "--at" => {
                         run.at = value.split(',').map(|t| t.trim().parse::<u64>().ok()).collect::<Option<Vec<u64>>>().ok_or_else(|| format!("'--at' is ticks with commas: 90,180,270 (got '{value}')"))?;
                         crate::script_run::check_at(&run.at).map_err(|e| format!("'--at': {e}"))?;
+                    }
+                    "--set" => {
+                        let (name, values) = value.split_once('=').ok_or_else(|| format!("'--set' is NAME=NUMBER, or NAME=N,N,N for a run each (got '{value}')"))?;
+                        let values = values.split(',').map(|v| v.trim().parse::<f64>().ok().filter(|v| v.is_finite())).collect::<Option<Vec<f64>>>().filter(|v| !v.is_empty() && v.len() <= crate::script_run::MAX_SWEEP).ok_or_else(|| format!("'--set {name}': 1 to {} numbers with commas (got '{values}')", crate::script_run::MAX_SWEEP))?;
+                        run.set.push((name.trim().to_owned(), values));
+                    }
+                    "--vary" => {
+                        let parsed = value.split_once('=').and_then(|(name, range)| {
+                            let (lo, hi) = range.split_once("..")?;
+                            Some((name.trim().to_owned(), lo.trim().parse::<f64>().ok().filter(|v| v.is_finite())?, hi.trim().parse::<f64>().ok().filter(|v| v.is_finite())?))
+                        });
+                        run.vary = Some(parsed.filter(|(_, lo, hi)| lo < hi).ok_or_else(|| format!("'--vary' is NAME=LOW..HIGH (grip=0.1..1), the low below the high (got '{value}')"))?);
+                    }
+                    "--until" => run.until = Some(crate::script_run::Until::parse(value).map_err(|e| format!("'--until': {e}"))?),
+                    "--tries" => run.tries = Some(value.parse::<u64>().ok().filter(|t| (1..=crate::script_run::MAX_TRIES).contains(t)).ok_or_else(|| format!("'--tries' is a whole number from 1 to {} (got '{value}')", crate::script_run::MAX_TRIES))?),
+                    "--words" => {
+                        run.words = value.split(',').map(|w| w.trim().to_owned()).collect();
+                        crate::script_run::check_inputs(&run.words.iter().map(|w| (0, w.clone())).collect::<Vec<_>>()).map_err(|e| format!("'--words': {e}"))?;
+                    }
+                    "--rise" => run.rise = Some(value.to_owned()),
+                    "--never" => run.never = Some(crate::script_run::Until::parse(value).map_err(|e| format!("'--never': {e}"))?),
+                    "--step" => run.step = Some(value.parse::<u64>().ok().filter(|s| (1..=3600).contains(s)).ok_or_else(|| format!("'--step' is a number of ticks from 1 to 3600 (got '{value}')"))?),
+                    "--cells" => {
+                        run.cells = value.split(',').map(|k| k.trim().to_owned()).collect();
+                        crate::script_run::check_keys(&run.cells).map_err(|e| format!("'--cells': {e}"))?;
                     }
                     "--keys" => {
                         run.keys = value.split(',').map(|k| k.trim().to_owned()).collect();
@@ -393,7 +467,11 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
                 run.ticks = Some(run.inputs.last().map_or(0, |(at, _)| *at));
             }
             if run.ticks.is_none() {
-                return Err("'specula run' needs --ticks N: how many ticks to play (0: only the start), or --at T,T,...: the ticks to print the state at, or --follow: steps read from standard input".to_owned());
+                return Err(match command {
+                    "find" => "'specula find' needs --ticks N: the most ticks a script it finds may be long".to_owned(),
+                    "tune" => "'specula tune' needs --ticks N: how many ticks each run it tries plays".to_owned(),
+                    _ => "'specula run' needs --ticks N: how many ticks to play (0: only the start), or --at T,T,...: the ticks to print the state at, or --follow: steps read from standard input".to_owned(),
+                });
             }
             if let Some(ticks) = run.ticks {
                 crate::script_run::check_span(&run.inputs, ticks).map_err(|e| format!("'--inputs': {e}"))?;
@@ -401,7 +479,46 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
             if run.size.is_some() && run.frame.is_none() {
                 return Err("'--size' is a frame's: give --frame FILE.png with it".to_owned());
             }
-            Cli::Run(run)
+            // The parameters as one run takes them, and what each command asks beyond a run.
+            let first: Vec<(String, f64)> = run.set.iter().map(|(name, values)| (name.clone(), values[0])).chain(run.vary.iter().map(|(name, lo, _)| (name.clone(), *lo))).collect();
+            crate::script_run::check_set(&first).map_err(|e| format!("'--set': {e}"))?;
+            if run.set.iter().filter(|(_, values)| values.len() > 1).count() > 1 {
+                return Err("'--set': one parameter may have several values (a run each); the others have one".to_owned());
+            }
+            let swept = run.set.iter().any(|(_, values)| values.len() > 1);
+            let only = |given: bool, flag: &str, of: &str| if given { Err(format!("'{flag}' belongs to 'specula {of}'")) } else { Ok(()) };
+            let finds = !run.words.is_empty() || run.rise.is_some() || run.step.is_some() || !run.cells.is_empty() || run.never.is_some();
+            match command {
+                "run" => {
+                    only(run.vary.is_some(), "--vary", "tune")?;
+                    only(run.until.is_some() || run.tries.is_some(), "--until and --tries", "tune' and 'specula find")?;
+                    only(finds, "--words, --rise, --step and --cells", "find")?;
+                    if swept && (run.follow || run.frame.is_some()) {
+                        return Err("a run for each value of '--set' takes no --follow and no --frame: a run of one value does".to_owned());
+                    }
+                    Cli::Run(run)
+                }
+                "tune" => {
+                    only(finds, "--words, --rise, --step and --cells", "find")?;
+                    if run.vary.is_none() || run.until.is_none() {
+                        return Err("'specula tune' needs --vary NAME=LOW..HIGH (a number the rules read with cx.param, and the range to look in) and --until \"LINE OP VALUE\" (what must hold at the run's end)".to_owned());
+                    }
+                    if swept || run.follow || run.frame.is_some() || !run.at.is_empty() {
+                        return Err("'specula tune' plays a whole run for each value it tries: it takes no --at, --follow or --frame, and one value for each --set".to_owned());
+                    }
+                    Cli::Tune(run)
+                }
+                _ => {
+                    only(run.vary.is_some(), "--vary", "tune")?;
+                    if run.until.is_none() || run.words.is_empty() {
+                        return Err("'specula find' needs --until \"LINE OP VALUE\" (what the script must reach) and --words W,W,... (the inputs it may give: right,left,up,down,none)".to_owned());
+                    }
+                    if swept || run.follow || !run.at.is_empty() {
+                        return Err("'specula find' takes no --at and no --follow, and one value for each --set".to_owned());
+                    }
+                    Cli::Find(run)
+                }
+            }
         }
         // A project's own checks: runs of its game and what each must print.
         "check" => {
@@ -550,6 +667,33 @@ mod tests {
         assert!(no("run crypt --at 90 --ticks 50").contains("after the run's last tick"));
         assert!(no("run crypt --at 90 --follow").contains("give one"));
         assert!(no("run crypt --at x").contains("ticks with commas"));
+        // A number of the rules' for a run, and a run for each of several values of one.
+        let Ok(Some(Cli::Run(set))) = p("run crypt --ticks 60 --set grip=0.3 --set push=2,4,8") else { panic!("not a run") };
+        assert_eq!(set.set, vec![("grip".to_owned(), vec![0.3]), ("push".to_owned(), vec![2.0, 4.0, 8.0])]);
+        assert!(no("run crypt --ticks 60 --set grip=1,2 --set push=2,4").contains("one parameter may have several"));
+        assert!(no("run crypt --ticks 60 --set grip").contains("NAME=NUMBER"));
+        assert!(no("run crypt --ticks 60 --set grip=a").contains("numbers with commas"));
+        assert!(no("run crypt --ticks 60 --set grip=1 --set grip=2").contains("given twice"));
+        assert!(no("run crypt --ticks 60 --set 9x=1").contains("a letter then"));
+        assert!(no("run crypt --ticks 60 --set grip=1,2 --follow").contains("no --follow"));
+        assert!(no("run crypt --ticks 60 --until won==true").contains("specula find"));
+        // The value of a parameter at which a condition begins to hold.
+        let Ok(Some(Cli::Tune(tune))) = p("tune crypt --ticks 60 --inputs 0:right --vary grip=0.1..1 --until ball.x>1 --tries 6") else { panic!("not a tuning") };
+        assert_eq!((tune.vary.clone(), tune.until.as_ref().map(|u| u.text()), tune.tries, tune.ticks), (Some(("grip".to_owned(), 0.1, 1.0)), Some("ball.x>1".to_owned()), Some(6), Some(60)));
+        assert!(no("tune crypt --ticks 60 --until ball.x>1").contains("--vary NAME=LOW..HIGH"));
+        assert!(no("tune crypt --ticks 60 --vary grip=1..0.1 --until ball.x>1").contains("the low below the high"));
+        assert!(no("tune crypt --vary grip=0..1 --until ball.x>1").contains("each run it tries"));
+        assert!(no("tune crypt --ticks 60 --vary grip=0..1 --until ball.x>1 --at 30").contains("no --at"));
+        assert!(no("tune crypt --ticks 60 --vary grip=0..1 --until ball.x>1 --words up").contains("specula find"));
+        // A script of inputs that reaches a condition.
+        let Ok(Some(Cli::Find(find))) = p("find crypt --ticks 1800 --inputs 0:enter --until screen==won --words left,right,none --rise score --cells score,ball --never lives<3 --step 20 --tries 500") else { panic!("not a search") };
+        assert_eq!((find.words.clone(), find.rise.as_deref(), find.cells.clone(), find.step, find.tries), (vec!["left".to_owned(), "right".to_owned(), "none".to_owned()], Some("score"), vec!["score".to_owned(), "ball".to_owned()], Some(20), Some(500)));
+        assert_eq!((find.until.as_ref().map(|u| u.text()), find.never.as_ref().map(|u| u.text())), (Some("screen==won".to_owned()), Some("lives<3".to_owned())));
+        assert!(no("find crypt --ticks 600 --until screen==won").contains("--words W,W"));
+        assert!(no("find crypt --until screen==won --words up").contains("the most ticks a script"));
+        assert!(no("find crypt --ticks 600 --until screen --words up").contains("not a condition"));
+        assert!(no("find crypt --ticks 600 --until screen==won --words up --vary grip=0..1").contains("specula tune"));
+        assert!(no("find crypt --ticks 600 --until screen==won --words up --step 0").contains("1 to 3600"));
         assert!(no("run crypt").contains("--ticks"), "how many ticks is always said");
         // A followed run's ticks are its steps': the script before them may be none, and
         // when there is one it runs to its last input.

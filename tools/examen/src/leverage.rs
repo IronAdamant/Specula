@@ -540,7 +540,9 @@ fn arm_text(arm: &str, run: &Path, change: bool) -> Vec<String> {
         } else {
             "- You build it with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`): a small sample game that builds and plays, with every part in place. Start with one read, from that folder: `cat notes/how.md game.json modules/*/src/lib.rs modules/*/actions.json assets/ui/hud.json assets/ui/settings.json assets/strings/en.json` (how such a game is built and run; the sample's game file, rules, inputs, two of its screens and its words). That is the reading done: notes/how.md is complete for a game of this size. Replace the sample's rules, screens and words with your game's, and delete the sample's `checks` folder.".to_owned()
         },
-        format!("- Run the game with no window with `{tool} play {rd} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH] [--follow]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in."),
+        format!("- Run the game with no window with `{tool} play {rd} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH] [--at T,T,T] [--keys LINE,LINE] [--set NAME=NUMBER] [--follow]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in. `--at` prints the state at each of those ticks in one run: read what a thing does over a run from one run, never a run a tick."),
+        "- The headless run a brief asks for is this `play` command, and no program of yours around it: the brief's input words are the game file's `\"inputs\"`, its JSON is the game file's `\"report\"` (a line can read the world itself, and the sounds asked for: notes/how.md), and an option of the brief's such as a board to start on is `--set board=2`, read by the rules with `cx.param(\"board\", 1.0)?`.".to_owned(),
+        format!("- What the engine looks for itself, each one command (notes/how.md, \"When the engine should look for you\"): `{tool} find {rd} --ticks N --until \"LINE OP VALUE\" --words W,W,...` finds a script of inputs that reaches a condition; `{tool} tune {rd} --ticks N --vary NAME=LOW..HIGH --until \"LINE OP VALUE\"` finds the value of a number of the rules' at which one begins to hold. Write no player and no search of your own."),
         format!("- Also there, and not needed to build or run a game: `{tool} check {rd} [--only NAME]` (the engine's own `specula check`: it plays every run that `checks/runs.json` lists and says which did not hold; notes/how.md); and an engine left running, with its tools (`{tool} engine start {rd}`, `{tool} engine stop {rd}`, `{tool} tools {rd} [FILTER]`, `{tool} call {rd} TOOL '{{json}}'` or `TOOL @args.json`). Never run the engine's executable yourself."),
         format!("- notes/how.md is written to be enough for a game of this size. Where it is not, the engine's documents are in {} (design notes for each area in `docs/design/`), with {}.", posix(&repo.join("docs")), posix(&repo.join("README.md"))),
         "- The two checks the brief asks for can be the `play` command, with the game file's `report` saying what it prints; or small scripts of yours.".to_owned(),
@@ -570,6 +572,7 @@ pub(crate) fn brief_text(j: &Json, arm: &Arm, run: &Path, s: &Json, exe: Option<
     lines.extend(j.get("brief").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).map(str::to_owned));
     lines.push(String::new());
     lines.extend(arm_lines(arm, run, j.get("change_of").is_some(), exe)?);
+    lines.extend(lead_lines(j, arm, run)?);
     lines.push(String::new());
     lines.push("Limits and rules".to_owned());
     lines.push(format!(
@@ -581,6 +584,29 @@ pub(crate) fn brief_text(j: &Json, arm: &Arm, run: &Path, s: &Json, exe: Option<
     lines.extend(s.get("rules").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).map(|r| format!("- {r}")));
     lines.push("- When you finish, answer with: what you built, the commands for the two checks, what you checked yourself, and what does not work.".to_owned());
     Ok(lines.join("\n") + "\n")
+}
+
+/// What the lead says of this job to a builder who works through the engine: a job's `"lead"`,
+/// a list of lines (with `{tool}` and `{run}` filled in as in an arm's own text). The owner,
+/// 2026-11-21: "You'll need to be the one to monitor that agent. It may be worth for you to
+/// make that decision for that agent to decide before it works." A brief that carries it is
+/// not a cold builder's brief: a report of such runs says so ([`led`]).
+pub(crate) fn lead_lines(j: &Json, arm: &Arm, run: &Path) -> R<Vec<String>> {
+    let said: Vec<&str> = j.get("lead").and_then(Json::as_array).map(|l| l.iter().filter_map(Json::as_str).collect()).unwrap_or_default();
+    if arm.kind != Kind::Engine || said.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (tool, rd) = me(run);
+    let mut lines = vec![String::new(), "From the lead, who has read this brief and chosen for it".to_owned()];
+    for line in said {
+        lines.push(format!("- {}", fill(line, &[("tool", &tool), ("run", &rd)]).map_err(|why| format!("the job's lead: {why}"))?));
+    }
+    Ok(lines)
+}
+
+/// Whether a job's engine builders are told the lead's choice ([`lead_lines`]).
+pub(crate) fn led(j: &Json) -> bool {
+    j.get("lead").and_then(Json::as_array).is_some_and(|l| !l.is_empty())
 }
 
 /// What `cmd` printed, and its exit code, run in `cwd` for at most `limit` (`None`: it could
@@ -672,6 +698,8 @@ pub fn prepare(a: &Prepare) -> R<Json> {
         ("job", Json::Str(a.job.clone())),
         ("arm", Json::Str(a.arm.clone())),
         ("kind", Json::Str(arm.kind.name().to_owned())),
+        // (Whether this builder's brief carries the lead's choice for the job: a report says so.)
+        ("led", Json::Bool(engine && led(&j))),
         ("data", Json::Str(data_word(&data))),
         ("n", Json::Num(a.n as f64)),
         ("phase", Json::Str("build".to_owned())),
@@ -872,6 +900,12 @@ pub fn play_cmd(run: &Path, flags: &[String]) -> R<i32> {
 /// logged as one call: every run its `checks/runs.json` lists, in one command.
 pub fn check_cmd(run: &Path, flags: &[String]) -> R<i32> {
     headless_cmd(run, flags, "check")
+}
+
+/// `find RUN [FLAGS]` and `tune RUN [FLAGS]`: the engine's own searches (`specula find`,
+/// `specula tune`) on the run's work folder, each logged as one call.
+pub fn search_cmd(run: &Path, flags: &[String], word: &str) -> R<i32> {
+    headless_cmd(run, flags, word)
 }
 
 /// One of the engine's headless commands (`run`, `check`) on a run's work folder.
@@ -1402,7 +1436,7 @@ pub fn judge_text(run: &Path, r: &Json) -> R<String> {
     ];
     if kind_of_run(r) == Kind::Engine {
         lines.push(format!(
-            "- This game runs on the Specula engine. `{tool} play {rd} ...` is the engine's own headless run of it (it needs no engine started), and `{tool} check {rd} --file FILE` plays every run a checks file of your own lists in one command (the game's `notes/checks.md` says how one is written, or `notes/how.md` in a game made before that note was; keep yours in your scratch folder, and take frames with `play`: a check's frame is written into the game's own folder); if its documents use an engine left running, start it with `{tool} engine start {rd}` and stop it with `{tool} engine stop {rd}` when you are done, and calls go through `{tool} call {rd} TOOL '{{json}}'`. Never run the engine's executable yourself."
+            "- This game runs on the Specula engine. `{tool} play {rd} ...` is the engine's own headless run of it (it needs no engine started; `--at T,T,T` prints the state at each of those ticks in one run and `--keys LINE,LINE` only the lines named: read what happens over a run from one run), and `{tool} check {rd} --file FILE` plays every run a checks file of your own lists in one command (the game's `notes/checks.md` says how one is written, or `notes/how.md` in a game made before that note was; keep yours in your scratch folder, and take frames with `play`: a check's frame is written into the game's own folder); if its documents use an engine left running, start it with `{tool} engine start {rd}` and stop it with `{tool} engine stop {rd}` when you are done, and calls go through `{tool} call {rd} TOOL '{{json}}'`. Never run the engine's executable yourself."
         ));
     }
     lines.push(String::new());
@@ -1665,6 +1699,11 @@ fn dispatch(mut args: crate::cli::Args) -> R<i32> {
             let rest = args.rest();
             let Some((run, flags)) = rest.split_first() else { return Err("usage: examen leverage play RUN [--ticks N --inputs ... (specula run's flags)]".to_owned()) };
             play_cmd(&run_named(Path::new(run)), flags)
+        }
+        word @ ("find" | "tune") => {
+            let rest = args.rest();
+            let Some((run, flags)) = rest.split_first() else { return Err(format!("usage: examen leverage {word} RUN --ticks N --until \"LINE OP VALUE\" ... (specula {word}'s flags)")) };
+            search_cmd(&run_named(Path::new(run)), flags, word)
         }
         "check" => {
             let rest = args.rest();
