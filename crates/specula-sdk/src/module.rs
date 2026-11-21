@@ -202,6 +202,11 @@ impl Entity {
         self.data.get("rotation_deg").and_then(Value::as_vec3).unwrap_or(Vec3::ZERO)
     }
 
+    /// How fast the body moves, m/s (zero for a thing with no body).
+    pub fn velocity(&self) -> Vec3 {
+        self.data.get("body").and_then(|b| b.get("velocity")).and_then(Value::as_vec3).unwrap_or(Vec3::ZERO)
+    }
+
     pub fn version(&self) -> u64 {
         self.data.get("version").and_then(Value::as_u64).unwrap_or(0)
     }
@@ -290,6 +295,21 @@ impl Spawn {
     /// metre away fully; nothing is lit past `range_m`.
     pub fn light(self, intensity: f32, range_m: f32) -> Spawn {
         self.field("light", Value::map().with("intensity", intensity).with("range", range_m))
+    }
+    /// How much of its speed a thing keeps when it bounces, 0 to 1 (0 unless given: nothing
+    /// bounces). The lesser of the two things that meet counts. After a collider word.
+    pub fn bounce(self, restitution: f32) -> Spawn {
+        self.in_collider("restitution", restitution)
+    }
+    /// How much the collider grips, 0 (ice) to about 1 (rubber). After a collider word.
+    pub fn friction(self, friction: f32) -> Spawn {
+        self.in_collider("friction", friction)
+    }
+    fn in_collider(mut self, key: &str, value: f32) -> Spawn {
+        let mut collider = self.0.get("collider").cloned().unwrap_or_else(Value::map);
+        collider.insert(key, value);
+        self.0.insert("collider", collider);
+        self
     }
 }
 
@@ -521,6 +541,33 @@ impl<'a> Cx<'a> {
     pub fn touching(&mut self, id: Id) -> Result<Vec<Id>, SdkError> {
         let v = self.ask(Value::map().with("op", "touching").with("id", id.0))?;
         Ok(v.get("ids").and_then(Value::as_list).unwrap_or_default().iter().filter_map(Value::as_u64).map(Id).collect())
+    }
+
+    /// Adds `dv` (m/s) to a body's velocity and wakes it; the rest of the body is kept as it
+    /// is (its spin above all: a rolling ball goes on rolling). A force held on a body is
+    /// `cx.push(id, acceleration * cx.dt())` each tick; a jump or a kick is one push.
+    pub fn push(&mut self, id: Id, dv: Vec3) -> Result<(), SdkError> {
+        let Some(e) = self.entity(id)? else { return Err(SdkError::new("not_found", format!("no entity with id {}", id.0))) };
+        let Some(mut body) = e.data.get("body").filter(|b| b.as_map().is_some()).cloned() else {
+            return Err(SdkError::new("no_body", format!("{} has no body to push (spawn it with .dynamic(mass))", e.path())));
+        };
+        let v = e.velocity();
+        body.insert("velocity", Vec3::new(v.x + dv.x, v.y + dv.y, v.z + dv.z));
+        body.insert("sleeping", false);
+        self.set(id, Patch::new().field("body", body)).map(drop)
+    }
+
+    /// Puts a body at rest at `position`: no speed and no spin, the rest of the body kept.
+    /// (For a thing with no body it only moves it.)
+    pub fn place_at_rest(&mut self, id: Id, position: Vec3) -> Result<(), SdkError> {
+        let Some(e) = self.entity(id)? else { return Err(SdkError::new("not_found", format!("no entity with id {}", id.0))) };
+        let mut patch = Patch::new().position(position);
+        if let Some(mut body) = e.data.get("body").filter(|b| b.as_map().is_some()).cloned() {
+            body.insert("velocity", Vec3::ZERO);
+            body.insert("angular_velocity", Vec3::ZERO);
+            patch = patch.field("body", body);
+        }
+        self.set(id, patch).map(drop)
     }
 
     /// Moves a character entity by `motion` (metres this tick, gravity included) through the

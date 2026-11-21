@@ -507,19 +507,21 @@ All of it is a spawn, in the module's `start` or `tick` (`use specula_sdk::{Spaw
 - **Physics**: `.collider_box(size)`, `.collider_sphere(radius)`, `.collider_capsule(radius,
   height)` are in the thing's own units (a cube's own box is 1, 1, 1 whatever its scale). A
   collider alone stands still; `.dynamic(mass_kg)` makes it fall, roll and be pushed;
-  `.kinematic()` is moved by the rules only. Gravity is 9.81 m/s2 down. Read where a body is
-  with `cx.entity(id)?` (`.position()`, `.rotation_deg()`); what is near with
-  `cx.query_near("tag", at, radius, 16)?`; **what touches any thing now** with
-  `cx.touching(id)?` (ids; "is it on the ground", "what is in this zone").
+  `.kinematic()` is moved by the rules only. **Nothing bounces unless told**: `.bounce(0.5)`
+  after a collider word (on both things that meet); `.friction(0.3)` likewise. Gravity is
+  9.81 m/s2 down. **Push a body** with `cx.push(id, dv)?` (it adds to its velocity: a force
+  held is `acceleration * cx.dt()` each tick; never set the whole `body` to push, which
+  stops its spin). Read a body with `cx.entity(id)?` (`.position()`, `.velocity()`,
+  `.rotation_deg()`); what is near with `cx.query_near("tag", at, radius, 16)?`; **what
+  touches any thing now** with `cx.touching(id)?` (ids; "is it on the ground").
 - **What physics tells the rules**, among `cx.events()` at the next tick (`e.from ==
   "engine"`, values by `e.data.get("key")`): `contact`, for a thing tagged `contacts` or
   under a group that is (`.tags(&["contacts"])` on the game's root hears of everything): `kind`
   is `begin` or `end` (`enter`, `exit` for a trigger), `a` and `b` the two things' paths
   (when only one is heard it is `a`), `speed` how fast they met (m/s), `point`, `normal`.
   And `fell`, when a body has dropped 5 m below everything it could land on:
-  `entity` (its path), `position`. Put it back (`cx.set(id, Patch::new().position(v)
-  .field("body", Value::map().with("kind", "dynamic").with("velocity", Vec3::new(0.0, 0.0,
-  0.0))))?`) or delete it; a run that ends with one out there says so.
+  `entity` (its path), `position`. Put it back at rest (`cx.place_at_rest(id, v)?`) or
+  delete it; a run that ends with one out there says so.
 - **Light**: `.light(intensity, range_m)` on any spawn (1 lights a white surface 1 m away
   fully). The camera of a 3D game is `game.json`'s `"view": {"eye": [x, y, z], "target": [x,
   y, z], "fov_y_deg": 50}`.
@@ -528,7 +530,7 @@ All of it is a spawn, in the module's `start` or `tick` (`use specula_sdk::{Spaw
   "layers": [{"name": "thump", "source": {"wave": "sine", "freq": {"points": [[0, 220], [0.2,
   90]], "curve": "exp"}}, "env": {"attack": 0.002, "decay": 0.18, "sustain": 0, "release":
   0.04}}]}`. `specula call audio_preview '{"path": "assets/sounds/bounce.json"}'` measures one without
-  playing it. A sound with no file plays nothing and changes nothing: `specula run` names it.
+  playing it (with `"wav": true` it also writes it as a WAV file). A sound with no file plays nothing and changes nothing: `specula run` names it.
 - **Seeing it**: `specula run . --ticks 40 --frame out.png --size 800x480` writes what the
   camera sees at that tick. Any other field of a spawn (`specula tools world_spawn` lists
   them) goes in by `.field("name", value)`.
@@ -797,7 +799,7 @@ mod tests {
         assert!(world.contains(&format!(".tags(&[\"{}\"])", crate::physics_told::CONTACTS_TAG)) && world.contains("`contact`") && world.contains("`fell`") && world.contains(&format!("dropped {} m below", crate::physics_told::FELL_BELOW_M)), "notes/world.md and physics_told differ");
         assert!(notes.brief().contains("notes/world.md") && text("notes/how.md").contains("notes/world.md"), "the world's page is not pointed at");
         let sdk = include_str!("../../specula-sdk/src/module.rs");
-        for word in ["model", "rotation_deg", "collider_box", "collider_sphere", "collider_capsule", "dynamic", "kinematic", "light", "query_near", "touching", "sound", "entity"] {
+        for word in ["model", "rotation_deg", "collider_box", "collider_sphere", "collider_capsule", "dynamic", "kinematic", "light", "query_near", "touching", "push", "place_at_rest", "bounce", "friction", "velocity", "sound", "entity"] {
             assert!(world.contains(&format!("{word}(")) && sdk.contains(&format!("pub fn {word}(")), "notes/world.md and the SDK differ on {word}");
         }
         for tool in ["audio_preview", "world_spawn"] {
