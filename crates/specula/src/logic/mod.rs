@@ -560,6 +560,11 @@ impl LogicHost {
         self.params = params.into_iter().take(MAX_PARAMS).map(|(name, value)| (name, Param { value, read: Default::default() })).collect();
     }
 
+    /// How many numbers the run was given.
+    pub fn params_len(&self) -> usize {
+        self.params.len()
+    }
+
     /// The run's numbers no rule has asked for so far, by name.
     pub fn params_unread(&self) -> Vec<&str> {
         self.params.iter().filter(|(_, p)| !p.read.load(std::sync::atomic::Ordering::Relaxed)).map(|(name, _)| name.as_str()).collect()

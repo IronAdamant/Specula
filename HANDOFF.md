@@ -88,6 +88,7 @@ rounds.
   word; this checkout pulls when the owner says). [docs/design/LINUX.md](docs/design/LINUX.md)
   says what runs there, what does not, and where a Linux machine finds faults this one
   cannot. **`origin/main` may move without this session: fetch and look before any push.**
+- **The gate passed on `c40f4732`** (2026-11-22, everything for an engine change: 3,600 tests, repeats, slow workers, speed, clippy for both targets, both builds; of the live checks, `search_check` and `new_project_check` were run and passed). Before it:
 - **The gate passed on `8d172ace`** (2026-11-22, everything for an engine change: the workspace, repeats, slow workers, speed, clippy, both builds; the live checks were not run whole, `search_check` passed on the save mend). Before it:
 - **The gate passed on `14c0d08c`** (2026-11-21, everything: 3,585 tests, repeats, slow workers, speed, clippy, both builds; the live checks were not run again). In it: `53985a95` (a module pushes a
   body and tells it to bounce: `Cx::push`, `Cx::place_at_rest`, `Spawn::bounce`, `friction`),

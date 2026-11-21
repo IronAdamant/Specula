@@ -4122,6 +4122,7 @@ impl Engine {
             info.set("module_sounds", self.module_sounds.to_json());
             let unread = self.logic.params_unread();
             if !unread.is_empty() {
+                info.set("params_read", Json::from(self.logic.params_len() - unread.len()));
                 info.set("params_unread", Json::arr(unread.into_iter().map(Json::from)));
             }
         }

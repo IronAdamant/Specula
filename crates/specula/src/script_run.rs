@@ -1129,7 +1129,11 @@ impl Run<'_> {
     fn unread_set(&self) -> Result<Vec<String>, Json> {
         let info = self.call("engine_info", Json::obj([("response_format", Json::from("detailed"))]))?;
         let unread: Vec<&str> = info.get("params_unread").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).collect();
-        Ok(unread.iter().take(MAX_SAID).map(|name| format!("{}: the rules read a number with cx.param(\"{name}\", default), by exactly that name", unread_words(name))).collect())
+        // Where no number at all was read, the likelier cause is rules that have not come to
+        // read them (a run still at its title screen reads no board), not every name mistyped.
+        let none_read = info.get("params_read").and_then(Json::as_u64) == Some(0);
+        let why = if none_read { "no number was read at all, so the rules that read them may not have run (a game still at its title: begin the run in --inputs); or the name is not the one cx.param is given" } else { "the rules read a number with cx.param(NAME, default), by exactly that name" };
+        Ok(unread.iter().take(MAX_SAID).map(|name| format!("{}: {why}", unread_words(name))).collect())
     }
 
     /// The sounds the rules asked for in this engine's life that no file makes: the engine
