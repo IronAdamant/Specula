@@ -30,6 +30,12 @@ rounds.
   run that passed: that points at the machine and not at the window's loop, and it is a
   reading, not a proof. Run the checks whole again on a quiet machine before calling the
   window's loop clean.
+- **Paused by the owner (2026-11-21) until the cost is dealt with:** "We're on the pause right now,
+  because cost increase issue is going to likely expotentially increase if we don't fix this now."
+  Part 4, the libraries and every later part wait on it. The owner is taking the comparison to Grok
+  before deciding how to proceed. Added to the plan the same day, for M6 and not designed: a library
+  of effects (lightning, fire, explosions, fire spread, laser, freeze, wind) across "any part of the
+  system" (ROADMAP M6).
 - **The six-job comparison of 2026-11-21 (the owner asked for it; the paid runs are done): the
   engine costs more on every job, 3D included.** Weighted tokens, engine over plain: small
   1.77, medium 1.22, change 1.18; small3d 1.62, medium3d 1.71, change3d 1.24, with the same

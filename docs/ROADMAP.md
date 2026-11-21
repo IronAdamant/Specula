@@ -1522,6 +1522,22 @@ at once.
     - **What this does to M6's size, said plainly:** this part grows from about 15,000 to 20,000 lines
       to about 40,000 to 60,000, with the research before it, and a design note for each library before
       it is built. The owner accepts the time.
+- [ ] ➕ **A library of effects, for any game** (owner, 2026-11-21: "Are there plans to set up SFX
+  library, like lightning, fire, explosions, fire spread, laser, freeze, wind, etc?", then "Add it in
+  the plan. This will be part of M6. any part of the system."). **Not designed.** What exists: the
+  effects system (`specula-scintilla`: particles and decals as data, budgets, photosensitivity checks),
+  sounds as data, wind for grass; each effect so far was made once, for Sepulcra. What the owner's
+  "any part of the system" asks of the design, in Claude's reading, to be settled with them:
+  - **An effect by name, changed by numbers**, as a shape or a creature is: lightning, fire, an
+    explosion, a laser, freezing, wind and the rest, found through a catalogue an agent can search.
+  - **One name carries every part of the system it needs:** the particles, the flash and the light, the
+    decal it leaves, its sound, and where it has one its behaviour.
+  - **Behaviour is the larger half.** Fire that spreads and cold that freezes change the world over
+    time: they belong to the simulation and hold its determinism rules (F2), where a spark or a flash
+    is cosmetic and outside them. The two are designed apart and offered under one name.
+  - **The look is the project's**: an effect takes the project's style and palette, as a recipe does.
+  - **How it is measured:** the comparison's harness, a job that needs effects, with the library and
+    without it.
 - [ ] **Ship Sepulcra, the engine's MVP game, as the demo, with its three maps** (owner, 2026-11-16:
   "Sepulcra is a MVP game for Specula"; "3 map set in October. As demo. I'll probably ask you to set up 20
   different maps, each very different from the initial 3 maps"). This is the item that read "ship the
