@@ -47,12 +47,20 @@ pub struct Find {
     /// What the game is never to be in on the way (`--never "lives<3"`): a situation where it
     /// holds is not kept, and the search does not play on from it.
     pub never: Option<Until>,
+    /// The search ends after this many seconds with the best it came to (`--seconds`): a
+    /// command an agent runs is given two minutes by most harnesses, and a search that
+    /// outlived its caller left a builder of the comparison waiting on a project it could
+    /// not run (2026-11-22). A search that ends by its tries, or finds, never reads the clock.
+    pub seconds: u64,
 }
 
 /// The ticks an input is held when the command names none.
 pub const DEFAULT_STEP: u64 = 15;
 /// The stretches a search plays when the command names none.
-pub const DEFAULT_FIND_TRIES: u64 = 2000;
+pub const DEFAULT_FIND_TRIES: u64 = 20_000;
+/// The seconds a search takes at most when the command names none, and the most it may name.
+pub const DEFAULT_FIND_SECONDS: u64 = 90;
+pub const MAX_FIND_SECONDS: u64 = 1500;
 /// Most stretches a search plays, and most runs a tuning makes (`--tries`).
 pub const MAX_TRIES: u64 = 20_000;
 /// Most values of one parameter a run is played for (`--set grip=0.2,0.4,...`).
@@ -76,6 +84,7 @@ impl Find {
             ("words", Json::arr(self.words.iter().map(|w| Json::from(w.as_str())))),
             ("step", Json::from(self.step)),
             ("tries", Json::from(self.tries)),
+            ("seconds", Json::from(self.seconds)),
         ]);
         if let Some(rise) = &self.rise {
             j.set("rise", Json::from(rise.as_str()));
@@ -99,6 +108,7 @@ impl Find {
             step: j.get("step").and_then(Json::as_u64).unwrap_or(DEFAULT_STEP),
             tries: j.get("tries").and_then(Json::as_u64).unwrap_or(DEFAULT_FIND_TRIES),
             never: j.get("never").and_then(Json::as_str).map(Until::parse).transpose()?,
+            seconds: j.get("seconds").and_then(Json::as_u64).unwrap_or(DEFAULT_FIND_SECONDS),
         };
         find.check()?;
         Ok(find)
@@ -110,8 +120,8 @@ impl Find {
         }
         check_inputs(&self.words.iter().map(|w| (0, w.clone())).collect::<Vec<_>>())?;
         check_keys(&self.cells)?;
-        if !(1..=3600).contains(&self.step) || !(1..=MAX_TRIES).contains(&self.tries) {
-            return Err(format!("find: a step of 1 to 3600 ticks, and 1 to {MAX_TRIES} tries"));
+        if !(1..=3600).contains(&self.step) || !(1..=MAX_TRIES).contains(&self.tries) || !(1..=MAX_FIND_SECONDS).contains(&self.seconds) {
+            return Err(format!("find: a step of 1 to 3600 ticks, 1 to {MAX_TRIES} tries, and 1 to {MAX_FIND_SECONDS} seconds"));
         }
         if self.rise.as_ref().is_some_and(|r| r.is_empty() || r.len() > 128) {
             return Err("find.rise: the name of one of the report's lines".to_owned());
@@ -271,7 +281,13 @@ pub(super) fn find(run: &mut Run, game: &GameFile, spec: &Spec, find: &Find, tic
     let mut stretches = 0u64;
     let mut best = (rise_of(&first), tick);
     let mut reached: Option<(Vec<(u64, String)>, u64)> = None;
+    let (began, limit) = (std::time::Instant::now(), Duration::from_secs(find.seconds));
+    let mut out_of_time = false;
     'search: while stretches < find.tries {
+        if began.elapsed() >= limit {
+            out_of_time = true;
+            break;
+        }
         // Pick: three times in four among the situations that stand at the most of what
         // rises (a game that has got somewhere is played on from there), else among them all;
         // and among those, one picked less is picked more. The pick is the run's seed's.
@@ -369,7 +385,7 @@ pub(super) fn find(run: &mut Run, game: &GameFile, spec: &Spec, find: &Find, tic
             ("until", Json::from(find.until.text().as_str())),
             ("stretches", Json::from(stretches)),
             ("situations", Json::from(kept.len() as u64)),
-            ("why", Json::from(if stretches >= find.tries { "the tries ran out" } else { "every situation reached stands at the run's last tick" })),
+            ("why", Json::from((if out_of_time { format!("the search's {} seconds ran out (--seconds gives it more, up to {MAX_FIND_SECONDS})", find.seconds) } else if stretches >= find.tries { "the tries ran out".to_owned() } else { "every situation reached stands at the run's last tick".to_owned() }).as_str())),
         ]);
         if find.rise.is_some() {
             answer.set("best", Json::obj([("rise", Json::Num(best.0)), ("at_tick", Json::from(best.1))]));
@@ -433,10 +449,10 @@ mod tests {
 
     #[test]
     fn a_search_is_read_back_as_it_was_written() {
-        let find = Find { until: Until::parse("screen==won&&score>=30").unwrap(), words: vec!["left".into(), "right".into(), "none".into()], rise: Some("score".into()), cells: vec!["ball".into()], step: 20, tries: 500, never: Some(Until::parse("lives<3").unwrap()) };
+        let find = Find { until: Until::parse("screen==won&&score>=30").unwrap(), words: vec!["left".into(), "right".into(), "none".into()], rise: Some("score".into()), cells: vec!["ball".into()], step: 20, tries: 500, never: Some(Until::parse("lives<3").unwrap()), seconds: 45 };
         assert_eq!(Find::from_json(&find.to_json()).unwrap(), find);
         let bare = Find::from_json(&Json::parse(r#"{"until": "won==true", "words": ["tap"]}"#).unwrap()).unwrap();
-        assert_eq!((bare.step, bare.tries, bare.rise, bare.cells.len()), (DEFAULT_STEP, DEFAULT_FIND_TRIES, None, 0));
+        assert_eq!((bare.step, bare.tries, bare.rise, bare.cells.len(), bare.seconds), (DEFAULT_STEP, DEFAULT_FIND_TRIES, None, 0, DEFAULT_FIND_SECONDS));
         let bad = |text: &str| Find::from_json(&Json::parse(text).unwrap()).unwrap_err();
         assert!(bad(r#"{"until": "won", "words": ["tap"]}"#).contains("not a condition"));
         assert!(bad(r#"{"until": "won==true", "words": []}"#).contains("find.words"));

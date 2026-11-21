@@ -1345,6 +1345,16 @@ impl Game for Shell {
         if let Some(tick) = self.run.ended_at() {
             j.set("ended_at", Json::from(tick));
         }
+        // What the modules have not been told yet (a run that began, a setting, a button's
+        // word: told at the next tick). It is part of where the game stands: a save made
+        // between the telling and the tick lost it, and the game loaded was a game whose
+        // rules never heard that their run began (found by `specula find`, 2026-11-22: a
+        // script it found from a save of the start did not win in a run of its own). Each
+        // is its name and its data as the module host encodes a value, so that a number
+        // comes back as the kind of number it was.
+        if !self.events_out.is_empty() {
+            j.set("events", Json::arr(self.events_out.iter().map(|(name, data)| Json::arr([Json::from(name.as_str()), Json::from(specula_core::base64::encode(&data.encode()).as_str())]))));
+        }
         Some(Ok(j.to_string().into_bytes()))
     }
 
@@ -1363,20 +1373,38 @@ impl Game for Shell {
         };
         // (A save from before runs were kept has none: one run, if it was ever under way.)
         let runs = j.get("runs").and_then(Json::as_u64).unwrap_or(u64::from(phase != Phase::Title));
-        Ok(Box::new((phase, j.get("ended_at").and_then(Json::as_u64), runs)))
+        // (A save from before the waiting events were kept has none.)
+        let mut events: Vec<(String, Value)> = Vec::new();
+        for event in j.get("events").and_then(Json::as_array).unwrap_or(&[]).iter().take(MAX_EVENTS) {
+            let pair = event.as_array().filter(|p| p.len() == 2);
+            let (Some(name), Some(data)) = (pair.and_then(|p| p[0].as_str()), pair.and_then(|p| p[1].as_str())) else {
+                return Err("the game's part of the save has an event that is not a name and its data".to_owned());
+            };
+            let data = specula_core::base64::decode(data).ok().and_then(|bytes| Value::decode(&bytes).ok()).ok_or_else(|| format!("the game's part of the save has an event ('{name}') whose data cannot be read"))?;
+            events.push((name.to_owned(), data));
+        }
+        Ok(Box::new((phase, j.get("ended_at").and_then(Json::as_u64), runs, events)))
     }
 
-    fn apply_state(&mut self, ctx: &mut Ctx, state: Box<dyn std::any::Any>) {
-        if let Ok(saved) = state.downcast::<(Phase, Option<u64>, u64)>() {
+    fn apply_state(&mut self, _: &mut Ctx, state: Box<dyn std::any::Any>) {
+        self.put_back(state);
+    }
+}
+
+impl Shell {
+    /// Puts the run back as a save had it ([`Game::apply_state`]).
+    fn put_back(&mut self, state: Box<dyn std::any::Any>) {
+        if let Ok(saved) = state.downcast::<(Phase, Option<u64>, u64, Vec<(String, Value)>)>() {
+            let saved = *saved;
             self.run.restore(saved.0, saved.1, saved.2);
             // What was pressed before the load was pressed in another run: it is not told to
-            // the modules the save brought back.
-            self.events_out.clear();
+            // the modules the save brought back. What the saved game's modules had still to
+            // be told is.
+            self.events_out = saved.3;
             // The clock is as the phase says: only a run under way ticks.
             self.clock_wish = Some(saved.0 != Phase::Running);
-            let _ = ctx;
             self.laid_out = None;
-        self.stale = true;
+            self.stale = true;
         }
     }
 }
@@ -1715,8 +1743,17 @@ mod tests {
         // The game's part of a save, and back.
         let bytes = shell.save_state().unwrap().unwrap();
         let parsed = shell.parse_state(&bytes).unwrap();
-        let saved = parsed.downcast::<(Phase, Option<u64>, u64)>().unwrap();
-        assert_eq!(*saved, (Phase::Ended(Ended::Lost), Some(77), 1));
+        let saved = parsed.downcast::<(Phase, Option<u64>, u64, Vec<(String, Value)>)>().unwrap();
+        assert_eq!(*saved, (Phase::Ended(Ended::Lost), Some(77), 1, Vec::new()));
+        // What the modules have still to be told is in the save, each number the kind it
+        // was, and a load tells it in place of whatever waited before the load.
+        shell.events_out = vec![("run".to_owned(), Value::map().with("phase", "start").with("tick", 5i64).with("speed", 0.5))];
+        let bytes = shell.save_state().unwrap().unwrap();
+        shell.events_out = vec![("ui".to_owned(), Value::map().with("action", "pressed_before_the_load"))];
+        let parsed = shell.parse_state(&bytes).unwrap();
+        shell.put_back(parsed);
+        assert_eq!(events(&mut shell), [("run".to_owned(), Value::map().with("phase", "start").with("tick", 5i64).with("speed", 0.5))]);
+        assert!(shell.parse_state(br#"{"format": "specula.shell.save.v1", "phase": "running", "events": [["run", "not base64 of a value"]]}"#).is_err());
         assert!(shell.parse_state(b"{}").is_err() && shell.parse_state(br#"{"format": "specula.shell.save.v1", "phase": "flying"}"#).is_err());
     }
 

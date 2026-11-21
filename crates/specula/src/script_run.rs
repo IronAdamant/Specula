@@ -35,7 +35,7 @@ use specula_protocol::{Content, SessionInfo, ToolHandler, ToolOutput};
 use crate::startgate::StartGate;
 
 mod find;
-pub use find::{Find, DEFAULT_FIND_TRIES, DEFAULT_STEP, MAX_SWEEP, MAX_TRIES};
+pub use find::{Find, DEFAULT_FIND_SECONDS, DEFAULT_FIND_TRIES, DEFAULT_STEP, MAX_FIND_SECONDS, MAX_SWEEP, MAX_TRIES};
 use crate::tools::{Command, TimeOp, Tools};
 
 /// Most ticks one run plays (at 60 Hz, about four and a half hours of game).

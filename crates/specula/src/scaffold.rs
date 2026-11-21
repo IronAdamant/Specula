@@ -376,7 +376,8 @@ builds the modules, plays the game with no window and prints how it stands as JS
   where the condition begins to hold); **"there is a script that wins"**, `specula find .
   --ticks 1800 --inputs 0:enter --until "phase==won" --words left,right,up,down,none --rise
   score --never "lives<3"` (it answers the inputs: put them in `checks/runs.json`; `--cells`
-  names the lines that say where the game is, such as `score,ball`). None of them is needed
+  names the lines that say where the game is, such as `score,ball`; it ends within 90 seconds
+  with the best it came to, and `--seconds` gives it more). None of them is needed
   to build a game: when nothing here fits, write the game and run it once.
 - **Ticks.** The script counts every tick. The game's own clock ticks only while a run is
   under way: the title, a pause and an ended run hold it, as they do for a player.
@@ -568,7 +569,8 @@ All of it is a spawn, in the module's `start` or `tick` (`use specula_sdk::{Spaw
   "layers": [{"name": "thump", "source": {"wave": "sine", "freq": {"points": [[0, 220], [0.2,
   90]], "curve": "exp"}}, "env": {"attack": 0.002, "decay": 0.18, "sustain": 0, "release":
   0.04}}]}`. `specula call audio_preview '{"path": "assets/sounds/bounce.json"}'` measures one without
-  playing it (with `"wav": true` it also writes it as a WAV file). A sound with no file plays nothing and changes nothing: `specula run` names it. The player's
+  playing it. **Each sound as a WAV file**: `specula run . --ticks 0 --sounds sounds` writes
+  `sounds/NAME.wav` for every recipe, with no engine started. A sound with no file plays nothing and changes nothing: `specula run` names it. The player's
   `volume` setting scales everything played (the engine does it, on the master bus: no rule is
   needed, and 0 is silence); a run with no window plays nothing aloud.
 - **Seeing it**: `specula run . --ticks 40 --frame out.png --size 800x480` writes what the

@@ -4,6 +4,7 @@
   "title": "Roll, the whole game: three boards, crates to push, a moving bridge, a menu, saved settings, two languages",
   "lead": [
     "The physics is the engine's, and notes/world.md says what it will do (bounce, friction, what a push does to a ball that rolls, the order in a tick): write the whole game in one go from the two pages, and do not measure what a page says.",
+    "Each sound as a WAV file is one command: `{tool} play {run} --ticks 0 --sounds sounds` writes sounds/NAME.wav for every recipe in assets/sounds. Start no engine for it.",
     "The bridge is a kinematic slab with `.carries()` after its collider word, moved by its position each tick: what rests on it rides with it. Write no rule of your own that carries the ball.",
     "The board to start on is `--set board=3`, read by the rules with `cx.param(\"board\", 1.0)?` where a run begins.",
     "The item that asks for a script that clears board 3 is a search the engine makes: `{tool} find {run} --ticks 3600 --set board=3 --until \"screen==won\" --words right,left,up,down,none --rise score --cells score,ball --never \"lives<3\"`, with your report's own line names, and `--inputs` for whatever enters play. Put the inputs it answers in your README. Write no player of your own."

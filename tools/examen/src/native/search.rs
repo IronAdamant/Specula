@@ -47,6 +47,12 @@ impl Module for Rules {
         Ok(())
     }
     fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        // The tick the run begins in is the engine's telling of it, and no push: a game put back
+        // from a save of its start must still be told (a save that lost what the rules had yet
+        // to hear put this ball a tick ahead of a run of its own, 2026-11-22).
+        if cx.events().iter().any(|e| e.from == "engine" && e.name == "run") {
+            return Ok(());
+        }
         let ball = cx.find("/nummi/ball")?.expect("ball");
         let a = cx.param("push", 5.6)? as f32 * cx.dt();
         let mut push = Vec3::new(0.0, 0.0, 0.0);

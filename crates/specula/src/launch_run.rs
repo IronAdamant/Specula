@@ -676,7 +676,16 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
         Err(no) => return no,
     };
     // One parameter with several values: the run is played once for each, a line each.
-    let Some(swept) = args.set.iter().position(|(_, values)| values.len() > 1) else { return run_in(ctx, &folder, args, Kept::AsAsked) };
+    let Some(swept) = args.set.iter().position(|(_, values)| values.len() > 1) else {
+        let (code, mut answer) = run_in(ctx, &folder, args, Kept::AsAsked);
+        if let (0, Some(out)) = (code, &args.sounds) {
+            match write_sounds(&folder, out) {
+                Ok(written) => drop(answer.set(RUN_SOUNDS, Json::Arr(written))),
+                Err(why) => return why,
+            }
+        }
+        return (code, answer);
+    };
     let mut lines = Vec::new();
     let mut failed = false;
     for value in &args.set[swept].1 {
@@ -702,6 +711,55 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
         }
     }
     (i32::from(failed), Json::obj([(CHECK_LINES, Json::Arr(lines))]))
+}
+
+/// Most sounds one run writes out.
+const MAX_SOUNDS_WRITTEN: usize = 64;
+/// The key a run's answer has the sounds it wrote under.
+const RUN_SOUNDS: &str = "sounds_written";
+
+/// `--sounds DIR`: every sound of the game (`assets/sounds/NAME.json`, a recipe) rendered and
+/// written as `DIR/NAME.wav`, 16 bits, as the game would play it. No engine is started for it:
+/// a brief that asks for each sound as a file cost a builder of the comparison three requests
+/// and an engine left running (`audio_preview`), and the files landed in a captures folder.
+/// Returns a line for each file written.
+fn write_sounds(project: &Path, out: &Path) -> Result<Vec<Json>, (i32, Json)> {
+    use specula_audio::{synth, wav};
+    let from = project.join("assets").join("sounds");
+    let out = std::path::absolute(out).unwrap_or_else(|_| out.to_path_buf());
+    let mut recipes: Vec<PathBuf> = match std::fs::read_dir(&from) {
+        Ok(entries) => entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "json") && p.is_file()).collect(),
+        Err(_) => Vec::new(),
+    };
+    recipes.sort();
+    if recipes.is_empty() {
+        return Err(refusal("no_sounds", format!("{} has no sound to write: a sound is a recipe, NAME.json, there (notes/world.md)", from.display())));
+    }
+    if recipes.len() > MAX_SOUNDS_WRITTEN {
+        return Err(refusal("too_many_sounds", format!("{} has {} recipes; --sounds writes at most {MAX_SOUNDS_WRITTEN}", from.display(), recipes.len())));
+    }
+    crate::disk::book().make_dir(crate::disk::Category::Captures, &out, crate::disk::Need::Essential).map_err(|e| refusal("no_sounds", format!("{}: {e}", out.display())))?;
+    let mut written = Vec::new();
+    for path in recipes {
+        let bad = |why: String| refusal("bad_sound", format!("{}: {why}", path.display()));
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if size > crate::module_sounds::MAX_RECIPE_BYTES {
+            return Err(bad(format!("{size} bytes; a sound's recipe is at most {} KiB", crate::module_sounds::MAX_RECIPE_BYTES >> 10)));
+        }
+        let text = std::fs::read_to_string(&path).map_err(|e| bad(e.to_string()))?;
+        let recipe = synth::Recipe::parse(&text).map_err(|e| bad(e.to_string()))?;
+        if recipe.rendered_seconds() > crate::module_sounds::MAX_SOUND_S {
+            return Err(bad(format!("{:.1} s long; a game's sound is at most {} s", recipe.rendered_seconds(), crate::module_sounds::MAX_SOUND_S)));
+        }
+        let sound = synth::render(&recipe, &synth::RenderOptions::default()).map_err(|e| bad(e.to_string()))?;
+        let bytes = wav::encode(&sound.samples, sound.channels, sound.rate, wav::WavFormat::Pcm16).map_err(|e| bad(e.to_string()))?;
+        let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let file = out.join(format!("{name}.wav"));
+        crate::disk::book().write(crate::disk::Category::Captures, "sounds", &file, &bytes, crate::disk::Need::Essential).map_err(|e| bad(format!("{}: {e}", file.display())))?;
+        let seconds = sound.samples.len() as f64 / (f64::from(sound.channels.max(1)) * f64::from(sound.rate.max(1)));
+        written.push(Json::obj([("sound", Json::from(name.as_str())), ("file", Json::from(file.to_string_lossy().as_ref())), ("seconds", Json::Num((seconds * 1000.0).round() / 1000.0))]));
+    }
+    Ok(written)
 }
 
 /// The last state of a run made for a search, or why there is none.
@@ -1039,6 +1097,7 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
             step: args.step.unwrap_or(crate::script_run::DEFAULT_STEP),
             tries: args.tries.unwrap_or(crate::script_run::DEFAULT_FIND_TRIES),
             never: args.never.clone(),
+            seconds: args.seconds.unwrap_or(crate::script_run::DEFAULT_FIND_SECONDS),
         }),
         out: scratch.join("answer.json"),
     };
@@ -1314,6 +1373,10 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
         }
         for line in json.get("log").and_then(Json::as_array).unwrap_or(&[]) {
             eprintln!("{}", log_line(line));
+        }
+        // (The sounds written, beside the state: a line each, where the game's problems are said.)
+        for sound in json.get(RUN_SOUNDS).and_then(Json::as_array).unwrap_or(&[]) {
+            eprintln!("specula run: wrote {} ({} s)", sound.get("file").and_then(Json::as_str).unwrap_or("?"), sound.get("seconds").and_then(Json::as_f64).unwrap_or(0.0));
         }
         // The states on the way (`--at`), a line each, in order.
         for state in json.get(RUN_AT).and_then(Json::as_array).unwrap_or(&[]) {
