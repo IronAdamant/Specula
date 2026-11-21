@@ -72,7 +72,7 @@ rounds.
   body and tells it to bounce: `Cx::push`, `Cx::place_at_rest`, `Spawn::bounce`, `friction`),
   `7f2167f8` (the 3D jobs). The mends are on the engine without the library (`C:/sf-base`,
   `4eb20e9e`), without the push words; that arm is not measured again.
-- **Pushed on 2026-11-21 at the owner's word: `origin/main` = `349c9e64`** (a plain fast-forward from `7345f320`). Anything after it is not pushed. Push only when the owner asks.
+- **Pushed on 2026-11-22 at the owner's word: `origin/main` is this line up to the commit that says so** (a plain fast-forward from `349c9e64`). Anything after it is not pushed. Push only when the owner asks.
 - **Part 4, the libraries and everything after them wait** behind what the owner set on
   2026-11-20, when a measured comparison showed the shape library made four props no cheaper and
   the cause turned out to be that the builders could not see what they needed ("the builders
