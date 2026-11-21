@@ -1287,6 +1287,11 @@ mod stale_tests {
         let repo = specula_logic::fix::canonical(&Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(".."));
         let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| repo.join("target"), PathBuf::from);
         let target = specula_logic::fix::canonical(&target).join("module-tests-stale-units");
+        // From an empty folder: the folder outlives a run, and the units of a build made under
+        // another setting (`CARGO_INCREMENTAL` set or not gives a unit another name) are
+        // rightly stale beside this run's. With it left, the test failed whenever the
+        // setting had changed since the last run in the same target folder (2026-11-21).
+        let _ = std::fs::remove_dir_all(&target);
         for round in 0..2 {
             for check in [true, false] {
                 let mut req = BuildRequest::new(repo.join("games").join("ambulo"));

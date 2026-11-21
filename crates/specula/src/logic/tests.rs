@@ -905,3 +905,55 @@ fn the_sdks_typed_spawn_words_are_what_the_engine_takes() {
     // a model library, which this host has not: the words are held as they are written).
     assert_eq!(Spawn::model("models/gear.json").0, specula_sdk::Value::map().with("shape", "model").with("recipe", "models/gear.json"));
 }
+
+/// Pushes a spinning ball, then puts it at rest.
+#[derive(Default)]
+struct Pusher;
+impl Module for Pusher {
+    fn describe(&self) -> ModuleInfo {
+        ModuleInfo { name: "pusher", ..ModuleInfo::default() }
+    }
+    fn start(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        use specula_sdk::{Value, Vec3};
+        let spinning = Value::map().with("kind", "dynamic").with("mass", 2.0).with("velocity", Vec3::new(1.0, 0.0, 0.0)).with("angular_velocity", Vec3::new(0.0, 0.0, -4.0));
+        cx.spawn(Spawn::new("sphere").name("ball").collider_sphere(0.5).bounce(0.5).friction(0.25).field("body", spinning))?;
+        cx.spawn(Spawn::new("cube").name("wall").collider_box(Vec3::new(1.0, 1.0, 1.0)))?;
+        Ok(())
+    }
+    fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        use specula_sdk::Vec3;
+        let ball = cx.find("/ball")?.expect("the ball");
+        match cx.tick() {
+            1 => cx.push(ball, Vec3::new(0.5, 2.0, 0.0))?,
+            2 => cx.place_at_rest(ball, Vec3::new(0.0, 3.0, 0.0))?,
+            3 => {
+                let wall = cx.find("/wall")?.expect("the wall");
+                let refused = cx.push(wall, Vec3::new(1.0, 0.0, 0.0)).unwrap_err();
+                cx.set_state("refused", refused.code.as_str())?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// `Cx::push` adds to a body's velocity and keeps the rest of it (its spin, its mass);
+/// `place_at_rest` moves it and takes its speed and spin away; a thing with no body is refused
+/// by name; and the bounce and the friction go into the collider a collider word made.
+#[test]
+fn a_push_keeps_the_bodys_spin_and_a_placing_takes_it() {
+    let mut r = Run::new();
+    r.load(ModuleCode::of::<Pusher>()).unwrap();
+    let ball = |r: &Run| r.world.get(r.world.find_path("/ball").unwrap()).unwrap().clone();
+    let c = ball(&r).collider.expect("a collider");
+    assert!((c.restitution - 0.5).abs() < 1e-6 && (c.friction - 0.25).abs() < 1e-6 && format!("{:?}", c.shape).contains("Sphere"), "{c:?}");
+    r.ticks(2);
+    let b = ball(&r).body.expect("a body");
+    assert!((b.velocity.x - 1.5).abs() < 1e-5 && (b.velocity.y - 2.0).abs() < 1e-5, "the push is added: {:?}", b.velocity);
+    assert!((b.angular_velocity.z + 4.0).abs() < 1e-5 && (b.mass - 2.0).abs() < 1e-6, "its spin and its mass are kept: {b:?}");
+    r.ticks(1);
+    let (e, b) = (ball(&r), ball(&r).body.unwrap());
+    assert!((e.position.y - 3.0).abs() < 1e-6 && b.velocity.length() < 1e-6 && b.angular_velocity.length() < 1e-6 && (b.mass - 2.0).abs() < 1e-6, "{e:?}");
+    r.ticks(1);
+    assert_eq!(r.state("pusher", "refused").as_str(), Some("no_body"));
+}
