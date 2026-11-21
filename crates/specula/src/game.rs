@@ -290,6 +290,13 @@ pub trait Game {
         None
     }
 
+    /// The player's volume as the game applies it to everything heard, 0 to 1 (a headless run
+    /// plays nothing, and says by this how loud each sound would have been). Default: none
+    /// (a game with no such setting: every sound at its own gain).
+    fn volume(&self) -> Option<f32> {
+        None
+    }
+
     /// The module folders the game is made of, below the project (with `/`), as its game file
     /// names them: what `--run` builds and loads at start. Default: none.
     fn modules(&self) -> Vec<String> {

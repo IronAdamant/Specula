@@ -631,7 +631,9 @@ tokens in one run of the 3D game) and a tracer of their own; the plain builders 
   knows. `--never` names what must not happen on the way (a life lost, a fall): such a situation
   is not kept. This is the first phase of Go-Explore (Ecoffet and others, "Go-Explore: a New
   Approach for Hard-Exploration Problems", 2019). The search's choices come from the run's seed:
-  the same command finds the same script.
+  the same command makes the same tries in the same order (a search ended by its seconds
+  got as far as the machine went: its `why` says so, and only then does the answer depend
+  on the machine).
 
 **What it rests on, and how that is held.** A game put back from a save must play on as the game
 that was saved: the world, the modules' state and random streams, physics' hidden state, the
@@ -666,6 +668,48 @@ from the page alone was an array; the page says the form now.
 `set` and `find`), `launch_run.rs` (`tune_game`, a run for each value), `logic` (`set_params`, the
 request `param`), `specula-sdk` (`Cx::param`), `launch_cli.rs`, `scaffold.rs` (the guide's "When
 the engine should look for you"), `tools/examen/src/native/search.rs` (`search_check`).
+
+## 16. What a second reader's bug list found (2026-11-22)
+
+A second reader went through the code and the 24 ledgers of the second comparison and listed
+thirteen faults ([LEVERAGE.md](LEVERAGE.md) has the comparison; the list was a report to the
+owner, not a file of this repository). What was mended from it, by hand, the same day:
+
+- **A damaged save could hang the engine.** A physics snapshot's settings were read with no
+  range check, and the substep count is a loop's length: one byte wrong, and the next step
+  ran for hours. They are checked as a game file's are (`bad_snapshot`), a step holds the
+  count to `MAX_SUBSTEPS` (64), and a test changes a few bytes of a save 4,000 ways: each is
+  refused, or restored and stepped.
+- **A number no rule reads was set in silence.** `--set bord=3` played the game as written. A
+  run now says so among its problems ("the run set 'bord' and no rule read it in this run"),
+  a check says it on its own line, and `specula tune` refuses to vary one
+  (`unread_parameter`): every try would be the same run.
+- **A check could not give its run a number.** `"set": {"board": 3}` is a key of a check now,
+  as `--set` is a flag of a run.
+- **A loop over the tick's events could not change the world.** `cx.events()` lends the list;
+  `cx.take_events()` hands it over, and the sample and the guide use it.
+- **"Silent at volume 0" could be shown by no run**, a headless run playing nothing.
+  `run.sounds_heard` is each sound asked for with how loud: its own gain times the player's
+  volume as the game stood.
+- **The sounds a run reports were no part of a save** (found by `search_check` once its game
+  made a sound, not by the reader): a script a search found was answered with the sounds of
+  every stretch the search had tried. The list is a section of the save (`sounds`, there
+  only when a sound was asked for).
+- **What two pages did not say**: every public word of the SDK is on the guide or the world
+  page (twelve were on neither, and four of six builders of the 3D jobs searched the SDK's
+  source), and the world page lists a sound recipe's fields. A test holds both against the
+  code. The world page is twelve half-kilobytes for it.
+- **Said, not mended:** a search that ends by its seconds answers by how far this machine got
+  (the page said "the same command finds the same script"; it says when that holds). The
+  guard against tests that pass by the machine's speed reads upper bounds only: what it
+  cannot see is written at its head.
+- **Left as they are:** the sample's screens keep their names (`hud`, `pause`; the report's
+  `phase` line says `paused`); three lookups that panic on a name not in the engine's own
+  tables; the engine on Linux ([LINUX.md](LINUX.md): the second reader builds that side).
+
+`search_check` plays the three that need a game: the sound's loudness at the tick a coin is
+taken, a tuning refused for a number no rule reads, and three checks that give their runs a
+number, one of them mistyped.
 
 ## As built
 

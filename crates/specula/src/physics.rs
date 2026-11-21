@@ -1026,7 +1026,7 @@ impl PhysicsPatch {
 /// so a slower tick (the engine's 30 Hz without a game) takes proportionally more and the
 /// solver sees the same substep length (as stiff) at any tick rate.
 pub fn space_settings(s: &PhysicsSettings, hz: u32) -> specula_physics::Settings {
-    let per_tick = (s.substeps * 60).div_ceil(hz.max(1)).clamp(1, 64);
+    let per_tick = (s.substeps * 60).div_ceil(hz.max(1)).clamp(1, specula_physics::MAX_SUBSTEPS);
     specula_physics::Settings {
         gravity: Vec3::new(s.gravity[0], s.gravity[1], s.gravity[2]),
         substeps: per_tick,

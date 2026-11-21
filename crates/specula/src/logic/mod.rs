@@ -333,7 +333,7 @@ struct CallParts<'a> {
     log: &'a mut VecDeque<LogLine>,
     pending_events: usize,
     fp: &'a mut FpLog,
-    params: &'a BTreeMap<String, f64>,
+    params: &'a BTreeMap<String, Param>,
 }
 
 /// Runs one call of `code` as module `name`, with the world recorded in full. On failure the
@@ -417,7 +417,23 @@ pub struct LogicHost {
     /// Numbers a run was given for its rules to read (`specula run --set friction=0.3`;
     /// `Cx::param`): the run's, as its script and its seed are, set once before a module loads
     /// and never changed by one. A window's game has none, and every `param` answers its default.
-    params: BTreeMap<String, f64>,
+    params: BTreeMap<String, Param>,
+}
+
+/// A number a run was given, and whether any rule has asked for it: a name nothing reads is a
+/// name mistyped (`--set bord=3`), and the run would play as written and say nothing.
+#[derive(Debug, Default)]
+pub struct Param {
+    pub value: f64,
+    read: std::sync::atomic::AtomicBool,
+}
+
+impl Param {
+    /// The number, noted as read.
+    pub fn read(&self) -> f64 {
+        self.read.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.value
+    }
 }
 
 impl Default for LogicHost {
@@ -541,7 +557,12 @@ fn describe(code: &ModuleCode, tick: u64) -> Result<(Info, ModuleInput), WorldEr
 impl LogicHost {
     /// The numbers this run's rules may read (`Cx::param`). Set before a module loads.
     pub fn set_params(&mut self, params: impl IntoIterator<Item = (String, f64)>) {
-        self.params = params.into_iter().take(MAX_PARAMS).collect();
+        self.params = params.into_iter().take(MAX_PARAMS).map(|(name, value)| (name, Param { value, read: Default::default() })).collect();
+    }
+
+    /// The run's numbers no rule has asked for so far, by name.
+    pub fn params_unread(&self) -> Vec<&str> {
+        self.params.iter().filter(|(_, p)| !p.read.load(std::sync::atomic::Ordering::Relaxed)).map(|(name, _)| name.as_str()).collect()
     }
 
     pub fn new() -> LogicHost {
@@ -591,7 +612,7 @@ impl LogicHost {
         mover: &'a mut Box<dyn CharacterMover>,
         log: &'a mut VecDeque<LogLine>,
         fp: &'a mut FpLog,
-        params: &'a BTreeMap<String, f64>,
+        params: &'a BTreeMap<String, Param>,
         pending: usize,
         name: &str,
     ) -> CallParts<'a> {

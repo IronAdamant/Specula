@@ -227,7 +227,8 @@ impl Module for Rules {
         // rules read, a run started or given up, a press of the game's own button, the run's
         // end. In order, so that a tap that comes with the start counts, and a run started and
         // given up in one tick is given up.
-        for event in cx.events().iter().filter(|e| e.from == "engine") {
+        // (Taken, so that this loop may call cx: `cx.events()` only lends the list.)
+        for event in cx.take_events().into_iter().filter(|e| e.from == "engine") {
             let word = |key: &str| event.data.get(key).and_then(Value::as_str);
             match event.name.as_str() {
                 "setting" if word("name") == Some("difficulty") => seconds = seconds_for(word("value").unwrap_or("normal")),
@@ -390,7 +391,8 @@ builds the modules, plays the game with no window and prints how it stands as JS
   **The world itself**, read after the tick's physics, so no rule need copy it:
   `world./{{module}}/ball.position` (`{"x", "y", "z"}`), `.x`, `.velocity`, `.exists`; everything
   with a tag, by path: `world.#coin.positions`, `world.#coin.count`. `run.sounds`: every
-  sound the rules asked for so far, in order.
+  sound the rules asked for so far, in order; `run.sounds_heard`: the same with how loud
+  (`{"sound", "gain"}`: its own gain times the player's volume, so 0 at volume 0).
 - `--seed N` (1 when left out) seeds `cx.random_*`: the same seed and inputs give the same
   run, and the rules never see a seed. `--settings FOLDER` is where the player's settings are
   read and kept (a file the engine writes in it: the same folder again finds them); without
@@ -470,7 +472,8 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   (`Down`, `Left`, `Right`), `Pad.Start`, `Pad.LeftBumper`, `Pad.RightTrigger` (an axis),
   `Pad.LeftStick` (an axis2); `Mouse.Left`, `Mouse.Right`; `Touch.Tap`. A name the input
   map does not read is refused when the module loads, with the name.
-- Events from the engine, at a tick: `for e in cx.events()`, with `e.from == "engine"`,
+- Events from the engine, at a tick: `for e in cx.take_events()` (the list is then yours,
+  and the loop may call `cx`; `cx.events()` only lends it), with `e.from == "engine"`,
   `e.name` and `e.data.get("key")`: `run` (`phase` is `start` when a run begins; any other
   `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`); from physics,
   `contact` and `fell` (`notes/world.md`).
@@ -491,6 +494,14 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   the rules take no seed and keep none. A stream goes on from where it was, so a second game
   in one session is another game; `cx.random_restart("stream")?` puts it back at its
   beginning (call it where a run begins, for "the same seed gives the same game again").
+- **The rest of the SDK** (with `notes/world.md`, this is all of it: no need to read its
+  source): `cx.random_u32("stream")?`; `cx.emit("name", data)?` (an event every module hears
+  next tick); `cx.move_character(id, motion)?` (the engine's character controller: a `Moved`
+  with `.position`, `.grounded`, `.blocked`); `cx.actions()` (every action, by name);
+  `cx.reloaded()` and `cx.generation()` (a module loaded again); `cx.trace(TraceLevel::Info,
+  "code", fields)?`; `cx.request(value)?` (the call under all of these). What
+  `cx.entity(id)?` gives also has `.path()`, `.version()`, `.has_tag("t")` and
+  `.prop("key")`; a `Spawn` and a `Patch` take `.props(value)`.
 
 **Also**
 
@@ -568,7 +579,12 @@ All of it is a spawn, in the module's `start` or `tick` (`use specula_sdk::{Spaw
   recipe: `{"sound": 1, "name": "bounce", "bus": "sfx", "duration": 0.25, "loudness": -20,
   "layers": [{"name": "thump", "source": {"wave": "sine", "freq": {"points": [[0, 220], [0.2,
   90]], "curve": "exp"}}, "env": {"attack": 0.002, "decay": 0.18, "sustain": 0, "release":
-  0.04}}]}`. `specula call audio_preview '{"path": "assets/sounds/bounce.json"}'` measures one without
+  0.04}}]}`. A layer takes `name`, `at` (s), `length`, `gain_db`, `pan`, `source`, `env`,
+  `vibrato`, `arp`, `filters`, `fx`, `repeat`; a source `wave` (`sine`, `square`, `saw`,
+  `triangle`, `noise` with a `color`), `freq`, `duty`, `partials`, `fm`, `unison`, `phase`;
+  a filter is `{"type", "cutoff", "q"}` (`lowpass`, `highpass`, `bandpass`, `notch`, `lp1`,
+  `hp1`); an fx `{"type": ...}` (`distort`, `bitcrush`, `delay`, `reverb`, `tremolo`). A
+  field not there is refused by name, with what the place takes. `specula call audio_preview '{"path": "assets/sounds/bounce.json"}'` measures one without
   playing it. **Each sound as a WAV file**: `specula run . --ticks 0 --sounds sounds` writes
   `sounds/NAME.wav` for every recipe, with no engine started. A sound with no file plays nothing and changes nothing: `specula run` names it. The player's
   `volume` setting scales everything played (the engine does it, on the master bus: no rule is
@@ -838,13 +854,27 @@ mod tests {
         let world = text("notes/world.md");
         // Eleven half-kilobytes since 2026-11-21 (nine before): what physics will do is said on
         // it, because each line left out was paid for in runs that measured it.
-        assert!(world.len() <= 11 * 512, "notes/world.md is {} bytes: it is one page", world.len());
+        // Twelve since 2026-11-22: the sound recipe's fields, which two builders of the 3D jobs
+        // went to the engine's design pages for (three requests each).
+        assert!(world.len() <= 12 * 512, "notes/world.md is {} bytes: it is one page", world.len());
         // What physics tells the rules is told under the names and the tag the engine uses.
         assert!(world.contains(&format!(".tags(&[\"{}\"])", crate::physics_told::CONTACTS_TAG)) && world.contains("`contact`") && world.contains("`fell`") && world.contains(&format!("dropped {} m below", crate::physics_told::FELL_BELOW_M)), "notes/world.md and physics_told differ");
         assert!(notes.brief().contains("notes/world.md") && text("notes/how.md").contains("notes/world.md"), "the world's page is not pointed at");
         let sdk = include_str!("../../specula-sdk/src/module.rs");
         for word in ["model", "rotation_deg", "collider_box", "collider_sphere", "collider_capsule", "dynamic", "kinematic", "light", "query_near", "touching", "push", "place_at_rest", "bounce", "friction", "carries", "velocity", "sound", "entity"] {
             assert!(world.contains(&format!("{word}(")) && sdk.contains(&format!("pub fn {word}(")), "notes/world.md and the SDK differ on {word}");
+        }
+        // Every public word of the SDK is on one of the two pages a builder reads (2026-11-22:
+        // four of six builders of the 3D jobs searched the SDK's source for signatures, and
+        // twelve words were on no page). `new` is each type's own.
+        let how = text("notes/how.md");
+        let mut unsaid: Vec<&str> = sdk.lines().filter_map(|l| l.trim_start().strip_prefix("pub fn ")).filter_map(|l| l.split('(').next()).filter(|w| *w != "new" && *w != "as_str").filter(|w| ![world, how].iter().any(|page| page.contains(&format!(".{w}(")) || page.contains(&format!("::{w}(")))).collect();
+        unsaid.dedup();
+        assert!(unsaid.is_empty(), "the SDK has words no page of a new project says: {unsaid:?}");
+        // The sound's fields are the synthesiser's own lists.
+        use specula_audio::synth::recipe::{FILTER_NAMES, FX_NAMES, LAYER_FIELDS, SOURCE_FIELDS, WAVE_NAMES};
+        for name in LAYER_FIELDS.iter().chain(SOURCE_FIELDS).chain(WAVE_NAMES).chain(FILTER_NAMES).chain(FX_NAMES) {
+            assert!(world.contains(&format!("`{name}`")), "notes/world.md does not say the sound's `{name}`");
         }
         for tool in ["audio_preview", "world_spawn"] {
             assert!(world.contains(tool) && crate::tools::definitions().iter().any(|d| d.name == tool), "notes/world.md and the engine's tools differ on {tool}");

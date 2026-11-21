@@ -240,6 +240,9 @@ pub fn check_settings(s: &Json) -> Vec<String> {
     if !whole(s, "runs_per_cell").is_some_and(|n| (1..=20).contains(&n)) {
         out.push("runs_per_cell must be a whole number from 1 to 20".to_owned());
     }
+    if s.get("lead").is_some_and(|l| l.as_bool().is_none()) {
+        out.push("lead must be true or false (false: the jobs' lead lines are left out of every brief)".to_owned());
+    }
     for k in ["builder_model", "judge_model"] {
         if !text(s, k).is_some_and(|m| !m.is_empty()) {
             out.push(format!("{k} must name a model"));
@@ -572,7 +575,9 @@ pub(crate) fn brief_text(j: &Json, arm: &Arm, run: &Path, s: &Json, exe: Option<
     lines.extend(j.get("brief").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).map(str::to_owned));
     lines.push(String::new());
     lines.extend(arm_lines(arm, run, j.get("change_of").is_some(), exe)?);
-    lines.extend(lead_lines(j, arm, run)?);
+    if lead_given(s) {
+        lines.extend(lead_lines(j, arm, run)?);
+    }
     lines.push(String::new());
     lines.push("Limits and rules".to_owned());
     lines.push(format!(
@@ -602,6 +607,14 @@ pub(crate) fn lead_lines(j: &Json, arm: &Arm, run: &Path) -> R<Vec<String>> {
         lines.push(format!("- {}", fill(line, &[("tool", &tool), ("run", &rd)]).map_err(|why| format!("the job's lead: {why}"))?));
     }
     Ok(lines)
+}
+
+/// Whether these settings give the lead's lines to builders at all: `"lead": false` leaves them
+/// out of every brief, for a pass of cold builders over the same jobs (2026-11-22: a second
+/// reader's point that directed engine builders against undirected plain ones measure the
+/// lead as much as the engine). Left out, or `true`: given.
+pub(crate) fn lead_given(s: &Json) -> bool {
+    s.get("lead").and_then(Json::as_bool) != Some(false)
 }
 
 /// Whether a job's engine builders are told the lead's choice ([`lead_lines`]).
@@ -699,7 +712,7 @@ pub fn prepare(a: &Prepare) -> R<Json> {
         ("arm", Json::Str(a.arm.clone())),
         ("kind", Json::Str(arm.kind.name().to_owned())),
         // (Whether this builder's brief carries the lead's choice for the job: a report says so.)
-        ("led", Json::Bool(engine && led(&j))),
+        ("led", Json::Bool(engine && lead_given(&s) && led(&j))),
         ("data", Json::Str(data_word(&data))),
         ("n", Json::Num(a.n as f64)),
         ("phase", Json::Str("build".to_owned())),

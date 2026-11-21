@@ -707,9 +707,9 @@ impl Run<'_> {
         // physics left it this tick (`world.PATH.position`), the sounds the rules asked for.
         let mut beyond = Json::obj::<&str>([]);
         for (_, key) in game.report.iter().filter(|(name, _)| self.keys.is_empty() || self.keys.contains(name)) {
-            if key == "run.sounds" {
+            if key == "run.sounds" || key == "run.sounds_heard" {
                 let info = self.call("engine_info", Json::obj([("response_format", Json::from("detailed"))]))?;
-                beyond.set(key, info.get("module_sounds").and_then(|s| s.get("order")).cloned().unwrap_or_else(|| Json::Arr(Vec::new())));
+                beyond.set(key, info.get("module_sounds").and_then(|s| s.get(if key == "run.sounds" { "order" } else { "heard" })).cloned().unwrap_or_else(|| Json::Arr(Vec::new())));
             } else if let Some(asked) = key.strip_prefix("world.") {
                 beyond.set(key, self.of_world(asked)?);
             }
@@ -868,7 +868,7 @@ fn value_of(key: &str, ticks: u64, seed: Option<u64>, game: &Json, ui: &Json, st
     let found = match head {
         "world" => beyond.get(key).cloned(),
         "run" => match rest {
-            "sounds" => beyond.get(key).cloned(),
+            "sounds" | "sounds_heard" => beyond.get(key).cloned(),
             "ticks" => Some(Json::from(ticks)),
             "seed" => seed.map(Json::from),
             _ => None,
@@ -1051,11 +1051,21 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     problems.extend(unfilled.into_iter().map(Json::from));
     problems.extend(run.silent_sounds()?.into_iter().map(Json::from));
     problems.extend(run.lost_bodies()?.into_iter().map(Json::from));
+    problems.extend(run.unread_set()?.into_iter().map(Json::from));
     if !problems.is_empty() {
         answer.set("problems", Json::Arr(problems));
     }
     Ok(answer)
 }
+
+/// How a run's problems begin for a number it was given that no rule asked for (`specula tune`
+/// looks for these words about the number it varies).
+pub fn unread_words(name: &str) -> String {
+    format!("{UNREAD_BEGINS}{name}' and no rule read it in this run")
+}
+
+/// How [`unread_words`] begins, whatever the name.
+pub const UNREAD_BEGINS: &str = "the run set '";
 
 /// The most problems of one kind a run says (the rest are counted in the last line).
 const MAX_SAID: usize = 6;
@@ -1112,6 +1122,14 @@ impl Run<'_> {
             said.push(format!("and {} more bodies out of the world", total - said.len()));
         }
         Ok(said)
+    }
+
+    /// The run's numbers (`--set`, a check's `set`) that no rule asked for: a name mistyped
+    /// plays as the game is written, and only this says so.
+    fn unread_set(&self) -> Result<Vec<String>, Json> {
+        let info = self.call("engine_info", Json::obj([("response_format", Json::from("detailed"))]))?;
+        let unread: Vec<&str> = info.get("params_unread").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).collect();
+        Ok(unread.iter().take(MAX_SAID).map(|name| format!("{}: the rules read a number with cx.param(\"{name}\", default), by exactly that name", unread_words(name))).collect())
     }
 
     /// The sounds the rules asked for in this engine's life that no file makes: the engine

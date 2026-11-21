@@ -39,12 +39,17 @@ mod snapshot;
 pub use snapshot::{read_joint_desc, write_joint_desc};
 pub use snapshot::SNAPSHOT_VERSION;
 
+/// The most solver substeps a step takes (the engine asks for up to this many at a low tick
+/// rate). A step holds [`Settings::substeps`] to it and a snapshot outside it is refused: the
+/// count is a loop's length, and a damaged one must not become hours of work.
+pub const MAX_SUBSTEPS: u32 = 64;
+
 /// Simulation settings. Defaults follow Box2D v3 where it has an equivalent.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     /// m/s².
     pub gravity: Vec3,
-    /// Solver substeps per step (1..=16).
+    /// Solver substeps per step (1 to [`MAX_SUBSTEPS`]; a step takes it as within that).
     pub substeps: u32,
     /// Bodies at rest may fall asleep.
     pub sleep: bool,
@@ -1825,9 +1830,9 @@ impl Space {
                 lock_angular: la,
             });
         }
-        let substep_rate = settings.substeps.max(1) as f32 / dt;
+        let substep_rate = settings.substeps.clamp(1, MAX_SUBSTEPS) as f32 / dt;
         let hertz = settings.contact_hertz.min(0.25 * substep_rate);
-        let h = dt / settings.substeps.max(1) as f32;
+        let h = dt / settings.substeps.clamp(1, MAX_SUBSTEPS) as f32;
         let soft = Softness::new(hertz, settings.contact_damping_ratio, h);
         let static_soft = Softness::new(2.0 * hertz, settings.contact_damping_ratio, h);
         for &slot in &self.sim {
@@ -1878,7 +1883,7 @@ impl Space {
         self.prepare_joints(joint_soft, h);
         let mut joints = std::mem::take(&mut self.joint_cons);
         let tuning = Tuning {
-            substeps: settings.substeps.max(1),
+            substeps: settings.substeps.clamp(1, MAX_SUBSTEPS),
             contact_hertz: hertz,
             damping_ratio: settings.contact_damping_ratio,
             push_speed: settings.push_speed,

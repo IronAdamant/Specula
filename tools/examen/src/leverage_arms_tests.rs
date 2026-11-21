@@ -78,7 +78,7 @@ fn before_brief_text(j: &Json, arm: &str, run: &Path, s: &Json) -> String {
     lines.extend(before_arm_text(arm, run, j.get("change_of").is_some()));
     // (2026-11-21: the lead's word on the job, for a builder who works through the engine.)
     let lead: Vec<&str> = j.get("lead").and_then(Json::as_array).map(|l| l.iter().filter_map(Json::as_str).collect()).unwrap_or_default();
-    if arm != "plain" && !lead.is_empty() {
+    if arm != "plain" && !lead.is_empty() && s.get("lead").and_then(Json::as_bool) != Some(false) {
         let (tool, rd) = lev::me(run);
         lines.push(String::new());
         lines.push("From the lead, who has read this brief and chosen for it".to_owned());
@@ -95,6 +95,30 @@ fn before_brief_text(j: &Json, arm: &str, run: &Path, s: &Json) -> String {
     lines.extend(s.get("rules").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).map(|r| format!("- {r}")));
     lines.push("- When you finish, answer with: what you built, the commands for the two checks, what you checked yourself, and what does not work.".to_owned());
     lines.join("\n") + "\n"
+}
+
+/// Settings that say `"lead": false` leave the lead's lines out of every brief (a pass of cold
+/// builders over the same jobs), and say so in the run's record; anything else there is refused.
+#[test]
+fn settings_can_leave_the_leads_lines_out() {
+    // (The data's own settings may say either: both are set here.)
+    let mut given = lev::settings().unwrap();
+    given.set("lead", Json::Bool(true));
+    let mut cold = given.clone();
+    cold.set("lead", Json::Bool(false));
+    assert!(lev::check_settings(&cold).is_empty());
+    let mut odd = given.clone();
+    odd.set("lead", Json::from("no"));
+    assert!(lev::check_settings(&odd).iter().any(|p| p.contains("lead must be true or false")));
+    let all = arms::arms_of(&given).unwrap();
+    let engine = all.iter().find(|a| a.kind == Kind::Engine).unwrap();
+    let run = absolute(Path::new("ROOT")).join("x-engine-1");
+    let mut job = lev::job("small").unwrap();
+    job.set("lead", Json::arr([Json::from("Write the game whole.")]));
+    let said = |s: &Json| lev::brief_text(&job, engine, &run, s, None).unwrap();
+    assert!(said(&given).contains("From the lead") && said(&given).contains("- Write the game whole."));
+    assert!(!said(&cold).contains("From the lead") && !said(&cold).contains("Write the game whole."));
+    assert!(lev::lead_given(&given) && !lev::lead_given(&cold));
 }
 
 /// Every job and arm of `evals/leverage` is told, to the byte, what it was told before arms

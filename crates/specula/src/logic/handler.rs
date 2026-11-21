@@ -51,7 +51,7 @@ pub(super) struct ModuleHandler<'a> {
     pub pending_events: usize,
     pub log: &'a mut VecDeque<LogLine>,
     /// The run's parameters (`LogicHost::set_params`).
-    pub params: &'a std::collections::BTreeMap<String, f64>,
+    pub params: &'a std::collections::BTreeMap<String, super::Param>,
     /// `(key, value before)` for every state write, to undo a failed call.
     pub state_undo: Vec<(String, Option<Value>)>,
     /// `(stream, state before)` for every stream touched, to undo a failed call.
@@ -305,7 +305,7 @@ impl ModuleHandler<'_> {
             "param" => {
                 let name = str_arg(req, "name")?;
                 let default = req.get("default").and_then(Value::as_f64).filter(|d| d.is_finite()).ok_or_else(|| refuse("invalid_field", "'default' must be a number"))?;
-                Ok(Value::from(self.params.get(name).copied().unwrap_or(default)))
+                Ok(Value::from(self.params.get(name).map_or(default, super::Param::read)))
             }
             "log" => {
                 let msg = str_arg(req, "message")?;

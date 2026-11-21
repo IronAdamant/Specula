@@ -445,9 +445,18 @@ impl<'a> Cx<'a> {
         &self.actions
     }
 
-    /// Events emitted during the previous tick.
+    /// Events emitted during the previous tick. The list borrows the context: a loop over it
+    /// cannot call what changes the world (`set`, `push`, `sound`). A loop that must takes the
+    /// list with [`Cx::take_events`].
     pub fn events(&self) -> &[Event] {
         &self.events
+    }
+
+    /// The events of the previous tick as a list of the caller's own, in the same order, so
+    /// that the loop over them may call anything of the context. They are taken: after it,
+    /// [`Cx::events`] is empty for the rest of this tick.
+    pub fn take_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
     }
 
     fn ask(&mut self, req: Value) -> Result<Value, SdkError> {

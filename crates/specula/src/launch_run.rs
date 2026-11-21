@@ -762,14 +762,6 @@ fn write_sounds(project: &Path, out: &Path) -> Result<Vec<Json>, (i32, Json)> {
     Ok(written)
 }
 
-/// The last state of a run made for a search, or why there is none.
-fn end_state(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs) -> Result<Json, Json> {
-    match run_in(ctx, folder, args, Kept::AsAsked) {
-        (0, answer) => Ok(answer.get(RUN_REPORT).cloned().unwrap_or(Json::Null)),
-        (_, why) => Err(why),
-    }
-}
-
 /// `specula tune`: the value of one parameter at which a condition begins to hold, looked for
 /// by halving the range. Each try is a whole run of its own, from the game's start, with that
 /// value: nothing of one try is in the next, and a value found is one a plain `specula run
@@ -789,7 +781,17 @@ fn tune_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
         one.vary = None;
         one.until = None;
         one.set.push((name.clone(), vec![value]));
-        let state = end_state(ctx, &folder, &one)?;
+        let state = match run_in(ctx, &folder, &one, Kept::AsAsked) {
+            (0, answer) => {
+                // A number no rule reads decides nothing: every try would be the same run.
+                let unread = crate::script_run::unread_words(&name);
+                if answer.get("problems").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).any(|p| p.starts_with(&unread)) {
+                    return Err(refusal("unread_parameter", format!("{unread}: --vary takes a name the rules read with cx.param(\"{name}\", default)")).1);
+                }
+                answer.get(RUN_REPORT).cloned().unwrap_or(Json::Null)
+            }
+            (_, why) => return Err(why),
+        };
         if let Some(line) = until.unread(&state).first() {
             let mut e = refusal("unknown_line", format!("'{line}' is read by --until and the game's report has no such line (game.json, \"report\")")).1;
             e.set("state", state);
@@ -962,7 +964,7 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
                 continue;
             }
         };
-        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), frame, size: check.size, ..Default::default() };
+        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), set: check.set.iter().map(|(name, value)| (name.clone(), vec![*value])).collect(), frame, size: check.size, ..Default::default() };
         // A check's settings are the folder it names, or none: never the folder the command
         // itself was given, which is some player's own.
         let named = check.settings.as_ref().map(|name| scratch.join(name));
@@ -1004,8 +1006,13 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
             }
         }
         // What the game says is wrong with its own files is the same in every run: said once.
-        if problems.is_none() {
-            problems = answer.get("problems").cloned();
+        // A number this check set and no rule read is this check's own: said on its line.
+        let (own, shared): (Vec<Json>, Vec<Json>) = answer.get("problems").and_then(Json::as_array).unwrap_or(&[]).iter().cloned().partition(|p| p.as_str().is_some_and(|p| p.starts_with(crate::script_run::UNREAD_BEGINS)));
+        if !own.is_empty() {
+            line.set("problems", Json::Arr(own));
+        }
+        if problems.is_none() && !shared.is_empty() {
+            problems = Some(Json::Arr(shared));
         }
         lines.push(line);
         // A game that does not build, or a game file that does not load, fails every check

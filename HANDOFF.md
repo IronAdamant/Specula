@@ -67,6 +67,27 @@ rounds.
   job's new board and did not find a winning script for the bridge board (in 90 s or 500 s).
   **Nothing further is paid for until the owner says.** Not built: hooks. Not measured: a
   cold engine builder on the mended engine, the carrying mend, a job larger than medium3d.
+- **A second reader's bug list, mended (2026-11-22, by hand, not reviewed)**
+  ([FIRST_HOUR.md](docs/design/FIRST_HOUR.md), section 16): a damaged save could hang the
+  engine (a snapshot's settings are range-checked now, and a fuzzing test holds it); a
+  `--set` name no rule reads is said; a check takes `set`; `Cx::take_events`;
+  `run.sounds_heard`; every public word of the SDK and a sound recipe's fields on the two
+  pages a builder reads. Found on the way by `search_check`, and mended: the sounds a run
+  reports were no part of a save.
+- **The owner's direction (2026-11-22):** "We're still paused on shape, recipe, template, and
+  sfx, part 4 and onwards plan until we get this fixed. We're debugging until this engine
+  makes sense to be used by you and other agents." Part 4 and everything after it wait; the
+  work is faults and the cost of use, until a comparison shows the engine pays.
+- **The owner's standing authority (2026-11-22) for one more full comparison** after these
+  mends ("Cost are acceptable. Not a issue."). The design: **cold builders** (the jobs' lead
+  lines left out: `"lead": false` in both settings files), five runs a cell on the six jobs,
+  and the 2D `large` job (written 2026-11-17, never measured) at three. About 135 USD at
+  list prices, said to the owner first. After that one pass, paid runs need their word again.
+- **Linux is the second reader's side** (the owner, 2026-11-22: it works on a Linux machine,
+  builds what the engine needs to start there, and its work comes to `main` by the owner's
+  word; this checkout pulls when the owner says). [docs/design/LINUX.md](docs/design/LINUX.md)
+  says what runs there, what does not, and where a Linux machine finds faults this one
+  cannot. **`origin/main` may move without this session: fetch and look before any push.**
 - **The gate passed on `8d172ace`** (2026-11-22, everything for an engine change: the workspace, repeats, slow workers, speed, clippy, both builds; the live checks were not run whole, `search_check` passed on the save mend). Before it:
 - **The gate passed on `14c0d08c`** (2026-11-21, everything: 3,585 tests, repeats, slow workers, speed, clippy, both builds; the live checks were not run again). In it: `53985a95` (a module pushes a
   body and tells it to bounce: `Cx::push`, `Cx::place_at_rest`, `Spawn::bounce`, `friction`),

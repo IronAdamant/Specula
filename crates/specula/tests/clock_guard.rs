@@ -25,6 +25,13 @@
 //! **What it can't see:** a time copied into a plain number (`let n = t.as_millis(); assert!(n
 //! < 50)`), and an assertion inside a helper that takes the bound as an argument. Reviews look
 //! for those.
+//!
+//! **Nor the other way round:** a test that needs the machine to be slow ("still running after
+//! a pump of 1 ms": the cause of CI's red on 2026-11-21, where a faster machine had finished),
+//! and a test that sleeps a few milliseconds and expects a file's time to have moved (a file
+//! system may keep times by the second). This guard reads upper bounds only; a second
+//! reader's list of 2026-11-22 names `thread::sleep` between writes in `project.rs`'s tests
+//! as places to look. Not yet a check.
 
 use std::path::{Path, PathBuf};
 

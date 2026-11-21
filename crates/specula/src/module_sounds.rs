@@ -82,6 +82,17 @@ pub struct ModuleSounds {
     /// the run and kept by no rule.
     order: std::collections::VecDeque<String>,
     order_more: u64,
+    /// Beside each of `order`: how loud it was asked to be heard, the sound's own gain times
+    /// the player's volume as the game stood when it was asked for (`run.sounds_heard`: a
+    /// headless run plays nothing, so "silent at volume 0" could be shown by no run).
+    heard: std::collections::VecDeque<f32>,
+}
+
+/// The sounds section of a save, read ([`ModuleSounds::parse_section`]).
+#[derive(Debug, Default, PartialEq)]
+pub struct SoundsSaved {
+    order: Vec<(String, f32)>,
+    more: u64,
 }
 
 /// Most sounds whose order is kept.
@@ -89,7 +100,7 @@ pub const MAX_ORDER: usize = 512;
 
 impl ModuleSounds {
     pub fn new(assets: &Path) -> ModuleSounds {
-        ModuleSounds { audio: None, assets: assets.to_owned(), cache: BTreeMap::new(), samples: 0, loading: 0, failed: 0, clock: 0, played: 0, skipped: 0, asked: BTreeMap::new(), asked_more: 0, order: std::collections::VecDeque::new(), order_more: 0 }
+        ModuleSounds { audio: None, assets: assets.to_owned(), cache: BTreeMap::new(), samples: 0, loading: 0, failed: 0, clock: 0, played: 0, skipped: 0, asked: BTreeMap::new(), asked_more: 0, order: std::collections::VecDeque::new(), order_more: 0, heard: std::collections::VecDeque::new() }
     }
 
     pub fn set_audio(&mut self, audio: Arc<crate::audio_service::AudioService>) {
@@ -165,6 +176,57 @@ impl ModuleSounds {
         trace(cue, why);
     }
 
+    /// What a save keeps of the sounds: the ones asked for so far, in order, each with how loud
+    /// (`run.sounds`, `run.sounds_heard`). `None` when none was asked for: such a save is as it
+    /// was before this section existed. A sound is presentation and changes no run; but a
+    /// run's report can read this list, and a search plays on from saves (2026-11-22: a
+    /// script a search found was answered with the sounds of every stretch it had tried).
+    pub fn save_section(&self) -> Option<Vec<u8>> {
+        if self.order.is_empty() && self.order_more == 0 {
+            return None;
+        }
+        let mut w = specula_core::bytes::ByteWriter::new();
+        w.u32(1);
+        w.u64(self.order_more);
+        w.u32(self.order.len() as u32);
+        for (name, gain) in self.order.iter().zip(&self.heard) {
+            w.str(name);
+            w.f32(*gain);
+        }
+        Some(w.into_bytes())
+    }
+
+    /// A save's sounds section, read and checked (off the engine thread).
+    pub fn parse_section(bytes: &[u8]) -> Result<SoundsSaved, String> {
+        let mut r = specula_core::bytes::ByteReader::new(bytes);
+        let bad = |e: specula_core::bytes::DecodeError| format!("the save's sounds are damaged: {e}");
+        let version = r.u32("version").map_err(bad)?;
+        if version != 1 {
+            return Err(format!("the save's sounds are version {version}; this build reads 1"));
+        }
+        let more = r.u64("order_more").map_err(bad)?;
+        let n = r.count("order", MAX_ORDER, 8).map_err(bad)?;
+        let mut order = Vec::with_capacity(n);
+        for _ in 0..n {
+            let name = r.str("order.name", 64).map_err(bad)?;
+            let gain = r.f32("order.gain").map_err(bad)?;
+            if !gain.is_finite() {
+                return Err("the save's sounds are damaged: a gain is not a number".to_owned());
+            }
+            order.push((name, gain));
+        }
+        r.finish().map_err(bad)?;
+        Ok(SoundsSaved { order, more })
+    }
+
+    /// Puts back what a save kept (`None`: a save with no sounds section, so none asked for).
+    pub fn restore(&mut self, saved: Option<SoundsSaved>) {
+        let saved = saved.unwrap_or_default();
+        self.order_more = saved.more;
+        self.order = saved.order.iter().map(|(name, _)| name.clone()).collect();
+        self.heard = saved.order.iter().map(|(_, gain)| *gain).collect();
+    }
+
     pub fn to_json(&self) -> specula_core::Json {
         use specula_core::Json;
         Json::obj([
@@ -179,6 +241,7 @@ impl ModuleSounds {
             ("asked_more", Json::from(self.asked_more)),
             ("order", Json::arr(self.order.iter().map(|n| Json::from(n.as_str())))),
             ("order_more", Json::from(self.order_more)),
+            ("heard", Json::arr(self.order.iter().zip(&self.heard).map(|(name, gain)| Json::obj([("sound", Json::from(name.as_str())), ("gain", Json::Num((f64::from(*gain) * 1000.0).round() / 1000.0))])))),
             ("cached", Json::from(self.cache.len().saturating_sub(self.loading + self.failed))),
             ("loading", Json::from(self.loading())),
             ("failed_names", Json::from(self.failed)),
@@ -238,9 +301,12 @@ impl Engine {
     fn note_asked(&mut self, cue: &SoundCue) {
         if self.module_sounds.order.len() == MAX_ORDER {
             self.module_sounds.order.pop_front();
+            self.module_sounds.heard.pop_front();
             self.module_sounds.order_more += 1;
         }
         self.module_sounds.order.push_back(cue.name.clone());
+        let volume = self.game.as_ref().and_then(|g| g.volume()).unwrap_or(1.0);
+        self.module_sounds.heard.push_back(cue.gain * volume);
         let key = format!("{}/{}", cue.module, cue.name);
         if let Some(a) = self.module_sounds.asked.get_mut(&key) {
             a.times += 1;
@@ -354,6 +420,38 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sounds asked for go into a save and come back from it, with how loud each was; a
+    /// save of a game that asked for none has no such section, and puts none back.
+    #[test]
+    fn the_sounds_asked_for_are_a_saves_and_come_back() {
+        let mut a = ModuleSounds::new(Path::new("."));
+        assert!(a.save_section().is_none());
+        a.order.extend(["coin".to_owned(), "bounce".to_owned()]);
+        a.heard.extend([0.4, 1.0]);
+        a.order_more = 3;
+        let bytes = a.save_section().expect("a section");
+        let mut b = ModuleSounds::new(Path::new("."));
+        b.order.push_back("other".to_owned());
+        b.heard.push_back(2.0);
+        b.restore(Some(ModuleSounds::parse_section(&bytes).unwrap()));
+        assert_eq!((b.order.clone(), b.heard.clone(), b.order_more), (a.order.clone(), a.heard.clone(), 3));
+        assert_eq!(b.save_section().as_deref(), Some(bytes.as_slice()));
+        b.restore(None);
+        assert!(b.order.is_empty() && b.heard.is_empty() && b.order_more == 0 && b.save_section().is_none());
+        // Damaged: cut short, another version, a gain that is no number, bytes after the end.
+        assert!(ModuleSounds::parse_section(&bytes[..bytes.len() - 1]).unwrap_err().contains("damaged"));
+        let mut other = bytes.clone();
+        other[0] = 9;
+        assert!(ModuleSounds::parse_section(&other).unwrap_err().contains("version 9"));
+        let mut nan = bytes.clone();
+        let end = nan.len();
+        nan[end - 4..].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(ModuleSounds::parse_section(&nan).unwrap_err().contains("not a number"));
+        let mut long = bytes.clone();
+        long.push(0);
+        assert!(ModuleSounds::parse_section(&long).unwrap_err().contains("damaged"));
+    }
 
     #[test]
     fn recipes_are_looked_for_in_the_module_then_the_assets() {

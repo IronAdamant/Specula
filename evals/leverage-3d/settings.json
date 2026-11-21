@@ -1,7 +1,8 @@
 {
   "leverage": 1,
   "note": "Sizes are data: change them for your budget and your machine. Every report states the settings its runs used. These are the sizes of the 3D jobs of 2026-11-21 (a 3D view, physics and sound), larger than the 2D jobs' because a build without an engine has more to write.",
-  "runs_per_cell": 2,
+  "runs_per_cell": 5,
+  "lead": false,
   "builder_model": "claude-sonnet-5-5",
   "judge_model": "claude-opus-5-5",
   "arms": ["engine", "plain"],

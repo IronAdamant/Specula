@@ -24,7 +24,10 @@
 //! situation, straight through, before it is answered: a load that did not put the game back
 //! exactly would show there, as a script that no longer reaches the condition, and that is
 //! answered as the fault it is (`not_reproduced`), never as a script. The seed of the search
-//! is the run's: the same command finds the same script.
+//! is the run's: the same command makes the same tries in the same order, and a search that
+//! ends by finding, or by its tries, answers the same on any machine. One that ends by its
+//! seconds (`why` says so) got as far as this machine went in that time: a faster one may
+//! find what it did not. A script found is the same script wherever it is found.
 
 use super::*;
 use specula_core::rng::Rng;

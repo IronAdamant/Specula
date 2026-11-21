@@ -4120,6 +4120,10 @@ impl Engine {
         if !self.logic.is_empty() {
             info.set("modules", self.logic.summary());
             info.set("module_sounds", self.module_sounds.to_json());
+            let unread = self.logic.params_unread();
+            if !unread.is_empty() {
+                info.set("params_unread", Json::arr(unread.into_iter().map(Json::from)));
+            }
         }
         if let Some(game) = &self.game {
             info.set("game", Json::obj([("name", Json::from(self.game_name.as_str())), ("status", game.status())]));

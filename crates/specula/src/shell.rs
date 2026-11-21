@@ -1161,6 +1161,10 @@ impl Game for Shell {
         self.game.modules.clone()
     }
 
+    fn volume(&self) -> Option<f32> {
+        self.settings.fraction("volume").map(|v| v as f32)
+    }
+
     fn told(&mut self, problem: &str) {
         note(&mut self.problems, problem.to_owned());
         self.say(problem, ToastKind::Warn);

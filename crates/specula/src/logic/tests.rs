@@ -991,6 +991,14 @@ fn a_runs_parameter_is_read_by_the_rules_and_the_default_stands_without_one() {
     set.load(ModuleCode::of::<Tuned>()).unwrap();
     set.ticks(1);
     assert_eq!((read(&set, "grip_at_start"), read(&set, "grip"), read(&set, "reach")), (Some(0.25), Some(0.25), Some(2.0)));
+    // A name no rule asks for is known as unread (a mistyped --set would play as written).
+    assert!(set.host.params_unread().is_empty());
+    let mut typo = Run::new();
+    typo.host.set_params([("grip".to_owned(), 0.25), ("gripp".to_owned(), 0.5)]);
+    assert_eq!(typo.host.params_unread(), ["grip", "gripp"], "before the rules run, none is read");
+    typo.load(ModuleCode::of::<Tuned>()).unwrap();
+    typo.ticks(1);
+    assert_eq!(typo.host.params_unread(), ["gripp"]);
     // No more are taken than a run may give.
     let mut many = Run::new();
     many.host.set_params((0..100).map(|i| (format!("p{i}"), 1.0)));

@@ -120,6 +120,19 @@ fn r_settings(r: &mut ByteReader<'_>, version: u32) -> Result<Settings, DecodeEr
     }
     // Threads: at least one, and no more than a machine has (the results never depend on it).
     counts[3] = counts[3].clamp(1, 64);
+    // A save is bytes from a disk: a setting out of its range is refused here, as a game file's
+    // is where it is read. Nothing after this checks them (they are not in the hash), and a
+    // substep count with one byte wrong would have the next step run for hours.
+    let bad = |what: String| DecodeError::new("invalid", r.offset(), f, what);
+    if !(1..=crate::space::MAX_SUBSTEPS).contains(&substeps) {
+        return Err(bad(format!("substeps is 1 to {}, not {substeps}", crate::space::MAX_SUBSTEPS)));
+    }
+    if !crate::math::is_finite(gravity) {
+        return Err(bad("gravity is not a finite number".to_owned()));
+    }
+    if let Some(i) = v.iter().chain(&[joint_hertz, joint_damping_ratio]).position(|x| !(x.is_finite() && *x >= 0.0)) {
+        return Err(bad(format!("setting {i} of the twelve numbers is not a finite number of zero or more")));
+    }
     Ok(Settings {
         joint_hertz,
         joint_damping_ratio,
@@ -396,6 +409,9 @@ impl Space {
         let settings = r_settings(r, version).map_err(decode)?;
         let steps = r.u64("steps").map_err(decode)?;
         let dt = r.f32("dt").map_err(decode)?;
+        if !(dt.is_finite() && dt >= 0.0) {
+            return Err(decode(DecodeError::new("invalid", r.offset(), "dt", "the last step's length is not a finite number of zero or more".to_owned())));
+        }
         let next_island = r.u32("next_island").map_err(decode)?;
         let refused = r.u64("refused").map_err(decode)?.min(u64::from(u32::MAX)) as usize;
         // Bodies: at least ~200 bytes each.
@@ -745,6 +761,85 @@ mod tests {
         a.save_state(&mut wa);
         b.save_state(&mut wb);
         assert_eq!(wa.bytes(), wb.bytes());
+    }
+
+    /// The saved bytes of the nine-body scene after fifty steps.
+    fn saved() -> (Vec<u64>, Vec<u8>) {
+        let keys: Vec<u64> = (1..=9).collect();
+        let mut a = scene(&keys);
+        for _ in 0..50 {
+            a.step(1.0 / 60.0);
+        }
+        let mut w = ByteWriter::new();
+        a.save_state(&mut w);
+        (keys, w.into_bytes())
+    }
+
+    /// A save is bytes from a disk. Its settings were taken as read (found by a second reader,
+    /// 2026-11-22: with the high byte of the substep count changed, the restore answered in
+    /// microseconds and the next step did not come back within a minute).
+    #[test]
+    fn a_snapshot_whose_settings_are_out_of_range_is_refused() {
+        let (keys, bytes) = saved();
+        // The layout this test leans on: the version, gravity, then the substep count.
+        assert_eq!(bytes[16..20], Settings::default().substeps.to_le_bytes());
+        let refused = |at: usize, with: &[u8]| {
+            let mut bad = bytes.clone();
+            bad[at..at + with.len()].copy_from_slice(with);
+            let e = scene(&keys).restore_state(&mut ByteReader::new(&bad)).unwrap_err();
+            (e.code, e.message)
+        };
+        for substeps in [0u32, MAX_SUBSTEPS + 1, 4 | 1 << 24, u32::MAX] {
+            let (code, message) = refused(16, &substeps.to_le_bytes());
+            assert!(code == "bad_snapshot" && message.contains("substeps"), "{substeps}: {code}: {message}");
+        }
+        assert_eq!(scene(&keys).restore_state(&mut ByteReader::new(&{
+            let mut most = bytes.clone();
+            most[16..20].copy_from_slice(&MAX_SUBSTEPS.to_le_bytes());
+            most
+        })), Ok(()), "the most a step takes is still a save");
+        // Gravity, and each of the ten numbers after the sleep flag (at 21).
+        assert!(refused(4, &f32::NAN.to_le_bytes()).1.contains("gravity"));
+        for i in 0..10 {
+            for bad in [f32::NAN, f32::INFINITY, -1.0] {
+                let (code, message) = refused(21 + 4 * i, &bad.to_le_bytes());
+                assert!(code == "bad_snapshot" && message.contains("setting"), "number {i} as {bad}: {code}: {message}");
+            }
+        }
+    }
+
+    /// Whatever a few bytes of a save are changed to, a restore answers, and a space it accepted
+    /// steps on. The changes are drawn from a fixed sequence: the same ones in every run.
+    #[test]
+    fn a_damaged_snapshot_is_refused_or_restored_and_never_hangs() {
+        let (keys, bytes) = saved();
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (mut refused, mut restored) = (0, 0);
+        for round in 0..4000 {
+            let mut bad = bytes.clone();
+            // Half the rounds in the first hundred bytes, where the settings and the counts are.
+            let span = if round % 2 == 0 { bad.len().min(100) } else { bad.len() };
+            for _ in 0..1 + next() % 4 {
+                let at = (next() % span as u64) as usize;
+                bad[at] = (next() >> 32) as u8;
+            }
+            let mut s = scene(&keys);
+            match s.restore_state(&mut ByteReader::new(&bad)) {
+                Err(_) => refused += 1,
+                Ok(()) => {
+                    restored += 1;
+                    s.step(1.0 / 60.0);
+                    s.step(1.0 / 60.0);
+                }
+            }
+        }
+        assert!(refused > 100 && restored > 100, "both ways were met: {refused} refused, {restored} restored");
     }
 
     /// A chain of ball joints hanging from the world, a box knocking into it, and (optionally)

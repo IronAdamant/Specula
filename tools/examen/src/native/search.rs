@@ -14,6 +14,9 @@
 //!   bit**: a game put back from a save plays on as the game that was saved. This is the
 //!   proof the search rests on, kept as a check;
 //! - the same search again finds the same script.
+//! - a sound the rules asked for is said with how loud it would have been heard; a number no
+//!   rule reads is refused by `tune` and said by a run; a check gives its run its numbers
+//!   (`"set"`). (The three a second reader found missing, 2026-11-22.)
 
 use specula_core::Json;
 
@@ -70,6 +73,7 @@ impl Module for Rules {
             let (dx, dy, dz) = (c.x - p.x, c.y - p.y, c.z - p.z);
             if dx * dx + dy * dy + dz * dz < 0.25 {
                 cx.delete(coin)?;
+                cx.sound("coin", None, 0.5)?;
                 score += 10;
             }
         }
@@ -101,7 +105,7 @@ const GAME: &str = r#"{
   "start": "run",
   "modules": ["modules/nummi"],
   "inputs": { "east": "right" },
-  "report": { "tick": "run.ticks", "score": "nummi.score", "won": "nummi.won", "ball": "world./nummi/ball.position", "coins": "world.#coin.count" }
+  "report": { "tick": "run.ticks", "score": "nummi.score", "won": "nummi.won", "ball": "world./nummi/ball.position", "coins": "world.#coin.count", "heard": "run.sounds_heard" }
 }
 "#;
 
@@ -133,11 +137,15 @@ pub fn search(cx: &mut Cx) -> Result<String, String> {
     };
 
     // 1. A run read on its way, in the game's own word, the ball's place from the world.
-    let (code, lines) = run(cx, &["run", &folder, "--at", "30,60", "--inputs", "0:east", "--keys", "tick,ball,coins"])?;
+    let (code, lines) = run(cx, &["run", &folder, "--at", "30,60", "--inputs", "0:east", "--keys", "tick,ball,coins,heard"])?;
     expect(code == 0 && lines.len() == 2, "a run with --at 30,60 did not print two states", &Json::Arr(lines.clone()))?;
     let (first, second) = (&lines[0], &lines[1]);
     expect(number(first, "tick") == 30.0 && number(second, "tick") == 60.0 && number(first, "ball.x") > 0.3 && number(second, "ball.x") > number(first, "ball.x") && at(first, "score").is_none(), "the states on the way are not the two ticks, with the ball further at the second and only the lines asked for", &Json::Arr(lines.clone()))?;
     expect(number(first, "coins") == 3.0 && number(second, "coins") == 2.0, "the coin at (2, 0) was not taken between tick 30 and tick 60", &Json::Arr(lines.clone()))?;
+
+    // (A headless run plays nothing: how loud the coin's sound was asked to be heard is its own
+    // gain, 0.5, times the player's volume, 8 of 10 for a new player.)
+    expect(at(first, "heard").and_then(Json::as_array).is_some_and(|h| h.is_empty()) && at(second, "heard").map(Json::to_string).as_deref() == Some(r#"[{"sound":"coin","gain":0.4}]"#), "the coin's sound is not said with how loud it was asked to be heard, at the tick the coin was taken", &Json::Arr(lines.clone()))?;
 
     // 2. A run for each value of the push.
     let (code, lines) = run(cx, &["run", &folder, "--ticks", "30", "--inputs", "0:right", "--set", "push=2,4,8", "--keys", "ball"])?;
@@ -155,6 +163,22 @@ pub fn search(cx: &mut Cx) -> Result<String, String> {
     expect(at_holds.first().is_some_and(|s| number(s, "ball.x") > 1.0), "a run with the push the tuning found does not put the ball past x = 1", &Json::Arr(at_holds.clone()))?;
     let (code, neither) = run(cx, &["tune", &folder, "--ticks", "30", "--inputs", "0:right", "--vary", "push=0..1", "--until", "ball.x>1", "--tries", "5"])?;
     expect(code == 1 && neither.len() == 3 && at(&neither[2], "found").and_then(Json::as_bool) == Some(false), "a range the condition holds nowhere in is not said so after its two ends", &Json::Arr(neither.clone()))?;
+
+    // A number no rule reads decides nothing, and a mistyped name is one: refused by name.
+    let (code, unread) = run(cx, &["tune", &folder, "--ticks", "30", "--inputs", "0:right", "--vary", "pusj=0..20", "--until", "ball.x>1", "--tries", "5"])?;
+    expect(code == 1 && unread.len() == 1 && text(&unread[0], "error") == Some("unread_parameter"), "a tuning of a number no rule reads is not refused by name", &Json::Arr(unread.clone()))?;
+    // Checks that give the run its numbers, and one with a name mistyped: it plays as the game
+    // is written, and its own line says no rule read it.
+    let (weak, between) = (xs[0], (xs[0] + xs[2]) / 2.0);
+    std::fs::create_dir_all(project.join("checks")).map_err(|e| format!("checks: {e}"))?;
+    write("checks/runs.json", &format!(r#"{{"format": "specula.checks.v1", "checks": [
+  {{"name": "a strong push", "ticks": 30, "inputs": "0:right", "set": {{"push": 8}}, "expect": {{"ball.x": {{"gt": {between}}}}}}},
+  {{"name": "a weak push", "ticks": 30, "inputs": "0:right", "set": {{"push": 2}}, "expect": {{"ball.x": {{"lt": {between}}}}}}},
+  {{"name": "a name mistyped", "ticks": 30, "inputs": "0:right", "set": {{"pusj": 8}}, "expect": {{"ball.x": {{"gt": {weak}}}}}}}
+]}}"#))?;
+    let (code, checked) = run(cx, &["check", &folder])?;
+    let says = |i: usize| checked.get(i).and_then(|c| at(c, "problems")).map(Json::to_string).unwrap_or_default();
+    expect(code == 0 && checked.len() == 4 && says(2).contains("the run set 'pusj' and no rule read it") && says(0).is_empty() && says(1).is_empty(), "three checks that give their runs a number did not all hold, with the mistyped name said and the others not", &Json::Arr(checked.clone()))?;
 
     // 4. A script that takes the three coins: found, played again, and the same in a run of
     // its own.
