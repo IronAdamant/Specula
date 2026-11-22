@@ -1,0 +1,52 @@
+{
+  "leverage": 1,
+  "note": "Two variants of the engine arm's brief on the large job, a second reader's two cheap measurements (2026-11-23): 'nodocs' has no path to the engine's repository; 'batch' is told to check the game with one command (specula check), not a run a question. Everything else in each is the engine arm's own text, word for word. Compared by hand with the plain and engine runs of the cold comparison and of stage 1.",
+  "runs_per_cell": 5,
+  "lead": false,
+  "change_round": false,
+  "builder_model": "claude-sonnet-5-5",
+  "judge_model": "claude-opus-5-5",
+  "arms": [
+    {"name": "nodocs", "kind": "engine", "exe": "e", "text": [
+      "What you have",
+      "- You build it with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`): a small sample game that builds and plays, with every part in place. Start with one read, from that folder: `cat notes/how.md game.json modules/*/src/lib.rs modules/*/actions.json assets/ui/hud.json assets/ui/settings.json assets/strings/en.json` (how such a game is built and run; the sample's game file, rules, inputs, two of its screens and its words). That is the reading done: notes/how.md is complete for a game of this size. Replace the sample's rules, screens and words with your game's, and delete the sample's `checks` folder.",
+      "- Run the game with no window with `{tool} play {run} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH] [--at T,T,T] [--keys LINE,LINE] [--set NAME=NUMBER] [--follow]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in. `--at` prints the state at each of those ticks in one run: read what a thing does over a run from one run, never a run a tick.",
+      "- The headless run a brief asks for is this `play` command, and no program of yours around it: the brief's input words are the game file's `\"inputs\"`, its JSON is the game file's `\"report\"` (a line can read the world itself, and the sounds asked for: notes/how.md), and an option of the brief's such as a board to start on is `--set board=2`, read by the rules with `cx.param(\"board\", 1.0)?`.",
+      "- What the engine looks for itself, each one command (notes/how.md, \"When the engine should look for you\"): `{tool} find {run} --ticks N --until \"LINE OP VALUE\" --words W,W,...` finds a script of inputs that reaches a condition; `{tool} tune {run} --ticks N --vary NAME=LOW..HIGH --until \"LINE OP VALUE\"` finds the value of a number of the rules' at which one begins to hold. Write no player and no search of your own.",
+      "- Also there, and not needed to build or run a game: `{tool} check {run} [--only NAME]` (the engine's own `specula check`: it plays every run that `checks/runs.json` lists and says which did not hold; notes/how.md); and an engine left running, with its tools (`{tool} engine start {run}`, `{tool} engine stop {run}`, `{tool} tools {run} [FILTER]`, `{tool} call {run} TOOL '{{json}}'` or `TOOL @args.json`). Never run the engine's executable yourself.",
+      "- The pages in your work folder's `notes` are all there is to read about the engine. Its own repository, documents and source are not yours to open, as they would not be for someone who was only given the engine: do not look for them. What the pages do not say, find out by running the game.",
+      "- The two checks the brief asks for can be the `play` command, with the game file's `report` saying what it prints; or small scripts of yours.",
+      "- Whoever checks the game starts with no engine running: the commands in your README must work from there."
+    ]},
+    {"name": "batch", "kind": "engine", "exe": "e", "text": [
+      "What you have",
+      "- You build it with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`): a small sample game that builds and plays, with every part in place. Start with one read, from that folder: `cat notes/how.md notes/checks.md game.json modules/*/src/lib.rs modules/*/actions.json assets/ui/hud.json assets/ui/settings.json assets/strings/en.json checks/runs.json` (how such a game is built, run and checked; the sample's game file, rules, inputs, two of its screens, its words and its checks). That is the reading done: notes/how.md is complete for a game of this size. Replace the sample's rules, screens, words and checks with your game's.",
+      "- **Check the game with one command, not a run a question.** Write each thing the brief asks to be true as a check in `checks/runs.json` (a run: its inputs, its ticks, what its state must be; a check takes `set`, `seed`, `settings` and any key of the report or of the engine: notes/checks.md), and play them all at once with `{tool} check {run}`: one answer says which hold and, for one that does not, what the state was. Write the checks when you write the game, play them, mend what does not hold, play them again.",
+      "- To look at one thing you do not understand, run the game with no window with `{tool} play {run} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH] [--at T,T,T] [--keys LINE,LINE] [--set NAME=NUMBER] [--follow]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in. `--at` prints the state at each of those ticks in one run. It is for a question, not for walking through the brief: that is what the checks are for.",
+      "- The headless run a brief asks for is this `play` command, and no program of yours around it: the brief's input words are the game file's `\"inputs\"`, its JSON is the game file's `\"report\"` (a line can read the world itself, and the sounds asked for: notes/how.md), and an option of the brief's such as a board to start on is `--set board=2`, read by the rules with `cx.param(\"board\", 1.0)?`.",
+      "- What the engine looks for itself, each one command (notes/how.md, \"When the engine should look for you\"): `{tool} find {run} --ticks N --until \"LINE OP VALUE\" --words W,W,...` finds a script of inputs that reaches a condition; `{tool} tune {run} --ticks N --vary NAME=LOW..HIGH --until \"LINE OP VALUE\"` finds the value of a number of the rules' at which one begins to hold. Write no player and no search of your own.",
+      "- Also there, and not needed to build or run a game: an engine left running, with its tools (`{tool} engine start {run}`, `{tool} engine stop {run}`, `{tool} tools {run} [FILTER]`, `{tool} call {run} TOOL '{{json}}'` or `TOOL @args.json`). Never run the engine's executable yourself.",
+      "- notes/how.md is written to be enough for a game of this size. Where it is not, the engine's documents are in {docs} (design notes for each area in `docs/design/`).",
+      "- The two checks the brief asks for can be the `play` command, with the game file's `report` saying what it prints; or small scripts of yours.",
+      "- Whoever checks the game starts with no engine running: the commands in your README must work from there."
+    ]}
+  ],
+  "baseline": "nodocs",
+  "jobs": {
+    "large":  {"token_cap": 4000000, "wall_s": 14400}
+  },
+  "judge": {"token_cap": 150000, "wall_s": 1800},
+  "token_weights": {"input": 1.0, "cache_write": 1.25, "cache_read": 0.1, "output": 5.0},
+  "ports": [7681, 7699],
+  "runner": {
+    "note": "As evals/leverage's.",
+    "command": ["claude", "-p", "{prompt}", "--model", "{model}", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--tools", "Bash,Read,Write,Edit,Glob,Grep", "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep", "--no-session-persistence"]
+  },
+  "rules": [
+    "Download nothing and install nothing.",
+    "Someone may be using this machine: open no window that takes the keyboard or comes to the front, and never move the pointer or press keys for them.",
+    "Anything you start that listens, listens on 127.0.0.1 only.",
+    "Stop every process you started before you finish.",
+    "Write a file with your file-writing tool, never with a shell here-document: on this machine a here-document is refused when its text holds an apostrophe, and what was written into it is lost."
+  ]
+}

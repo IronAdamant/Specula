@@ -1485,3 +1485,84 @@ as planned (a smaller project to start from, the SDK's signatures, one command f
 checks) is about the number and size of requests and may bring it to three or four; it
 will not bring it to one. What would have to change for that is in the handoff, as a
 question for the owner.
+
+## Results (2026-11-23: the large job after the guide was put right, and two variants of the brief)
+
+A second reader's review of stage 1 ([FIRST_HOUR.md](FIRST_HOUR.md), section 17, "What a
+second reader found in it") did two things. It listed faults, mended in `ff4b1298`: among
+them Escape over a screen the rules put up, and a guide that was wrong on Escape and silent
+on what every builder had gone to the source for (a title or a menu of the game's own, what
+`keep` leaves to the rules, the kinds a state's value is read as). And it asked for two
+cheap measurements before anything larger was built: the large job with no path to the
+engine's repository in the brief, and with the builder told to check the game by one command.
+
+Three cells on `ff4b1298`, the large job, five cold runs each, all ended by themselves and
+judged. **control**: the engine arm's brief unchanged (added by the lead: the guide had
+changed, so the variants alone could not be told from it). **nodocs**: the same brief, the
+line that points at the engine's documents replaced by one that says the project's pages are
+all there is. **batch**: the same brief, telling the builder to write what the brief asks as
+checks and play them with `specula check`, the sample's checks kept as a model. The variants
+are arms as data: [evals/leverage-probes](../../evals/leverage-probes/settings.json).
+Records: [perf/leverage/2026-11-23-large-control](../../perf/leverage/2026-11-23-large-control/report.md),
+[perf/leverage/2026-11-23-large-probes](../../perf/leverage/2026-11-23-large-probes/report.md).
+Cost: 48.35 USD (builds 15.42, judging 32.92).
+
+| Cell | Weighted tokens, mean (lowest to highest) | Over plain (269,351) | Requests | Checks of 31 | Commands into the engine's repository, a run |
+|---|---|---|---|---|---|
+| cold comparison, `74007d71`, three runs | 1,594,268 (1,128,330 to 2,097,197) | 5.92 | 81.7 | 28.3 | |
+| stage 1, `93c46983` | 1,510,680 (1,004,823 to 2,319,609) | 5.61 | 76.4 | 30.2 | 40, 78, 46 in the first three |
+| **control, `ff4b1298`** | **516,514** (411,391 to 638,415) | **1.92** | 35.0 | 30.6 | 8, 4, 6, 10, 0 |
+| nodocs | 532,140 (467,840 to 614,579) | 1.98 | 33.8 | 30.4 | 1, 0, 0, 0, 0 |
+| batch | 644,396 (442,423 to 798,332) | 2.39 | 40.0 | 30.8 | 1, 2, 12, 2, 4 |
+
+(The last column counts commands in a builder's stream that name the repository's documents
+or crates by any spelling of its path; a stream says a command more than once, so the
+figures are for holding against each other, not counts of requests.)
+
+**The large job is at 1.92 times a plain build, from 5.61, and the cause is what one commit
+put right, most of it in the guide.** Between stage 1's five runs and the control's the job,
+the brief to the word and the model are the same, cold; the engine differs by `ff4b1298`
+alone (the guide's lines, Escape over a shown screen told to the rules, a key printed as
+`null`). The measurement cannot part the guide's lines from the mend of Escape. The fifteen runs of the three cells lie between
+411,391 and 798,332; stage 1's five lay between 1,004,823 and 2,319,609. The builders of
+the control read the engine's source a fifth as often, and one not at all. What changed
+their reading was about twenty lines: that a title or a menu of the game's own is
+`"start": "run"`, a shown screen and rules that answer its buttons; that Escape over such a
+screen is the rules'; that the rules only set the state `keep` names; how a state's value
+is read. Stage 1 had built the means and left those lines out, and each builder paid twenty
+to forty requests to find them.
+
+**What the lead got wrong the day before**, and it is this page's own section above that
+says it: "the cost at this size is not a list of missing features; it is that the shell
+decides things a builder must find out". The second half was right and the conclusion drawn
+from it was not. The shell does decide things; the builder does not need to find them out
+if the guide says them at the place they are needed, and saying them cost a day. The second
+reader's review said so in its third answer ("one worked example of a two-screen flow would
+answer most of the requests on the title and Escape"), and its two measurements were the
+right thing to do before a larger change.
+
+**The two variants.**
+
+- **No path to the repository changes nothing more** (1.98 against 1.92). With the guide
+  put right the builders hardly go there; without the path they do not go at all, and it
+  costs the same. The path was not what sent them.
+- **Told to check by one command costs more, not less** (2.39 against 1.92, in ranges that
+  overlap). The builders wrote checks and played them two to six times a run, and played
+  single runs nearly as often as before (6 to 18 against the control's 14 to 22): the
+  checks were added to the looking, not put in its place. One game more passed all 31.
+
+**Against the bars agreed on 2026-11-22.** The large job is to come to 1.0 or under, and
+above 1.5 after stage 2 means the design is wrong. It stands at 1.92 before stage 2. Every
+engine run still costs more than every plain run (the cheapest 411,391, the dearest plain
+306,759). What is left, by the control's ledgers: about 19 runs of the game a build (14 to
+22), each at a context that ends near 85,000 tokens where a plain build's ends near 50,000;
+four or five requests reading the project at the start; and no reading of the source to
+speak of.
+
+**A fault the runs show, not mended yet: a button that says `resume` on a pause screen of
+the game's own does nothing.** Five of the fifteen games failed the pause item the same way
+(Enter on Resume leaves the game paused; only Escape resumes). `resume` is a word the engine
+answers itself, and where the game is not paused by the engine it answers nothing and the
+rules never hear it (read in one of the five: its rules wait for the event `resume` from a
+screen the game file shows). The engine's own words on a screen the rules put up are a trap
+the guide does not name.

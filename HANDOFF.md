@@ -148,6 +148,28 @@ rounds.
   who does not never has to learn it; (b) the engine answers questions about itself in one
   command (what does this action do, what happens at a start), so that nobody reads its
   source. The lead's view: (a) first, then stage 2, then the large job again.
+- **The large job is at 1.92 times a plain build (2026-11-23; 48.35 USD), from 5.61.** A
+  second reader's review of stage 1 found faults (mended in `ff4b1298`: a settings file that
+  was not read is never written over; Escape over the rules' own screen is the rules'; a
+  guide that was wrong on Escape and silent on a title or menu of the game's own) and asked
+  for two cheap measurements. Three cells, five cold runs each: the engine brief unchanged
+  on the mended commit **1.92** (35 requests, 30.6 of 31 checks; the builders read the
+  engine's source a fifth as often); with no path to the repository in the brief 1.98; told
+  to check by one command 2.39 ([LEVERAGE.md](docs/design/LEVERAGE.md), the last results).
+  **What moved it was what that commit put right, mostly about twenty lines of the guide**;
+  the lead's reading of the day before ("the shell decides things a builder must find out",
+  so the design must change) drew the wrong conclusion from a true half. The bar is 1.0,
+  and 1.5 after stage 2: every engine run still costs more than every plain one. What is
+  left is about 19 runs of the game a build at a context twice a plain build's. **Next:**
+  the `resume` trap (below); then stage 2 as planned (a smaller project to start from,
+  signatures, what changed handed over without a request); a larger job written before it
+  is measured, since a plain build of this one is a four-minute sitting.
+- **Found by those runs, not mended:** on a pause screen of the game's own (a shown screen),
+  a button whose action is `resume` does nothing: it is the engine's word, and where the
+  engine did not pause the game it answers nothing and the rules never hear it. Five of
+  fifteen games failed the pause item so. The same holds for any engine word (`pause`,
+  `title`, `start`) on a screen the rules put up.
+- **The gate passed on `ff4b1298`** (2026-11-23, everything for an engine change; the three cells ran on it).
 - **The gate passed on `93c46983`** (2026-11-22, everything for an engine change; stage 1's runs were made on it).
 - **The gate passed on `74007d71`** (2026-11-22, everything for an engine change; the comparison ran on it).
 - **The gate passed on `c40f4732`** (2026-11-22, everything for an engine change: 3,600 tests, repeats, slow workers, speed, clippy for both targets, both builds; of the live checks, `search_check` and `new_project_check` were run and passed). Before it:
