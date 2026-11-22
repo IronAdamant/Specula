@@ -88,6 +88,26 @@ rounds.
   word; this checkout pulls when the owner says). [docs/design/LINUX.md](docs/design/LINUX.md)
   says what runs there, what does not, and where a Linux machine finds faults this one
   cannot. **`origin/main` may move without this session: fetch and look before any push.**
+- **The cold comparison is done (2026-11-22; 66 builds, none failed to run; 110.35 USD at
+  list prices, of which the judging is 76.91)**
+  ([LEVERAGE.md](docs/design/LEVERAGE.md), the last results). Engine over plain, weighted
+  tokens, five runs a cell: small 1.70, medium 1.65, change 1.29; small3d 1.38, medium3d
+  1.01 (with fewer checks passed), **change3d 0.68** (four of five engine runs under every
+  plain run: the one job the engine is cheaper on). **The 2D `large` job, measured for the
+  first time, three runs: 5.92 times a plain build, and three checks fewer.** Its three
+  engine builders spent 29, 47 and 23 requests reading the engine's documents and source
+  for what no page says and, in one case, the engine cannot do: **a game has no way to keep
+  anything of its own between two runs of the program** (a best score, a saved run; all
+  three failed both items). So "the engine pays where a game is larger" is an aim and not a
+  finding. Next by hand, from the ledgers: a game's own kept data; screens of the game's
+  own opened, closed and named; a run's lines read by key without being in the report
+  (`--keys run.sounds_heard`: four of five medium3d engine games failed "silent at volume
+  0" because no builder wrote the line into the report). Then the large job again, engine
+  arm only. The owner allowed a second full pass while away ("Full second pass is
+  permitted"); none has been started. **Owed to the owner when they are back: the reminder
+  on hooks that no harness owns** (they asked for it if the cold pass showed no savings;
+  it showed one job in seven).
+- **The gate passed on `74007d71`** (2026-11-22, everything for an engine change; the comparison ran on it).
 - **The gate passed on `c40f4732`** (2026-11-22, everything for an engine change: 3,600 tests, repeats, slow workers, speed, clippy for both targets, both builds; of the live checks, `search_check` and `new_project_check` were run and passed). Before it:
 - **The gate passed on `8d172ace`** (2026-11-22, everything for an engine change: the workspace, repeats, slow workers, speed, clippy, both builds; the live checks were not run whole, `search_check` passed on the save mend). Before it:
 - **The gate passed on `14c0d08c`** (2026-11-21, everything: 3,585 tests, repeats, slow workers, speed, clippy, both builds; the live checks were not run again). In it: `53985a95` (a module pushes a

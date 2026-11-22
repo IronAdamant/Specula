@@ -1328,3 +1328,103 @@ run kept apart 1.04); the judging is about two thirds of it.
 **What this pass does not show.** A cold engine builder on the mended engine (every engine
 run here was directed); the carrying mend; more than two runs a cell; any job larger than
 medium3d, which is where the engine's share of the work should grow.
+
+## Results (2026-11-22: cold builders, five runs a cell, and the large job)
+
+The third pass over the same jobs, made to answer what the second could not. A second
+reader's review of the second pass said, rightly: its engine builders were directed by lead
+lines the plain builders did not get, the aids named in those lines had been built from
+these very jobs, two runs a cell cannot tell level from cheaper, and nothing larger than
+medium3d had been measured. So this pass is **cold** (the jobs' lead lines are left out of
+every brief: `"lead": false` in both settings files), **five runs a cell**, and adds the 2D
+`large` job, written on 2026-11-17 and never measured until now (three runs a cell; the
+report's settings line says five, which is the data folder's figure). The engine is
+`74007d71`: the mends of the second reader's bug list ([FIRST_HOUR.md](FIRST_HOUR.md),
+section 16) and the carrying mend. Builders Sonnet 5.5, judges Opus 5.5. 66 builds, every one
+ended by itself and was judged; none failed to run. Records:
+[perf/leverage/2026-11-22-cold-2d](../../perf/leverage/2026-11-22-cold-2d/report.md),
+[perf/leverage/2026-11-22-cold-3d](../../perf/leverage/2026-11-22-cold-3d/report.md).
+
+| Job | Engine, weighted tokens (lowest to highest) | Plain (lowest to highest) | Engine over plain | Directed pass, two runs | Requests, engine / plain | Checks passed, engine / plain |
+|---|---|---|---|---|---|---|
+| small | 109,928 (101,814 to 116,902) | 64,679 (61,552 to 68,206) | **1.70** | 1.69 | 11.0 / 6.0 | 13.8 / 14.0 of 14 |
+| medium | 216,807 (176,386 to 277,822) | 131,034 (117,355 to 144,041) | **1.65** | 1.44 | 20.4 / 8.2 | 18.8 / 18.8 of 19 |
+| change | 128,636 (116,644 to 150,840) | 99,709 (77,535 to 114,273) | **1.29** | 1.87 | 15.0 / 10.4 | 8.6 / 9.0 of 9 |
+| large | 1,594,268 (1,128,330 to 2,097,197) | 269,351 (210,352 to 306,759) | **5.92** | not run | 81.7 / 13.7 | 28.3 / 31.0 of 31 |
+| small3d | 153,419 (125,961 to 195,611) | 111,514 (91,610 to 131,578) | **1.38** | 1.19 | 15.6 / 7.0 | 14.8 / 15.0 of 15 |
+| medium3d | 456,692 (284,962 to 628,612) | 452,168 (327,088 to 571,317) | **1.01** | 0.88 | 35.4 / 19.8 | 22.4 / 23.6 of 24 |
+| change3d | 189,977 (156,410 to 286,867) | 280,116 (265,013 to 300,072) | **0.68** | 0.80 | 18.8 / 21.8 | 11.0 / 10.8 of 11 |
+
+**What the figures support, and what they do not.**
+
+- **One job is cheaper through the engine: the 3D change (0.68).** Four of the five engine
+  runs cost less than every plain run. It is the job where a builder comes to a game that is
+  already there and adds a board: the engine's project is read once and the change is small,
+  while a plain build is a renderer and a physics of the builder's own to read again.
+- **Medium 3D is level (1.01), with fewer checks passed** (22.4 against 23.6 of 24), so it is
+  not level in what was delivered. Four of the five engine games failed one item the same way
+  (m23, below).
+- **Everything in 2D, and the small 3D job, costs more through the engine: 1.3 to 1.7 times.**
+  With five runs a cell the ranges of the two arms do not meet on small or on medium (on
+  small3d the dearest plain run is above the cheapest engine run).
+  This is the fourth measurement of the small job at about 1.7; it has not moved since the
+  first hour's passes ended, and no mend of the last two rounds moved it.
+- **The large job is the finding of the pass: 5.9 times a plain build, and three checks
+  fewer.** The page has said since M5 that the engine should pay where a game is larger. On
+  the one larger job measured, it is the other way round, and by far.
+- **Cold against directed** changes less than the review feared: small is the same (1.70,
+  1.69), the 3D jobs are a little dearer cold and tell the same story, medium is dearer and
+  change cheaper. The lead lines were not what made 3D come level.
+
+**Why the large job cost six times as much: read request by request.** The three engine
+builders took 87, 97 and 61 requests against 13, 10 and 18. Of those, **29, 47 and 23 were
+spent reading the engine's own documents and source**, a third of the first run's cost, about half of the
+third's and nearly three fifths of the second's. What they went looking for, in the order the
+ledgers show it:
+
+1. **How a game keeps anything between two runs of the program.** The job asks for a best
+   score and a saved run that a later headless run finds. The project shell keeps the
+   player's settings and nothing else; a module has no way to keep a value of its own, and
+   no page says so. Each builder searched the SDK, the handler, the shell, `SAVES.md` and
+   `MODULES.md` for one (`persist`, `kept`, `slot`, `best score`), found none, and shipped
+   a game that fails both items (l23 and l26, failed by all three; the plain builds write
+   a small file and pass). **This is a hole in the engine, not in a page.**
+2. **How screens beyond the five the shell names are opened and closed** (a shop between
+   waves), and what Escape and a "back" do on each: read from `shell.rs` and the UI crate's
+   source. Two of the three failed the pause item (l22): one never showed the paused screen
+   by name, one had a Resume button whose word the rules never heard.
+3. **How a text takes numbers in three languages** (`LOCALISATION.md`, the shell's source).
+
+A plain builder of the same job reads nothing: the first of them wrote the game in six
+requests and checked it in four.
+
+**The other items the engine arm failed, each a thing of the engine's:**
+
+- **m23, "silent at volume 0", failed by four of five medium3d engine games.** The line that
+  shows it (`run.sounds_heard`, built for exactly this item the day before) is read only if
+  the builder writes it into the game file's report. None did; the judges asked for it by
+  name with `--keys` and were refused, since `--keys` takes the report's own names. An aid a
+  cold builder does not reach for is not there. (The search is reached for: the brief names
+  it, and every cold builder of the 3D jobs ran `find` unasked.)
+- **m01, once:** `--set board=2` on a game that begins at its title. The run said so (the new
+  warning), and the builder wrote in its README that it had found no way to begin in play
+  (the game file's `"start": "run"` is on the guide).
+- **m12 and m13:** crates that a ball cannot move; one plain game failed m13 too.
+
+**Where the request count comes from at the smaller sizes.** As before: a plain small build
+is six requests, the same six in all five runs (61,552 to 68,206 weighted tokens). An engine
+build reads the project, writes four or five files where plain writes one, and runs the game
+more often. That floor is the project itself, and nothing built in the last two rounds
+touches it.
+
+**What it cost**: 110.35 USD at the runner's list prices (2D 54.94, 3D 55.41). The builds
+are 33.44 of it and the judging 76.91: a judge on Opus costs more than twice what the builder
+it judges does.
+
+**What follows.** The claim this page has carried, that the engine pays where a game is
+larger, is not supported by the one larger job measured. It should be read as an aim, not a
+finding, until a larger job shows it. The mends that the ledgers name, in the order of what
+they cost: a game's own data kept between runs (a best score, a saved run), with its line
+in the guide; opening, closing and naming screens of the game's own; a run's lines read by
+their keys without first being written into the report (`--keys run.sounds_heard`). After
+them the large job is measured again, engine arm only, against the three plain runs here.
