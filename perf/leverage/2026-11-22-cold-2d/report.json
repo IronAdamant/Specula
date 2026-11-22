@@ -2843,7 +2843,7 @@
       "defects": [
         "The Spanish won/lost hint is 'Enter: título', so the English key word 'Enter' stays on Spanish screens.",
         "Volume is stored and shown but there is no sound at all, as the README admits.",
-        "Without --settings, the headless run writes to %APPDATA%\\HoldTheGate\\settings.json. The README example uses C:/tmp/s.json, which writes outside the game folder.",
+        "Without --settings, the headless run writes to a settings.json in the user's own application-data folder. The README example uses C:/tmp/s.json, which writes outside the game folder.",
         "The tkinter window was not checked by the judge. The builder says it did not open it either."
       ],
       "judge": {
