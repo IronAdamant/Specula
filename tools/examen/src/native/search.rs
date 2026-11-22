@@ -17,6 +17,9 @@
 //! - a sound the rules asked for is said with how loud it would have been heard; a number no
 //!   rule reads is refused by `tune` and said by a run; a check gives its run its numbers
 //!   (`"set"`). (The three a second reader found missing, 2026-11-22.)
+//! - a key is read by itself where the report has no line for it (`--keys game.phase`, a
+//!   condition over `world./nummi/ball.x`); and the best score, kept by the game
+//!   file's `keep`, is found by a later run in the same place and by none elsewhere.
 
 use specula_core::Json;
 
@@ -53,6 +56,12 @@ impl Module for Rules {
         // The tick the run begins in is the engine's telling of it, and no push: a game put back
         // from a save of its start must still be told (a save that lost what the rules had yet
         // to hear put this ball a tick ahead of a run of its own, 2026-11-22).
+        // What the game kept for the player (the best score) is told before the run begins.
+        let mut best = cx.state("best")?.as_u64().unwrap_or(0);
+        for e in cx.events().iter().filter(|e| e.from == "engine" && e.name == "kept" && e.data.get("name").and_then(specula_sdk::Value::as_str) == Some("best")) {
+            best = best.max(e.data.get("value").and_then(specula_sdk::Value::as_u64).unwrap_or(0));
+        }
+        cx.set_state("best", best)?;
         if cx.events().iter().any(|e| e.from == "engine" && e.name == "run") {
             return Ok(());
         }
@@ -78,6 +87,7 @@ impl Module for Rules {
             }
         }
         cx.set_state("score", score)?;
+        cx.set_state("best", best.max(score))?;
         cx.set_state("won", score >= 30)?;
         Ok(())
     }
@@ -105,6 +115,7 @@ const GAME: &str = r#"{
   "start": "run",
   "modules": ["modules/nummi"],
   "inputs": { "east": "right" },
+  "keep": { "best": "nummi.best" },
   "report": { "tick": "run.ticks", "score": "nummi.score", "won": "nummi.won", "ball": "world./nummi/ball.position", "coins": "world.#coin.count", "heard": "run.sounds_heard" }
 }
 "#;
@@ -197,6 +208,25 @@ pub fn search(cx: &mut Cx) -> Result<String, String> {
     expect(code == 0 && Some(&replay) == at(&found, "state"), "the script the search found, in a run of its own, does not end in the state the search answered: a game put back from a save did not play on as the game that was saved", &Json::obj([("found", found.clone()), ("run", replay.clone())]))?;
     let (_, again) = search(cx, "1")?;
     expect(again.last() == Some(&found), "the same search did not find the same script", &Json::obj([("first", found.clone()), ("again", again.last().cloned().unwrap_or(Json::Null))]))?;
+
+    // What the engine knows is read by its key, with no line of the report for it; and what
+    // the game keeps for the player is found by a later run in the same place, and by no other.
+    let (code, keyed) = run(cx, &["run", &folder, "--ticks", "70", "--inputs", "0:east", "--keys", "coins,game.phase,nummi.best,run.sounds_heard,nummi.nothing"])?;
+    let line = keyed.last().cloned().unwrap_or(Json::Null);
+    expect(code == 0 && number(&line, "coins") == 2.0 && line.get("game.phase").and_then(Json::as_str) == Some("running") && line.get("nummi.best").and_then(Json::as_f64).is_some_and(|b| b >= 10.0) && line.get("run.sounds_heard").and_then(Json::as_array).is_some_and(|h| h.len() == 1) && line.get("nummi.nothing").is_none(), "keys asked for by themselves are not printed under their own names beside a line of the report (and one with no value left out)", &line)?;
+    let (code, by_key) = run(cx, &["tune", &folder, "--ticks", "30", "--inputs", "0:right", "--vary", "push=0..20", "--until", "world./nummi/ball.x>1", "--tries", "4", "--keys", "ball"])?;
+    expect(code == 0 && by_key.last().and_then(|l| at(l, "found")).and_then(Json::as_bool) == Some(true), "a condition over a key the report has no line for is not read", &Json::Arr(by_key.clone()))?;
+    let place = cx.out.join("kept").to_string_lossy().into_owned();
+    let alone = |cx: &mut Cx, ticks: &str, inputs: &str, place: Option<&str>| -> Result<f64, String> {
+        let mut words = vec!["run", folder.as_str(), "--ticks", ticks, "--inputs", inputs, "--keys", "nummi.best"];
+        if let Some(place) = place {
+            words.extend(["--settings", place]);
+        }
+        let (_, lines) = cx.cli_lines(&words)?;
+        Ok(lines.last().map_or(f64::NAN, |l| l.get("nummi.best").and_then(Json::as_f64).unwrap_or(f64::NAN)))
+    };
+    let (first, later, lower, elsewhere) = (alone(cx, "70", "0:east", Some(&place))?, alone(cx, "3", "0:none", Some(&place))?, alone(cx, "3", "0:none", Some(&place))?, alone(cx, "3", "0:none", None)?);
+    expect(first == 10.0 && later == 10.0 && lower == 10.0 && elsewhere == 0.0, "a best score kept in one run is not found by the next in the same place, or is found where nothing is kept", &Json::arr([first, later, lower, elsewhere].map(Json::from)))?;
 
     // 5. What a search cannot read is said before anything is played.
     let (code, no_line) = run(cx, &["find", &folder, "--ticks", "600", "--until", "lives==0", "--words", "right"])?;

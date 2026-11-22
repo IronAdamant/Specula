@@ -84,7 +84,13 @@ pub struct Spec {
     /// a thing does over a run, read from one run.
     pub at: Vec<u64>,
     /// The report's lines that are printed, by name (`--keys ball,score`); empty: all of them.
+    /// A name that is no line of the report and is a key itself (`run.sounds_heard`,
+    /// `game.phase`, `gate.wave`) is printed under its own name: what the engine knows is read
+    /// without first being written into the game file.
     pub keys: Vec<String>,
+    /// Names the command itself reads (a condition's, a check's): printed too where they are
+    /// keys and no lines, whatever `keys` says.
+    pub also: Vec<String>,
     /// Numbers the rules read with `Cx::param`, for this run (`--set grip=0.3`).
     pub set: Vec<(String, f64)>,
     /// `specula find`: after the script, the engine looks for inputs that reach a condition.
@@ -148,6 +154,9 @@ impl Spec {
         if !self.keys.is_empty() {
             j.set("keys", Json::arr(self.keys.iter().map(|k| Json::from(k.as_str()))));
         }
+        if !self.also.is_empty() {
+            j.set("also", Json::arr(self.also.iter().map(|k| Json::from(k.as_str()))));
+        }
         if !self.set.is_empty() {
             j.set("set", Json::Obj(self.set.iter().map(|(name, value)| (name.clone(), Json::Num(*value))).collect()));
         }
@@ -181,6 +190,11 @@ impl Spec {
             Some(keys) => keys.as_array().and_then(|k| k.iter().map(|k| k.as_str().map(str::to_owned)).collect()).ok_or("keys: a list of names")?,
         };
         check_keys(&keys)?;
+        let also: Vec<String> = match j.get("also") {
+            None => Vec::new(),
+            Some(also) => also.as_array().and_then(|k| k.iter().map(|k| k.as_str().map(str::to_owned)).collect()).ok_or("also: a list of names")?,
+        };
+        check_keys(&also)?;
         let set: Vec<(String, f64)> = match j.get("set") {
             None => Vec::new(),
             Some(set) => set.as_object().and_then(|s| s.iter().map(|(name, value)| value.as_f64().map(|v| (name.clone(), v))).collect()).ok_or("set: an object of numbers")?,
@@ -203,6 +217,7 @@ impl Spec {
             follow: j.get("follow").and_then(Json::as_bool).unwrap_or(false),
             at,
             keys,
+            also,
             set,
             find: j.get("find").map(Find::from_json).transpose()?,
             out: j.get("out").and_then(Json::as_str).map(PathBuf::from).ok_or("out: where the answer is written")?,
@@ -292,6 +307,11 @@ impl Until {
                 Op::Lt => numbers.is_some_and(|(g, w)| g < w),
             }
         })
+    }
+
+    /// Every name it reads.
+    pub fn names(&self) -> Vec<String> {
+        self.0.iter().map(|(name, _, _)| name.clone()).collect()
     }
 
     /// The names it reads that `report` has no value for: said before a search is begun.
@@ -475,7 +495,7 @@ struct Run<'t> {
     /// The game file's own words for inputs (`"inputs"`): each with what it stands for.
     words: Vec<(String, String)>,
     /// The report's lines that are printed (`--keys`); empty: all.
-    keys: Vec<String>,
+    lines: Vec<(String, String, bool)>,
 }
 
 /// `word` with the game file's own words replaced by what they stand for, part by part
@@ -706,7 +726,7 @@ impl Run<'_> {
         // What a line reads from the engine itself and no module keeps: a thing's place as
         // physics left it this tick (`world.PATH.position`), the sounds the rules asked for.
         let mut beyond = Json::obj::<&str>([]);
-        for (_, key) in game.report.iter().filter(|(name, _)| self.keys.is_empty() || self.keys.contains(name)) {
+        for (_, key, _) in &self.lines {
             if key == "run.sounds" || key == "run.sounds_heard" {
                 let info = self.call("engine_info", Json::obj([("response_format", Json::from("detailed"))]))?;
                 beyond.set(key, info.get("module_sounds").and_then(|s| s.get(if key == "run.sounds" { "order" } else { "heard" })).cloned().unwrap_or_else(|| Json::Arr(Vec::new())));
@@ -717,7 +737,9 @@ impl Run<'_> {
         let report = if game.report.is_empty() {
             Json::obj([("tick", Json::from(tick)), ("game", state.clone()), ("ui", ui), ("state", states)])
         } else {
-            Json::Obj(game.report.iter().filter(|(name, _)| self.keys.is_empty() || self.keys.contains(name)).map(|(name, key)| (name.clone(), value_of(key, tick, seed, &state, &ui, &states, &beyond))).collect())
+            // (A key asked for by itself that has no value is left out: it is then a line the
+            // run has not, and whoever asked is told so, as for a name mistyped.)
+            Json::Obj(self.lines.iter().map(|(name, key, own)| (name.clone(), value_of(key, tick, seed, &state, &ui, &states, &beyond), *own)).filter(|(_, value, own)| *own || !value.is_null()).map(|(name, value, _)| (name, value)).collect())
         };
         log_in_order(&mut log);
         Ok(Stand { report, state, log, unfilled })
@@ -850,15 +872,30 @@ fn interface(run: &Run) -> Result<Json, Json> {
     let text_of = |w: &Json| w.get("text").filter(|t| t.as_str().is_some_and(|t| !t.is_empty())).cloned();
     let buttons: Vec<&Json> = widgets.iter().filter(of_screen).filter(|w| w.get("type").and_then(Json::as_str) == Some("button")).collect();
     let focused = buttons.iter().position(|w| w.get("focused").and_then(Json::as_bool) == Some(true));
+    // A button's words are a label inside it: the first text of its screen that lies within
+    // its rectangle.
+    let rect = |w: &Json| -> Option<[f64; 4]> {
+        let r = w.get("rect")?.as_array()?;
+        Some([r.first()?.as_f64()?, r.get(1)?.as_f64()?, r.get(2)?.as_f64()?, r.get(3)?.as_f64()?])
+    };
+    let within = |inner: [f64; 4], outer: [f64; 4]| inner[0] >= outer[0] - 0.5 && inner[1] >= outer[1] - 0.5 && inner[0] + inner[2] <= outer[0] + outer[2] + 0.5 && inner[1] + inner[3] <= outer[1] + outer[3] + 0.5;
+    let words_on = |button: &Json| -> Option<Json> {
+        let outer = rect(button)?;
+        widgets.iter().filter(of_screen).filter(|w| rect(w).is_some_and(|inner| within(inner, outer))).find_map(text_of)
+    };
     Ok(Json::obj([
         ("screen", screen.as_deref().map_or(Json::Null, Json::from)),
         ("screens", Json::arr(shown.iter().filter_map(name).map(|n| Json::from(n.as_str())))),
-        ("focus", focused.and_then(|i| buttons[i].get("id").cloned()).unwrap_or(Json::Null)),
+        // The focused button as a player reads it, and its id (2026-11-22: a brief's "selected"
+        // is the words on the button; five games shipped the id, or another screen's texts).
+        ("focus", focused.and_then(|i| words_on(buttons[i]).or_else(|| buttons[i].get("id").cloned())).unwrap_or(Json::Null)),
+        ("focus_id", focused.and_then(|i| buttons[i].get("id").cloned()).unwrap_or(Json::Null)),
         ("focus_index", focused.map_or(Json::Null, |i| Json::from(i as u64))),
-        // Every text that is up, the screens underneath included, in order; and the top
-        // screen's alone (a menu over the field: what the menu says).
-        ("texts", Json::arr(widgets.iter().filter_map(text_of))),
+        // The top screen's texts (a menu over the field: what the menu says), under both
+        // names it has had; and every text that is up, the screens underneath included.
+        ("texts", Json::arr(widgets.iter().filter(of_screen).filter_map(text_of))),
         ("top_texts", Json::arr(widgets.iter().filter(of_screen).filter_map(text_of))),
+        ("all_texts", Json::arr(widgets.iter().filter_map(text_of))),
     ]))
 }
 
@@ -891,7 +928,7 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     if gate.wait(START_WAIT).is_err() {
         return Err(refusal("no_engine", "the engine did not start"));
     }
-    let mut run = Run { tools, session: session(), modules: Vec::new(), held: Vec::new(), hold_left: 0, at: 0, spans: Vec::new(), words: game.inputs.clone(), keys: spec.keys.clone() };
+    let mut run = Run { tools, session: session(), modules: Vec::new(), held: Vec::new(), hold_left: 0, at: 0, spans: Vec::new(), words: game.inputs.clone(), lines: lines_of(&game, &spec.keys, &spec.also) };
     for dir in game.modules.iter().take(crate::run_modules::MAX_MODULES) {
         let name = run.build(dir, spec.seed)?;
         run.modules.push((name, Vec::new()));
@@ -913,8 +950,8 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
         }
     }
     // A name of `--keys` that the report has no line of is said before a tick is played.
-    if let Some(name) = spec.keys.iter().find(|k| !game.report.iter().any(|(name, _)| name == *k)) {
-        let mut e = refusal("unknown_key", format!("'{name}' is not a line of this game's report (game.json, \"report\")"));
+    if let Some(name) = spec.keys.iter().find(|k| !game.report.iter().any(|(name, _)| name == *k) && !k.contains('.')) {
+        let mut e = refusal("unknown_key", format!("'{name}' is not a line of this game's report (game.json, \"report\"), and not a key (run.sounds_heard, game.phase, ui.top_texts, a module's gate.wave: notes/how.md lists them)"));
         e.set("lines", Json::arr(game.report.iter().map(|(name, _)| Json::from(name.as_str()))));
         return Err(e);
     }
@@ -1067,6 +1104,24 @@ pub fn unread_words(name: &str) -> String {
 /// How [`unread_words`] begins, whatever the name.
 pub const UNREAD_BEGINS: &str = "the run set '";
 
+/// The lines a run prints, each a name, the key it shows and whether it is the report's own:
+/// the report's lines (those `keys` names, or all of them), then every name of `keys` and
+/// `also` that is no line of the report (nor a part of one: `ball.x` is line `ball`'s) and is
+/// a key itself, under its own name. So what the engine knows (`run.sounds_heard`,
+/// `game.phase`, `world./gate/door.position`, a module's `gate.wave`) is read by its key from
+/// a run, a check or a search without the game file naming it first (2026-11-22: four of
+/// five builders' games failed an item whose proof was a line none had written in).
+fn lines_of(game: &GameFile, keys: &[String], also: &[String]) -> Vec<(String, String, bool)> {
+    let line = |k: &str| game.report.iter().any(|(name, _)| name == k || k.split_once('.').is_some_and(|(first, _)| first == name));
+    let mut lines: Vec<(String, String, bool)> = game.report.iter().filter(|(name, _)| keys.is_empty() || keys.contains(name)).map(|(name, key)| (name.clone(), key.clone(), true)).collect();
+    for key in keys.iter().chain(also) {
+        if !line(key) && key.contains('.') && !lines.iter().any(|(name, _, _)| name == key) && lines.len() < 2 * specula_ludus::game::MAX_REPORT {
+            lines.push((key.clone(), key.clone(), false));
+        }
+    }
+    lines
+}
+
 /// The most problems of one kind a run says (the rest are counted in the last line).
 const MAX_SAID: usize = 6;
 
@@ -1076,7 +1131,7 @@ const MAX_SAID: usize = 6;
 fn unfilled_texts(ui: &Json) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: Vec<&str> = Vec::new();
-    for text in ui.get("texts").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str) {
+    for text in ui.get("all_texts").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str) {
         let mut rest = text;
         while let Some(open) = rest.find('{') {
             let Some(len) = rest[open..].find('}') else { break };
@@ -1267,11 +1322,30 @@ mod tests {
         assert!(parse_inputs(&many.join(",")).unwrap_err().contains("at most"));
     }
 
+    /// A run prints the report's lines, and any key asked for by itself that is no line.
+    #[test]
+    fn a_key_is_read_without_being_a_line_of_the_report() {
+        let game = GameFile::parse(r#"{"format": "specula.game.v1", "title": "g", "modules": ["modules/gate"], "report": {"tick": "run.ticks", "ball": "world./gate/ball.position", "score": "gate.score"}}"#).unwrap();
+        let names = |keys: &[&str], also: &[&str]| -> Vec<String> {
+            let own = |list: &[&str]| list.iter().map(|k| (*k).to_owned()).collect::<Vec<String>>();
+            lines_of(&game, &own(keys), &own(also)).into_iter().map(|(name, key, own)| format!("{name}={key}{}", if own { "" } else { "*" })).collect()
+        };
+        assert_eq!(names(&[], &[]), ["tick=run.ticks", "ball=world./gate/ball.position", "score=gate.score"]);
+        assert_eq!(names(&["score"], &[]), ["score=gate.score"]);
+        // A key by itself, alone or beside lines; a part of a line is the line's, not a key.
+        assert_eq!(names(&["run.sounds_heard"], &[]), ["run.sounds_heard=run.sounds_heard*"]);
+        assert_eq!(names(&["score", "game.phase"], &["ball.x", "gate.wave", "game.phase", "score"]), ["score=gate.score", "game.phase=game.phase*", "gate.wave=gate.wave*"]);
+        // What a condition reads is printed beside every line when no keys are named.
+        assert_eq!(names(&[], &["game.phase"]).len(), 4);
+        // A word with no dot is a name, and one the report has not is still refused (where the run begins).
+        assert!(names(&["lives"], &[]).is_empty());
+    }
+
     #[test]
     fn a_spec_is_read_back_as_it_was_written() {
-        let spec = Spec { ticks: 600, seed: Some(7), inputs: vec![(0, "enter".into()), (5, "up".into())], frame: Some(PathBuf::from("out/f.png")), size: (800, 480), follow: true, at: vec![90, 180], keys: vec!["ball".into()], set: vec![("grip".into(), 0.25)], find: None, out: PathBuf::from("answer.json") };
+        let spec = Spec { ticks: 600, seed: Some(7), inputs: vec![(0, "enter".into()), (5, "up".into())], frame: Some(PathBuf::from("out/f.png")), size: (800, 480), follow: true, at: vec![90, 180], keys: vec!["ball".into()], also: vec!["game.phase".into()], set: vec![("grip".into(), 0.25)], find: None, out: PathBuf::from("answer.json") };
         assert_eq!(Spec::from_json(&spec.to_json()).unwrap(), spec);
-        let bare = Spec { ticks: 0, seed: None, inputs: Vec::new(), frame: None, size: (960, 540), follow: false, at: Vec::new(), keys: Vec::new(), set: Vec::new(), find: None, out: PathBuf::from("a") };
+        let bare = Spec { ticks: 0, seed: None, inputs: Vec::new(), frame: None, size: (960, 540), follow: false, at: Vec::new(), keys: Vec::new(), also: Vec::new(), set: Vec::new(), find: None, out: PathBuf::from("a") };
         assert_eq!(Spec::from_json(&Json::parse(r#"{"ticks": 0, "out": "a"}"#).unwrap()).unwrap(), bare);
         let bad = |text: &str| Spec::from_json(&Json::parse(text).unwrap()).unwrap_err();
         assert!(bad(r#"{"ticks": 2000000, "out": "a"}"#).contains("ticks"));
@@ -1400,13 +1474,13 @@ mod tests {
     /// are no key, and texts that were filled, are not.
     #[test]
     fn a_screen_text_nothing_fills_is_said() {
-        let ui = Json::parse(r#"{"texts": ["Taps: {marble.taps}", "Time: {marble.left}", "Taps: {marble.taps}", "Score: 40", "Press {A} to start", "{} and {a.} and {.b}"]}"#).unwrap();
+        let ui = Json::parse(r#"{"all_texts": ["Taps: {marble.taps}", "Time: {marble.left}", "Taps: {marble.taps}", "Score: 40", "Press {A} to start", "{} and {a.} and {.b}"]}"#).unwrap();
         let said = unfilled_texts(&ui);
         assert_eq!(said.len(), 2, "{said:?}");
         assert!(said[0].contains("\"Taps: {marble.taps}\"") && said[0].contains("nothing keeps \"marble.taps\"") && said[0].contains("cx.set_state(\"taps\""), "{}", said[0]);
         assert!(said[1].contains("marble.left"), "{}", said[1]);
         // Bounded: the keys past the most said are counted in one line.
-        let many = Json::obj([("texts", Json::arr((0..20).map(|i| Json::from(format!("{{m.k{i}}}")))))]);
+        let many = Json::obj([("all_texts", Json::arr((0..20).map(|i| Json::from(format!("{{m.k{i}}}")))))]);
         let said = unfilled_texts(&many);
         assert_eq!(said.len(), MAX_SAID + 1);
         assert!(said[MAX_SAID].contains("14 more"), "{}", said[MAX_SAID]);

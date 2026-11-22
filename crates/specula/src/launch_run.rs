@@ -780,6 +780,8 @@ fn tune_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
         let mut one = args.clone();
         one.vary = None;
         one.until = None;
+        // (What the condition reads is printed for it, where it is a key and no line.)
+        one.also.extend(until.names());
         one.set.push((name.clone(), vec![value]));
         let state = match run_in(ctx, &folder, &one, Kept::AsAsked) {
             (0, answer) => {
@@ -964,7 +966,7 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
                 continue;
             }
         };
-        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), set: check.set.iter().map(|(name, value)| (name.clone(), vec![*value])).collect(), frame, size: check.size, ..Default::default() };
+        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), set: check.set.iter().map(|(name, value)| (name.clone(), vec![*value])).collect(), also: check.expect.iter().map(|(key, _)| key.clone()).collect(), frame, size: check.size, ..Default::default() };
         // A check's settings are the folder it names, or none: never the folder the command
         // itself was given, which is some player's own.
         let named = check.settings.as_ref().map(|name| scratch.join(name));
@@ -1095,6 +1097,8 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
         follow: args.follow,
         at: args.at.clone(),
         keys: args.keys.clone(),
+        // What a condition reads is printed for it, where it is a key and no line of the report.
+        also: args.also.iter().cloned().chain(args.until.iter().chain(&args.never).flat_map(crate::script_run::Until::names)).chain(args.rise.iter().cloned()).chain(args.cells.iter().cloned()).take(specula_ludus::game::MAX_REPORT).collect(),
         set: args.set.iter().map(|(name, values)| (name.clone(), values[0])).collect(),
         find: args.until.clone().filter(|_| !args.words.is_empty()).map(|until| crate::script_run::Find {
             until,

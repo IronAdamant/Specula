@@ -25,6 +25,9 @@ pub const FORMAT: &str = "specula.settings.v1";
 pub const MAX_SETTINGS: usize = 64;
 pub const MAX_OPTIONS: usize = 32;
 pub const MAX_EXTRA: usize = 32;
+/// What stands before the name of a value the game keeps for the player, in the settings
+/// file: a setting's name has no dot.
+pub const KEPT: &str = "kept.";
 /// What a setting may stand for in the engine (`"is"`).
 pub const MEANINGS: [&str; 3] = ["volume", "ui_scale", "text_size"];
 
@@ -180,6 +183,29 @@ impl Kept {
         } else if self.values.len() < MAX_SETTINGS + MAX_EXTRA && name.chars().count() <= 64 {
             self.values.push((name.to_owned(), value.to_json()));
         }
+    }
+
+    /// The game keeps `value` for the player under `name` ([`KEPT`] before it in the file,
+    /// so that no setting can have its name). Whether anything changed.
+    pub fn keep(&mut self, name: &str, value: Json) -> bool {
+        let name = format!("{KEPT}{name}");
+        if let Some(at) = self.values.iter().position(|(k, _)| *k == name) {
+            if self.values[at].1 == value {
+                return false;
+            }
+            self.values[at].1 = value;
+            true
+        } else if self.values.len() < MAX_SETTINGS + MAX_EXTRA {
+            self.values.push((name, value));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// What the game kept under `name` ([`Kept::keep`]).
+    pub fn kept(&self, name: &str) -> Option<&Json> {
+        self.values.iter().find(|(k, _)| k.strip_prefix(KEPT) == Some(name)).map(|(_, v)| v)
     }
 
     /// What the player chose for `name`, as the file holds it.
@@ -407,6 +433,22 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a game keeps stands under its own names in the player's file, beside the settings
+    /// and apart from them.
+    #[test]
+    fn what_a_game_keeps_is_beside_the_settings() {
+        let mut kept = Kept::read_text(r#"{"format": "specula.settings.v1", "values": {"volume": 3}}"#);
+        assert_eq!(kept.kept("best"), None);
+        assert!(kept.keep("best", Json::Num(40.0)));
+        assert!(!kept.keep("best", Json::Num(40.0)), "the same again changes nothing");
+        assert!(kept.keep("best", Json::Num(50.0)));
+        assert!(kept.keep("volume", Json::Num(9.0)), "a kept value named as a setting is another name in the file");
+        assert_eq!((kept.kept("best"), kept.kept("volume"), kept.get("volume")), (Some(&Json::Num(50.0)), Some(&Json::Num(9.0)), Some(&Json::Num(3.0))));
+        let again = Kept::read_text(&kept.to_text());
+        assert_eq!(again.kept("best"), Some(&Json::Num(50.0)));
+    }
+
 
     fn def(text: &str) -> Result<Setting, Problem> {
         Setting::parse(&Json::parse(text).expect("the test's JSON"), "settings[0]")

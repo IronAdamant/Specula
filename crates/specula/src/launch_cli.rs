@@ -48,6 +48,8 @@ pub struct RunArgs {
     pub at: Vec<u64>,
     /// The report's lines that are printed (`--keys ball,score`); empty: all.
     pub keys: Vec<String>,
+    /// Names the command reads beside `keys` (a check's expectations): [`crate::script_run::Spec::also`].
+    pub also: Vec<String>,
     /// Numbers the rules read with `Cx::param` (`--set grip=0.3`); one of them may have several
     /// values (`--set grip=0.2,0.4,0.6`): the run is played once for each.
     pub set: Vec<(String, Vec<f64>)>,

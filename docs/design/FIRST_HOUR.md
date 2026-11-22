@@ -292,8 +292,8 @@ So the second pass is one loop, the plain arm's: **edit, run, read.**
 - **The game file says what is printed and how the game is looked at.**
   - `"report"`: each line a name and the key whose value it shows, in order: what a module keeps
     (`gate.walkers`), `setting.NAME`, `game.phase`, `game.score`, `game.outcome`, `game.tick`,
-    `run.ticks`, `run.seed`, `ui.screen`, `ui.focus`, `ui.focus_index`, `ui.texts` (every text on
-    screen) and `ui.top_texts` (the top screen's). No report: everything.
+    `run.ticks`, `run.seed`, `ui.screen`, `ui.focus` (the focused button's words), `ui.focus_id`, `ui.focus_index`, `ui.texts` (the top
+    screen's texts) and `ui.all_texts` (every screen's). No report: everything.
   - `"view"`: `{"center": [x, y], "height": metres}` (straight on, as a 2D game is seen) or
     `{"eye", "target", "fov_y_deg"}`. A run's frame uses it, and so does the window while nobody has
     pointed it elsewhere: a 2D game is no longer seen by the camera that fits whatever is in the world.
@@ -710,6 +710,47 @@ owner, not a file of this repository). What was mended from it, by hand, the sam
 `search_check` plays the three that need a game: the sound's loudness at the tick a coin is
 taken, a tuning refused for a number no rule reads, and three checks that give their runs a
 number, one of them mistyped.
+
+## 17. What the large job ran out of (2026-11-22, after the cold comparison)
+
+The cold comparison's one larger job cost 5.9 times a plain build
+([LEVERAGE.md](LEVERAGE.md), the last results). Its three builders spent 99 requests reading
+the engine's documents and source, and a second reader's three passes over the ledgers put
+about four fifths of that on two things the engine could not do or did not say, tied: what a
+game keeps between two runs of the program, and screens of the game's own. The same passes
+found two smaller traps that cost checks. Built for it, by hand:
+
+- **What a game keeps for the player** (`"keep": {"best": "gate.best"}` in the game file: a
+  name, and a key of a module's state). The engine writes the value when the rules change
+  it, in the player's settings file under `kept.NAME` (so only where settings are kept), and
+  tells it back to the rules as the event `kept` before the first tick and after a save is
+  loaded. Any value the state holds, 4 KiB as JSON, sixteen names. Nothing of the sim reads
+  a file: what was kept comes in as every other thing from outside does, as an event at a
+  tick's boundary.
+- **Screens the rules put up** (`"show": {"shop": "gate.shopping"}`): while a run is under
+  way or paused and the key is true, the screen is up over the game's own and under any
+  menu, with the focus. Its buttons' words reach the rules as `ui` events; the clock goes
+  on; the rules take it down by the key. Escape still pauses over it.
+- **A key is read by itself.** `--keys`, a check's `expect`, and a condition of `find` or
+  `tune` take any key the report could name (`game.phase`, `run.sounds_heard`,
+  `world./gate/door.position`, `gate.wave`) with no line of the report written for it first.
+  A key with no value is left out, so a name mistyped is still refused by name. (Four of
+  five games failed "silent at volume 0" because the line that shows it was in no report;
+  twelve searches were refused over `game.phase`.)
+- **`ui.texts` is the top screen's texts** (it was every screen's, and five games printed
+  the title's buttons under a pause); `ui.all_texts` is every screen's. **`ui.focus` is the
+  focused button's words**, `ui.focus_id` its id.
+- **The guide says what the engine does not do**, five lines: no file from the rules, no
+  setting changed by them, no screen opened by a call, Escape not theirs to hear, no tick
+  at the title.
+
+`search_check` plays the kept score (set in one run, found in the next in the same place,
+not found elsewhere) and the keys read by themselves. A shown screen is held by a unit test
+of the shell and was played by hand; no live check plays one yet.
+
+**Not done here, and next:** a smaller project to start from and an index of the SDK's
+signatures (builders still opened its source for types); one command that plays every check
+of a brief. Both are about the number of requests, which these mends do not touch.
 
 ## As built
 

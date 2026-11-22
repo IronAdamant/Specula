@@ -367,8 +367,9 @@ builds the modules, plays the game with no window and prints how it stands as JS
   only, where `down` would also hold a module's action of that name).
 - **A run read on its way**: `--at 90,180,270` prints the state at each of those ticks, a
   line each, in one run (it ends at the last unless `--ticks` goes further); `--keys a,b`
-  prints only those lines of the report. What a thing does over time is one run, not one a
-  tick.
+  prints only those lines of the report, and any key below by itself
+  (`--keys game.phase,run.sounds_heard`): it need not be in the report first. What a thing
+  does over time is one run, not one a tick.
 - **When the engine should look for you** (each is one command and no program of yours):
   a number whose effect you want to see, `specula run . --ticks 120 --set grip=0.2,0.4,0.8`
   (the rules read it with `cx.param("grip", 0.6)?`: a run for each value, a line each); a
@@ -385,9 +386,11 @@ builds the modules, plays the game with no window and prints how it stands as JS
 - **What is printed** is the game file's `"report"`: each line a name and the key whose value
   it shows. Keys: `{{module}}.KEY` (what the module keeps), `setting.NAME`, `game.phase`
   (title, running, paused, won, lost), `game.score`, `game.outcome`, `game.tick`, `run.ticks`,
-  `run.seed`, `ui.screen` (the top screen's name), `ui.focus` and `ui.focus_index` (the
-  focused button, and its place among its screen's buttons), `ui.texts` (every text on
-  screen, in order) and `ui.top_texts` (the top screen's). No `"report"`: all of it.
+  `run.seed`, `ui.screen` (the top screen's name), `ui.focus` (the focused button's
+  words; `ui.focus_id` its id, `ui.focus_index` its place among its screen's buttons),
+  `ui.texts` (the top screen's texts, in order; `ui.all_texts`: the screens underneath too).
+  No `"report"`: all of it. A check's `expect`, and `--until`, `--rise`, `--cells`, `--never`
+  and `--keys`, take a line's name or any of these keys as it stands (`game.phase==won`).
   **The world itself**, read after the tick's physics, so no rule need copy it:
   `world./{{module}}/ball.position` (`{"x", "y", "z"}`), `.x`, `.velocity`, `.exists`; everything
   with a tag, by path: `world.#coin.positions`, `world.#coin.count`. `run.sounds`: every
@@ -423,6 +426,14 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   and it is the sound's volume. A setting of the game's with `"is": "volume"` (any name, its
   own range and default) is the volume in its place.
   Every setting is kept for the player; nothing else is needed for that.
+- `keep`: what outlasts the program (a best score, a run to go on with):
+  `{"best": "{{module}}.best"}`, a name and a key of the rules' state (any value, 4 KiB).
+  The engine writes it when the rules change it, where the settings are kept (`--settings
+  FOLDER`), and tells it back as the event `kept` (`name`, `value`) before the first tick:
+  `"kept" if word("name") == Some("best") => best = best.max(..)`.
+- `show`: screens the rules put up, `{"shop": "{{module}}.shopping"}`: in a run, while
+  that key is true (or not 0), `assets/ui/shop.json` is up over the game's own with the
+  focus; its buttons' words reach the rules as `ui` events, and the clock goes on.
 - **A setting the rules read** (a difficulty) is four things: `"sim": true` on it here; a
   button on a screen with the action `cycle:NAME` (or `step:NAME:+1`), its text
   `{setting.NAME.text}`; for a choice, a line `setting.NAME.VALUE` for each value in every
@@ -435,6 +446,14 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   `{"center": [x, y], "height": metres}` (straight on, +x right, +y up: draw with flat cubes
   at z 0). 3D: `{"eye": [x, y, z], "target": [x, y, z], "fov_y_deg": 50}`.
 - `report`: above. `inputs`: words of the game's own for a script, above.
+
+**What the engine does not do** (do not look for it in its source)
+
+- The rules read and write no file; only `keep` outlasts the program. They change no
+  setting (a button does) and open no screen by a call (`open:SCREEN` on a button, or `show`).
+- Escape is not the rules' to hear: on a menu it goes back; in a run with no menu up it
+  pauses (the `pause` screen, `game.phase` is `paused`) and no rule ticks until `resume`.
+- At the title no rule ticks: a run needs `0:enter` first, or `"start": "run"`.
 
 **Screens** (`assets/ui/*.json`; widgets: box, panel, label, button, bar, list, spacer)
 
@@ -494,14 +513,12 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   the rules take no seed and keep none. A stream goes on from where it was, so a second game
   in one session is another game; `cx.random_restart("stream")?` puts it back at its
   beginning (call it where a run begins, for "the same seed gives the same game again").
-- **The rest of the SDK** (with `notes/world.md`, this is all of it: no need to read its
-  source): `cx.random_u32("stream")?`; `cx.emit("name", data)?` (an event every module hears
-  next tick); `cx.move_character(id, motion)?` (the engine's character controller: a `Moved`
-  with `.position`, `.grounded`, `.blocked`); `cx.actions()` (every action, by name);
-  `cx.reloaded()` and `cx.generation()` (a module loaded again); `cx.trace(TraceLevel::Info,
-  "code", fields)?`; `cx.request(value)?` (the call under all of these). What
-  `cx.entity(id)?` gives also has `.path()`, `.version()`, `.has_tag("t")` and
-  `.prop("key")`; a `Spawn` and a `Patch` take `.props(value)`.
+- **The rest of the SDK** (with `notes/world.md` that is all of it): `cx.random_u32("s")?`;
+  `cx.emit("name", data)?` (an event every module hears next tick);
+  `cx.move_character(id, motion)?` (a `Moved`: `.position`, `.grounded`, `.blocked`);
+  `cx.actions()`; `cx.reloaded()`, `cx.generation()`; `cx.trace(TraceLevel::Info, "code",
+  fields)?`; `cx.request(value)?`. An entity also has `.path()`, `.version()`,
+  `.has_tag("t")`, `.prop("key")`; a `Spawn` and a `Patch` take `.props(value)`.
 
 **Also**
 

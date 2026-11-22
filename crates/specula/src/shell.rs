@@ -395,6 +395,10 @@ pub struct Shell {
     /// What the modules keep, as last seen: `<module>.<key>`.
     shown: Vec<(String, Shown)>,
     events_out: Vec<(String, Value)>,
+    /// What each of the game file's `keep` names last had in its module, in their order: a
+    /// value is written to the player's file when it differs from this, and not looked at
+    /// otherwise (nothing is copied a tick).
+    kept_seen: Vec<Option<Value>>,
     events_dropped: u64,
     clock_wish: Option<bool>,
     requests: Vec<GameRequest>,
@@ -475,6 +479,7 @@ impl Shell {
             strings: Vec::new(),
             shown: Vec::new(),
             events_out: Vec::new(),
+            kept_seen: Vec::new(),
             events_dropped: 0,
             clock_wish: None,
             requests: Vec::new(),
@@ -865,7 +870,7 @@ impl Shell {
     fn fill(&mut self) {
         let score = self.score();
         let language = self.language_setting();
-        let screen = self.run.visible().last().map(|s| (*s).to_owned()).unwrap_or_default();
+        let screen = self.up().last().cloned().unwrap_or_default();
         let s = &mut self.state;
         s.reset();
         // The player's language's lines; where it has no table of its own, the first's, as
@@ -928,8 +933,8 @@ impl Shell {
 
     /// Shows the screens the run says are up, and hides the rest.
     fn sync_screens(&mut self) {
+        let up = self.up();
         let Some(face) = &mut self.face else { return };
-        let up: Vec<String> = self.run.visible().into_iter().map(str::to_owned).collect();
         for name in &face.screens {
             let want = up.iter().any(|u| u == name);
             if face.ui.is_visible(name) != want {
@@ -1065,7 +1070,7 @@ impl Shell {
             })),
             ("runs", Json::from(self.run.runs())),
             ("tick_hz", Json::from(self.game.tick_hz)),
-            ("screens", Json::arr(self.run.visible().into_iter().filter(|s| self.has_screen(s)).map(Json::from))),
+            ("screens", Json::arr(self.up().iter().filter(|s| self.has_screen(s)).map(|s| Json::from(s.as_str())))),
             ("locale", Json::from(self.settings.locale())),
         ]);
         if let Some(tick) = self.run.ended_at() {
@@ -1117,12 +1122,16 @@ impl Game for Shell {
     }
 
     fn start(&mut self, _ctx: &mut Ctx) {
+        // What the game kept for the player is told first: the rules have it before they hear
+        // that a run begins.
+        self.tell_kept();
         let effects = self.run.began(&self.settings);
         self.apply(effects, false);
     }
 
     fn after_modules(&mut self, ctx: &mut Ctx, modules: &ModuleStates) {
         self.see(modules);
+        self.keep_values(modules);
         // (The run is asked with what it reads lent beside it: nothing is copied a tick.)
         let (runs, phase) = (self.run.runs(), self.run.phase());
         let effects = {
@@ -1396,6 +1405,82 @@ impl Game for Shell {
 }
 
 impl Shell {
+    /// The screens that are up, the bottom first: the phase's own, then the game's own that
+    /// its rules put up (the game file's `show`, while a run is under way or paused), then
+    /// the ones opened over them (a pause menu, the settings).
+    fn up(&self) -> Vec<String> {
+        let own = self.run.visible();
+        let opened = self.run.stack().len();
+        let (below, above) = own.split_at(own.len() - opened);
+        let mut up: Vec<String> = below.iter().map(|s| (*s).to_owned()).collect();
+        if matches!(self.run.phase(), Phase::Running | Phase::Paused) {
+            let (runs, phase) = (self.run.runs(), self.run.phase());
+            // (Under a pause menu too: the pause is over what was up.)
+            let at = if phase == Phase::Paused { up.len().saturating_sub(1) } else { up.len() };
+            let mut shown: Vec<String> = Vec::new();
+            for (screen, key) in &self.game.show {
+                let on = match value_of(&self.shown, &self.settings, runs, phase, key) {
+                    Some(Val::Bool(b)) => b,
+                    Some(Val::Num(n)) => n != 0.0,
+                    Some(Val::Text(t)) => !t.is_empty(),
+                    None => false,
+                };
+                if on && !up.contains(screen) && !shown.contains(screen) {
+                    shown.push(screen.clone());
+                }
+            }
+            up.splice(at..at, shown);
+        }
+        up.extend(above.iter().map(|s| (*s).to_owned()));
+        up
+    }
+}
+
+impl Shell {
+    /// Tells the modules each value the game keeps for the player and the player's file has
+    /// (the game file's `keep`): an event `kept` from the engine, with `name` and `value`, at
+    /// the next tick. Once a name: a save that held the telling is not told twice.
+    fn tell_kept(&mut self) {
+        for (name, _) in &self.game.keep {
+            let Some(value) = self.kept.kept(name) else { continue };
+            let told = self.events_out.iter().any(|(event, data)| event == "kept" && data.get("name").and_then(Value::as_str) == Some(name.as_str()));
+            if !told && self.events_out.len() < MAX_EVENTS {
+                self.events_out.push(("kept".to_owned(), Value::map().with("name", name.as_str()).with("value", Value::from_json(value))));
+            }
+        }
+    }
+
+    /// Keeps for the player what the game file's `keep` names, as the modules have it after
+    /// this tick: written to the player's file (where one is kept) when a value changed.
+    fn keep_values(&mut self, modules: &ModuleStates) {
+        let Shell { game, kept_seen, kept, settings_dirty, problems, .. } = self;
+        if kept_seen.len() != game.keep.len() {
+            kept_seen.resize(game.keep.len(), None);
+        }
+        for (i, (name, key)) in game.keep.iter().enumerate() {
+            // (A module that is not running keeps nothing new: what was kept stays.)
+            let Some(value) = modules.dotted(key) else { continue };
+            if kept_seen[i].as_ref() == Some(value) {
+                continue;
+            }
+            kept_seen[i] = Some(value.clone());
+            let json = value.to_json();
+            let size = json.to_string().len();
+            if size > MAX_KEPT_BYTES {
+                note(problems, format!("\"keep\": '{name}' ({key}) is {size} bytes as JSON and a kept value is at most {MAX_KEPT_BYTES}: it is not kept"));
+                continue;
+            }
+            if kept.keep(name, json) {
+                *settings_dirty = true;
+            }
+        }
+    }
+}
+
+/// The largest value a game keeps for the player, as JSON text.
+const MAX_KEPT_BYTES: usize = 4096;
+
+impl Shell {
     /// Puts the run back as a save had it ([`Game::apply_state`]).
     fn put_back(&mut self, state: Box<dyn std::any::Any>) {
         if let Ok(saved) = state.downcast::<(Phase, Option<u64>, u64, Vec<(String, Value)>)>() {
@@ -1405,6 +1490,9 @@ impl Shell {
             // the modules the save brought back. What the saved game's modules had still to
             // be told is.
             self.events_out = saved.3;
+            // And what the game keeps for the player, which no save holds: the rules a save
+            // brought back have its own values, older than the player's.
+            self.tell_kept();
             // The clock is as the phase says: only a run under way ticks.
             self.clock_wish = Some(saved.0 != Phase::Running);
             self.laid_out = None;
@@ -1434,6 +1522,39 @@ mod tests {
         let mut out = Vec::new();
         shell.take_module_events(&mut out);
         out
+    }
+
+    /// What the game keeps for the player is told to the rules before a run begins, once a
+    /// name; and a screen the rules put up is over the game's own and under a pause.
+    #[test]
+    fn kept_values_are_told_and_the_rules_screens_are_up() {
+        let game = GAME.replace("\"outcome\"", "\"keep\": { \"best\": \"gate.best\", \"run\": \"gate.saved\" }, \"show\": { \"shop\": \"gate.shopping\" }, \"outcome\"");
+        let mut shell = Shell::build("gate", ShellFiles::builtin(&game)).expect("a shell");
+        let file = "{\"format\": \"specula.settings.v1\", \"values\": {\"volume\": 3, \"kept.best\": 40, \"kept.other\": 1}}";
+        shell.use_settings(Some(file), &SettingsStore { kind: "per_user", agents_save: false, problem: None });
+        shell.tell_kept();
+        shell.tell_kept();
+        let told = events(&mut shell);
+        assert_eq!(told, vec![("kept".to_owned(), Value::map().with("name", "best").with("value", 40i64))], "the one name the file has, once");
+        assert_eq!(shell.settings.get("volume"), Some(&Val::Num(3.0)), "a setting beside it is as it was");
+        // What the game kept stays in the player's file when a setting is written.
+        shell.press("step:volume:-1", true).unwrap();
+        let text = shell.take_settings().expect("the file");
+        assert!(text.contains("\"kept.best\": 40") && text.contains("\"volume\": 2"), "{text}");
+        // The rules' own screen: up while a run is under way and its key is true.
+        assert_eq!(shell.up(), ["title"]);
+        shell.shown.push(("gate.shopping".to_owned(), Shown::Bool(true)));
+        assert_eq!(shell.up(), ["title"], "not at the title");
+        shell.press("start", true).unwrap();
+        assert_eq!(shell.up(), ["hud", "shop"]);
+        shell.press("pause", true).unwrap();
+        assert_eq!(shell.up(), ["hud", "shop", "pause"]);
+        shell.press("open:settings", true).unwrap();
+        assert_eq!(shell.up(), ["hud", "shop", "pause", "settings"]);
+        shell.press("back", true).unwrap();
+        shell.press("resume", true).unwrap();
+        shell.shown[0].1 = Shown::Int(0);
+        assert_eq!(shell.up(), ["hud"], "taken down by the key");
     }
 
     /// A choice's value is words too: shown by the line `setting.NAME.VALUE` of the player's

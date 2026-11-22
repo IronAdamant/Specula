@@ -107,6 +107,32 @@ rounds.
   permitted"); none has been started. **Owed to the owner when they are back: the reminder
   on hooks that no harness owns** (they asked for it if the cold pass showed no savings;
   it showed one job in seven).
+- **What counts as success, agreed with the owner on 2026-11-22** ("That's also my current
+  definition of success"), set before the next measurement: (1) a game that outgrows one
+  sitting costs no more through the engine than without, with as many checks passed: the 2D
+  `large` job from 5.92 to 1.0 or under; above 1.5 after the mends means the design is wrong,
+  not that more holes need filling; (2) both change jobs under 0.8 (cold: 3D 0.68, 2D 1.29);
+  (3) the advantage grows with size, shown on a second large job and one larger still,
+  written before they are measured; (4) never measured: three agents building one larger
+  game finish for fewer tokens, or far less time, than one agent and than three sharing a
+  plain folder; (5) no cold builder opens the engine's source (cold: 14 of 33 did). **Not a
+  target:** a one-screen game (a plain build is six requests). Every report gives the
+  builders' cost and the builders' with the judges' side by side.
+- **A second reader's three passes over the cold comparison (2026-11-22)** recomputed every
+  figure from the raw streams (all held) and corrected the lead's reading: the engine is
+  never dearer a request, it loses by their number; the holes are about half the large
+  job's loss (about 2.6 to 3 times is left without them, by subtraction, not measured);
+  screens cost as much reading as kept data; the lead's aids went unused (`play` 353 times,
+  `check` 9, `tune` 0 in 33 runs); builders still opened the SDK's source for types.
+- **The plan, four stages, each ending in a measurement** (the owner: "Start the steps"):
+  **1, the holes** (built, FIRST_HOUR.md section 17: a game's kept data, screens the rules
+  put up, a key read by itself, `ui.texts` and `ui.focus`, what the engine does not do),
+  then the large job again, engine arm, five runs; **2, the shape of a build**: a much
+  smaller project to start from, an index of the SDK's signatures, one command that plays
+  every check of a brief and says what changed (results handed over without a request, in
+  a form no harness owns), then large and small again, both arms; **3**: a second large job
+  and a larger one, and three agents on one game; **4**: back to part 4. The second reader
+  reviews each stage from a bundle before its measurement.
 - **The gate passed on `74007d71`** (2026-11-22, everything for an engine change; the comparison ran on it).
 - **The gate passed on `c40f4732`** (2026-11-22, everything for an engine change: 3,600 tests, repeats, slow workers, speed, clippy for both targets, both builds; of the live checks, `search_check` and `new_project_check` were run and passed). Before it:
 - **The gate passed on `8d172ace`** (2026-11-22, everything for an engine change: the workspace, repeats, slow workers, speed, clippy, both builds; the live checks were not run whole, `search_check` passed on the save mend). Before it:
@@ -114,7 +140,7 @@ rounds.
   body and tells it to bounce: `Cx::push`, `Cx::place_at_rest`, `Spawn::bounce`, `friction`),
   `7f2167f8` (the 3D jobs). The mends are on the engine without the library (`C:/sf-base`,
   `4eb20e9e`), without the push words; that arm is not measured again.
-- **Pushed on 2026-11-22 at the owner's word: `origin/main` is this line up to the commit that says so** (a plain fast-forward from `349c9e64`). Anything after it is not pushed. Push only when the owner asks.
+- **Pushed on 2026-11-22 at the owner's word, twice: `origin/main` is `6d822aa0`** (plain fast-forwards; the cold comparison and everything before it). Anything after it is not pushed. Push only when the owner asks.
 - **Part 4, the libraries and everything after them wait** behind what the owner set on
   2026-11-20, when a measured comparison showed the shape library made four props no cheaper and
   the cause turned out to be that the builders could not see what they needed ("the builders
