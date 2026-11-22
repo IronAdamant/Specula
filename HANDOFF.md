@@ -133,6 +133,22 @@ rounds.
   a form no harness owns), then large and small again, both arms; **3**: a second large job
   and a larger one, and three agents on one game; **4**: back to part 4. The second reader
   reviews each stage from a bundle before its measurement.
+- **Stage 1 measured (2026-11-22; 22.90 USD): the large job is 5.61 times a plain build, from
+  5.92.** The mends fixed what was delivered (30.2 of 31 checks, from 28.3; the saved run and
+  the best score pass in all five) and not what it cost: all five builders still read the
+  engine's source, 20 to 41 requests each, now for the next things (a title button that
+  begins a run another way, what `start` does, `keep` and `show` beyond the guide's lines,
+  numbers in a text in three languages). **A hole closed uncovers the next**
+  ([LEVERAGE.md](docs/design/LEVERAGE.md), the last results). Stage 2 as planned may bring
+  it to three or four; it will not bring it to one. **The question put to the owner, not
+  answered yet:** at this size the cost is that the project shell decides things a builder
+  must find out, where a plain builder decides everything in code it wrote. Two ways on:
+  (a) the rules may drive everything themselves (put any screen up, begin and end a run,
+  hear every button and key), so that a builder who wants the shell's help takes it and one
+  who does not never has to learn it; (b) the engine answers questions about itself in one
+  command (what does this action do, what happens at a start), so that nobody reads its
+  source. The lead's view: (a) first, then stage 2, then the large job again.
+- **The gate passed on `93c46983`** (2026-11-22, everything for an engine change; stage 1's runs were made on it).
 - **The gate passed on `74007d71`** (2026-11-22, everything for an engine change; the comparison ran on it).
 - **The gate passed on `c40f4732`** (2026-11-22, everything for an engine change: 3,600 tests, repeats, slow workers, speed, clippy for both targets, both builds; of the live checks, `search_check` and `new_project_check` were run and passed). Before it:
 - **The gate passed on `8d172ace`** (2026-11-22, everything for an engine change: the workspace, repeats, slow workers, speed, clippy, both builds; the live checks were not run whole, `search_check` passed on the save mend). Before it:

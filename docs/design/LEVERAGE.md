@@ -1428,3 +1428,60 @@ they cost: a game's own data kept between runs (a best score, a saved run), with
 in the guide; opening, closing and naming screens of the game's own; a run's lines read by
 their keys without first being written into the report (`--keys run.sounds_heard`). After
 them the large job is measured again, engine arm only, against the three plain runs here.
+
+## Results (2026-11-22: the large job again, after what it ran out of was built)
+
+Stage 1 of the plan the owner and the lead agreed after the cold comparison
+([FIRST_HOUR.md](FIRST_HOUR.md), section 17): a game's kept data, screens the rules put up, a
+key read by itself, `ui.texts` and `ui.focus`, five lines on what the engine does not do. Then
+the large job again: engine arm only, five cold runs on `93c46983`, against the three plain
+runs of the cold comparison. Every run ended by itself and was judged. Records:
+[perf/leverage/2026-11-22-large-after-holes](../../perf/leverage/2026-11-22-large-after-holes/report.md).
+Cost: 22.90 USD at list prices (builds 12.31, judging 10.59).
+
+| | Before (three runs) | After (five runs) | Plain (three runs) |
+|---|---|---|---|
+| Weighted tokens, mean | 1,594,268 | 1,510,680 | 269,351 |
+| Lowest to highest | 1,128,330 to 2,097,197 | 1,004,823 to 2,319,609 | 210,352 to 306,759 |
+| Engine over plain | 5.92 | **5.61** | |
+| Requests, mean | 81.7 | 76.4 | 13.7 |
+| Checks passed, of 31 | 28.3 | **30.2** | 31.0 |
+| Requests that read the engine's documents and source, a run | 29, 47, 23 | 20, 41, 23, 27, and about 25 steps inside other requests | 0 |
+
+**The mends fixed what was delivered and not what it cost.** The two items every engine game
+had failed (the saved run, the best score) pass in all five; the shop is a screen of its own
+in every game. The cost did not move: 5.61 against 5.92 is inside either pass's own range.
+The second reader had put the figure after these mends at 2.6 to 3 times, by taking the
+source-reading out of the ledgers; the lead had expected about the same. Both were wrong, and
+for one reason: **the builders read as much as before, about the next things.**
+
+What they went to the source for this time, from the five ledgers:
+
+- **A title button that begins a run in another way** ("Continue"): whether a button's word
+  reaches the rules at the title (it does not: no rule ticks there), whether a button can do
+  two things, what `start` does exactly. Read from `action.rs`, `run.rs` and `shell.rs` in
+  all five runs. Two games failed the pause item for a screen put between the pause and
+  the title to work round it.
+- **`keep` and `show` themselves**: the builders searched the design pages
+  for more than the guide's three lines each (when is a kept value written, what comes
+  first at a start).
+- **A text with numbers in it in three languages**, a state's exact types, data files
+  beside the rules, what Escape and "back" do on each screen: as in the cold pass.
+- All five builders opened the engine's source (the bar is none). The fifth did it inside
+  requests that began by reading its own project, 33 of them.
+
+**What this says.** A hole closed uncovers the next. A game of this size meets the project
+shell's exact behaviour in a dozen places, and a guide of sixteen kilobytes cannot hold all
+of it; whatever it leaves out costs a builder twenty requests in the source. A plain builder
+never has the question, because everything its game does is in the thousand lines it wrote.
+So the cost at this size is not a list of missing features. It is that the shell decides
+things the builder must then find out. The second reader's other half was right: without
+any source-reading the engine arm would still be near three times plain, on its ordinary
+loop of small runs at a large context.
+
+**Against the bars agreed on 2026-11-22**: the large job is to come to 1.0 or under, and
+above 1.5 after stage 2 means the design is wrong. Stage 1 alone leaves it at 5.6. Stage 2
+as planned (a smaller project to start from, the SDK's signatures, one command for a brief's
+checks) is about the number and size of requests and may bring it to three or four; it
+will not bring it to one. What would have to change for that is in the handoff, as a
+question for the owner.
