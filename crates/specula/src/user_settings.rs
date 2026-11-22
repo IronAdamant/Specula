@@ -157,7 +157,9 @@ fn write_to(dir: &Path, text: &str) -> Result<(), String> {
     }
     let book = crate::disk::book();
     book.make_dir(crate::disk::Category::Settings, dir, crate::disk::Need::Essential).map_err(|e| e.to_string())?;
-    let tmp = dir.join(format!("{FILE}.tmp"));
+    // (A name of this process's own: two engines on one folder, as agents' headless runs
+    // are, would otherwise write one temporary file between them and rename half of it.)
+    let tmp = dir.join(format!("{FILE}.{}.tmp", std::process::id()));
     let path = dir.join(FILE);
     let old = crate::disk::file_len(&path);
     // On disk before the rename: a power cut then leaves the old file or the new one, never a
@@ -189,7 +191,8 @@ impl Engine {
     pub(crate) fn serve_game_settings(&mut self) {
         let Some(game) = self.game.as_mut() else { return };
         if let Some(text) = game.take_settings() {
-            if self.user_settings.dir.is_some() {
+            // (Never over a file that was there and was not read: SettingsStore::saving.)
+            if self.user_settings.dir.is_some() && self.user_settings.store.saving() {
                 self.user_settings.pending = Some(text);
             }
         }
@@ -223,7 +226,7 @@ impl Engine {
     /// m5-a11y: two changes a frame apart, then Quit, and the second never reached the disk.)
     pub(crate) fn finish_settings(&mut self) {
         if let Some(text) = self.game.as_mut().and_then(|g| g.take_settings()) {
-            if self.user_settings.dir.is_some() {
+            if self.user_settings.dir.is_some() && self.user_settings.store.saving() {
                 self.user_settings.pending = Some(text);
             }
         }

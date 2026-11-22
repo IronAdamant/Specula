@@ -160,6 +160,12 @@ pub struct Kept {
 }
 
 impl Kept {
+    /// Whether `text` is a settings file at all (JSON, of this format): one that is not is a
+    /// file damaged or someone else's, read as holding nothing and never written over.
+    pub fn is_file(text: &str) -> bool {
+        Json::parse(text).is_ok_and(|json| json.get("format").and_then(Json::as_str) == Some(FORMAT))
+    }
+
     /// The choices in a settings file's text (none, when the text is not a settings file).
     /// At most [`MAX_SETTINGS`] and [`MAX_EXTRA`] names together, each of at most 64 characters.
     pub fn read_text(text: &str) -> Kept {
@@ -189,6 +195,10 @@ impl Kept {
     /// so that no setting can have its name). Whether anything changed.
     pub fn keep(&mut self, name: &str, value: Json) -> bool {
         let name = format!("{KEPT}{name}");
+        // (A name the file's reader would drop is not written: it would be gone at the next start.)
+        if name.chars().count() > 64 {
+            return false;
+        }
         if let Some(at) = self.values.iter().position(|(k, _)| *k == name) {
             if self.values[at].1 == value {
                 return false;
@@ -447,6 +457,10 @@ mod tests {
         assert_eq!((kept.kept("best"), kept.kept("volume"), kept.get("volume")), (Some(&Json::Num(50.0)), Some(&Json::Num(9.0)), Some(&Json::Num(3.0))));
         let again = Kept::read_text(&kept.to_text());
         assert_eq!(again.kept("best"), Some(&Json::Num(50.0)));
+        // A name the reader would drop is not written; a text that is no settings file is told apart.
+        assert!(!kept.keep(&"n".repeat(60), Json::Num(1.0)) && kept.keep(&"n".repeat(59), Json::Num(1.0)));
+        assert_eq!(Kept::read_text(&kept.to_text()).kept(&"n".repeat(59)), Some(&Json::Num(1.0)));
+        assert!(Kept::is_file(&kept.to_text()) && !Kept::is_file("{") && !Kept::is_file(r#"{"format": "other"}"#));
     }
 
 

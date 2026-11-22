@@ -752,6 +752,51 @@ of the shell and was played by hand; no live check plays one yet.
 signatures (builders still opened its source for types); one command that plays every check
 of a brief. Both are about the number of requests, which these mends do not touch.
 
+### What a second reader found in it (2026-11-23), and what was mended
+
+The second reader applied this section's change to a clone, built and tested it on Linux, and
+read the five runs' ledgers again by a rule of its own. Its findings, with what was done:
+
+- **A file that was there and could not be read was written over at the first change**
+  (too large, not UTF-8, damaged JSON, another format): defaults replaced it. Before this
+  section that cost a player their settings; with `keep` it costs their saved run.
+  **Mended:** nothing is saved over a file that was not read (`SettingsStore::saving`), a
+  text that is no settings file is told apart and said, and the engine's own writer holds
+  to the same.
+- **Sixteen kept values at their most made a file its own reader refuses.** **Mended:** what
+  a game keeps is 48 KiB at most in all; a value that would pass it is not kept, and said.
+- **A kept name of 60 to 128 characters was written and gone at the next start** (the
+  file's reader takes names of 64, and `kept.` stands before it). **Mended:** a kept name is
+  48 characters at most, refused in the game file by that number.
+- **Two engines on one settings folder shared one temporary file.** **Mended:** each writes
+  a temporary file of its own. **Not mended:** each still writes its whole view of the file,
+  so of two that change different things the later write wins. Runs side by side on one
+  folder are for reading, not for keeping.
+- **A kept value from the file was told whatever its size.** **Mended:** one larger than a
+  game may keep is not told, and said. Its kind is still not checked: a file changed by
+  hand tells the rules what it holds.
+- **After a load a telling the save held was told in place of the player's file's.**
+  **Mended:** the file's value takes its place; what was last seen of the modules is
+  forgotten at a load.
+- **`--keys` dropped a key with a dot in it that had no value, so one mistyped vanished.**
+  **Mended:** a key `--keys` names is always printed, `null` when it has no value (every
+  state of `--at` has the same lines). A key only a condition reads is still left out when
+  it has none, and the condition says it could not be read. And a key of a module named as
+  a line of the report (`--keys gate.wave` beside a line `gate`) is read.
+- **Escape over a screen the rules put up paused the game** (four of five games paused in
+  their shop, against their brief). **Mended:** over such a screen Escape is told to the
+  rules (`ui`, action `back`, with `screen`) and does nothing else.
+- **The guide said "Escape is not the rules' to hear"**, which a working game of the five
+  contradicted. **Mended**, with what `keep` left unsaid (the rules only set the state; the
+  telling comes at the first tick, before `run`), the kinds a state's value is read as, and
+  the case every builder went to the source for: a title or a menu of the game's own is
+  `"start": "run"`, a shown screen, and rules that answer its buttons.
+
+**Left, and said:** `ui.focus` takes the first text inside the button's rectangle and falls
+back to the id; `ui.texts` changed its meaning, which a check written against the old one
+will show; a shown screen is drawn by its own `layer`, whatever order the shell has it in
+(the guide now says which layer to give it).
+
 ## As built
 
 **Built, with its own tests, the structural guards and clippy passing; the full gate passed on its last commit** (2026-11-16, branch

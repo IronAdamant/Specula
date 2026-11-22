@@ -131,6 +131,9 @@ impl Outcome {
 pub const MAX_REPORT: usize = 64;
 /// Most values a game keeps for the player ([`GameFile::keep`]).
 pub const MAX_KEEP: usize = 16;
+/// The longest name of a kept value: with what stands before it in the player's file
+/// ([`crate::settings::KEPT`]) it is a name that file's reader takes (64 characters).
+pub const MAX_KEEP_NAME: usize = 48;
 /// Most screens the rules put up ([`GameFile::show`]).
 pub const MAX_SHOW: usize = 8;
 
@@ -354,8 +357,8 @@ impl GameFile {
             let names = keep.as_object().filter(|k| k.len() <= MAX_KEEP).ok_or_else(|| Problem::new("keep", "bad_keep", format!("\"keep\" is an object of at most {MAX_KEEP} names: a name, and the key of a module whose value is kept for the player under it (\"best\": \"gate.best\")")))?;
             for (name, key) in names {
                 let here = format!("keep.{name}");
-                if !key_ok(name) || name.contains('.') {
-                    return Err(Problem::new(&here, "bad_name", "a kept value's name is 1 to 64 characters with no blank and no dot"));
+                if !key_ok(name) || name.contains('.') || name.chars().count() > MAX_KEEP_NAME {
+                    return Err(Problem::new(&here, "bad_name", format!("a kept value's name is 1 to {MAX_KEEP_NAME} characters with no blank and no dot")));
                 }
                 // (What a module keeps: the engine's own lines are not a game's to keep.)
                 let of_a_module = |k: &&str| key_ok(k) && k.split_once('.').is_some_and(|(module, key)| !key.is_empty() && !["run", "ui", "game", "setting", "world"].contains(&module));
@@ -470,6 +473,9 @@ mod tests {
         let code = |more: &str| with(more).unwrap_err().code;
         assert_eq!(code(r#""keep": ["best"]"#), "bad_keep");
         assert_eq!(code(r#""keep": {"my.best": "gate.best"}"#), "bad_name");
+        // A name is one the player's file's reader takes with what stands before it.
+        assert!(with(&format!(r#""keep": {{"{}": "gate.best"}}"#, "n".repeat(MAX_KEEP_NAME))).is_ok());
+        assert_eq!(code(&format!(r#""keep": {{"{}": "gate.best"}}"#, "n".repeat(MAX_KEEP_NAME + 1))), "bad_name");
         for key in ["best", "setting.volume", "game.score", "run.ticks", "gate."] {
             assert_eq!(code(&format!(r#""keep": {{"best": "{key}"}}"#)), "bad_key", "{key}");
             assert_eq!(code(&format!(r#""show": {{"shop": "{key}"}}"#)), "bad_key", "{key}");

@@ -381,9 +381,13 @@ pub struct SettingsStore {
 }
 
 impl SettingsStore {
-    /// Whether settings are saved at all.
+    /// Whether settings are saved at all. Never over a file that was there and was not read
+    /// (too large, damaged, not a settings file): what could not be read may still be put
+    /// right by hand, and since 2026-11-22 it holds what the game keeps for the player (a
+    /// best score, a run to go on with) beside the settings. A second reader, 2026-11-23:
+    /// the first change after such a start wrote defaults over it.
     pub fn saving(&self) -> bool {
-        self.kind != "off" && !self.kind.is_empty()
+        self.kind != "off" && !self.kind.is_empty() && self.problem.is_none()
     }
 
     pub fn to_json(&self) -> Json {

@@ -979,16 +979,19 @@ impl Shell {
                         self.say(&why, ToastKind::Warn);
                     }
                 }
-                // A menu's "back" with no action of its own.
+                // A menu's "back" with no action of its own. Over a screen the rules put up it
+                // is the rules' to answer: the screen is theirs to take down.
                 UiEvent::Back { .. } if !backed => {
                     backed = true;
-                    let _ = self.press("back", player);
+                    if !self.back_to_rules() {
+                        let _ = self.press("back", player);
+                    }
                 }
                 UiEvent::Back { .. } | UiEvent::Refused { .. } => {}
             }
         }
         // Back while only the game's own screen is up (no menu took it): the pause menu.
-        if !backed && !events.consumed.navigation && self.input.pressed(PAUSE) && self.run.phase() == Phase::Running && self.run.stack().is_empty() {
+        if !backed && !events.consumed.navigation && self.input.pressed(PAUSE) && self.run.phase() == Phase::Running && self.run.stack().is_empty() && !self.back_to_rules() {
             let _ = self.press("pause", player);
         }
     }
@@ -1288,6 +1291,18 @@ impl Game for Shell {
     fn use_settings(&mut self, text: Option<&str>, store: &SettingsStore) {
         let text_size = self.scale_of("text_size");
         self.store = store.clone();
+        // A file that is there and is no settings file (damaged, another format) holds nothing
+        // that can be read, and is not written over: what the game kept for the player in it
+        // may still be put right by hand.
+        let text = text.filter(|text| {
+            let is = Kept::is_file(text);
+            if !is {
+                let why = "the settings file is not a settings file (damaged, or another format): left as it is, defaults used, nothing saved over it";
+                self.store.problem = Some(why.to_owned());
+                note(&mut self.problems, format!("the saved settings: {why}"));
+            }
+            is
+        });
         if let Some(text) = text {
             for problem in self.settings.read_text(text) {
                 note(&mut self.problems, format!("the saved settings: {problem}"));
@@ -1405,6 +1420,27 @@ impl Game for Shell {
 }
 
 impl Shell {
+    /// Escape (or a pad's back) while a screen the rules put up is on top: told to the rules as
+    /// the event `ui` with the action `back` and the screen's name, and nothing else is done.
+    /// The game is not paused over the rules' own screen, and the screen is not closed: the
+    /// rules take it down by its key, or do nothing (a shop Escape does nothing in). Whether
+    /// such a screen was on top. (A second reader, 2026-11-23: four of five games paused in
+    /// their shop, against their brief, and the guide gave them no way out.)
+    fn back_to_rules(&mut self) -> bool {
+        if self.run.phase() != Phase::Running || !self.run.stack().is_empty() {
+            return false;
+        }
+        let Some(top) = self.up().pop().filter(|top| self.game.show.iter().any(|(screen, _)| screen == top)) else { return false };
+        if self.events_out.len() < MAX_EVENTS {
+            self.events_out.push(("ui".to_owned(), Value::map().with("action", "back").with("screen", top.as_str())));
+        } else {
+            self.events_dropped += 1;
+        }
+        true
+    }
+}
+
+impl Shell {
     /// The screens that are up, the bottom first: the phase's own, then the game's own that
     /// its rules put up (the game file's `show`, while a run is under way or paused), then
     /// the ones opened over them (a pause menu, the settings).
@@ -1443,9 +1479,19 @@ impl Shell {
     fn tell_kept(&mut self) {
         for (name, _) in &self.game.keep {
             let Some(value) = self.kept.kept(name) else { continue };
-            let told = self.events_out.iter().any(|(event, data)| event == "kept" && data.get("name").and_then(Value::as_str) == Some(name.as_str()));
-            if !told && self.events_out.len() < MAX_EVENTS {
-                self.events_out.push(("kept".to_owned(), Value::map().with("name", name.as_str()).with("value", Value::from_json(value))));
+            // (A value larger than one the game may keep was not written by it: a file changed
+            // by hand. It is not told.)
+            if value.to_string().len() > MAX_KEPT_BYTES {
+                note(&mut self.problems, format!("\"keep\": '{name}' in the settings file is larger than a kept value ({MAX_KEPT_BYTES} bytes): not told to the rules"));
+                continue;
+            }
+            let told = Value::map().with("name", name.as_str()).with("value", Value::from_json(value));
+            // A telling a save brought back is of the save's day: the player's file is newer.
+            let waiting = self.events_out.iter().position(|(event, data)| event == "kept" && data.get("name").and_then(Value::as_str) == Some(name.as_str()));
+            match waiting {
+                Some(at) => self.events_out[at].1 = told,
+                None if self.events_out.len() < MAX_EVENTS => self.events_out.push(("kept".to_owned(), told)),
+                None => {}
             }
         }
     }
@@ -1470,6 +1516,13 @@ impl Shell {
                 note(problems, format!("\"keep\": '{name}' ({key}) is {size} bytes as JSON and a kept value is at most {MAX_KEPT_BYTES}: it is not kept"));
                 continue;
             }
+            // All of it together stays a file that is read again (2026-11-23: sixteen values
+            // at their most made a file its own reader refused).
+            let whole = kept.to_text().len() + size + name.len() + 16;
+            if whole > MAX_KEPT_TOTAL {
+                note(problems, format!("\"keep\": with '{name}' ({size} bytes) the player's file would be {whole} bytes, and what a game keeps is {MAX_KEPT_TOTAL} at most in all: it is not kept"));
+                continue;
+            }
             if kept.keep(name, json) {
                 *settings_dirty = true;
             }
@@ -1479,6 +1532,9 @@ impl Shell {
 
 /// The largest value a game keeps for the player, as JSON text.
 const MAX_KEPT_BYTES: usize = 4096;
+/// The largest the player's file is let grow by what a game keeps: under what its reader
+/// takes ([`crate::user_settings::MAX_BYTES`]), with room for the settings.
+const MAX_KEPT_TOTAL: usize = 48 << 10;
 
 impl Shell {
     /// Puts the run back as a save had it ([`Game::apply_state`]).
@@ -1492,6 +1548,7 @@ impl Shell {
             self.events_out = saved.3;
             // And what the game keeps for the player, which no save holds: the rules a save
             // brought back have its own values, older than the player's.
+            self.kept_seen.clear();
             self.tell_kept();
             // The clock is as the phase says: only a run under way ticks.
             self.clock_wish = Some(saved.0 != Phase::Running);
@@ -1547,6 +1604,27 @@ mod tests {
         assert_eq!(shell.up(), ["title"], "not at the title");
         shell.press("start", true).unwrap();
         assert_eq!(shell.up(), ["hud", "shop"]);
+        // Escape over the rules' own screen is the rules' to answer: told, and nothing done.
+        assert!(shell.back_to_rules());
+        assert_eq!(events(&mut shell).last(), Some(&("ui".to_owned(), Value::map().with("action", "back").with("screen", "shop"))));
+        assert_eq!((shell.up(), shell.run.phase()), (vec!["hud".to_owned(), "shop".to_owned()], Phase::Running));
+        shell.press("pause", true).unwrap();
+        assert!(!shell.back_to_rules(), "under a pause it is the pause's");
+        shell.press("resume", true).unwrap();
+        // A telling that waits (a save's, of its own day) takes the player's file's value.
+        shell.events_out = vec![("kept".to_owned(), Value::map().with("name", "best").with("value", 5i64))];
+        shell.tell_kept();
+        assert_eq!(events(&mut shell), vec![("kept".to_owned(), Value::map().with("name", "best").with("value", 40i64))]);
+        // A file that is there and is no settings file is never written over (a second reader,
+        // 2026-11-23: the first change after such a start replaced it with defaults, and the
+        // file holds what the game kept for the player).
+        let mut damaged = Shell::build("gate", ShellFiles::builtin(&game)).expect("a shell");
+        damaged.use_settings(Some("{\"format\": \"specula.settings.v1\", \"values\": {\"kept.best\": 40"), &SettingsStore { kind: "folder", agents_save: true, problem: None });
+        assert!(damaged.store.problem.as_deref().is_some_and(|p| p.contains("not a settings file")) && !damaged.store.saving());
+        damaged.press("step:volume:-1", true).unwrap();
+        assert_eq!(damaged.take_settings(), None);
+        let unread = SettingsStore { kind: "folder", agents_save: true, problem: Some("the settings file is 70000 bytes".into()) };
+        assert!(!unread.saving());
         shell.press("pause", true).unwrap();
         assert_eq!(shell.up(), ["hud", "shop", "pause"]);
         shell.press("open:settings", true).unwrap();

@@ -1112,11 +1112,20 @@ pub const UNREAD_BEGINS: &str = "the run set '";
 /// a run, a check or a search without the game file naming it first (2026-11-22: four of
 /// five builders' games failed an item whose proof was a line none had written in).
 fn lines_of(game: &GameFile, keys: &[String], also: &[String]) -> Vec<(String, String, bool)> {
-    let line = |k: &str| game.report.iter().any(|(name, _)| name == k || k.split_once('.').is_some_and(|(first, _)| first == name));
+    let named = |k: &str| game.report.iter().any(|(name, _)| name == k);
+    // (What a condition reads may be a part of a line, `ball.x`: that is the line's. What
+    // `--keys` names with a dot in it is a key and nothing else, so that a module named as
+    // a line is still read: `--keys gate.wave` beside a line `gate`.)
+    let part = |k: &str| k.split_once('.').is_some_and(|(first, _)| named(first));
     let mut lines: Vec<(String, String, bool)> = game.report.iter().filter(|(name, _)| keys.is_empty() || keys.contains(name)).map(|(name, key)| (name.clone(), key.clone(), true)).collect();
-    for key in keys.iter().chain(also) {
-        if !line(key) && key.contains('.') && !lines.iter().any(|(name, _, _)| name == key) && lines.len() < 2 * specula_ludus::game::MAX_REPORT {
-            lines.push((key.clone(), key.clone(), false));
+    // The third field: whether the line is always printed, `null` when it has no value. A
+    // line of the report and a key `--keys` names are (a key mistyped is then seen to be
+    // null, and every state of `--at` has the same lines); a key only a condition reads is
+    // left out when it has none, and the condition says it could not be read.
+    for (key, asked) in keys.iter().map(|k| (k, true)).chain(also.iter().map(|k| (k, false))) {
+        let a_key = key.contains('.') && !named(key) && (asked || !part(key));
+        if a_key && !lines.iter().any(|(name, _, _)| name == key) && lines.len() < 2 * specula_ludus::game::MAX_REPORT {
+            lines.push((key.clone(), key.clone(), asked));
         }
     }
     lines
@@ -1325,22 +1334,25 @@ mod tests {
     /// A run prints the report's lines, and any key asked for by itself that is no line.
     #[test]
     fn a_key_is_read_without_being_a_line_of_the_report() {
-        let game = GameFile::parse(r#"{"format": "specula.game.v1", "title": "g", "modules": ["modules/gate"], "report": {"tick": "run.ticks", "ball": "world./gate/ball.position", "score": "gate.score"}}"#).unwrap();
+        let game = GameFile::parse(r#"{"format": "specula.game.v1", "title": "g", "modules": ["modules/gate"], "report": {"tick": "run.ticks", "ball": "world./gate/ball.position", "score": "gate.score", "gate": "gate.hp"}}"#).unwrap();
+        // (`*`: left out when it has no value; the others are printed always, `null` then.)
         let names = |keys: &[&str], also: &[&str]| -> Vec<String> {
             let own = |list: &[&str]| list.iter().map(|k| (*k).to_owned()).collect::<Vec<String>>();
-            lines_of(&game, &own(keys), &own(also)).into_iter().map(|(name, key, own)| format!("{name}={key}{}", if own { "" } else { "*" })).collect()
+            lines_of(&game, &own(keys), &own(also)).into_iter().map(|(name, key, always)| format!("{name}={key}{}", if always { "" } else { "*" })).collect()
         };
-        assert_eq!(names(&[], &[]), ["tick=run.ticks", "ball=world./gate/ball.position", "score=gate.score"]);
+        assert_eq!(names(&[], &[]), ["tick=run.ticks", "ball=world./gate/ball.position", "score=gate.score", "gate=gate.hp"]);
         assert_eq!(names(&["score"], &[]), ["score=gate.score"]);
-        // A key by itself, alone or beside lines; a part of a line is the line's, not a key.
-        assert_eq!(names(&["run.sounds_heard"], &[]), ["run.sounds_heard=run.sounds_heard*"]);
-        assert_eq!(names(&["score", "game.phase"], &["ball.x", "gate.wave", "game.phase", "score"]), ["score=gate.score", "game.phase=game.phase*", "gate.wave=gate.wave*"]);
-        // What a condition reads is printed beside every line when no keys are named.
-        assert_eq!(names(&[], &["game.phase"]).len(), 4);
-        // A word with no dot is a name, and one the report has not is still refused (where the run begins).
+        // A key by itself: printed always, so that one mistyped is seen as null.
+        assert_eq!(names(&["run.sounds_heard"], &[]), ["run.sounds_heard=run.sounds_heard"]);
+        // A key of a module that a line is named as is still a key (a second reader, 2026-11-23:
+        // beside a line `gate`, `--keys gate.wave` printed nothing).
+        assert_eq!(names(&["score", "gate.wave"], &[]), ["score=gate.score", "gate.wave=gate.wave"]);
+        // What a condition reads: a part of a line is the line's; a key is printed where it has a value.
+        assert_eq!(names(&["score"], &["ball.x", "game.phase", "score", "gate.wave"]), ["score=gate.score", "game.phase=game.phase*"]);
+        assert_eq!(names(&[], &["game.phase"]).len(), 5);
+        // A word with no dot is a name, and one the report has not is refused where the run begins.
         assert!(names(&["lives"], &[]).is_empty());
     }
-
     #[test]
     fn a_spec_is_read_back_as_it_was_written() {
         let spec = Spec { ticks: 600, seed: Some(7), inputs: vec![(0, "enter".into()), (5, "up".into())], frame: Some(PathBuf::from("out/f.png")), size: (800, 480), follow: true, at: vec![90, 180], keys: vec!["ball".into()], also: vec!["game.phase".into()], set: vec![("grip".into(), 0.25)], find: None, out: PathBuf::from("answer.json") };

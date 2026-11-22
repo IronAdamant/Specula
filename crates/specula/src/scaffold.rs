@@ -401,14 +401,11 @@ builds the modules, plays the game with no window and prints how it stands as JS
   read and kept (a file the engine writes in it: the same folder again finds them); without
   it they are kept nowhere. A window's player has a folder of their own, per user.
 - `--frame` writes what a player would see (the game file's `"view"`, with the interface).
-- `--follow` goes on after the script (`--ticks` may be left out): the state is printed,
-  then each line read from standard input is a step, `TICKS` or `TICKS WORD` (`10 up+shoot`:
-  that input, then ten ticks), and the state is printed after it, until the input ends. It
-  is how a program of yours plays by reaction, in one run, should a script of inputs not do.
+- `--follow` goes on after the script: each line of standard input is a step (`TICKS` or
+  `TICKS WORD`, as `10 up+shoot`), and the state is printed after each.
 
-**Shapes by name:** `specula call formae_list '{}'` names a library of figures and solids (a
-gear, a heart, an arch, a star, a torus, a gem...) that model recipes and `shape2d` items take
-by name; `formae_get` gives one ready to paste.
+**Shapes by name:** `specula call formae_list '{}'` names figures and solids (a gear, a
+heart, a torus...) that model recipes and `shape2d` items take; `formae_get` gives one.
 
 **Models** (props, pickups, scenery) are recipes under `assets/models/`: `notes/models.md`.
 
@@ -428,12 +425,18 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   Every setting is kept for the player; nothing else is needed for that.
 - `keep`: what outlasts the program (a best score, a run to go on with):
   `{"best": "{{module}}.best"}`, a name and a key of the rules' state (any value, 4 KiB).
-  The engine writes it when the rules change it, where the settings are kept (`--settings
-  FOLDER`), and tells it back as the event `kept` (`name`, `value`) before the first tick:
-  `"kept" if word("name") == Some("best") => best = best.max(..)`.
+  The rules only `cx.set_state("best", v)?`: the engine writes it when it changes, where
+  the settings are kept (`--settings FOLDER`), and tells it back as the event `kept`
+  (`name`, `value`) at the first tick, before `run`: `"kept" if word("name") ==
+  Some("best") => best = best.max(..)`.
 - `show`: screens the rules put up, `{"shop": "{{module}}.shopping"}`: in a run, while
   that key is true (or not 0), `assets/ui/shop.json` is up over the game's own with the
-  focus; its buttons' words reach the rules as `ui` events, and the clock goes on.
+  focus (give it `"modal": true` and a `"layer"` between the hud's and the pause's). Its
+  buttons' words reach the rules as `ui` events (`action`); Escape over it reaches them as
+  `ui` with the action `back` and `screen`, and does nothing else; the clock goes on.
+- **A title or a menu of the game's own** (Start and Continue, a shop, a level choice) is
+  that: `"start": "run"`, a shown screen, and the rules answer its buttons. The engine's
+  own `title` screen is for a game whose title only starts it.
 - **A setting the rules read** (a difficulty) is four things: `"sim": true` on it here; a
   button on a screen with the action `cycle:NAME` (or `step:NAME:+1`), its text
   `{setting.NAME.text}`; for a choice, a line `setting.NAME.VALUE` for each value in every
@@ -451,9 +454,11 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
 
 - The rules read and write no file; only `keep` outlasts the program. They change no
   setting (a button does) and open no screen by a call (`open:SCREEN` on a button, or `show`).
-- Escape is not the rules' to hear: on a menu it goes back; in a run with no menu up it
-  pauses (the `pause` screen, `game.phase` is `paused`) and no rule ticks until `resume`.
-- At the title no rule ticks: a run needs `0:enter` first, or `"start": "run"`.
+- Escape on a menu goes back; in a run with nothing over the game it pauses (the `pause`
+  screen, `game.phase` is `paused`: no rule ticks until `resume`); over a shown screen it
+  is the rules' (above).
+- At the engine's title no rule ticks, so no button's word reaches the rules there: a run
+  needs `0:enter` first, or `"start": "run"`.
 
 **Screens** (`assets/ui/*.json`; widgets: box, panel, label, button, bar, list, spacer)
 
@@ -513,7 +518,10 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   the rules take no seed and keep none. A stream goes on from where it was, so a second game
   in one session is another game; `cx.random_restart("stream")?` puts it back at its
   beginning (call it where a run begins, for "the same seed gives the same game again").
-- **The rest of the SDK** (with `notes/world.md` that is all of it): `cx.random_u32("s")?`;
+- **The rest of the SDK** (with `notes/world.md` that is all of it; no need to read its
+  source: `cx.state(key)?` gives a `Value`, read with `.as_u64()`, `.as_f64()`, `.as_bool()`,
+  `.as_str()`, `.get("k")`; `cx.set_state(key, v)?` takes a number, text, a bool or a
+  `Value`): `cx.random_u32("s")?`;
   `cx.emit("name", data)?` (an event every module hears next tick);
   `cx.move_character(id, motion)?` (a `Moved`: `.position`, `.grounded`, `.blocked`);
   `cx.actions()`; `cx.reloaded()`, `cx.generation()`; `cx.trace(TraceLevel::Info, "code",
