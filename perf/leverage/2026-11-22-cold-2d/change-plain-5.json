@@ -865,7 +865,7 @@
             {
               "tool": "Bash",
               "kind": "read its own files",
-              "what": "cd <run>; mkdir -p judge-scratch; cat work/selftest.py | head -40; python --version; ls \"$APPDATA/HoldTheGa...",
+              "what": "cd <run>; mkdir -p judge-scratch; cat work/selftest.py | head -40; python --version; ls (the user's application-data folder)",
               "written": 37,
               "answered": 382
             }

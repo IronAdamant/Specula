@@ -189,7 +189,7 @@ At the runner's list prices: 17.22 USD for the builds, 37.72 USD for the judging
 - medium-plain-4: Quit on the title does nothing visible in headless mode (documented).
 - medium-plain-5: The Spanish won/lost hint is 'Enter: título', so the English key word 'Enter' stays on Spanish screens.
 - medium-plain-5: Volume is stored and shown but there is no sound at all, as the README admits.
-- medium-plain-5: Without --settings, the headless run writes to %APPDATA%\HoldTheGate\settings.json. The README example uses C:/tmp/s.json, which writes outside the game folder.
+- medium-plain-5: Without --settings, the headless run writes to a settings.json in the user's own application-data folder. The README example uses C:/tmp/s.json, which writes outside the game folder.
 - medium-plain-5: The tkinter window was not checked by the judge. The builder says it did not open it either.
 - small-engine-1: Sample title, pause, won and settings screens and their strings are left in the game, unused (README admits it).
 - small-engine-1: Miss detection is subject to float rounding: piece expected to leave at tick 226 still listed at y 0.5000000000000349 at tick 226 (one tick late); harmless.
