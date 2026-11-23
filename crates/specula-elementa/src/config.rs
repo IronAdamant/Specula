@@ -22,7 +22,9 @@ pub const MAX_FUEL_S: f32 = 3600.0;
 pub const MAX_NODES: u32 = 32_768;
 /// Work per spread step, at most (cell lookups plus neighbour checks).
 pub const MAX_WORK: u32 = 1 << 20;
-/// Work per spread step, at least: a smaller budget could not finish one query of a node.
+/// Work per spread step, at least: a floor so that a step does useful work. A neighbour query
+/// larger than the budget (a crowded cell has no limit of its own) is not lost: it resumes where
+/// it stopped at the next step.
 pub const MIN_WORK: u32 = 1024;
 /// The grid's cell, in metres.
 pub const MIN_CELL_M: f32 = 0.25;
@@ -63,10 +65,11 @@ pub struct Material {
 pub struct Limits {
     /// Nodes tracked at once.
     pub nodes: u32,
-    /// Nodes burning at once; a node that would ignite past it waits, in id order.
+    /// Nodes burning at once; a node that would ignite past it waits, the longest waiting
+    /// catching first.
     pub burning: u32,
     /// Work per spread step (cell lookups plus neighbour checks); a step that would pass it is
-    /// cut and the rest carried to the next step, in id order.
+    /// cut and resumed at the next step where it stopped; the heat delayed is given then.
     pub work: u32,
 }
 
@@ -105,10 +108,10 @@ const BUILT_IN: [Row; 10] = [
     ("cloth", Some(0.25), 12.0, 0.5, 0.7, 0.2, 0.03, false, None, 0.0, 0.0),
     ("flesh", Some(0.6), 8.0, 0.2, 0.7, 0.3, 0.0, false, None, 0.0, 0.0),
     ("grass", Some(0.2), 6.0, 0.4, 0.6, 0.2, 0.02, false, None, 0.0, 0.0),
-    ("ice", None, 0.0, 0.0, 0.0, 0.02, 0.0, false, Some(-0.2), 1.0, -0.6),
+    ("ice", None, 0.0, 0.0, 0.0, 0.006, 0.0, false, Some(-0.2), 1.0, -0.6),
     ("metal", None, 0.0, 0.0, 0.0, 0.3, 0.0, true, None, 0.0, 0.0),
     ("oil", Some(0.15), 20.0, 1.0, 0.95, 0.1, 0.0, false, None, 0.0, 0.0),
-    ("snow", None, 0.0, 0.0, 0.0, 0.05, 0.0, false, Some(-0.1), 0.5, -0.4),
+    ("snow", None, 0.0, 0.0, 0.0, 0.012, 0.0, false, Some(-0.15), 0.5, -0.4),
     ("stone", None, 0.0, 0.0, 0.0, 0.05, 0.0, false, None, 0.0, 0.0),
     ("water", None, 0.0, 0.0, 0.0, 0.1, 0.0, true, Some(-0.5), 1.0, 0.0),
     ("wood", Some(0.35), 40.0, 0.6, 0.8, 0.1, 0.05, false, None, 0.0, 0.0),
@@ -145,12 +148,21 @@ const MATERIAL_KEYS: [&str; 10] =
     ["ignite", "burn_s", "heat_out", "flame", "cool", "embers", "conducts", "freeze", "quench", "start_heat"];
 const LIMIT_KEYS: [&str; 3] = ["nodes", "burning", "work"];
 
+/// Keys an object of the file may have, at most (the tags' cap, the largest).
+const MAX_KEYS: usize = MAX_TAGS;
+
 fn object<'a>(v: &'a Json, path: &str) -> Result<&'a [(String, Json)], ElementaError> {
     let pairs = v.as_object().ok_or_else(|| wrong_type(path, "an object"))?;
-    for (i, (k, _)) in pairs.iter().enumerate() {
-        if pairs[..i].iter().any(|(p, _)| p == k) {
-            return Err(ElementaError::new("duplicate", format!("{path}.{k} is given twice")).with("path", format!("{path}.{k}")));
-        }
+    if pairs.len() > MAX_KEYS {
+        return Err(ElementaError::limit("keys", MAX_KEYS as u64, pairs.len() as u64, format!("{path} has {} keys; at most {MAX_KEYS}", pairs.len()))
+            .with("path", path));
+    }
+    // Duplicates by sorting (k log k), not by comparing every pair.
+    let mut keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+    keys.sort_unstable();
+    if let Some(w) = keys.windows(2).find(|w| w[0] == w[1]) {
+        let k: String = w[0].chars().take(MAX_NAME).collect();
+        return Err(ElementaError::new("duplicate", format!("{path}.{k} is given twice")).with("path", format!("{path}.{k}")));
     }
     Ok(pairs)
 }
@@ -511,10 +523,12 @@ impl Config {
     /// take (every node updated, plus the work budget), the most grid entries, and the memory.
     pub fn worst_case(&self) -> WorstCase {
         let n = u64::from(self.limits.nodes);
+        let entries = n * u64::from(crate::grid::MAX_NODE_CELLS);
         WorstCase {
-            ops_per_step: n + u64::from(self.limits.work),
+            ops_per_step: 2 * n + u64::from(self.limits.work),
+            rebuild_ops: crate::grid::rebuild_ops(entries),
             steps_per_second: self.spread_hz,
-            grid_entries: n * u64::from(crate::grid::MAX_NODE_CELLS),
+            grid_entries: entries,
             bytes: n * (std::mem::size_of::<crate::sim::Node>() as u64 + 4)
                 + n * u64::from(crate::grid::MAX_NODE_CELLS) * std::mem::size_of::<crate::grid::Entry>() as u64,
         }
@@ -541,6 +555,7 @@ impl Config {
                 "worst_case",
                 Json::obj([
                     ("ops_per_step", Json::from(w.ops_per_step)),
+                    ("rebuild_ops", Json::from(w.rebuild_ops)),
                     ("steps_per_second", Json::from(w.steps_per_second)),
                     ("grid_entries", Json::from(w.grid_entries)),
                     ("bytes", Json::from(w.bytes)),
@@ -553,8 +568,11 @@ impl Config {
 /// The most a config's limits allow (see [`Config::worst_case`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorstCase {
-    /// Node updates plus work, in one spread step.
+    /// Node updates, ready nodes put in order, and the work budget, in one spread step.
     pub ops_per_step: u64,
+    /// A grid rebuild at the node limit with every node covering 64 cells (entries written and
+    /// the sort's comparisons at most): added to the step or act after any add, remove or move.
+    pub rebuild_ops: u64,
     pub steps_per_second: u32,
     /// Grid entries when every node covers the most cells it may.
     pub grid_entries: u64,

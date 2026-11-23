@@ -252,3 +252,28 @@ fn embers_jump_a_gap_downwind_and_only_in_a_wind() {
     let (calm, never, _) = run(0.0);
     assert_eq!((calm, never), (0, None), "no wind, no embers");
 }
+
+#[test]
+fn ice_and_snow_thaw_in_minutes_at_ambient_0_and_keep_below_it() {
+    // Ambient 0 is a mild day: everything frozen thaws, ice in about five minutes and snow in
+    // about three. A world that keeps its ice sets its ambient heat below the freezing lines.
+    let thaw = |ambient: f32| {
+        let mut e = sim(r#"{"elements": 1}"#, 1);
+        let (ice, snow) = (mat(&e, "ice"), mat(&e, "snow"));
+        e.add(NodeDesc::new(1, ice, Vec3::ZERO, Vec3::ONE)).unwrap();
+        e.add(NodeDesc::new(2, snow, Vec3::new(10.0, 0.0, 0.0), Vec3::ONE)).unwrap();
+        assert!(e.nodes().iter().all(|n| n.phase == Phase::Frozen), "both start frozen");
+        e.set_ambient(ambient).unwrap();
+        run_until(&mut e, 60 * 60 * 20, EventKind::Thawed)
+    };
+    let at = thaw(0.0);
+    let (ice_s, snow_s) = (at[&1] / 60, at[&2] / 60);
+    assert!((240..=360).contains(&ice_s), "ice thawed after {ice_s} s");
+    assert!((120..=240).contains(&snow_s), "snow thawed after {snow_s} s");
+    assert!(thaw(-0.5).is_empty(), "nothing thaws in 20 minutes of winter");
+    // Every built-in that freezes thaws below ambient 0, so a mild day thaws it.
+    let c = specula_elementa::Config::default();
+    for m in c.materials.iter().filter(|m| m.freeze.is_some()) {
+        assert!(m.freeze.unwrap() + specula_elementa::sim::THAW_MARGIN < 0.0, "{} would never thaw at ambient 0", m.name);
+    }
+}

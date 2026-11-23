@@ -10,6 +10,8 @@ use specula_core::math::Vec3;
 pub const MAX_CHECK_TICKS: u32 = 36_000;
 /// Ids of burnt nodes a prediction names; the rest are counted.
 pub const MAX_NAMED: usize = 64;
+/// A prediction's own ceiling on ops, whatever `max_ops` asks (one to a few seconds of one core).
+pub const MAX_CHECK_OPS: u64 = 1 << 30;
 /// The most steps [`Elementa::steps_to_ignite`] follows before it says "never".
 pub const MAX_IGNITE_STEPS: u32 = 100_000;
 
@@ -88,16 +90,19 @@ impl Prediction {
 }
 
 impl Elementa {
-    /// The most ops a scenario of `ticks` ticks with `acts` acts can take: every spread step's
-    /// worst case (every node updated, the whole work budget) and every act's (the node count).
+    /// The most ops a scenario of `ticks` ticks with `acts` acts can take: the grid's rebuild if
+    /// one is due (nothing moves in a prediction, so at most one), every act's worst case (twice
+    /// the node count, plus one) and every spread step's (every node updated and put in order,
+    /// and the whole work budget).
     pub fn check_bound(&self, ticks: u32, acts: usize) -> u64 {
         let steps = u64::from(ticks) / u64::from(self.every);
         let n = self.nodes.len() as u64;
-        steps * (n + u64::from(self.config.limits.work)) + acts as u64 * n.max(1)
+        self.pending_rebuild_ops() + acts as u64 * (2 * n + 1) + steps * (2 * n + u64::from(self.config.limits.work))
     }
 
     /// Runs the scenario on a copy of this state (this one is not changed) and says what came of
-    /// it. Bounded: at most [`MAX_CHECK_TICKS`] ticks and `max_ops` ops; meant for a worker
+    /// it. Bounded: at most [`MAX_CHECK_TICKS`] ticks and `max_ops` ops (never more than
+    /// [`MAX_CHECK_OPS`]; the step that reaches it is the last one run); meant for a worker
     /// thread (it never reads the world). Events already waiting here are not counted.
     pub fn check(&self, s: &Scenario) -> Result<Prediction, ElementaError> {
         if s.ticks == 0 || s.ticks > MAX_CHECK_TICKS {
@@ -108,6 +113,8 @@ impl Elementa {
         }
         let mut sim = self.clone();
         sim.take_events();
+        sim.clear_acts();
+        let max_ops = s.max_ops.min(MAX_CHECK_OPS);
         if let Some(w) = s.wind {
             sim.set_wind(w)?;
         }
@@ -116,11 +123,12 @@ impl Elementa {
         }
         let mut p = Prediction { bound_ops: self.check_bound(s.ticks, s.acts.len()), ..Prediction::default() };
         for a in &s.acts {
-            p.ops += u64::from(sim.act(*a)?.work);
+            let r = sim.act(*a)?;
+            p.ops += u64::from(r.work) + r.grid_ops;
         }
         let mut was_burning = sim.burning() > 0;
         for t in 1..=s.ticks {
-            if p.ops >= s.max_ops {
+            if p.ops >= max_ops {
                 p.cut = true;
                 break;
             }

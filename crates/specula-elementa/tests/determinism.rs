@@ -96,6 +96,10 @@ fn a_save_and_load_mid_fire_continue_to_the_same_hash() {
     assert_eq!(loaded.hash(), e.hash());
     assert_eq!(loaded.save(), bytes, "a load saves to the same bytes");
     assert_eq!(loaded.take_events(), e.take_events(), "waiting events are part of the save");
+    assert_eq!(loaded.last_report().burning, e.burning(), "a loaded state says what burns before its next spread step");
+    let (a, b) = (*e.step(), *loaded.step());
+    assert!(!a.spread, "this tick is between spread steps");
+    assert_eq!(a, b, "the same report on the tick after a load");
     let (a, _) = run(&mut e, 2_600);
     let (b, _) = run(&mut loaded, 2_600);
     assert!(a == b, "differ first at tick {:?}", a.iter().zip(&b).position(|(x, y)| x != y));
@@ -107,11 +111,12 @@ fn the_prediction_equals_the_run() {
     e.set_wind(Vec3::new(3.0, 0.0, 0.0)).unwrap();
     let light = Act { kind: ActKind::Ignite, target: Target::Sphere { at: forest_centre(N), radius: 2.0 }, amount: 1.0 };
     let s = Scenario { acts: vec![light], wind: None, ambient: None, ticks: 3_600, max_ops: u64::MAX };
+    let (before, bytes) = (e.hash(), e.save());
     let p = e.check(&s).unwrap();
     assert!(p.ignited > 50 && !p.cut, "{p:?}");
     assert!(p.ops <= p.bound_ops, "{} ops against the bound {}", p.ops, p.bound_ops);
-    let before = e.hash();
     assert_eq!(e.hash(), before, "a prediction leaves the state alone");
+    assert_eq!(e.save(), bytes);
     // The run itself.
     e.act(light).unwrap();
     let (mut ignited, mut burnt) = (0, 0);
@@ -127,4 +132,18 @@ fn the_prediction_equals_the_run() {
     let small = e.check(&Scenario { max_ops: 1_000, ..s.clone() }).unwrap();
     assert!(small.cut && small.ticks < 3_600);
     assert_eq!(e.check(&Scenario { ticks: 0, ..s }).unwrap_err().code, "out_of_range");
+}
+
+#[test]
+fn a_prediction_starts_with_none_of_the_ticks_acts() {
+    let mut e = sim(JSON, 1);
+    e.add_many(&forest(&e, 100, 1)).unwrap();
+    let one = Act { kind: ActKind::Wet, target: Target::Node(1), amount: 0.01 };
+    for _ in 0..specula_elementa::sim::MAX_ACTS_PER_TICK {
+        e.act(one).unwrap();
+    }
+    assert_eq!(e.act(one).unwrap_err().code, "limit", "the live tick has spent its acts");
+    let light = Act { kind: ActKind::Ignite, target: Target::Node(5), amount: 1.0 };
+    let p = e.check(&Scenario { acts: vec![light], wind: None, ambient: None, ticks: 60, max_ops: u64::MAX }).unwrap();
+    assert!(p.ignited >= 1, "{p:?}");
 }

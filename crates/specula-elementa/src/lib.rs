@@ -15,14 +15,15 @@
 //! - **Near** is a sorted grid ([`grid`]): no hashing, every walk in a fixed order.
 //! - **Bounded**: nodes tracked, nodes burning and work per step are limits ([`Limits`]),
 //!   checked when given and said before a run ([`Config::worst_case`]); a step never passes its
-//!   work limit (the rest waits for the next step, in id order).
+//!   work limit (it resumes where it stopped at the next step, and the heat delayed is given
+//!   then); under the burning limit the longest waiting catch first.
 //! - **Predicted** ([`Elementa::check`]): a scenario run on a copy, bounded, for a worker thread.
 //! - **Saved and hashed** ([`Elementa::save_state`], [`Elementa::restore_state`],
 //!   [`Elementa::hash`]): a load continues bit for bit; a damaged section is an error.
 //!
 //! **Determinism (F2):** only IEEE `+ − × ÷`, `sqrt`, `min`/`max`/`abs` and
 //! `specula_core::dmath`; ordered containers; one seeded stream (embers), one draw per burning
-//! node and step, in id order. Nothing reads a clock or spawns a thread.
+//! node as its heating starts, in a fixed order. Nothing reads a clock or spawns a thread.
 //!
 //! **What it does not do:** it writes nothing in the world (it tells the rules); blasts, strikes,
 //! wind zones and pushes are later stages (9 and 10).
@@ -36,10 +37,10 @@ pub mod grid;
 pub mod save;
 pub mod sim;
 
-pub use check::{Prediction, Scenario, MAX_CHECK_TICKS};
+pub use check::{Prediction, Scenario, MAX_CHECK_OPS, MAX_CHECK_TICKS};
 pub use config::{built_in, Config, Limits, Material, WorstCase};
 pub use error::ElementaError;
 pub use save::SECTION_VERSION;
 pub use sim::{
-    Act, ActKind, ActReport, AddReport, Cause, Elementa, Event, EventKind, Events, Node, NodeDesc, Phase, StepReport, Target,
+    Act, ActKind, ActReport, AddReport, Cause, Cursor, Elementa, Event, EventKind, Events, Node, NodeDesc, Phase, StepReport, Target,
 };

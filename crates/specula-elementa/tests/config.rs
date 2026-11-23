@@ -38,7 +38,9 @@ fn a_project_overrides_and_adds_materials_and_maps_tags() {
     assert_eq!(c.tag("bog"), c.material("peat"));
     assert_eq!(c.limits, Limits { nodes: 20000, burning: 1000, work: 65536 });
     let w = c.worst_case();
-    assert_eq!(w.ops_per_step, 20000 + 65536);
+    assert_eq!(w.ops_per_step, 2 * 20000 + 65536);
+    assert_eq!(w.grid_entries, 20000 * 64);
+    assert_eq!(w.rebuild_ops, 20000 * 64 * (1 + 21), "1,280,000 entries: written once, at most 21 comparisons each to sort");
     assert_eq!(w.steps_per_second, 5);
     assert!(w.bytes > 0);
     let shown = c.to_json().to_string();
@@ -124,4 +126,19 @@ fn the_tick_rate_must_be_a_multiple_of_the_spread_rate() {
     assert_eq!(e.code, "bad_config");
     assert_eq!(Elementa::new(Config::default(), 0, 1).unwrap_err().code, "bad_config");
     assert_eq!(Elementa::new(Config::default(), 60, 1).unwrap().ticks_per_step(), 6);
+}
+
+#[test]
+fn a_file_of_many_keys_is_refused_by_count_and_duplicates_found_by_sorting() {
+    // Near 64 KB of keys at the top of "tags": past 1,024 the object is refused before its
+    // duplicates are looked for.
+    let keys: Vec<String> = (0..4000).map(|i| format!(r#""t{i}":"wood""#)).collect();
+    let text = format!(r#"{{"elements": 1, "tags": {{{}}}}}"#, keys.join(","));
+    assert!(text.len() < MAX_FILE_BYTES);
+    let e = refused(&text);
+    assert_eq!((e.code, e.detail("max").and_then(|v| v.as_u64())), ("limit", Some(1024)));
+    // At the cap, a duplicate at the far end is found.
+    let mut keys: Vec<String> = (0..1023).map(|i| format!(r#""t{i}":"wood""#)).collect();
+    keys.push(r#""t0":"wood""#.to_owned());
+    assert_eq!(refused(&format!(r#"{{"elements": 1, "tags": {{{}}}}}"#, keys.join(","))).code, "duplicate");
 }

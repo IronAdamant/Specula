@@ -8,7 +8,8 @@
 //! two boxes share (the per-axis larger of their lowest cells), so no set is needed.
 //!
 //! The grid is derived: it is rebuilt from the nodes when one is added, removed or moved (the
-//! next step or act that needs it), never saved and never hashed.
+//! next step or act that needs it), in the memory it already has, never saved and never hashed.
+//! A rebuild is counted in the step's or the act's operations ([`rebuild_ops`]).
 
 use crate::sim::Node;
 use specula_core::dmath;
@@ -51,29 +52,39 @@ pub struct Grid {
 }
 
 impl Grid {
-    /// Enters every node in each cell its box overlaps, then sorts. Costs one entry per cell a
-    /// node covers (at most [`MAX_NODE_CELLS`] each) and one sort.
-    pub fn build(nodes: &[Node], cell: f32) -> Grid {
-        let mut entries = Vec::with_capacity(nodes.len() * 2);
+    /// Enters every node in each cell its box overlaps, then sorts, reusing this grid's memory.
+    /// Answers its cost in [`rebuild_ops`] units: one per entry written and the sort's
+    /// comparisons at most (`entries × ⌈log2 entries⌉`).
+    pub fn rebuild(&mut self, nodes: &[Node], cell: f32) -> u64 {
+        self.entries.clear();
         for (i, n) in nodes.iter().enumerate() {
             let (lo, hi) = cell_box(n.center - n.half, n.center + n.half, cell);
             for x in lo[0]..=hi[0] {
                 for y in lo[1]..=hi[1] {
                     for z in lo[2]..=hi[2] {
-                        entries.push(Entry { cell: [x, y, z], node: i as u32 });
+                        self.entries.push(Entry { cell: [x, y, z], node: i as u32 });
                     }
                 }
             }
         }
-        entries.sort_unstable();
-        Grid { entries }
+        self.entries.sort_unstable();
+        rebuild_ops(self.entries.len() as u64)
     }
 
     /// The nodes entered in one cell, in index (so id) order.
     pub fn cell(&self, c: [i32; 3]) -> &[Entry] {
-        let start = self.entries.partition_point(|e| e.cell < c);
-        let end = start + self.entries[start..].partition_point(|e| e.cell == c);
+        let (start, end) = self.range(c);
         &self.entries[start..end]
+    }
+
+    /// Where one cell's entries lie in [`Grid::entries`].
+    pub fn range(&self, c: [i32; 3]) -> (usize, usize) {
+        let start = self.entries.partition_point(|e| e.cell < c);
+        (start, start + self.entries[start..].partition_point(|e| e.cell == c))
+    }
+
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
     }
 
     pub fn len(&self) -> usize {
@@ -83,6 +94,22 @@ impl Grid {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+}
+
+/// The cost of building a grid of `entries` entries: each written once, and at most
+/// `⌈log2 entries⌉` comparisons each for the sort.
+pub fn rebuild_ops(entries: u64) -> u64 {
+    let log = if entries <= 1 { 0 } else { u64::from(64 - (entries - 1).leading_zeros()) };
+    entries + entries * log
+}
+
+/// The entries a grid of these nodes holds (one per cell each box overlaps), counted without
+/// building it.
+pub fn entries_for(nodes: &[Node], cell: f32) -> u64 {
+    nodes.iter().map(|n| {
+        let (lo, hi) = cell_box(n.center - n.half, n.center + n.half, cell);
+        cells_in(lo, hi)
+    }).sum()
 }
 
 /// The gap between two boxes (0 when they touch or overlap), metres.

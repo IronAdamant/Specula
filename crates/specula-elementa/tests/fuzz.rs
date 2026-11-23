@@ -105,3 +105,53 @@ fn huge_counts_are_refused_before_anything_is_allocated() {
     // Nothing at all.
     assert!(Elementa::load(&[]).is_err());
 }
+
+/// Where an 8-byte value sits in the section: found by its value, which must be there once.
+fn find_u64(bytes: &[u8], v: u64) -> usize {
+    let pat = v.to_le_bytes();
+    let at: Vec<usize> = (0..=bytes.len() - 8).filter(|&i| bytes[i..i + 8] == pat).collect();
+    assert_eq!(at.len(), 1, "{v} is in the section once");
+    at[0]
+}
+
+#[test]
+fn a_clock_or_a_count_at_its_end_is_refused_or_saturates() {
+    // A state at a tick no other field holds, with a refusal count no other field holds.
+    let mut e = sim(r#"{"elements": 1, "limits": {"nodes": 3, "burning": 3}}"#, 5);
+    let wood = e.config().material("wood").unwrap();
+    let d: Vec<specula_elementa::NodeDesc> =
+        (0..1234u64).map(|i| specula_elementa::NodeDesc::new(i, wood, Vec3::new(i as f32 * 3.0, 0.0, 0.0), Vec3::ONE)).collect();
+    e.add_many(&d).unwrap();
+    for _ in 0..4321 {
+        e.step();
+    }
+    let bytes = e.save();
+    let tick_at = find_u64(&bytes, 4321);
+    let refused_at = find_u64(&bytes, 1231);
+
+    // The clock at its end, or past the latest tick a state may be at: refused.
+    for t in [u64::MAX, specula_elementa::sim::MAX_TICK + 1] {
+        let mut b = bytes.clone();
+        b[tick_at..tick_at + 8].copy_from_slice(&t.to_le_bytes());
+        let err = Elementa::load(&b).unwrap_err();
+        assert_eq!(err.code, "snapshot_invalid", "tick {t}: {err}");
+    }
+    // At the latest tick: it loads and steps without wrapping.
+    let mut b = bytes.clone();
+    b[tick_at..tick_at + 8].copy_from_slice(&specula_elementa::sim::MAX_TICK.to_le_bytes());
+    let mut l = Elementa::load(&b).unwrap();
+    for _ in 0..12 {
+        l.step();
+    }
+    assert_eq!(l.tick(), specula_elementa::sim::MAX_TICK);
+    assert!(Elementa::load(&l.save()).is_ok());
+
+    // The refusal count at its end: it loads, and a refused node leaves it there.
+    let mut b = bytes.clone();
+    b[refused_at..refused_at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut l = Elementa::load(&b).unwrap();
+    assert_eq!(l.add(specula_elementa::NodeDesc::new(99_999, wood, Vec3::ZERO, Vec3::ONE)).unwrap_err().code, "limit");
+    let r = l.add_many(&[specula_elementa::NodeDesc::new(99_998, wood, Vec3::ZERO, Vec3::ONE)]).unwrap();
+    assert_eq!(r.left_out, 1);
+    assert_eq!(l.refused(), u64::MAX);
+}
