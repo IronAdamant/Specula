@@ -164,6 +164,24 @@ rounds.
   the `resume` trap (below); then stage 2 as planned (a smaller project to start from,
   signatures, what changed handed over without a request); a larger job written before it
   is measured, since a plain build of this one is a four-minute sitting.
+- **The second large job (2026-11-23; 25.83 USD): engine over plain 7.39. By the rule set
+  before the number, 1.92 was fitted to one brief.** Night Market, written by the second
+  reader and loaded as given; the engine and its guide frozen at `3207626c`; five engine and
+  five plain runs the same afternoon. Plain: 148,378 weighted tokens, seven or eight
+  requests, two minutes, 33.8 of 34 checks. Engine: 1,096,486, 61 requests, 32.2 of 34; all
+  five builders in the engine's source ([LEVERAGE.md](docs/design/LEVERAGE.md), the last
+  results). What they looked for was this job's own: **a word that acts once each time it is
+  given** (the engine's scripts hold an action until the next input, so the same word twice
+  is one press: three of five games failed the items it decides, and no line of a guide
+  mends that), keys that do things with no button for them, a grid with a cursor.
+  **The reading:** with a guide that answers a job's questions the engine arm costs about
+  twice a plain build; with one that does not, five to seven times; a new game asks new
+  questions. The first bar has not been tested at all: neither large job outgrows one
+  sitting for a plain build (the second reader expected 22 requests for a plain Night
+  Market; it took 7). The one job of eight where the engine is cheaper is still the 3D
+  change. **The freeze is over. What follows is the owner's to decide** (the lead's view is
+  in the write-up's last paragraphs: stop mending for 2D games a model writes in one
+  sitting; test the engine where a plain build is dear, and with several agents at once).
 - **The engine and its guide are frozen from the commit after `5207664e`** (the `resume` mend, below, and a kept value on a screen from the first frame: FIRST_HOUR.md, section 17) until a second large job is measured. Two reviews by the second reader confirmed 1.92 from the raw files (the runs do not overlap stage 1's; the builders' traces changed in kind) and asked for the one test that says whether it is the engine or a guide fitted to one brief: a different large job, written by the second reader and frozen before it is measured, five engine and five plain runs the same day. **The rule, set before the number:** at or under 2.2 the guide generalises; above 3.0 it was fitted; between, the runs are doubled. The lead does not write the job, does not see which of its requirements the guide leaves unanswered, and does not edit the guide or the engine until its runs are judged. Stage 2 is on hold: by the control's ledgers a smaller start is 6% of a build, and the batch check measured as a loss.
 - **Found by those runs, mended since:** on a pause screen of the game's own (a shown screen),
   a button whose action is `resume` does nothing: it is the engine's word, and where the

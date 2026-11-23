@@ -1566,3 +1566,79 @@ answers itself, and where the game is not paused by the engine it answers nothin
 rules never hear it (read in one of the five: its rules wait for the event `resume` from a
 screen the game file shows). The engine's own words on a screen the rules put up are a trap
 the guide does not name.
+
+## Results (2026-11-23: a second large job, written by the second reader: Night Market)
+
+The test both of the second reader's reviews asked for, and the lead's own worry: is 1.92 on
+the large job a fact about the engine, or about a guide fitted to one brief? A second, different
+large job, written by the second reader (who did not write the guide), frozen before it was
+measured; the engine and its guide frozen at `3207626c` before the job was seen; five engine
+and five plain runs the same afternoon, cold, the plain arm fresh. The job is
+[evals/leverage/jobs/night.json](../../evals/leverage/jobs/night.json) as it was given, one word
+changed at the owner's choice (its id, for a rule of the harness the lead had not told the
+second reader of). The second reader wrote down, for the owner and not the lead, which of the
+job's requirements the guide leaves unanswered. No pilot. Records:
+[perf/leverage/2026-11-23-night](../../perf/leverage/2026-11-23-night/report.md).
+Cost: 25.83 USD (builds 10.82, judging 15.00).
+
+**The rule set before the number:** engine over plain at or under 2.2, the guide generalises;
+above 3.0, it was fitted to one brief; between, the runs are doubled.
+
+| Arm | Weighted tokens, mean (lowest to highest) | Requests | Lines left | Checks of 34 |
+|---|---|---|---|---|
+| plain | 148,378 (130,807 to 167,306) | 7.4 (7 or 8 in every run) | 598 to 745 | 33.8 |
+| engine | 1,096,486 (523,399 to 1,834,602) | 61.4 (28 to 95) | 1,581 to 2,512 | 32.2 |
+
+**Engine over plain: 7.39. By the rule, 1.92 was fitted to one brief.** Every engine run
+costs more than three times every plain run. All five engine builders opened the engine's
+source (8 to 26 steps into the repository each).
+
+**What they went looking for**, from the five ledgers, and none of it was asked by the first
+large job:
+
+- **A word that acts once at its tick, each time it is given.** The brief says every input
+  word acts once, "even when the same word was given at the tick before". The engine's
+  scripts hold a module's action until the next input, as a held key (the guide says so), so
+  the same word twice running is one press. Every builder searched the documents and
+  `script_run.rs` for it ("held until", "same word", "re-press") and found that the engine
+  has no such thing. **Three of the five games then failed the items it decides** (the
+  cursor, the piece, the slot: n07, n08, n12): with `none` between two words they pass, as
+  the brief gives them they do not. This is not a line missing from the guide. A script
+  cannot say "press it again".
+- **Keys that do things on a screen with no button for them** (place, erase, the speed
+  words): "shortcut" and "hotkey", searched for in the UI's pages and source by all five.
+- **A grid with a cursor on it and a list**, as widgets; how a state's value is typed; what
+  Quit does in a headless run.
+
+**The plain builds.** Seven or eight requests, two minutes, about 650 lines, 34 of 34 in
+four of five. The second reader had expected 22 requests and 450,000 to 650,000 weighted
+tokens for a plain build of this job, a larger sitting than the first large job's; it was
+smaller (148,378 against 269,351). A model writes this game whole, in one file, in one go.
+Neither large job is large for a plain build.
+
+**What the two large jobs say together.**
+
+- With a guide that answers what a job's builders will ask, the engine arm costs about
+  twice a plain build (1.92). With one that does not, five to seven times (5.92, 5.61,
+  7.39). The guide answered the first job's questions because they had been read off its
+  ledgers. A new game asks new ones, and a guide of sixteen kilobytes cannot hold every
+  game's.
+- So the lead's reading of 2026-11-22, withdrawn the day after, stands in its first half and
+  now in its second too: at this size the project shell decides things (how a run begins,
+  what a press is, what a screen may hold) that a builder must find out, and a plain builder
+  decides them all in code it wrote. Twenty lines moved one job because they were that
+  job's twenty lines.
+- **Where the brief's model and the engine's differ, the engine arm also delivers less**
+  (three games failed the same items on what a press is). A plain build has no model of its
+  own to differ.
+- The one job of the eight measured where the engine is cheaper is still the 3D change
+  (0.68), where a plain build is a renderer and a physics of the builder's own to read and
+  write again. On the 2D games of menus, rules and a headless run, a plain build is one
+  sitting at every size tried.
+
+**Against the bars of 2026-11-22.** The first bar (a game that outgrows one sitting costs no
+more through the engine) has not been tested: no job yet outgrows one sitting for a plain
+build, and on the two that were meant to, the engine costs two to seven times as much. The
+rule the owner and the lead set says what that means: above 1.5 after the mends, the design
+is wrong, not short of mends. What the engine is for (3D, physics, sound, content at a
+scale no one file holds, several agents at once) is what none of these jobs asks of it.
