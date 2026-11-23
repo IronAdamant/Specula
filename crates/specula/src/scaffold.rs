@@ -399,15 +399,13 @@ builds the modules, plays the game with no window and prints how it stands as JS
 - `--seed N` (1 when left out) seeds `cx.random_*`: the same seed and inputs give the same
   run, and the rules never see a seed. `--settings FOLDER` is where the player's settings are
   read and kept (a file the engine writes in it: the same folder again finds them); without
-  it they are kept nowhere. A window's player has a folder of their own, per user.
+  it they are kept nowhere.
 - `--frame` writes what a player would see (the game file's `"view"`, with the interface).
 - `--follow` goes on after the script: each line of standard input is a step (`TICKS` or
   `TICKS WORD`, as `10 up+shoot`), and the state is printed after each.
 
-**Shapes by name:** `specula call formae_list '{}'` names figures and solids (a gear, a
-heart, a torus...) that model recipes and `shape2d` items take; `formae_get` gives one.
-
 **Models** (props, pickups, scenery) are recipes under `assets/models/`: `notes/models.md`.
+Shapes by name (a gear, a heart, a torus): `specula call formae_list '{}'`.
 
 **3D, physics, light and sound** from a module (a sphere, a model, a collider, a body that
 falls, a lamp, a sound's recipe): `notes/world.md`.
@@ -428,15 +426,18 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   The rules only `cx.set_state("best", v)?`: the engine writes it when it changes, where
   the settings are kept (`--settings FOLDER`), and tells it back as the event `kept`
   (`name`, `value`) at the first tick, before `run`: `"kept" if word("name") ==
-  Some("best") => best = best.max(..)`.
+  Some("best") => best = best.max(..)`. A screen reads it as `kept.best` from the first
+  frame, before any rule has (`"Best: {kept.best}"`, `"visible": "kept.saved"`).
 - `show`: screens the rules put up, `{"shop": "{{module}}.shopping"}`: in a run, while
   that key is true (or not 0), `assets/ui/shop.json` is up over the game's own with the
   focus (give it `"modal": true` and a `"layer"` between the hud's and the pause's). Its
-  buttons' words reach the rules as `ui` events (`action`); Escape over it reaches them as
-  `ui` with the action `back` and `screen`, and does nothing else; the clock goes on.
+  buttons' words reach the rules as `ui` events (`action`, `screen`), **`start`, `pause`,
+  `resume`, `title` and `back` among them**: on such a screen the engine does none of those
+  itself (a Resume on a pause screen of your own is yours to answer). Escape over it
+  reaches the rules as `ui` with the action `back`; the clock goes on.
 - **A title or a menu of the game's own** (Start and Continue, a shop, a level choice) is
   that: `"start": "run"`, a shown screen, and the rules answer its buttons. The engine's
-  own `title` screen is for a game whose title only starts it.
+  own `title` and `pause` screens are for a game that needs no more of them.
 - **A setting the rules read** (a difficulty) is four things: `"sim": true` on it here; a
   button on a screen with the action `cycle:NAME` (or `step:NAME:+1`), its text
   `{setting.NAME.text}`; for a choice, a line `setting.NAME.VALUE` for each value in every
@@ -455,8 +456,7 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
 - The rules read and write no file; only `keep` outlasts the program. They change no
   setting (a button does) and open no screen by a call (`open:SCREEN` on a button, or `show`).
 - Escape on a menu goes back; in a run with nothing over the game it pauses (the `pause`
-  screen, `game.phase` is `paused`: no rule ticks until `resume`); over a shown screen it
-  is the rules' (above).
+  screen, `game.phase` is `paused`: no rule ticks until `resume`).
 - At the engine's title no rule ticks, so no button's word reaches the rules there: a run
   needs `0:enter` first, or `"start": "run"`.
 
@@ -469,8 +469,9 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   language. `"visible"` shows a widget by a condition: `"KEY"`, `"!KEY"`, or a comparison
   (`"setting.difficulty == 'hard'"`, `"{{module}}.left < 3"`; `&&`, `||`).
 - A button's `action` is a word. The engine does `start`, `pause`, `resume`, `title`,
-  `open:SCREEN`, `back`, `quit`, `set:NAME:VALUE`, `step:NAME:+1`, `step:NAME:-1`,
-  `cycle:NAME`, `save:SLOT`, `load:SLOT`; any other word reaches the rules as the event `ui`.
+  `back` (on its own screens only: `show`, above), and everywhere `open:SCREEN`, `quit`,
+  `set:NAME:VALUE`, `step:NAME:+1`, `step:NAME:-1`, `cycle:NAME`, `save:SLOT`, `load:SLOT`;
+  any other word reaches the rules as the event `ui`.
 - On a button that moves a setting, Left and Right step it down and up; Enter does its action.
 - Another language is another file in `assets/strings`: the language setting finds it. The
   game's name on the title screen (`{game.title}`) is the game file's `title`, or the line

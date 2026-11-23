@@ -797,6 +797,30 @@ back to the id; `ui.texts` changed its meaning, which a check written against th
 will show; a shown screen is drawn by its own `layer`, whatever order the shell has it in
 (the guide now says which layer to give it).
 
+### After the large job was measured again (2026-11-23): the engine's words on the rules' own screens
+
+The measurement of `ff4b1298` ([LEVERAGE.md](LEVERAGE.md), the results of 2026-11-23) and the
+second reader's two reviews of it found two more things, both small, mended before the engine
+and its guide were frozen for a second large job:
+
+- **A button that says `resume` on a pause screen of the game's own did nothing** (five of
+  fifteen games failed the pause item so; a game whose pause was the engine's own screen
+  passed with the same word). `resume` was answered by the engine, which had paused nothing,
+  and the rules never heard it. On a screen the rules put up, the words that move the run
+  and the screens (`start`, `pause`, `resume`, `title`, `back`, `close`) now reach the rules
+  as the event `ui`, as any word of the game's own does, and the engine does nothing. What
+  serves any menu is still the engine's there (`open:SCREEN`, the settings' words, `save:`,
+  `load:`, `quit`), and on its own screens every word is the engine's as before.
+- **What was kept reached a screen a tick late**: the rules hear `kept` at the first tick,
+  so a title at the very start showed no Continue and "Best: 0" (four of fifteen games; no
+  item of the list sees it). A screen now reads what the game keeps as `kept.NAME`, from the
+  player's file, from the first frame.
+
+The guide says both, and which words are whose. **From this commit the engine and the guide
+are frozen** until the second large job's runs are judged: the job is written by the second
+reader, who did not write the guide, and the lead does not see what in it the guide does not
+answer. Typos excepted, and recorded before the runs.
+
 ## As built
 
 **Built, with its own tests, the structural guards and clippy passing; the full gate passed on its last commit** (2026-11-16, branch

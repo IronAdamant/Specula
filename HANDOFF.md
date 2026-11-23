@@ -164,7 +164,8 @@ rounds.
   the `resume` trap (below); then stage 2 as planned (a smaller project to start from,
   signatures, what changed handed over without a request); a larger job written before it
   is measured, since a plain build of this one is a four-minute sitting.
-- **Found by those runs, not mended:** on a pause screen of the game's own (a shown screen),
+- **The engine and its guide are frozen from the commit after `5207664e`** (the `resume` mend, below, and a kept value on a screen from the first frame: FIRST_HOUR.md, section 17) until a second large job is measured. Two reviews by the second reader confirmed 1.92 from the raw files (the runs do not overlap stage 1's; the builders' traces changed in kind) and asked for the one test that says whether it is the engine or a guide fitted to one brief: a different large job, written by the second reader and frozen before it is measured, five engine and five plain runs the same day. **The rule, set before the number:** at or under 2.2 the guide generalises; above 3.0 it was fitted; between, the runs are doubled. The lead does not write the job, does not see which of its requirements the guide leaves unanswered, and does not edit the guide or the engine until its runs are judged. Stage 2 is on hold: by the control's ledgers a smaller start is 6% of a build, and the batch check measured as a loss.
+- **Found by those runs, mended since:** on a pause screen of the game's own (a shown screen),
   a button whose action is `resume` does nothing: it is the engine's word, and where the
   engine did not pause the game it answers nothing and the rules never hear it. Five of
   fifteen games failed the pause item so. The same holds for any engine word (`pause`,

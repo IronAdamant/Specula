@@ -737,8 +737,9 @@ impl Run<'_> {
         let report = if game.report.is_empty() {
             Json::obj([("tick", Json::from(tick)), ("game", state.clone()), ("ui", ui), ("state", states)])
         } else {
-            // (A key asked for by itself that has no value is left out: it is then a line the
-            // run has not, and whoever asked is told so, as for a name mistyped.)
+            // (A key only a condition reads is left out when it has no value: the condition
+            // then says it could not be read. A line of the report, and a key `--keys` names,
+            // are printed always, `null` with none: `lines_of`.)
             Json::Obj(self.lines.iter().map(|(name, key, own)| (name.clone(), value_of(key, tick, seed, &state, &ui, &states, &beyond), *own)).filter(|(_, value, own)| *own || !value.is_null()).map(|(name, value, _)| (name, value)).collect())
         };
         log_in_order(&mut log);

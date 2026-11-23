@@ -777,7 +777,18 @@ impl Shell {
     /// to the game (the event `ui`) carries with it, so one module can tell two buttons that
     /// say the same word apart. `Err`: a code to branch on, and why.
     fn press_from(&mut self, word: &str, from: Option<(&str, &str)>, player: bool) -> Result<(), (&'static str, String)> {
-        let action = Action::parse(word).map_err(|why| ("bad_action", why))?;
+        let mut action = Action::parse(word).map_err(|why| ("bad_action", why))?;
+        // On a screen the rules put up, the words that move the run and the screens are the
+        // rules': `start`, `pause`, `resume`, `title`, `back`, `close` reach them as the event
+        // `ui`, as any word of the game's own does, and the engine does nothing. A pause
+        // screen of the rules' own with a button that says `resume` was answered by the
+        // engine, which had paused nothing, and the rules never heard it (five of fifteen
+        // games of 2026-11-23). What serves any menu stays the engine's there too: settings
+        // (`set:`, `step:`, `cycle:`), `open:SCREEN`, `save:`, `load:`, `quit`.
+        let rules_own = from.is_some_and(|(_, screen)| self.game.show.iter().any(|(shown, _)| shown == screen));
+        if rules_own && matches!(action, Action::Start | Action::Pause | Action::Resume | Action::Title | Action::Back | Action::Close) {
+            action = Action::Game(word.to_owned());
+        }
         let screens: Vec<String> = self.face.as_ref().map(|f| f.screens.clone()).unwrap_or_default();
         let has = |name: &str| screens.iter().any(|s| s == name);
         match self.run.act(&action, &mut self.settings, player, &has) {
@@ -924,6 +935,31 @@ impl Shell {
                     s.set_str(&words, name);
                 }
                 None => {}
+            }
+        }
+        // What the game keeps for the player, as the player's file has it: `kept.NAME`. A
+        // screen shows it from the first frame, before any rule has ticked and heard it (a
+        // title's "Best: 1,540", a Continue that is there only with a run to go on with).
+        for (name, _) in &self.game.keep {
+            let key = format!("kept.{name}");
+            match self.kept.kept(name) {
+                Some(Json::Bool(b)) => {
+                    s.set_bool(&key, *b);
+                }
+                Some(Json::Num(n)) if specula_core::dmath::fract_f64(*n) == 0.0 && n.abs() < 9.0e15 => {
+                    s.set_int(&key, *n as i64);
+                }
+                Some(Json::Num(n)) => {
+                    s.set_num(&key, *n);
+                }
+                Some(Json::Str(t)) => {
+                    s.set_str(&key, t);
+                }
+                // (A list or a map is there: true, for a condition.)
+                Some(Json::Arr(_) | Json::Obj(_)) => {
+                    s.set_bool(&key, true);
+                }
+                Some(Json::Null) | None => {}
             }
         }
         for (key, shown) in &self.shown {
@@ -1499,7 +1535,7 @@ impl Shell {
     /// Keeps for the player what the game file's `keep` names, as the modules have it after
     /// this tick: written to the player's file (where one is kept) when a value changed.
     fn keep_values(&mut self, modules: &ModuleStates) {
-        let Shell { game, kept_seen, kept, settings_dirty, problems, .. } = self;
+        let Shell { game, kept_seen, kept, settings_dirty, problems, stale, .. } = self;
         if kept_seen.len() != game.keep.len() {
             kept_seen.resize(game.keep.len(), None);
         }
@@ -1525,6 +1561,8 @@ impl Shell {
             }
             if kept.keep(name, json) {
                 *settings_dirty = true;
+                // (A screen may show it: `kept.NAME`.)
+                *stale = true;
             }
         }
     }
@@ -1604,6 +1642,26 @@ mod tests {
         assert_eq!(shell.up(), ["title"], "not at the title");
         shell.press("start", true).unwrap();
         assert_eq!(shell.up(), ["hud", "shop"]);
+        // The words that move the run are the rules' on a screen the rules put up: a Resume on
+        // a pause screen of the game's own is told to them, and the engine pauses and resumes
+        // nothing. What serves any menu is still done by the engine there.
+        shell.press_from("resume", Some(("go", "shop")), true).unwrap();
+        shell.press_from("title", Some(("out", "shop")), true).unwrap();
+        let heard = events(&mut shell);
+        assert_eq!(heard.iter().filter(|(name, _)| name == "ui").map(|(name, data)| (name.as_str(), data.get("action").and_then(Value::as_str), data.get("screen").and_then(Value::as_str))).collect::<Vec<_>>(), [("ui", Some("resume"), Some("shop")), ("ui", Some("title"), Some("shop"))]);
+        assert_eq!((shell.up(), shell.run.phase()), (vec!["hud".to_owned(), "shop".to_owned()], Phase::Running), "the run is as it was");
+        shell.press_from("open:settings", Some(("s", "shop")), true).unwrap();
+        assert_eq!(shell.up(), ["hud", "shop", "settings"]);
+        shell.press("back", true).unwrap();
+        // On the engine's own pause screen `resume` is the engine's, as it was.
+        shell.press("pause", true).unwrap();
+        shell.press_from("resume", Some(("resume", "pause")), true).unwrap();
+        assert_eq!(shell.run.phase(), Phase::Running);
+        assert!(events(&mut shell).iter().all(|(_, data)| data.get("action").and_then(Value::as_str) != Some("resume")));
+        // What was kept is on a screen from the first frame, under `kept.NAME`.
+        shell.fill();
+        assert_eq!(shell.state.get("kept.best").and_then(|v| v.as_f64()), Some(40.0));
+        assert!(shell.state.get("kept.run").is_none(), "nothing kept under it yet");
         // Escape over the rules' own screen is the rules' to answer: told, and nothing done.
         assert!(shell.back_to_rules());
         assert_eq!(events(&mut shell).last(), Some(&("ui".to_owned(), Value::map().with("action", "back").with("screen", "shop"))));
