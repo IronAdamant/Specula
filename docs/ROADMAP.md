@@ -1524,7 +1524,9 @@ at once.
       it is built. The owner accepts the time.
 - [ ] ➕ **A library of effects, for any game** (owner, 2026-11-21: "Are there plans to set up SFX
   library, like lightning, fire, explosions, fire spread, laser, freeze, wind, etc?", then "Add it in
-  the plan. This will be part of M6. any part of the system."). **Not designed.** What exists: the
+  the plan. This will be part of M6. any part of the system."). **Designed, not built**
+  (2026-11-24): [design/EFFECTUS.md](design/EFFECTUS.md), the library (Effectus), the behaviour
+  (Elementa), the first table, the staged plan and the questions for the owner. What exists: the
   effects system (`specula-scintilla`: particles and decals as data, budgets, photosensitivity checks),
   sounds as data, wind for grass; each effect so far was made once, for Sepulcra. What the owner's
   "any part of the system" asks of the design, in Claude's reading, to be settled with them:
