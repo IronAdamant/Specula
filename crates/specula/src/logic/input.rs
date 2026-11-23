@@ -53,7 +53,18 @@ pub struct ModuleInput {
     /// Holds the window's human ended by using the held action (the window wins): `(action,
     /// holder)`, until [`ModuleInput::take_ended`].
     ended: Vec<(String, Option<crate::inputguard::Actor>)>,
+    /// Per action: an agent's hold that was placed and let go again before a tick read it (a
+    /// script's `1:put,1:next_good` lets `put` go for `next_good`). The next tick reports it
+    /// pressed and released, as a window's press shorter than a tick is: never lost.
+    tapped: Vec<bool>,
+    /// Every press since the last tick, in order, repeats included (two holds of one action
+    /// between two ticks are two; `pressed` can say only one): told to the module with its tick
+    /// as the engine's events `press` ([`ModuleInput::take_tick_and_presses`]).
+    presses: Vec<String>,
 }
+
+/// Most presses one tick tells a module (the rest of a tick's are not told; `pressed` still is).
+pub const MAX_PRESSES: usize = 64;
 
 /// An action the human used at the window this recently (seconds of window frames) is theirs.
 pub const HUMAN_RECENT_S: f64 = 1.0;
@@ -72,6 +83,8 @@ impl ModuleInput {
             time_s: 0.0,
             human_at: vec![f64::NEG_INFINITY; n],
             ended: Vec::new(),
+            tapped: vec![false; n],
+            presses: Vec::new(),
         })
     }
 
@@ -113,9 +126,11 @@ impl ModuleInput {
                 if self.map.actions()[j].kind == a.kind {
                     self.last[j] = old.last[i];
                     self.latch[j] = old.latch[i];
+                    self.tapped[j] = old.tapped[i];
                 }
             }
         }
+        self.presses = old.presses.into_iter().filter(|name| self.map.index_of(name).is_some()).collect();
         self.time_s = old.time_s;
     }
 
@@ -136,17 +151,28 @@ impl ModuleInput {
             w.f32(h.value[0]);
             w.f32(h.value[1]);
             w.u64(h.ticks_left);
+            // (Version 2: whether no tick has read it yet, so a save between a script's word and
+            // the next tick keeps the press.)
+            w.bool(h.fresh);
         }
         w.len_u32(self.map.actions().len());
         for (i, a) in self.map.actions().iter().enumerate() {
             w.str(&a.name);
             state(w, &self.last[i]);
             state(w, &self.latch[i]);
+            w.bool(self.tapped[i]);
+        }
+        w.len_u32(self.presses.len());
+        for name in &self.presses {
+            w.str(name);
         }
     }
 
-    /// Reads [`ModuleInput::save`]'s bytes; actions this build doesn't have are skipped.
-    pub(crate) fn restore(&mut self, r: &mut specula_core::bytes::ByteReader<'_>) -> Result<(), specula_core::bytes::DecodeError> {
+    /// Reads [`ModuleInput::save`]'s bytes, as the logic section's `version` wrote them (1:
+    /// before a press waiting for its tick was kept); actions this build doesn't have are
+    /// skipped.
+    pub(crate) fn restore(&mut self, r: &mut specula_core::bytes::ByteReader<'_>, version: u32) -> Result<(), specula_core::bytes::DecodeError> {
+        let v2 = version >= 2;
         let state = |r: &mut specula_core::bytes::ByteReader<'_>| -> Result<ActionState, specula_core::bytes::DecodeError> {
             Ok(ActionState { held: r.bool("held")?, pressed: r.bool("pressed")?, released: r.bool("released")?, value: [r.f32("value")?, r.f32("value")?] })
         };
@@ -156,23 +182,39 @@ impl ModuleInput {
             let name = r.str("holds.name", 256)?;
             let value = [r.f32("holds.value")?, r.f32("holds.value")?];
             let ticks_left = r.u64("holds.ticks")?;
+            let fresh = if v2 { r.bool("holds.fresh")? } else { false };
             if self.map.index_of(&name).is_some() {
-                holds.insert(name, Hold { value, ticks_left, fresh: false, by: None });
+                holds.insert(name, Hold { value, ticks_left, fresh, by: None });
             }
         }
         // (An action's record is its name and two states: 4 + the name + 22 bytes. The least is
         // a name of no letters, 26: the 30 that stood here refused every save of a module whose
         // action has a name of three letters or fewer, such as a new project's own `tap`.)
         let n = r.count("actions", 4096, 26)?;
+        let mut tapped = vec![false; self.tapped.len()];
         for _ in 0..n {
             let name = r.str("actions.name", 256)?;
             let (last, latch) = (state(r)?, state(r)?);
+            let tap = if v2 { r.bool("actions.tapped")? } else { false };
             if let Some(i) = self.map.index_of(&name) {
                 self.last[i] = last;
                 self.latch[i] = latch;
+                tapped[i] = tap;
+            }
+        }
+        let mut presses = Vec::new();
+        if v2 {
+            let n = r.count("presses", MAX_PRESSES, 4)?;
+            for _ in 0..n {
+                let name = r.str("presses.name", 256)?;
+                if self.map.index_of(&name).is_some() {
+                    presses.push(name);
+                }
             }
         }
         self.holds = holds;
+        self.tapped = tapped;
+        self.presses = presses;
         Ok(())
     }
 
@@ -190,6 +232,9 @@ impl ModuleInput {
             l.held = st.held;
             let delta = a.kind != ActionKind::Button && a.output == AxisOutput::Delta;
             l.value = if delta { [l.value[0] + st.value[0], l.value[1] + st.value[1]] } else { st.value };
+            if st.pressed && self.presses.len() < MAX_PRESSES {
+                self.presses.push(a.name.clone());
+            }
             if st.held || st.pressed || st.released || st.value != [0.0, 0.0] {
                 if let Some(t) = self.human_at.get_mut(i) {
                     *t = self.time_s;
@@ -232,9 +277,19 @@ impl ModuleInput {
         }
         for (name, value) in plan {
             if ticks == 0 || value == [0.0, 0.0] {
-                self.holds.remove(&name);
+                // Let go before any tick read it: still a press, told at the next tick.
+                if self.holds.remove(&name).is_some_and(|h| h.fresh) {
+                    if let Some(i) = self.map.index_of(&name) {
+                        self.tapped[i] = true;
+                    }
+                }
             } else {
-                let fresh = !self.holds.contains_key(&name);
+                // (A hold made longer while it stands is no new press, and one no tick has read
+                // yet stays the press it is.)
+                let fresh = self.holds.get(&name).is_none_or(|h| h.fresh);
+                if !self.holds.contains_key(&name) && self.presses.len() < MAX_PRESSES {
+                    self.presses.push(name.clone());
+                }
                 self.holds.insert(name, Hold { value, ticks_left: ticks, fresh, by: by.clone() });
             }
         }
@@ -267,8 +322,16 @@ impl ModuleInput {
     /// The actions for one tick, as the SDK reads them (`{name: [held, pressed, released, x, y]}`),
     /// and the latch reset for the next.
     pub fn take_tick(&mut self) -> Value {
+        self.take_tick_and_presses().0
+    }
+
+    /// [`ModuleInput::take_tick`], and every press since the last tick in the order made,
+    /// repeats included: each action reported `pressed` is among them at least once.
+    pub fn take_tick_and_presses(&mut self) -> (Value, Vec<String>) {
         let mut out = Value::map();
+        let mut presses = std::mem::take(&mut self.presses);
         for (i, a) in self.map.actions().iter().enumerate() {
+            let tapped = std::mem::take(&mut self.tapped[i]);
             let w = std::mem::take(&mut self.latch[i]);
             // The window's held state carries over; only edges and deltas start again.
             self.latch[i].held = w.held;
@@ -291,18 +354,23 @@ impl ModuleInput {
                     h.ticks_left -= 1;
                     let fresh = std::mem::take(&mut h.fresh);
                     let value = if a.kind == ActionKind::Button { [1.0, 0.0] } else { h.value };
-                    ActionState { held: true, pressed: fresh || !self.last[i].held, released: false, value }
+                    ActionState { held: true, pressed: fresh || tapped || !self.last[i].held, released: false, value }
                 }
                 None => {
                     let held = w.held;
+                    // (An agent's press let go before this tick: pressed and released in it, as a
+                    // window's press shorter than a tick is.)
                     ActionState {
                         held,
-                        pressed: w.pressed || (held && !self.last[i].held),
-                        released: w.released || (!held && self.last[i].held),
+                        pressed: w.pressed || tapped || (held && !self.last[i].held),
+                        released: w.released || (tapped && !held) || (!held && self.last[i].held),
                         value: w.value,
                     }
                 }
             };
+            if state.pressed && !presses.contains(&a.name) {
+                presses.push(a.name.clone());
+            }
             self.last[i] = state;
             if state != ActionState::default() {
                 out.insert(
@@ -318,7 +386,7 @@ impl ModuleInput {
             }
         }
         self.holds.retain(|_, h| h.ticks_left > 0);
-        out
+        (out, presses)
     }
 }
 
@@ -352,7 +420,7 @@ mod tests {
             let bytes = w.into_bytes();
             let mut back = ModuleInput::new(&map).unwrap();
             let mut r = specula_core::bytes::ByteReader::new(&bytes);
-            back.restore(&mut r).unwrap_or_else(|e| panic!("an action named {name:?}: {} ({})", e.message, e.code));
+            back.restore(&mut r, crate::logic::save::LOGIC_VERSION).unwrap_or_else(|e| panic!("an action named {name:?}: {} ({})", e.message, e.code));
             r.finish().unwrap();
             // The hold goes on where it was: held, no longer a fresh press.
             assert_eq!(state(&back.take_tick(), name), Some((true, false, false, 1.0, 0.0)), "{name}");
@@ -402,6 +470,81 @@ mod tests {
         // A hold made longer while it stands (an agent keeping a key down) is no press.
         jump(&mut m, 30).unwrap();
         assert_eq!(state(&m.take_tick(), "jump"), Some((true, false, false, 1.0, 0.0)));
+    }
+
+    /// Several words at one tick (a script's `1:jump,1:move=1/0`, `1:jump,1:jump`): each one
+    /// held and let go again before the tick is still a press at it, and every press is told in
+    /// the order made, repeats included; a save between the words and the tick keeps them all.
+    #[test]
+    fn several_holds_between_two_ticks_are_each_a_press_in_order() {
+        let jump = |m: &mut ModuleInput, ticks: u64| m.hold(&Json::parse(r#"{"jump": true}"#).unwrap(), ticks, None).map(drop);
+        let walk = |m: &mut ModuleInput, ticks: u64| m.hold(&Json::parse(r#"{"move": [1, 0]}"#).unwrap(), ticks, None).map(drop);
+        // Two actions: `jump` let go for `move` before the tick, as a script's next word does.
+        let mut m = ModuleInput::new(MAP).unwrap();
+        jump(&mut m, 10).unwrap();
+        m.hold(&Json::parse(r#"{"jump": true}"#).unwrap(), 0, None).unwrap();
+        walk(&mut m, 10).unwrap();
+        let (t, presses) = m.take_tick_and_presses();
+        assert_eq!(state(&t, "jump"), Some((false, true, true, 0.0, 0.0)), "pressed and let go in the one tick: {t:?}");
+        assert_eq!(state(&t, "move"), Some((true, true, false, 1.0, 0.0)));
+        assert_eq!(presses, ["jump", "move"], "in the order given");
+        let (t, presses) = m.take_tick_and_presses();
+        assert_eq!((state(&t, "jump"), state(&t, "move").map(|s| s.1)), (None, Some(false)), "each once");
+        assert!(presses.is_empty());
+        // The same action twice: one `pressed`, two presses.
+        walk(&mut m, 0).unwrap();
+        jump(&mut m, 10).unwrap();
+        jump(&mut m, 0).unwrap();
+        jump(&mut m, 10).unwrap();
+        let (t, presses) = m.take_tick_and_presses();
+        assert_eq!(state(&t, "jump"), Some((true, true, false, 1.0, 0.0)));
+        assert_eq!(presses, ["jump", "jump"]);
+        // Probing a word with no ticks, where nothing was held, presses nothing.
+        let mut idle = ModuleInput::new(MAP).unwrap();
+        jump(&mut idle, 0).unwrap();
+        assert_eq!(idle.take_tick_and_presses(), (Value::map(), Vec::new()));
+        // A hold made again before any tick read it stays one press (not two, not none).
+        jump(&mut idle, 10).unwrap();
+        jump(&mut idle, 20).unwrap();
+        let (t, presses) = idle.take_tick_and_presses();
+        assert_eq!((state(&t, "jump").map(|s| s.1), presses), (Some(true), vec!["jump".to_owned()]));
+        // A save between the words and the tick: the tick after the load is the same tick.
+        let mut a = ModuleInput::new(MAP).unwrap();
+        jump(&mut a, 10).unwrap();
+        jump(&mut a, 0).unwrap();
+        jump(&mut a, 10).unwrap();
+        let mut w = specula_core::bytes::ByteWriter::new();
+        a.save(&mut w);
+        let bytes = w.into_bytes();
+        let mut b = ModuleInput::new(MAP).unwrap();
+        let mut r = specula_core::bytes::ByteReader::new(&bytes);
+        b.restore(&mut r, crate::logic::save::LOGIC_VERSION).unwrap();
+        r.finish().unwrap();
+        assert_eq!(b.take_tick_and_presses(), a.take_tick_and_presses());
+        // And a window's press is told as a press too.
+        use specula_platform::keys;
+        let mut human = ModuleInput::new(MAP).unwrap();
+        human.feed(&[Event::KeyDown { code: keys::SPACE, repeat: false }], &[], 0.016);
+        assert_eq!(human.take_tick_and_presses().1, ["jump"]);
+    }
+
+    /// The input of a save written before presses were kept (the logic section's version 1)
+    /// still loads: a hold in it goes on, no longer a press.
+    #[test]
+    fn an_input_saved_in_the_first_layout_loads() {
+        let mut w = specula_core::bytes::ByteWriter::new();
+        w.len_u32(1);
+        w.str("jump");
+        w.f32(1.0);
+        w.f32(0.0);
+        w.u64(5);
+        w.len_u32(0);
+        let bytes = w.into_bytes();
+        let mut m = ModuleInput::new(MAP).unwrap();
+        let mut r = specula_core::bytes::ByteReader::new(&bytes);
+        m.restore(&mut r, 1).unwrap();
+        r.finish().unwrap();
+        assert_eq!(state(&m.take_tick(), "jump").map(|s| s.0), Some(true));
     }
 
     #[test]

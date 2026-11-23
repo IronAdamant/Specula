@@ -250,12 +250,19 @@ pub trait Game {
     }
 
     /// The player asked to quit (a title screen's Quit, pressed with the window's own input):
-    /// the engine stops as when the window's close button is pressed. Never honoured headless;
-    /// a game must not ask for an agent (agents don't close the human's window). Taken after
-    /// every frame. Default: `false`.
+    /// the engine stops as when the window's close button is pressed. A game must not ask for
+    /// an agent (agents don't close the human's window). Taken after every frame. Headless it
+    /// is honoured only in a run by a script (`specula run`, [`Game::played_by_script`]): the
+    /// run ends there, before any later input or tick. Default: `false`.
     fn take_quit(&mut self) -> bool {
         false
     }
+
+    /// The engine was started for a headless run by a script (`--script`, `specula run`): the
+    /// script stands in for the player, so what only the player may do (Quit) is the script's
+    /// too, and the game may ask to quit from its own rules. Never told to a windowed or a
+    /// served engine, where an agent is no player. Default: nothing.
+    fn played_by_script(&mut self) {}
 
     /// After every tick's modules ran (the game's own tick came first): what the modules keep
     /// now, to read. A game whose rules are modules decides here how the run stands; it may

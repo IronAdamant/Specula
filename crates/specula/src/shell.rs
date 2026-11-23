@@ -403,6 +403,11 @@ pub struct Shell {
     clock_wish: Option<bool>,
     requests: Vec<GameRequest>,
     quit: bool,
+    /// A headless run by a script (`specula run`): the script stands in for the player, so its
+    /// press of Quit is the player's, and the rules' `quit` ends the run ([`Game::played_by_script`]).
+    script_player: bool,
+    /// The rules asked to quit where nothing ends by it (a window, a served engine): said once.
+    rules_quit_said: bool,
     refused: u32,
     refused_told: u32,
     title_sent: bool,
@@ -425,6 +430,17 @@ fn value_of(shown: &[(String, Shown)], settings: &Settings, runs: u64, phase: Ph
         _ => {}
     }
     shown.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.val())
+}
+
+/// Whether a key's value says "yes", as `show` and `quit` read it: true, a number that is not 0,
+/// text that is not empty.
+fn truthy(value: Option<Val>) -> bool {
+    match value {
+        Some(Val::Bool(b)) => b,
+        Some(Val::Num(n)) => n != 0.0,
+        Some(Val::Text(t)) => !t.is_empty(),
+        None => false,
+    }
 }
 
 fn note(problems: &mut Vec<String>, what: String) {
@@ -484,6 +500,8 @@ impl Shell {
             clock_wish: None,
             requests: Vec::new(),
             quit: false,
+            script_player: false,
+            rules_quit_said: false,
             refused: 0,
             refused_told: 0,
             title_sent: false,
@@ -1011,6 +1029,8 @@ impl Shell {
                     backed |= matches!(&**action, "back" | "resume" | "close");
                     let from = self.face.as_ref().map(|f| (f.ui.widget_id(*widget).unwrap_or("").to_owned(), f.ui.screen_name(widget.screen).to_owned()));
                     let from = from.as_ref().map(|(widget, screen)| (widget.as_str(), screen.as_str()));
+                    // (A script that stands in for the player presses Quit as the player would.)
+                    let player = self.as_player(action, player);
                     if let Err((_, why)) = self.press_from(action, from, player) {
                         self.say(&why, ToastKind::Warn);
                     }
@@ -1181,6 +1201,11 @@ impl Game for Shell {
         if !effects.is_empty() {
             self.apply(effects, false);
         }
+        self.rules_quit();
+    }
+
+    fn played_by_script(&mut self) {
+        self.script_player = true;
     }
 
     fn see_modules(&mut self, modules: &ModuleStates) {
@@ -1456,6 +1481,30 @@ impl Game for Shell {
 }
 
 impl Shell {
+    /// Whether a press of `action` from a frame is the player's: the window's own input is
+    /// (`player`); under a script (`specula run`), which stands in for the player, its press of
+    /// Quit is too. Nothing else of the player's alone is widened, and an agent's `game_act`
+    /// never comes through here.
+    fn as_player(&self, action: &str, player: bool) -> bool {
+        player || (self.script_player && action == "quit")
+    }
+
+    /// The rules' own Quit (the game file's `quit`), after a tick: it ends a run by a script;
+    /// anywhere else it is said once and ends nothing (an agent can drive the rules, and agents
+    /// never close a person's window: there a button whose action is `quit` does).
+    fn rules_quit(&mut self) {
+        let Some(key) = &self.game.quit else { return };
+        if !truthy(self.value(key)) {
+            return;
+        }
+        if self.script_player {
+            self.quit = true;
+        } else if !self.rules_quit_said {
+            self.rules_quit_said = true;
+            note(&mut self.problems, format!("the rules asked to quit ({key}, the game file's \"quit\"): that ends a headless run (specula run) there; in a window the game ends by a button whose action is quit"));
+        }
+    }
+
     /// Escape (or a pad's back) while a screen the rules put up is on top: told to the rules as
     /// the event `ui` with the action `back` and the screen's name, and nothing else is done.
     /// The game is not paused over the rules' own screen, and the screen is not closed: the
@@ -1491,12 +1540,7 @@ impl Shell {
             let at = if phase == Phase::Paused { up.len().saturating_sub(1) } else { up.len() };
             let mut shown: Vec<String> = Vec::new();
             for (screen, key) in &self.game.show {
-                let on = match value_of(&self.shown, &self.settings, runs, phase, key) {
-                    Some(Val::Bool(b)) => b,
-                    Some(Val::Num(n)) => n != 0.0,
-                    Some(Val::Text(t)) => !t.is_empty(),
-                    None => false,
-                };
+                let on = truthy(value_of(&self.shown, &self.settings, runs, phase, key));
                 if on && !up.contains(screen) && !shown.contains(screen) {
                     shown.push(screen.clone());
                 }
@@ -2083,6 +2127,95 @@ mod tests {
         e.game_act(&who, "start");
         let ran = e.play_ticks(100_000);
         assert!(ran <= crate::game::STEPS_AT_MOST && e.clock.queued() == 0, "{ran}");
+    }
+
+    /// Quit under a script (`specula run`): the script stands in for the player, so its press
+    /// of Quit from a frame, or the rules' own `quit`, asks to quit. An agent's press by word
+    /// (`game_act`) is refused there too, and without a script neither is anyone's but the
+    /// window's player's, as it was.
+    #[test]
+    fn under_a_script_its_quit_and_the_rules_quit_are_the_players() {
+        let game = GAME.replace("\"outcome\"", "\"quit\": \"gate.quit\", \"outcome\"");
+        let mut windowed = Shell::build("gate", ShellFiles::builtin(&game)).unwrap();
+        // Not a script's: a synthetic frame's Quit is an agent's, the window's own the player's.
+        assert!(!windowed.as_player("quit", false) && windowed.as_player("quit", true));
+        assert!(windowed.press_from("quit", None, windowed.as_player("quit", false)).is_err());
+        assert!(!windowed.take_quit());
+        windowed.press_from("quit", None, windowed.as_player("quit", true)).unwrap();
+        assert!(windowed.take_quit());
+        // The rules ask to quit: said once, and nothing quits.
+        windowed.press("start", true).unwrap();
+        windowed.shown = vec![("gate.quit".into(), Shown::Bool(true))];
+        windowed.rules_quit();
+        windowed.rules_quit();
+        assert!(!windowed.take_quit());
+        assert_eq!(windowed.problems.iter().filter(|p| p.contains("the rules asked to quit")).count(), 1, "{:?}", windowed.problems);
+        // A script's: its frame's Quit is the player's, and nothing else of the player's alone is.
+        let mut scripted = Shell::build("gate", ShellFiles::builtin(&game)).unwrap();
+        scripted.played_by_script();
+        assert!(scripted.as_player("quit", false) && !scripted.as_player("start", false));
+        scripted.press_from("quit", None, scripted.as_player("quit", false)).unwrap();
+        assert!(scripted.take_quit());
+        // An agent's press by word (what `game_act` does) is refused under a script as anywhere.
+        assert_eq!(scripted.press_from("quit", None, false).map_err(|(code, _)| code), Err("players_only"));
+        assert!(!scripted.take_quit());
+        // The rules' quit, while its key is true (a number not 0 too), and not while it is not.
+        scripted.press("start", true).unwrap();
+        for (value, quits) in [(Shown::Bool(false), false), (Shown::Int(0), false), (Shown::Bool(true), true), (Shown::Int(2), true)] {
+            scripted.shown = vec![("gate.quit".into(), value)];
+            scripted.rules_quit();
+            assert_eq!(scripted.take_quit(), quits);
+        }
+        assert!(scripted.problems.iter().all(|p| !p.contains("the rules asked to quit")));
+        // A game file with no `quit` asks for nothing, whatever its rules keep.
+        let mut plain = shell();
+        plain.played_by_script();
+        plain.shown = vec![("gate.quit".into(), Shown::Bool(true))];
+        plain.rules_quit();
+        assert!(!plain.take_quit());
+    }
+
+    /// A game that asks to quit under a script has no further tick: none after the one it asked
+    /// on, none in the script's next ticks until the script was told (once), and the engine of
+    /// no script takes its quit at all (a window's is the window loop's).
+    #[test]
+    fn under_a_script_a_quit_ends_the_ticks_where_the_game_stood() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        /// A game whose rules ask to quit at its third tick.
+        struct QuitsAt {
+            ticks: u64,
+            quit: bool,
+            clock: Option<bool>,
+        }
+        impl Game for QuitsAt {
+            fn name(&self) -> &str {
+                "quits"
+            }
+            fn tick(&mut self, _ctx: &mut Ctx) {
+                self.ticks += 1;
+                self.quit |= self.ticks == 3;
+            }
+            fn take_quit(&mut self) -> bool {
+                std::mem::take(&mut self.quit)
+            }
+            fn take_clock(&mut self) -> Option<bool> {
+                self.clock.take()
+            }
+        }
+        e.game_name = "quits".into();
+        e.game = Some(Box::new(QuitsAt { ticks: 0, quit: false, clock: Some(false) }));
+        e.clock.set_paused(true);
+        e.script_clock = Some(false);
+        e.start_game();
+        assert_eq!(e.play_ticks(10), 3, "the tick it asked on is the last");
+        assert_eq!((e.play_ticks(10), e.clock.tick()), (0, 3), "and no tick runs until the script was told");
+        assert!(std::mem::take(&mut e.script_quit), "told once");
+        assert_eq!(e.play_ticks(2), 2, "a game put back (a search's load) goes on");
+        // No script: the game's quit is not taken here.
+        e.script_clock = None;
+        e.game = Some(Box::new(QuitsAt { ticks: 0, quit: true, clock: None }));
+        assert!(!e.script_quit_asked());
+        assert_eq!(e.game.as_mut().map(|g| g.take_quit()), Some(true), "left for the window loop, which a headless engine has not");
     }
 
     /// The engine does what a press asks of the clock, except while a playtest has the clock:

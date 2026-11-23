@@ -454,6 +454,10 @@ fn read(out: &ToolOutput) -> Result<Json, Json> {
     }
 }
 
+/// The key of a run's state that says the game quit, and at which of the script's ticks (no
+/// value: it did not). In the state of a run that quit whatever its report's lines are.
+pub const QUIT_KEY: &str = "run.quit";
+
 /// The key a module's failure or log line carries the script's tick under.
 pub const RUN_TICK: &str = "run_tick";
 
@@ -496,6 +500,9 @@ struct Run<'t> {
     words: Vec<(String, String)>,
     /// The report's lines that are printed (`--keys`); empty: all.
     lines: Vec<(String, String, bool)>,
+    /// The script's tick the game quit at (its Quit, pressed by the script that stands in for
+    /// the player, or its rules' `quit`): nothing is given or played after it.
+    quit_at: Option<u64>,
 }
 
 /// `word` with the game file's own words replaced by what they stand for, part by part
@@ -738,7 +745,9 @@ impl Run<'_> {
                 beyond.set(key, self.of_world(asked)?);
             }
         }
-        let report = if game.report.is_empty() {
+        let quit = self.quit_at.map_or(Json::Null, Json::from);
+        beyond.set(QUIT_KEY, quit.clone());
+        let mut report = if game.report.is_empty() {
             Json::obj([("tick", Json::from(tick)), ("game", state.clone()), ("ui", ui), ("state", states)])
         } else {
             // (A key only a condition reads is left out when it has no value: the condition
@@ -746,6 +755,11 @@ impl Run<'_> {
             // are printed always, `null` with none: `lines_of`.)
             Json::Obj(self.lines.iter().map(|(name, key, own)| (name.clone(), value_of(key, tick, seed, &state, &ui, &states, &beyond), *own)).filter(|(_, value, own)| *own || !value.is_null()).map(|(name, value, _)| (name, value)).collect())
         };
+        // A run the game quit says so in its state, whatever the report's lines: the tick it
+        // quit at, under the key's own name (which `--keys`, a check and `--until` read too).
+        if !quit.is_null() && report.get(QUIT_KEY).is_none() {
+            report.set(QUIT_KEY, quit);
+        }
         log_in_order(&mut log);
         Ok(Stand { report, state, log, unfilled })
     }
@@ -810,11 +824,26 @@ impl Run<'_> {
         self.spans.iter().find(|(game, _, count)| (*game..*game + *count).contains(&game_tick)).map(|(game, run, _)| run + (game_tick - game))
     }
 
+    /// Whether the game has quit by now, asked of the engine with no tick played: a quit
+    /// pressed by an input is known before the next input at the same tick is given.
+    fn quit_asked(&mut self) -> Result<bool, Json> {
+        if self.quit_at.is_none() {
+            let said = read(&self.tools.send(&self.session, Command::Time(TimeOp::Play(0))))?;
+            if said.get("quit").and_then(Json::as_bool) == Some(true) {
+                self.quit_at = Some(self.at);
+            }
+        }
+        Ok(self.quit_at.is_some())
+    }
+
     /// Plays up to `ticks` ticks of the game. Fewer were played when the game holds its clock
-    /// (the title, a pause, a run that ended): the rest pass with nothing ticking.
-    fn play(&mut self, ticks: u64) -> Result<(), Json> {
+    /// (the title, a pause, a run that ended): the rest pass with nothing ticking. Returns the
+    /// script's ticks that passed: all of them, unless the game quit ([`Run::quit_at`]), and
+    /// then those before the quit (none after it pass).
+    fn play(&mut self, ticks: u64) -> Result<u64, Json> {
+        let began = self.at;
         let mut left = ticks;
-        while left > 0 {
+        while left > 0 && self.quit_at.is_none() {
             let ask = left.min(crate::game::STEPS_AT_MOST);
             if !self.held.is_empty() && self.hold_left <= ask {
                 self.hold()?;
@@ -832,6 +861,13 @@ impl Run<'_> {
                     _ => {}
                 }
             }
+            // The game quit (before these ticks, or on one of them): the ticks that ran are the
+            // last, and the script's count stops with them.
+            if said.get("quit").and_then(Json::as_bool) == Some(true) {
+                self.at += played;
+                self.quit_at = Some(self.at);
+                break;
+            }
             self.at += if played < ask { left } else { played };
             left -= played.min(left);
             if played < ask {
@@ -846,7 +882,7 @@ impl Run<'_> {
                 break;
             }
         }
-        Ok(())
+        Ok(self.at - began)
     }
 }
 
@@ -910,7 +946,7 @@ fn value_of(key: &str, ticks: u64, seed: Option<u64>, game: &Json, ui: &Json, st
     let found = match head {
         "world" => beyond.get(key).cloned(),
         "run" => match rest {
-            "sounds" | "sounds_heard" => beyond.get(key).cloned(),
+            "sounds" | "sounds_heard" | "quit" => beyond.get(key).cloned(),
             "ticks" => Some(Json::from(ticks)),
             "seed" => seed.map(Json::from),
             _ => None,
@@ -933,7 +969,7 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     if gate.wait(START_WAIT).is_err() {
         return Err(refusal("no_engine", "the engine did not start"));
     }
-    let mut run = Run { tools, session: session(), modules: Vec::new(), held: Vec::new(), hold_left: 0, at: 0, spans: Vec::new(), words: game.inputs.clone(), lines: lines_of(&game, &spec.keys, &spec.also) };
+    let mut run = Run { tools, session: session(), modules: Vec::new(), held: Vec::new(), hold_left: 0, at: 0, spans: Vec::new(), words: game.inputs.clone(), lines: lines_of(&game, &spec.keys, &spec.also), quit_at: None };
     for dir in game.modules.iter().take(crate::run_modules::MAX_MODULES) {
         let name = run.build(dir, spec.seed)?;
         run.modules.push((name, Vec::new()));
@@ -969,35 +1005,65 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     // then the most a script found may be long.)
     let play_to = if spec.find.is_some() { spec.inputs.last().map_or(0, |(at, _)| *at) } else { spec.ticks };
     let mut stops = spec.at.iter().copied().filter(|t| *t < play_to).peekable();
+    // The inputs due by `tick`, in order. A game that quits on one of them is given none after
+    // it (each is asked for a quit before the next at the same tick is given).
+    let give = |run: &mut Run, next: &mut usize, tick: u64| -> Result<(), Json> {
+        while let Some((_, word)) = spec.inputs.get(*next).filter(|(at, _)| *at <= tick) {
+            if run.quit_at.is_some() {
+                break;
+            }
+            run.input(word)?;
+            *next += 1;
+            if spec.inputs.get(*next).is_some_and(|(at, _)| *at <= tick) {
+                run.quit_asked()?;
+            }
+        }
+        Ok(())
+    };
+    // A game that quits ends the run there: no later input, no further tick, no state on the
+    // way after it, and the state printed is the one it stood in (`run.quit`: the tick).
     loop {
         let stop = stops.peek().copied().unwrap_or(play_to);
-        while tick < stop {
-            while let Some((_, word)) = spec.inputs.get(next).filter(|(at, _)| *at <= tick) {
-                run.input(word)?;
-                next += 1;
+        while tick < stop && run.quit_at.is_none() {
+            give(&mut run, &mut next, tick)?;
+            if run.quit_at.is_some() {
+                break;
             }
             let until = spec.inputs.get(next).map_or(stop, |(at, _)| (*at).min(stop));
-            run.play(until - tick)?;
-            tick = until;
+            tick += run.play(until - tick)?;
         }
         // (Inputs at the tick itself are done before the state is read.)
-        while let Some((_, word)) = spec.inputs.get(next).filter(|(at, _)| *at <= tick) {
-            run.input(word)?;
-            next += 1;
+        give(&mut run, &mut next, tick)?;
+        if run.quit_at.is_none() && stops.peek().is_some() {
+            run.quit_asked()?;
         }
-        if stops.next().is_none() {
+        if run.quit_at.is_some() || stops.next().is_none() {
             break;
         }
         on_the_way.push(run.stand(&game, tick, spec.seed)?.report);
     }
+    // (A quit by the last input is known before the state is read.)
+    if run.quit_at.is_none() {
+        run.quit_asked()?;
+    }
     if let Some(asked) = &spec.find {
+        if let Some(at) = run.quit_at {
+            let mut e = refusal("quit", format!("the game quit at tick {at}, in the script given before the search: a search begins where the script leaves a game that goes on"));
+            e.set("state", run.stand(&game, tick, spec.seed)?.report);
+            return Err(e);
+        }
         let answer = find::find(&mut run, &game, spec, asked, tick, &spec.inputs)?;
         return Ok(Json::obj([("report", answer), ("searched", Json::Bool(true))]));
     }
 
     let mut stand = run.stand(&game, tick, spec.seed)?;
     let mut followed = None;
-    if spec.follow {
+    // (A game that quit in the script is not followed: the run is over.)
+    if spec.follow && run.quit_at.is_some() {
+        say(&stand.report)?;
+        followed = Some(0);
+    }
+    if spec.follow && run.quit_at.is_none() {
         // The state now, then a step a line: whoever plays reads the one and writes the other.
         say(&stand.report)?;
         let mut steps = 0u64;
@@ -1041,10 +1107,14 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
                     if let Some(word) = word {
                         run.input(word)?;
                     }
-                    run.play(ticks)?;
-                    tick += ticks;
+                    tick += run.play(ticks)?;
+                    run.quit_asked()?;
                     stand = run.stand(&game, tick, spec.seed)?;
                     say(&stand.report)?;
+                    // The game quit: its state is the last, and the steps after it are not read.
+                    if run.quit_at.is_some() {
+                        break;
+                    }
                 }
             }
         }
@@ -1071,7 +1141,7 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     let mut answer = Json::obj([("report", report)]);
     if !spec.at.is_empty() {
         // (The last tick of `--at` may be the run's last: that state is the report itself.)
-        if spec.at.last() == Some(&spec.ticks) {
+        if spec.at.last() == Some(&spec.ticks) && run.quit_at.is_none() {
             on_the_way.push(answer.get("report").cloned().unwrap_or(Json::Null));
             answer.set("at_is_all", Json::Bool(true));
         }
@@ -1474,6 +1544,10 @@ mod tests {
         assert_eq!((v("run.ticks"), v("run.seed"), v("game.phase"), v("game.screen"), v("game.title")), ("120".into(), "4".into(), "\"running\"".into(), "\"pause\"".into(), "\"Hold\"".into()));
         assert_eq!((v("setting.volume"), v("ui.focus_index"), v("ui.texts"), v("gate.wave")), ("7".into(), "1".into(), "[\"Paused\",\"Resume\"]".into(), "2".into()));
         assert_eq!(v("gate.walkers"), r#"[{"x":3.5,"y":2,"health":1}]"#);
+        // The tick a game quit at, where it quit; none where it did not.
+        let quit = j(r#"{"run.quit": 5}"#);
+        assert_eq!(value_of(QUIT_KEY, 5, None, &game, &ui, &states, &quit).to_string(), "5");
+        assert_eq!(v(QUIT_KEY), "null");
         // Nothing has the key: null, and the line is still there.
         assert_eq!((v("gate.nothing"), v("other.key"), v("plain"), v("setting.none")), ("null".into(), "null".into(), "null".into(), "null".into()));
     }

@@ -216,6 +216,8 @@ impl Run<'_> {
     /// Puts the game back as `kept` saved it, with what the script held there held again.
     fn back_to(&mut self, kept: &Kept) -> Result<(), Json> {
         self.call("save_read", Json::obj([("name", Json::from(kept.save.as_str())), ("force", Json::Bool(true))]))?;
+        // (A situation kept is one before any quit: the game goes on from it.)
+        self.quit_at = None;
         self.held = kept.held.clone();
         if !self.held.is_empty() {
             self.hold()?;
@@ -338,13 +340,16 @@ pub(super) fn find(run: &mut Run, game: &GameFile, spec: &Spec, find: &Find, tic
             }
             run.input(&word)?;
             inputs.push((at, word.clone()));
-            run.play(find.step)?;
-            at += find.step;
+            at += run.play(find.step)?;
             stretches += 1;
             let report = run.stand(game, at, spec.seed)?.report;
             if find.until.holds(&report) {
                 reached = Some((inputs, at));
                 break 'search;
+            }
+            // A way on which the game quit ends there: nothing is played on from it.
+            if run.quit_at.is_some() {
+                break;
             }
             // A situation the game is never to be in (`--never`: a life lost, a fall) is not
             // kept and not played on from: this way ends here.

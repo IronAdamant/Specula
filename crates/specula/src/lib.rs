@@ -997,6 +997,11 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.logic.set_params(script_params);
     }
     engine.game = game.take();
+    if scripted {
+        if let Some(game) = engine.game.as_mut() {
+            game.played_by_script();
+        }
+    }
     engine.start_game();
     startup.mark("game");
     if args.paused {
@@ -1298,6 +1303,9 @@ struct Engine {
     /// run's clock running, by its own last wish. The clock itself stands still but for the
     /// script's ticks.
     script_clock: Option<bool>,
+    /// Under a script: the game asked to quit (its Quit, or its rules' `quit`) and no tick has
+    /// run since. Told to the script with its next ticks, which do not run ([`Engine::play_ticks`]).
+    script_quit: bool,
     /// What the start-up build (`--run`) could not load, for the hosted game to show.
     run_reports: run_modules::Reports,
     /// World folders saved in this run, and the identity key that first saved each (its creator
@@ -1542,6 +1550,7 @@ impl Engine {
             playtest_pumping: false,
             game_clock_held: None,
             script_clock: None,
+            script_quit: false,
             run_reports: run_modules::Reports::default(),
             world_folders: std::collections::BTreeMap::new(),
             commits: authority::CallCommits::default(),
@@ -1893,6 +1902,12 @@ impl Engine {
                 self.clock.cancel_steps();
                 break;
             }
+            // Under a script, a game that asked to quit on this tick (its rules' `quit`) has no
+            // further tick either: the run ends where it stood.
+            if self.script_quit_asked() {
+                self.clock.cancel_steps();
+                break;
+            }
         }
         self.world.set_clock_s(self.clock.seconds());
         if ticks > 0 {
@@ -2000,6 +2015,10 @@ impl Engine {
     pub(crate) fn play_ticks(&mut self, n: u64) -> u64 {
         // A press since the last tick may have started, paused or ended the run.
         self.serve_game_clock();
+        // A game that asked to quit has no further tick (the script is told: `quit`).
+        if self.script_quit_asked() || n == 0 {
+            return 0;
+        }
         let before = self.clock.tick();
         // (The clock stands still under a script, whatever was done to it: its ticks are the
         // ones asked for here, each once.)
@@ -2013,6 +2032,18 @@ impl Engine {
             self.clock.cancel_steps();
         }
         self.clock.tick() - before
+    }
+
+    /// Under a script (`specula run`): whether the hosted game has asked to quit since the
+    /// script was last told ([`Game::take_quit`]: its Quit, pressed by the script that stands
+    /// in for the player, or its rules' `quit`). Anywhere else a quit is not taken here: a
+    /// window's is the window loop's, and a served engine's is nobody's.
+    fn script_quit_asked(&mut self) -> bool {
+        if self.script_clock.is_some() && !self.script_quit && self.game.as_mut().is_some_and(|g| g.take_quit()) {
+            specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "game.quit", game = self.game_name.as_str(), tick = self.clock.tick());
+            self.script_quit = true;
+        }
+        self.script_quit
     }
 
     /// The clock as the hosted game wants it, set as the game's own doing.
@@ -3562,6 +3593,10 @@ impl Engine {
                 let mut answer = self.clock_json();
                 if let Some(ran) = played {
                     answer.set("played", Json::from(ran));
+                    // The game asked to quit: told once, and the script gives nothing after it.
+                    if std::mem::take(&mut self.script_quit) {
+                        answer.set("quit", Json::Bool(true));
+                    }
                 }
                 if let Some(running) = self.script_clock {
                     answer.set("game_clock", Json::from(if running { "running" } else { "held" }));

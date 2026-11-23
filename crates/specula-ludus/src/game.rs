@@ -214,6 +214,12 @@ pub struct GameFile {
     /// screen is up over the game's own and has the focus (`"shop": "gate.shopping"`). The
     /// clock goes on: its buttons' words reach the rules, which take it down again.
     pub show: Vec<(String, String)>,
+    /// The key of a module that asks for the program to end (`"gate.quit"`): while it is true
+    /// (or a number that is not 0, or text that is not empty) after a tick, a headless run by
+    /// a script (`specula run`) ends there, the state as it stood. A menu the rules drive
+    /// themselves has a Quit too. In a window it closes nothing: the window's game ends by a
+    /// button whose action is `quit`, pressed by the person (an agent can drive the rules).
+    pub quit: Option<String>,
 }
 
 impl Default for GameFile {
@@ -232,6 +238,7 @@ impl Default for GameFile {
             inputs: Vec::new(),
             keep: Vec::new(),
             show: Vec::new(),
+            quit: None,
         }
     }
 }
@@ -257,7 +264,7 @@ impl GameFile {
     }
 
     pub fn from_json(json: &Json) -> Result<GameFile, Problem> {
-        unknown_keys(json, &["format", "title", "tick_hz", "modules", "start", "screens", "locale", "settings", "outcome", "view", "report", "inputs", "keep", "show"], "")?;
+        unknown_keys(json, &["format", "title", "tick_hz", "modules", "start", "screens", "locale", "settings", "outcome", "view", "report", "inputs", "keep", "show", "quit"], "")?;
         if json.get("format").and_then(Json::as_str) != Some(FORMAT) {
             return Err(Problem::new("format", "bad_format", format!("a game file says \"format\": \"{FORMAT}\"")));
         }
@@ -378,6 +385,11 @@ impl GameFile {
                 game.show.push((screen.clone(), key.to_owned()));
             }
         }
+        if let Some(quit) = json.get("quit") {
+            let of_a_module = |k: &&str| key_ok(k) && k.split_once('.').is_some_and(|(module, key)| !key.is_empty() && !["run", "ui", "game", "setting", "world"].contains(&module));
+            let key = quit.as_str().filter(of_a_module).ok_or_else(|| Problem::new("quit", "bad_key", "\"quit\" names what a module keeps, which says when the program is to end: \"gate.quit\""))?;
+            game.quit = Some(key.to_owned());
+        }
         Ok(game)
     }
 
@@ -452,6 +464,9 @@ impl GameFile {
         if !self.show.is_empty() {
             file.set("show", Json::Obj(self.show.iter().map(|(screen, key)| (screen.clone(), Json::Str(key.clone()))).collect()));
         }
+        if let Some(quit) = &self.quit {
+            file.set("quit", Json::Str(quit.clone()));
+        }
         file
     }
 }
@@ -483,6 +498,19 @@ mod tests {
         assert_eq!(code(r#""show": {"ui/shop": "gate.shopping"}"#), "bad_name");
         let many: Vec<String> = (0..=MAX_KEEP).map(|i| format!(r#""k{i}": "gate.k{i}""#)).collect();
         assert_eq!(code(&format!(r#""keep": {{{}}}"#, many.join(","))), "bad_keep");
+    }
+
+    /// The rules' own Quit is a key of a module, and comes back as written; none is no quit.
+    #[test]
+    fn quit_names_what_a_module_keeps() {
+        let with = |more: &str| GameFile::parse(&format!(r#"{{"format": "specula.game.v1", "title": "g"{more}}}"#));
+        assert_eq!(with("").unwrap().quit, None);
+        let game = with(r#", "quit": "gate.quit""#).unwrap();
+        assert_eq!(game.quit.as_deref(), Some("gate.quit"));
+        assert_eq!(GameFile::from_json(&game.to_json()).unwrap(), game);
+        for key in [r#""quit""#, r#""game.phase""#, r#""run.ticks""#, r#""gate.""#, "true", r#"["gate.quit"]"#] {
+            assert_eq!(with(&format!(r#", "quit": {key}"#)).unwrap_err().code, "bad_key", "{key}");
+        }
     }
 
     const FULL: &str = r#"{

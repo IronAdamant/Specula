@@ -126,6 +126,10 @@ struct Info {
     hooks: Vec<HookInfo>,
 }
 
+/// The engine's event a module hears for each press of one of its actions since the last tick,
+/// in order (`action`: the action's name).
+pub const PRESS_EVENT: &str = "press";
+
 #[derive(Clone, Debug)]
 pub(crate) struct EventRec {
     pub name: String,
@@ -1102,8 +1106,18 @@ impl LogicHost {
             if slot.disabled.is_some() {
                 continue;
             }
-            let actions = slot.input.take_tick();
-            let input = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("actions", actions).with("events", events.clone());
+            let (actions, presses) = slot.input.take_tick_and_presses();
+            // Every press since the last tick, in order, repeats included, as events of the
+            // engine's own to this module alone (`press`, with `action`): what `pressed` cannot
+            // say, as two presses of one action between two ticks (a script's `1:down,1:down`).
+            let events = if presses.is_empty() {
+                events.clone()
+            } else {
+                let mut all = events.as_list().map(<[Value]>::to_vec).unwrap_or_default();
+                all.extend(presses.iter().map(|action| EventRec { name: PRESS_EVENT.to_owned(), data: Value::map().with("action", action.as_str()), from: "engine".to_owned(), tick }.to_value()));
+                Value::List(all)
+            };
+            let input = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("actions", actions).with("events", events);
             let t = Instant::now();
             let result = self.call(&name, entry::TICK, &input, world, tick, Phase::Tick, commit);
             let took = t.elapsed();

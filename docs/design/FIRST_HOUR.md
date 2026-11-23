@@ -846,6 +846,36 @@ three faults of input. Looked at in the runs, they are one:
   requests on a settings screen of its own got it working with the engine's stepping
   buttons; the cost was finding that out.
 
+### Quit in a headless run, and several words at one tick (2026-11-23, after Day Market)
+
+The second reader's two passes over Day Market found two more faults, both reproduced.
+
+- **Quit did not end a headless run.** A script's Enter on a Quit button was an agent's press
+  (refused as the player's alone), a player's quit was honoured only in a window, the rules
+  that drive a menu of their own had no way to ask for it, and `run.ticks` said the script's
+  schedule where fewer ticks had passed. **Mended:** an engine started for a script
+  (`specula run`) is told so (`Game::played_by_script`): the script's press of Quit from a
+  frame is the player's, and the game file's new `quit` (a key of a module, `"gate.quit"`)
+  asks for it from the rules. The run ends there: no later input, no further tick (none
+  after the tick the rules asked on), the state as it stood, `run.ticks` the ticks that
+  passed, and the line `run.quit` (the tick) in the state whatever the report's lines are.
+  An `--at` tick after it is not read, a followed run reads no step after it, `specula
+  find` ends a way on which the game quit and refuses a search whose own script quit, and
+  a check's or a tuning's run ends as a run does. **Not changed:** `game_act` quit is
+  refused everywhere; a window's Quit button closes the window as before; the rules' `quit`
+  closes no window (an agent can drive the rules: it is said once as a problem there).
+- **Several words at one tick were one press of the last.** A script lets go of a word for
+  the next, and a hold let go before any tick read it was lost. **Mended:** it is a press at
+  the next tick (pressed and released, as a window's press shorter than a tick), so
+  `1:put,1:next_good` acts on both for any game that reads `.pressed`. One action twice at
+  one tick cannot be two `pressed`: every press since the last tick, in order, repeats
+  included, is told to its module as the engine's event `press` (`action`), so a menu the
+  rules drive counts `1:down,1:down` as two. A hold made again before a tick read it stays
+  one press. What no tick has read yet is part of a save (the logic section's version 2;
+  version 1 still loads). No change to the SDK: a project's copy of it builds as it was.
+  The interface's words take another path, a press each, so `0:down,0:down` moves a menu's
+  focus twice. The guide says both in four lines, paid for by wording nearby.
+
 ## As built
 
 **Built, with its own tests, the structural guards and clippy passing; the full gate passed on its last commit** (2026-11-16, branch

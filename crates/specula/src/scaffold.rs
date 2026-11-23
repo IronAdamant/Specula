@@ -358,8 +358,9 @@ builds the modules, plays the game with no window and prints how it stands as JS
   the state, on standard error, when the run ends. A run ends after 30 minutes at most.
 - **Inputs** are words at ticks. `up down left right enter escape` press the interface, as
   keys do. A module's action (`tap` here: `modules/{{module}}/actions.json`) is held until the
-  next input, as a held key is; the same word again is a press again; `none` holds
-  nothing. A word that is both does both. Words
+  next input, as a held key is; the same word again is a press again; words at one tick
+  each act, in order (one action twice is one `.pressed`; the event `press` is each);
+  `none` holds nothing. A word that is both does both. Words
   joined by `+` are held together (`up+shoot`). An action that is not a button takes its
   value (`throttle=0.5`, `move=1/0`). In the rules read `cx.action("tap").pressed` for
   "once" and `.held` for "while held".
@@ -381,9 +382,9 @@ builds the modules, plays the game with no window and prints how it stands as JS
   score --never "lives<3"` (it answers the inputs: put them in `checks/runs.json`; `--cells`
   names the lines that say where the game is, such as `score,ball`; it ends within 90 seconds
   with the best it came to, and `--seconds` gives it more). None of them is needed
-  to build a game: when nothing here fits, write the game and run it once.
+  to build a game: write it and run it once.
 - **Ticks.** The script counts every tick. The game's own clock ticks only while a run is
-  under way: the title, a pause and an ended run hold it, as they do for a player.
+  under way: the title, a pause and an ended run hold it.
 - **What is printed** is the game file's `"report"`: each line a name and the key whose value
   it shows. Keys: `{{module}}.KEY` (what the module keeps), `setting.NAME`, `game.phase`
   (title, running, paused, won, lost), `game.score`, `game.outcome`, `game.tick`, `run.ticks`,
@@ -399,7 +400,7 @@ builds the modules, plays the game with no window and prints how it stands as JS
   (`{"sound", "gain"}`: its own gain times the player's volume, so 0 at volume 0).
 - `--seed N` (1 when left out) seeds `cx.random_*`: the same seed and inputs give the same
   run, and the rules never see a seed. `--settings FOLDER` is where the player's settings are
-  read and kept (a file the engine writes in it: the same folder again finds them); without
+  read and kept (the same folder again finds them); without
   it they are kept nowhere.
 - `--frame` writes what a player would see (the `"view"`, with the interface).
 - `--follow` goes on after the script: each line of standard input is a step (`TICKS` or
@@ -450,7 +451,9 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
 - `view`: how the game is looked at, by the window and by a frame. A 2D game:
   `{"center": [x, y], "height": metres}` (straight on, +x right, +y up: draw with flat cubes
   at z 0). 3D: `{"eye": [x, y, z], "target": [x, y, z], "fov_y_deg": 50}`.
-- `report`: above. `inputs`: words of the game's own for a script, above.
+- `report`: above. `inputs`: words of the game's own for a script, above. `quit`:
+  `"{{module}}.quit"`: while that key is true a headless run ends there (`run.quit`:
+  the tick).
 
 **What the engine does not do** (do not look for it in its source)
 
@@ -501,7 +504,8 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
 - Events from the engine, at a tick: `for e in cx.take_events()` (the list is then yours,
   and the loop may call `cx`; `cx.events()` only lends it), with `e.from == "engine"`,
   `e.name` and `e.data.get("key")`: `run` (`phase` is `start` when a run begins; any other
-  `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`); from physics,
+  `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`), `press`
+  (`action`: every press, in order); from physics,
   `contact` and `fell` (`notes/world.md`).
 - The world: `cx.spawn(Spawn::new("cube").name("n").parent("/{{module}}").position(v)
   .scale(v).color("#rrggbb").tags(&["mob"]))?` (an `Id`; `v` is `Vec3::new(x, y, z)`, `f32`),
@@ -521,9 +525,7 @@ falls, a lamp, a sound's recipe): `notes/world.md`.
   in one session is another game; `cx.random_restart("stream")?` puts it back at its
   beginning (call it where a run begins, for "the same seed gives the same game again").
 - **The rest of the SDK** (with `notes/world.md` that is all of it; no need to read its
-  source: `cx.state(key)?` gives a `Value`, read with `.as_u64()`, `.as_f64()`, `.as_bool()`,
-  `.as_str()`, `.get("k")`; `cx.set_state(key, v)?` takes a number, text, a bool or a
-  `Value`): `cx.random_u32("s")?`;
+  source): `cx.random_u32("s")?`;
   `cx.emit("name", data)?` (an event every module hears next tick);
   `cx.move_character(id, motion)?` (a `Moved`: `.position`, `.grounded`, `.blocked`);
   `cx.actions()`; `cx.reloaded()`, `cx.generation()`; `cx.trace(TraceLevel::Info, "code",
