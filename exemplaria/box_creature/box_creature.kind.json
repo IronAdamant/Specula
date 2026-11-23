@@ -1,0 +1,32 @@
+{
+  "kind": 1,
+  "name": "box_creature",
+  "plan": "box_creature",
+  "about": "a creature of boxes on four legs: the test plan that goes the library's whole path, not an animal",
+  "aliases": ["box_beast", "test_creature"],
+  "licence": "MIT OR Apache-2.0",
+  "tail_carriage": "low",
+  "size": {
+    "shoulder_height": { "mean": 0.6, "sd": 0.05, "range": [0.45, 0.75], "unit": "m",
+      "own": "a test plan: no animal is measured; about a mid-sized dog's withers so its walk is of a familiar size" }
+  },
+  "numbers": {
+    "body_length": { "share": 1.2, "own": "a test plan: a trunk a little longer than the creature is tall" },
+    "leg_length": { "share": 0.62, "own": "a test plan: legs a little over half the shoulder height" },
+    "head_length": { "share": 0.36, "spread": 0.04, "own": "a test plan: a head's own spread, to test a residual on one number" }
+  },
+  "vary": {
+    "build": { "spread": 0.06, "own": "a test plan: girths vary by six in a hundred" },
+    "legs": { "spread": 0.03, "own": "a test plan" },
+    "tail": { "spread": 0.08, "own": "a test plan" }
+  },
+  "roles": { "coat": "#8a7a60", "claw": "#2a2420", "eye": "#c8a040" },
+  "motion": {
+    "walk": { "pattern": "lateral_walk", "froude": 0.25,
+      "source": "Fr 0.25, below the walk-trot change at Fr about 0.5 (Alexander 1993, as quoted in research C2, Sources disagree 2)" },
+    "trot": { "pattern": "trot", "froude": 1.0,
+      "source": "Fr 1.0, above the walk-trot change at Fr about 0.5 (Alexander 1993, as quoted in research C2, Sources disagree 2)" },
+    "idle": {}
+  },
+  "levels": { "near": 600, "far": 150 }
+}

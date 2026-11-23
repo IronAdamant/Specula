@@ -177,6 +177,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-exemplaria"
+version = "0.3.0"
+dependencies = [
+ "specula-anim",
+ "specula-core",
+ "specula-model",
+]
+
+[[package]]
 name = "specula-formae"
 version = "0.3.0"
 dependencies = [
