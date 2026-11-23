@@ -1727,6 +1727,9 @@ impl Shell {
             // the modules the save brought back. What the saved game's modules had still to
             // be told is.
             self.events_out = saved.3;
+            // A quit asked before the load was asked in another run: the game brought back has
+            // asked for none (no save holds one; a run that quit is over).
+            self.quit = false;
             // And what the game keeps for the player, which no save holds: the rules a save
             // brought back have its own values, older than the player's.
             self.kept_seen.clear();
@@ -2338,6 +2341,14 @@ mod tests {
             assert_eq!(scripted.take_quit(), quits);
         }
         assert!(scripted.problems.iter().all(|p| !p.contains("the rules asked to quit")));
+        // A quit asked before a save is loaded was asked in another run: the game put back
+        // has asked for none (`specula find` loads a save after a way that quit).
+        scripted.shown = vec![("gate.quit".into(), Shown::Bool(true))];
+        scripted.rules_quit();
+        let saved = scripted.save_state().unwrap().unwrap();
+        let parsed = scripted.parse_state(&saved).unwrap();
+        scripted.put_back(parsed);
+        assert!(!scripted.take_quit(), "a load takes the waiting quit away");
         // A game file with no `quit` asks for nothing, whatever its rules keep.
         let mut plain = shell();
         plain.played_by_script();
@@ -2352,11 +2363,13 @@ mod tests {
     #[test]
     fn under_a_script_a_quit_ends_the_ticks_where_the_game_stood() {
         let Some(mut e) = crate::workers::charge_tests::engine() else { return };
-        /// A game whose rules ask to quit at its third tick.
+        /// A game whose rules ask to quit at its third tick; with `hold`, its clock stops on that
+        /// same tick (its run ended there, or it paused).
         struct QuitsAt {
             ticks: u64,
             quit: bool,
             clock: Option<bool>,
+            hold: bool,
         }
         impl Game for QuitsAt {
             fn name(&self) -> &str {
@@ -2365,6 +2378,9 @@ mod tests {
             fn tick(&mut self, _ctx: &mut Ctx) {
                 self.ticks += 1;
                 self.quit |= self.ticks == 3;
+                if self.ticks == 3 && self.hold {
+                    self.clock = Some(true);
+                }
             }
             fn take_quit(&mut self) -> bool {
                 std::mem::take(&mut self.quit)
@@ -2374,7 +2390,7 @@ mod tests {
             }
         }
         e.game_name = "quits".into();
-        e.game = Some(Box::new(QuitsAt { ticks: 0, quit: false, clock: Some(false) }));
+        e.game = Some(Box::new(QuitsAt { ticks: 0, quit: false, clock: Some(false), hold: false }));
         e.clock.set_paused(true);
         e.script_clock = Some(false);
         e.start_game();
@@ -2382,9 +2398,19 @@ mod tests {
         assert_eq!((e.play_ticks(10), e.clock.tick()), (0, 3), "and no tick runs until the script was told");
         assert!(std::mem::take(&mut e.script_quit), "told once");
         assert_eq!(e.play_ticks(2), 2, "a game put back (a search's load) goes on");
+        // The clock held on the very tick the game quits (it won, or paused, and quit): the quit
+        // is taken on that tick, with the ticks that tell the script so.
+        let before = e.clock.tick();
+        e.script_quit = false;
+        e.script_clock = Some(false);
+        e.game = Some(Box::new(QuitsAt { ticks: 0, quit: false, clock: Some(false), hold: true }));
+        assert_eq!(e.play_ticks(10), 3);
+        assert!(e.script_quit, "the quit is taken on the tick its clock stopped, not at the next call");
+        assert_eq!((e.clock.tick() - before, e.script_clock), (3, Some(false)), "and the clock is held as the game asked");
+        e.script_quit = false;
         // No script: the game's quit is not taken here.
         e.script_clock = None;
-        e.game = Some(Box::new(QuitsAt { ticks: 0, quit: true, clock: None }));
+        e.game = Some(Box::new(QuitsAt { ticks: 0, quit: true, clock: None, hold: false }));
         assert!(!e.script_quit_asked());
         assert_eq!(e.game.as_mut().map(|g| g.take_quit()), Some(true), "left for the window loop, which a headless engine has not");
     }

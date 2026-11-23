@@ -641,8 +641,26 @@ impl Run<'_> {
             // this value, was asked when it was first held, and is not asked again: asking
             // lets go, and an action let go and held again is a press, which a word that is
             // only being looked at must not be.)
-            let held_so = self.held.iter().any(|(_, action, at)| action == name && *at == value);
-            if let Some(module) = module.filter(|_| !held_so) {
+            // An action held now, at any value, is not asked either: it was asked when it was
+            // first held, so its kind is known, and a value of the same kind is one it takes
+            // (asked again, a word that changes a held axis's value was let go, held again
+            // and given: two presses for one word, and a script found by `specula find`, or
+            // followed, would not be the same run under `specula run`: a reviewer, 2026-11-24).
+            let same_kind = |held: &Json| match (held, &value) {
+                (Json::Bool(_), Json::Bool(_)) => true,
+                (Json::Num(_), Json::Num(n)) => n.abs() <= 1.0e6,
+                (Json::Arr(a), Json::Arr(b)) => a.len() == b.len() && b.iter().all(|c| c.as_f64().is_some_and(|c| c.abs() <= 1.0e6)),
+                _ => false,
+            };
+            if let Some((_, _, held)) = self.held.iter().find(|(_, action, _)| action == name) {
+                if !same_kind(held) {
+                    let mut e = refusal("bad_input", format!("'{name}'{place} is held now with a value of another kind ({held}): give it a value of its own kind (a button is held, an axis has a number, an axis of two has two)"));
+                    e.set("input", Json::from(word.as_str()));
+                    return Err(e);
+                }
+                continue;
+            }
+            if let Some(module) = module {
                 if let Err(mut e) = self.call("logic_input", Json::obj([("module", Json::from(module.as_str())), ("actions", Json::obj([(name, value)])), ("ticks", Json::from(0u64))])) {
                     e.set("error", Json::from("bad_input"));
                     e.set("input", Json::from(word.as_str()));
@@ -999,6 +1017,13 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
         e.set("lines", Json::arr(game.report.iter().map(|(name, _)| Json::from(name.as_str()))));
         return Err(e);
     }
+    played(&mut run, &game, spec, &mut std::io::stdin().lock())
+}
+
+/// The run itself, once its modules are built and its words known: the script's inputs at
+/// their ticks, the states on the way, a search or the steps of a followed run (read from
+/// `steps`), and the answer.
+fn played(run: &mut Run, game: &GameFile, spec: &Spec, steps_in: &mut dyn std::io::BufRead) -> Result<Json, Json> {
     let mut tick = 0u64;
     let mut next = 0usize;
     // The state at each tick of `--at`, in order: read as the run passes it, with the inputs
@@ -1028,7 +1053,7 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     loop {
         let stop = stops.peek().copied().unwrap_or(play_to);
         while tick < stop && run.quit_at.is_none() {
-            give(&mut run, &mut next, tick)?;
+            give(run, &mut next, tick)?;
             if run.quit_at.is_some() {
                 break;
             }
@@ -1036,14 +1061,14 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
             tick += run.play(until - tick)?;
         }
         // (Inputs at the tick itself are done before the state is read.)
-        give(&mut run, &mut next, tick)?;
+        give(run, &mut next, tick)?;
         if run.quit_at.is_none() && stops.peek().is_some() {
             run.quit_asked()?;
         }
         if run.quit_at.is_some() || stops.next().is_none() {
             break;
         }
-        on_the_way.push(run.stand(&game, tick, spec.seed)?.report);
+        on_the_way.push(run.stand(game, tick, spec.seed)?.report);
     }
     // (A quit by the last input is known before the state is read.)
     if run.quit_at.is_none() {
@@ -1052,14 +1077,14 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     if let Some(asked) = &spec.find {
         if let Some(at) = run.quit_at {
             let mut e = refusal("quit", format!("the game quit at tick {at}, in the script given before the search: a search begins where the script leaves a game that goes on"));
-            e.set("state", run.stand(&game, tick, spec.seed)?.report);
+            e.set("state", run.stand(game, tick, spec.seed)?.report);
             return Err(e);
         }
-        let answer = find::find(&mut run, &game, spec, asked, tick, &spec.inputs)?;
+        let answer = find::find(run, game, spec, asked, tick, &spec.inputs)?;
         return Ok(Json::obj([("report", answer), ("searched", Json::Bool(true))]));
     }
 
-    let mut stand = run.stand(&game, tick, spec.seed)?;
+    let mut stand = run.stand(game, tick, spec.seed)?;
     let mut followed = None;
     // (A game that quit in the script is not followed: the run is over.)
     if spec.follow && run.quit_at.is_some() {
@@ -1070,9 +1095,9 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
         // The state now, then a step a line: whoever plays reads the one and writes the other.
         say(&stand.report)?;
         let mut steps = 0u64;
-        let mut input = std::io::stdin().lock();
+        let input = &mut *steps_in;
         loop {
-            let line = match step_line(&mut input) {
+            let line = match step_line(&mut &mut *input) {
                 Ok(Some(line)) => line,
                 Ok(None) => break,
                 Err(e) => return Err(refusal("no_input", format!("the run's steps could not be read ({e})"))),
@@ -1112,7 +1137,7 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
                     }
                     tick += run.play(ticks)?;
                     run.quit_asked()?;
-                    stand = run.stand(&game, tick, spec.seed)?;
+                    stand = run.stand(game, tick, spec.seed)?;
                     say(&stand.report)?;
                     // The game quit: its state is the last, and the steps after it are not read.
                     if run.quit_at.is_some() {
@@ -1391,6 +1416,9 @@ pub(crate) fn start(tools: Arc<Tools>, gate: Arc<StartGate>, spec: Spec) {
 
 /// The code of the answer of an engine that was refused its project's lock.
 pub const PROJECT_OPEN: &str = "project_open";
+
+#[cfg(test)]
+mod quit_tests;
 
 /// The answer of an engine started for a run whose project another engine has open.
 pub(crate) fn project_open(name: &str) -> Json {

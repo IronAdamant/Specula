@@ -1037,6 +1037,10 @@ impl Engine {
         if let Some(state) = parsed {
             self.game_call(crate::sim_writes::GameCall::ApplyState(state));
         }
+        // A quit the game asked for before the load was asked in another run: the game the
+        // save brought back has asked for none (`specula find` loads a save after a way that
+        // quit, and the next way took that quit as its own).
+        self.script_quit = false;
         // The loaded world isn't a world folder: world_save names one.
         self.world_name = None;
         self.saved = None;

@@ -1004,3 +1004,75 @@ fn a_runs_parameter_is_read_by_the_rules_and_the_default_stands_without_one() {
     many.host.set_params((0..100).map(|i| (format!("p{i}"), 1.0)));
     assert_eq!(many.host.params.len(), super::MAX_PARAMS);
 }
+
+/// Keeps, at each tick, the presses it heard as the engine's events `press` (in order), and
+/// whether `jump` read as pressed.
+#[derive(Default)]
+struct Presser;
+impl Module for Presser {
+    fn describe(&self) -> ModuleInfo {
+        ModuleInfo { name: "presser", actions: ACTIONS, ..ModuleInfo::default() }
+    }
+    fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        let heard: Vec<Value> = cx.take_events().into_iter().filter(|e| e.from == "engine" && e.name == "press").filter_map(|e| e.data.get("action").and_then(Value::as_str).map(Value::from)).collect();
+        cx.set_state("heard", Value::List(heard))?;
+        let jumped = cx.action("jump").pressed;
+        cx.set_state("jumped", jumped)
+    }
+}
+
+/// Every press made between two ticks reaches the module at the next one, in order, repeats
+/// included, as the event `press`; a save made between the presses and the tick keeps them
+/// (the logic section's version 2), and a section written in version 1 still loads.
+#[test]
+fn presses_reach_the_module_in_order_and_survive_a_save() {
+    let words = |host: &mut LogicHost| {
+        let hold = |host: &mut LogicHost, text: &str, ticks: u64| host.hold("presser", &Json::parse(text).unwrap(), ticks, None).map(drop).unwrap();
+        hold(host, r#"{"jump": true}"#, 10);
+        hold(host, r#"{"jump": true}"#, 0);
+        hold(host, r#"{"jump": true}"#, 10);
+        hold(host, r#"{"jump": true}"#, 0);
+        hold(host, r#"{"move": [1, 0]}"#, 10);
+    };
+    let heard = |r: &Run| -> Vec<String> { r.state("presser", "heard").as_list().unwrap_or_default().iter().filter_map(Value::as_str).map(str::to_owned).collect() };
+    let mut a = Run::new();
+    a.load(ModuleCode::of::<Presser>()).unwrap();
+    a.ticks(1);
+    words(&mut a.host);
+    let bytes = a.host.save_state().expect("a module ran");
+    a.ticks(1);
+    assert_eq!(heard(&a), ["jump", "jump", "move"]);
+    assert_eq!(a.state("presser", "jumped"), Value::Bool(true), "a press let go before the tick is still a press");
+    a.ticks(1);
+    assert!(heard(&a).is_empty(), "each once");
+    // Loaded from the save made between the words and the tick: the same tick.
+    let mut b = Run::new();
+    b.load(ModuleCode::of::<Presser>()).unwrap();
+    b.tick = 1;
+    b.host.restore_state(&bytes).unwrap();
+    b.ticks(1);
+    assert_eq!(heard(&b), ["jump", "jump", "move"]);
+    // A whole section in the first layout (no presses waiting in it) loads, its hold going on.
+    let mut w = specula_core::bytes::ByteWriter::new();
+    w.u32(1);
+    w.len_u32(0);
+    w.len_u32(0);
+    w.len_u32(1);
+    w.str("presser");
+    w.u64(0);
+    w.u64(1);
+    w.str("");
+    let mut input = specula_core::bytes::ByteWriter::new();
+    input.len_u32(1);
+    input.str("move");
+    input.f32(1.0);
+    input.f32(0.0);
+    input.u64(5);
+    input.len_u32(0);
+    w.blob(input.bytes());
+    let mut c = Run::new();
+    c.load(ModuleCode::of::<Presser>()).unwrap();
+    c.host.restore_state(&w.into_bytes()).expect("a version 1 section loads");
+    c.ticks(1);
+    assert_eq!(c.host.slots["presser"].input.holds_json().get("move").and_then(|m| m.get("ticks_left")).and_then(Json::as_u64), Some(4), "its hold went on");
+}

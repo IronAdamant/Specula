@@ -22,7 +22,7 @@ build on; this page is what Sepulcra ships and what the engine gives every game.
 | Piece | Where | What |
 |---|---|---|
 | Saved settings | `specula::user_settings`, `Game::use_settings` / `take_settings` | One file per game and user, read once before `start`, written off the engine thread |
-| Quit | `Game::take_quit` | A title screen's Quit stops the engine, like the close button. Never honoured headless |
+| Quit | `Game::take_quit` | A title screen's Quit, pressed by the person, stops the engine, like the close button. Headless it ends only a run by a script (`specula run`, which stands in for the player: `Game::played_by_script`), where the game file's `quit` (a key the rules keep) asks for it too; an agent's press of Quit is refused everywhere |
 | Hold or toggle | `specula_input::HoldMode`, `Input::set_hold_mode` | Per action. A chord's modifiers latch (`Mouse.Right+Mouse.Motion`), and a button stays held until pressed again |
 | Panels and handhelds | `specula_platform::monitor_of`, `specula_ui::Display::panel`, `Display::handheld`, `handheld_ui_scale` | The monitor's native size and diagonal (EDID raw DPI); known handhelds by panel; a legible default scale |
 | Scale options | `Display::scale_options` | Each UI-scale setting's effective scale, and `limited_by_window` or `smallest` when another setting nearer 1 gives the same size |

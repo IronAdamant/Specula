@@ -1898,13 +1898,13 @@ impl Engine {
             // A game that stopped the clock on this tick (its run ended, it paused) has no
             // further tick: the ones still due in this advance, and any still queued by a step,
             // do not run behind it.
-            if self.serve_game_clock() == Some(true) {
-                self.clock.cancel_steps();
-                break;
-            }
             // Under a script, a game that asked to quit on this tick (its rules' `quit`) has no
-            // further tick either: the run ends where it stood.
-            if self.script_quit_asked() {
+            // further tick either, and the quit is taken on this tick whatever the clock does: a
+            // run that ended, or paused, on the tick it quit on quit on it (a reviewer,
+            // 2026-11-24: taken after the clock's stop, it was seen a call later).
+            let quit = self.script_quit_asked();
+            let held = self.serve_game_clock() == Some(true);
+            if quit || held {
                 self.clock.cancel_steps();
                 break;
             }
@@ -2131,7 +2131,9 @@ impl Engine {
         if modal {
             self.logic.feed_window_idle(dt.as_secs_f32());
         } else {
-            self.logic.feed_window(&self.input, dt.as_secs_f32());
+            // (Under a script the game's clock is its own wish; else the clock is the game's.)
+            let held = self.script_clock.map_or(self.clock.paused(), |running| !running);
+            self.logic.feed_window(&self.input, dt.as_secs_f32(), held);
         }
         if self.lex_live.has_input() {
             if modal {

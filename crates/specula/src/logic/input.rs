@@ -61,6 +61,9 @@ pub struct ModuleInput {
     /// between two ticks are two; `pressed` can say only one): told to the module with its tick
     /// as the engine's events `press` ([`ModuleInput::take_tick_and_presses`]).
     presses: Vec<String>,
+    /// Per action: went down at the window while the game's clock was held, and is still down
+    /// ([`ModuleInput::feed_held`]): held when the clock runs again, and no press then.
+    quiet: Vec<bool>,
 }
 
 /// Most presses one tick tells a module (the rest of a tick's are not told; `pressed` still is).
@@ -85,6 +88,7 @@ impl ModuleInput {
             ended: Vec::new(),
             tapped: vec![false; n],
             presses: Vec::new(),
+            quiet: vec![false; n],
         })
     }
 
@@ -243,6 +247,30 @@ impl ModuleInput {
         }
     }
 
+    /// One window frame's input while the game's clock is held (its title, a pause, a run that
+    /// ended: no rule ticks): what is held is followed, and nothing pressed now acts when the
+    /// clock runs again. A press made in a pause menu (Enter on Resume, keys in the settings)
+    /// is no press of the game's: no edge is latched, no `press` is told, a key still down
+    /// when the clock starts is not pressed then, and motion summed is dropped. A release of
+    /// what was held before is still told (the rules saw it held). An agent's holds are its
+    /// own and are kept as they are.
+    pub fn feed_held(&mut self, events: &[Event], pads: &[GamepadState], dt_s: f32) {
+        let before = self.presses.len();
+        self.feed(events, pads, dt_s);
+        self.presses.truncate(before);
+        for (i, a) in self.map.actions().iter().enumerate() {
+            let l = &mut self.latch[i];
+            l.pressed = false;
+            l.released = false;
+            if a.kind != ActionKind::Button && a.output == AxisOutput::Delta {
+                l.value = [0.0, 0.0];
+            }
+            // Down now and not when the rules last ticked: held when the clock runs, never a
+            // press then. (Let go again, it was never there.)
+            self.quiet[i] = l.held && !self.last[i].held;
+        }
+    }
+
     /// `logic_input`: hold each named action for `ticks` (0 releases it), as `by`. Values:
     /// `true`/`false` for buttons, a number for axes, `[x, y]` for 2D axes.
     pub fn hold(&mut self, actions: &Json, ticks: u64, by: Option<crate::inputguard::Actor>) -> Result<Json, String> {
@@ -332,6 +360,8 @@ impl ModuleInput {
         let mut presses = std::mem::take(&mut self.presses);
         for (i, a) in self.map.actions().iter().enumerate() {
             let tapped = std::mem::take(&mut self.tapped[i]);
+            // (Down since a frame of a held clock: held now, and no press of the game's.)
+            let quiet = std::mem::take(&mut self.quiet[i]);
             let w = std::mem::take(&mut self.latch[i]);
             // The window's held state carries over; only edges and deltas start again.
             self.latch[i].held = w.held;
@@ -362,7 +392,7 @@ impl ModuleInput {
                     // window's press shorter than a tick is.)
                     ActionState {
                         held,
-                        pressed: w.pressed || tapped || (held && !self.last[i].held),
+                        pressed: w.pressed || tapped || (held && !self.last[i].held && !quiet),
                         released: w.released || (tapped && !held) || (!held && self.last[i].held),
                         value: w.value,
                     }
@@ -526,6 +556,39 @@ mod tests {
         let mut human = ModuleInput::new(MAP).unwrap();
         human.feed(&[Event::KeyDown { code: keys::SPACE, repeat: false }], &[], 0.016);
         assert_eq!(human.take_tick_and_presses().1, ["jump"]);
+    }
+
+    /// What the player presses while the game's clock is held (a pause menu, the title) does not
+    /// act in the game when it runs again: no edge, no `press`, and a key still down then is no
+    /// press; a release of what was held before the pause is still told, and an agent's hold
+    /// made then is its own press.
+    #[test]
+    fn presses_while_the_clock_is_held_do_not_act_after_it() {
+        use specula_platform::keys;
+        let down = || Event::KeyDown { code: keys::SPACE, repeat: false };
+        let up = || Event::KeyUp { code: keys::SPACE };
+        // Pressed and let go in the pause menu (Enter, Space in a menu): nothing at the next tick.
+        let mut m = ModuleInput::new(MAP).unwrap();
+        m.feed_held(&[down()], &[], 0.016);
+        m.feed_held(&[up()], &[], 0.016);
+        assert_eq!(m.take_tick_and_presses(), (Value::map(), Vec::new()));
+        // Pressed in the pause and still down when it runs: held, and no press.
+        m.feed_held(&[down()], &[], 0.016);
+        m.feed(&[], &[], 0.016);
+        let (t, presses) = m.take_tick_and_presses();
+        assert_eq!((state(&t, "jump"), presses), (Some((true, false, false, 1.0, 0.0)), Vec::new()));
+        // Held before the pause, let go in it: the release is told when it runs.
+        let mut m = ModuleInput::new(MAP).unwrap();
+        m.feed(&[down()], &[], 0.016);
+        assert_eq!(state(&m.take_tick(), "jump").map(|s| s.1), Some(true));
+        m.feed_held(&[up()], &[], 0.016);
+        m.feed(&[], &[], 0.016);
+        assert_eq!(state(&m.take_tick(), "jump"), Some((false, false, true, 0.0, 0.0)));
+        // An agent's hold placed while the clock is held is still its press.
+        m.feed_held(&[], &[], 0.016);
+        m.hold(&Json::parse(r#"{"jump": true}"#).unwrap(), 5, None).unwrap();
+        let (t, presses) = m.take_tick_and_presses();
+        assert_eq!((state(&t, "jump").map(|s| s.1), presses), (Some(true), vec!["jump".to_owned()]));
     }
 
     /// The input of a save written before presses were kept (the logic section's version 1)

@@ -875,6 +875,17 @@ The second reader's two passes over Day Market found two more faults, both repro
   version 1 still loads). No change to the SDK: a project's copy of it builds as it was.
   The interface's words take another path, a press each, so `0:down,0:down` moves a menu's
   focus twice. The guide says both in four lines, paid for by wording nearby.
+- **A reviewer's round on it (2026-11-24), mended:** a quit on the tick the game's clock
+  stopped (a run won, or paused, on the tick it quit) was taken after the clock's stop and
+  seen at the next input, so `run.ticks` and `run.quit` said the schedule: the quit is now
+  taken on its tick whatever the clock does. A quit waiting when a save is loaded is gone
+  with the load (`specula find`'s next way took it). A press at the window while the clock
+  is held (a pause menu, the title) no longer acts when it runs again, nor is told as
+  `press`. A word that changes the value of an action already held is looked at without
+  letting go of it, so a followed run, and a search, hear one press for it, as `specula
+  run` does. While the clock is held and no quit was asked, `run.ticks` is still the
+  script's count (it goes on whatever screen is up), as an input's tick is.
+
 ### A screenful of text in one kept value (2026-11-23, after Day Market)
 
 Five of ten cold builders' Day Market games put a whole end-of-day summary (about sixteen

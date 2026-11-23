@@ -984,8 +984,10 @@ impl LogicHost {
         .with("module", name)
     }
 
-    /// One window frame's input, for every module's actions (gamepads polled here).
-    pub fn feed_window(&mut self, events: &[Event], dt_s: f32) {
+    /// One window frame's input, for every module's actions (gamepads polled here). `held`: the
+    /// game's clock is held (its title, a pause, a run that ended), and nothing pressed now acts
+    /// in the game ([`ModuleInput::feed_held`]).
+    pub fn feed_window(&mut self, events: &[Event], dt_s: f32, held: bool) {
         if self.slots.values().all(|s| s.input.is_empty()) {
             return;
         }
@@ -998,7 +1000,11 @@ impl LogicHost {
             None => &[],
         };
         for slot in self.slots.values_mut() {
-            slot.input.feed(events, states, dt_s);
+            if held {
+                slot.input.feed_held(events, states, dt_s);
+            } else {
+                slot.input.feed(events, states, dt_s);
+            }
         }
     }
 
