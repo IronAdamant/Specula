@@ -41,6 +41,8 @@ remembers.**
 | 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built, reviewed, gated; measured on `d18e1131` (LEVERAGE.md, "Results (the fourth pass)": no build cheaper, the small game dearer; the checks came on top of single runs) |
 | 12 | What a first build is not asked for: the guide and the brief, cut (the fifth pass) | built, reviewed, gated; measured on `9450e0f4` in a clean shell (LEVERAGE.md, "Results (the fifth pass)": 1.85, 1.28 and 1.25 times; the gap is before the first line of code) |
 | 13 | The first meeting: one read that is enough, and a random stream that begins again (the sixth pass) | built, reviewed, gated; measured on `57f515d0` (LEVERAGE.md, "Results (2026-11-17: the sixth pass, the first meeting)"): 1.61, 1.22 and 1.47 times the plain build, and a quarter less spent before the first file |
+| 14 | What a second reading of the six-job comparison asked for: the pages say what physics will do, a slab that carries, a run that speaks a brief and is read on its way (2026-11-21) | built by hand, not reviewed, not measured |
+| 15 | What the engine looks for itself: a number of the rules' given by a run (`Cx::param`, `--set`), a number tuned to a condition (`specula tune`), a script of inputs found (`specula find`) (2026-11-21) | built by hand, not reviewed; `search_check` holds it end to end |
 
 ## 1. The SDK comes from the engine
 
@@ -290,8 +292,8 @@ So the second pass is one loop, the plain arm's: **edit, run, read.**
 - **The game file says what is printed and how the game is looked at.**
   - `"report"`: each line a name and the key whose value it shows, in order: what a module keeps
     (`gate.walkers`), `setting.NAME`, `game.phase`, `game.score`, `game.outcome`, `game.tick`,
-    `run.ticks`, `run.seed`, `ui.screen`, `ui.focus`, `ui.focus_index`, `ui.texts` (every text on
-    screen) and `ui.top_texts` (the top screen's). No report: everything.
+    `run.ticks`, `run.seed`, `ui.screen`, `ui.focus` (the focused button's words), `ui.focus_id`, `ui.focus_index`, `ui.texts` (the top
+    screen's texts) and `ui.all_texts` (every screen's). No report: everything.
   - `"view"`: `{"center": [x, y], "height": metres}` (straight on, as a 2D game is seen) or
     `{"eye", "target", "fov_y_deg"}`. A run's frame uses it, and so does the window while nobody has
     pointed it elsewhere: a 2D game is no longer seen by the camera that fits whatever is in the world.
@@ -564,6 +566,346 @@ something up. The owner, shown it: "That gap needs to be looked at and fixed up.
 **What it is made of**: `logic/handler.rs` (`rng_restart`, undone with a call that fails),
 `specula-sdk` (`Cx::random_restart`), `scaffold.rs` (the guide, `notes/checks.md`, the sample's
 header), `launch_run.rs` (`read_first`), the harness's brief.
+
+## 14. What physics will do, and a run that is asked many things at once (2026-11-21)
+
+The six-job comparison of 2026-11-21 (LEVERAGE.md) was read a second time, by Grok, from the same
+ledgers and the code. The two readings agree on where the tokens go: the engine's builders make two
+to three times the requests, most of them after the first code and short, each paid for by the
+context read again. They go to finding out what the pages did not say or said wrong, to a wrapper
+between the brief's words and the engine's, and to reading one number a run. What was built for it:
+
+- **The pages say what physics will do, and the guide says to write the game whole.** `notes/world.md`
+  was wrong on two points (bounce takes the larger of the two things that meet, friction the
+  geometric mean; it said "on both") and silent on what the builders measured: the default friction,
+  that a rolling ball takes 5/7 of a push, when a thing sleeps, that the rules run before physics in
+  a tick (what they keep is a step behind), where `fell` fires, where the volume applies. The guide
+  opened with "The loop: edit, run, read"; it opens with "Write the game whole, then run it".
+- **A slab that carries** (`Spawn::carries`, PHYSICS.md). A ball at rest on a sliding bridge is left
+  behind by honest contact, and a brief that says "it carries the ball" could be met only by a rule
+  of the builder's over the engine's friction, which is what a judge then saw as twice the speed.
+- **A run in the brief's words.** The game file's `"inputs"` gives a script words of its own
+  (`"menu_down": "Key.Down"`). A report's line reads the world itself, after the tick's physics:
+  `world.PATH.position`, `.x`, `.velocity`, `.exists`, `world.#TAG.positions`, `.count`; and
+  `run.sounds` is every sound the rules asked for, in order. No rule copies places into its state
+  for the report, and nothing is a step behind.
+- **A run read on its way.** `--at 90,180,270` prints the state at each of those ticks in one run,
+  and `--keys` only the lines asked for. The state at the end is the same with or without it
+  (tried by hand: bit for bit).
+
+Not built in this pass: results handed to a builder without a request (hooks). The searches the
+engine makes itself are section 15.
+
+**What it is made of**: `specula-physics` (`space.rs`, `carry`; the snapshot's version 4),
+`physics.rs` (`Collider::carries`), `specula-sdk` (`Spawn::carries`), `scaffold.rs` (the two pages),
+`specula-ludus` (`GameFile::inputs`), `script_run.rs` (`in_game_words`, `of_world`, `--at`, `--keys`),
+`module_sounds.rs` (the order of what was asked for), `launch_cli.rs`.
+
+## 15. What the engine looks for itself (2026-11-21)
+
+The owner, on the two kinds of search: "Then we'll do both. And each use must be determined by you,
+or your builders, depending on a task." Three commands, none of which a game needs to be built, and
+no program of a builder's between them and the game. In the comparison both arms wrote such
+programs: the engine's builders a player over `--follow` (nine requests and about 135,000 weighted
+tokens in one run of the 3D game) and a tracer of their own; the plain builders a `bot.py` and a
+`search.py` over their own simulation.
+
+- **A number of the rules', given by a run.** `cx.param("grip", 0.6)?` reads a number a headless
+  run may set (`specula run --set grip=0.3`) and answers the rules' own default when it sets none: a
+  player's game has none set and plays as written. The numbers are the run's, as its script and
+  its seed are; a module cannot change them, reading one changes nothing, and a save does not keep
+  them (a search goes back to saves within one run, where they are the same). `--set grip=0.2,0.4,0.8`
+  plays the run once for each value and prints a line each (`{"set": .., "state": ..}`).
+- **`specula tune`**: `--vary grip=0.1..1 --until "ball.x>3"` finds where a condition over the
+  report's lines begins to hold at the run's end, by halving the range. Every try is a whole run
+  of its own from the game's start (about four seconds here), so a value found is one a plain run
+  plays again. It needs the condition to hold at one end and not at the other, and says so when it
+  holds at both or at neither; a condition that comes and goes inside the range is not one a
+  halving finds.
+- **`specula find`**: `--until "won==true" --words right,left,up,down,none --rise score` finds a
+  script of inputs that reaches a condition. It keeps the situations it has reached, each as a save
+  of the whole game with the script that led there, told apart by a cell (the report's lines that
+  say where the game is, rounded: `--cells`); it goes back to one (three times in four to one that
+  stands at the most of what `--rise` names; among those, to one tried less), plays on a few
+  stretches with an input held through each, and keeps what is new or a better way to a cell it
+  knows. `--never` names what must not happen on the way (a life lost, a fall): such a situation
+  is not kept. This is the first phase of Go-Explore (Ecoffet and others, "Go-Explore: a New
+  Approach for Hard-Exploration Problems", 2019). The search's choices come from the run's seed:
+  the same command makes the same tries in the same order (a search ended by its seconds
+  got as far as the machine went: its `why` says so, and only then does the answer depend
+  on the machine).
+
+**What it rests on, and how that is held.** A game put back from a save must play on as the game
+that was saved: the world, the modules' state and random streams, physics' hidden state, the
+project shell. So a script found is played again from the search's first situation, straight
+through, before it is answered, and one that no longer reaches the condition is answered as the
+fault it is (`not_reproduced`). And `search_check` (a live check, in Rust) takes the script a
+search answered, plays it in a run of its own, and holds the state against the search's: equal to
+the last bit, on a game with rigid bodies. The same check holds the sweep, the tuning, a range the
+condition holds nowhere in, and that the same search finds the same script.
+
+**What it cost to find, by hand** (a ball, a board 8 m square, three coins up to 5.4 m apart): the
+script was found after 3,295 stretches of 15 ticks, in 29 seconds, at about 10 ms a stretch. Two
+things had to be mended on the way. With no word for what is worthless, a ball that had left the
+board fell for ever through cells that were all new, and filled what the search may keep: hence
+`--never`, and the worst kept situation gives way when the search is full. And picking among all
+situations alike never played on from the best: hence the three picks in four.
+
+**What it does not do.** It searches by what the report prints, so a game whose report does not
+say where it stands gives it nothing to tell situations apart by. A sound asked for is no part of
+a save: the line `run.sounds` is left out of the state a search answers (a run of the script says
+it). It gives one input a stretch; a game that needs two things held at once takes a word that
+joins them (`up+shoot`) among `--words`. A press of the interface in `--words` is given again each
+stretch.
+
+**Found while trying it cold.** A module that built with a warning and did not load was answered
+as "did not build", with no error to read (`specula run` read the warnings as the failure); it is
+answered as the load's failure now, with the reason. The guide gave an action's fields and not the
+file's own form (`{"format": "specula.input.v1", "actions": [..]}`), and an actions file written
+from the page alone was an array; the page says the form now.
+
+**What it is made of**: `script_run/find.rs` (the search), `script_run.rs` (`Until`, the spec's
+`set` and `find`), `launch_run.rs` (`tune_game`, a run for each value), `logic` (`set_params`, the
+request `param`), `specula-sdk` (`Cx::param`), `launch_cli.rs`, `scaffold.rs` (the guide's "When
+the engine should look for you"), `tools/examen/src/native/search.rs` (`search_check`).
+
+## 16. What a second reader's bug list found (2026-11-22)
+
+A second reader went through the code and the 24 ledgers of the second comparison and listed
+thirteen faults ([LEVERAGE.md](LEVERAGE.md) has the comparison; the list was a report to the
+owner, not a file of this repository). What was mended from it, by hand, the same day:
+
+- **A damaged save could hang the engine.** A physics snapshot's settings were read with no
+  range check, and the substep count is a loop's length: one byte wrong, and the next step
+  ran for hours. They are checked as a game file's are (`bad_snapshot`), a step holds the
+  count to `MAX_SUBSTEPS` (64), and a test changes a few bytes of a save 4,000 ways: each is
+  refused, or restored and stepped.
+- **A number no rule reads was set in silence.** `--set bord=3` played the game as written. A
+  run now says so among its problems ("the run set 'bord' and no rule read it in this run"),
+  a check says it on its own line, and `specula tune` refuses to vary one
+  (`unread_parameter`): every try would be the same run.
+- **A check could not give its run a number.** `"set": {"board": 3}` is a key of a check now,
+  as `--set` is a flag of a run.
+- **A loop over the tick's events could not change the world.** `cx.events()` lends the list;
+  `cx.take_events()` hands it over, and the sample and the guide use it.
+- **"Silent at volume 0" could be shown by no run**, a headless run playing nothing.
+  `run.sounds_heard` is each sound asked for with how loud: its own gain times the player's
+  volume as the game stood.
+- **The sounds a run reports were no part of a save** (found by `search_check` once its game
+  made a sound, not by the reader): a script a search found was answered with the sounds of
+  every stretch the search had tried. The list is a section of the save (`sounds`, there
+  only when a sound was asked for).
+- **What two pages did not say**: every public word of the SDK is on the guide or the world
+  page (twelve were on neither, and four of six builders of the 3D jobs searched the SDK's
+  source), and the world page lists a sound recipe's fields. A test holds both against the
+  code. The world page is twelve half-kilobytes for it.
+- **Said, not mended:** a search that ends by its seconds answers by how far this machine got
+  (the page said "the same command finds the same script"; it says when that holds). The
+  guard against tests that pass by the machine's speed reads upper bounds only: what it
+  cannot see is written at its head.
+- **Left as they are:** the sample's screens keep their names (`hud`, `pause`; the report's
+  `phase` line says `paused`); three lookups that panic on a name not in the engine's own
+  tables; the engine on Linux ([LINUX.md](LINUX.md): the second reader builds that side).
+
+`search_check` plays the three that need a game: the sound's loudness at the tick a coin is
+taken, a tuning refused for a number no rule reads, and three checks that give their runs a
+number, one of them mistyped.
+
+## 17. What the large job ran out of (2026-11-22, after the cold comparison)
+
+The cold comparison's one larger job cost 5.9 times a plain build
+([LEVERAGE.md](LEVERAGE.md), the last results). Its three builders spent 99 requests reading
+the engine's documents and source, and a second reader's three passes over the ledgers put
+about four fifths of that on two things the engine could not do or did not say, tied: what a
+game keeps between two runs of the program, and screens of the game's own. The same passes
+found two smaller traps that cost checks. Built for it, by hand:
+
+- **What a game keeps for the player** (`"keep": {"best": "gate.best"}` in the game file: a
+  name, and a key of a module's state). The engine writes the value when the rules change
+  it, in the player's settings file under `kept.NAME` (so only where settings are kept), and
+  tells it back to the rules as the event `kept` before the first tick and after a save is
+  loaded. Any value the state holds, 4 KiB as JSON, sixteen names. Nothing of the sim reads
+  a file: what was kept comes in as every other thing from outside does, as an event at a
+  tick's boundary.
+- **Screens the rules put up** (`"show": {"shop": "gate.shopping"}`): while a run is under
+  way or paused and the key is true, the screen is up over the game's own and under any
+  menu, with the focus. Its buttons' words reach the rules as `ui` events; the clock goes
+  on; the rules take it down by the key. Escape still pauses over it.
+- **A key is read by itself.** `--keys`, a check's `expect`, and a condition of `find` or
+  `tune` take any key the report could name (`game.phase`, `run.sounds_heard`,
+  `world./gate/door.position`, `gate.wave`) with no line of the report written for it first.
+  A key with no value is left out, so a name mistyped is still refused by name. (Four of
+  five games failed "silent at volume 0" because the line that shows it was in no report;
+  twelve searches were refused over `game.phase`.)
+- **`ui.texts` is the top screen's texts** (it was every screen's, and five games printed
+  the title's buttons under a pause); `ui.all_texts` is every screen's. **`ui.focus` is the
+  focused button's words**, `ui.focus_id` its id.
+- **The guide says what the engine does not do**, five lines: no file from the rules, no
+  setting changed by them, no screen opened by a call, Escape not theirs to hear, no tick
+  at the title.
+
+`search_check` plays the kept score (set in one run, found in the next in the same place,
+not found elsewhere) and the keys read by themselves. A shown screen is held by a unit test
+of the shell and was played by hand; no live check plays one yet.
+
+**Not done here, and next:** a smaller project to start from and an index of the SDK's
+signatures (builders still opened its source for types); one command that plays every check
+of a brief. Both are about the number of requests, which these mends do not touch.
+
+### What a second reader found in it (2026-11-23), and what was mended
+
+The second reader applied this section's change to a clone, built and tested it on Linux, and
+read the five runs' ledgers again by a rule of its own. Its findings, with what was done:
+
+- **A file that was there and could not be read was written over at the first change**
+  (too large, not UTF-8, damaged JSON, another format): defaults replaced it. Before this
+  section that cost a player their settings; with `keep` it costs their saved run.
+  **Mended:** nothing is saved over a file that was not read (`SettingsStore::saving`), a
+  text that is no settings file is told apart and said, and the engine's own writer holds
+  to the same.
+- **Sixteen kept values at their most made a file its own reader refuses.** **Mended:** what
+  a game keeps is 48 KiB at most in all; a value that would pass it is not kept, and said.
+- **A kept name of 60 to 128 characters was written and gone at the next start** (the
+  file's reader takes names of 64, and `kept.` stands before it). **Mended:** a kept name is
+  48 characters at most, refused in the game file by that number.
+- **Two engines on one settings folder shared one temporary file.** **Mended:** each writes
+  a temporary file of its own. **Not mended:** each still writes its whole view of the file,
+  so of two that change different things the later write wins. Runs side by side on one
+  folder are for reading, not for keeping.
+- **A kept value from the file was told whatever its size.** **Mended:** one larger than a
+  game may keep is not told, and said. Its kind is still not checked: a file changed by
+  hand tells the rules what it holds.
+- **After a load a telling the save held was told in place of the player's file's.**
+  **Mended:** the file's value takes its place; what was last seen of the modules is
+  forgotten at a load.
+- **`--keys` dropped a key with a dot in it that had no value, so one mistyped vanished.**
+  **Mended:** a key `--keys` names is always printed, `null` when it has no value (every
+  state of `--at` has the same lines). A key only a condition reads is still left out when
+  it has none, and the condition says it could not be read. And a key of a module named as
+  a line of the report (`--keys gate.wave` beside a line `gate`) is read.
+- **Escape over a screen the rules put up paused the game** (four of five games paused in
+  their shop, against their brief). **Mended:** over such a screen Escape is told to the
+  rules (`ui`, action `back`, with `screen`) and does nothing else.
+- **The guide said "Escape is not the rules' to hear"**, which a working game of the five
+  contradicted. **Mended**, with what `keep` left unsaid (the rules only set the state; the
+  telling comes at the first tick, before `run`), the kinds a state's value is read as, and
+  the case every builder went to the source for: a title or a menu of the game's own is
+  `"start": "run"`, a shown screen, and rules that answer its buttons.
+
+**Left, and said:** `ui.focus` takes the first text inside the button's rectangle and falls
+back to the id; `ui.texts` changed its meaning, which a check written against the old one
+will show; a shown screen is drawn by its own `layer`, whatever order the shell has it in
+(the guide now says which layer to give it).
+
+### After the large job was measured again (2026-11-23): the engine's words on the rules' own screens
+
+The measurement of `ff4b1298` ([LEVERAGE.md](LEVERAGE.md), the results of 2026-11-23) and the
+second reader's two reviews of it found two more things, both small, mended before the engine
+and its guide were frozen for a second large job:
+
+- **A button that says `resume` on a pause screen of the game's own did nothing** (five of
+  fifteen games failed the pause item so; a game whose pause was the engine's own screen
+  passed with the same word). `resume` was answered by the engine, which had paused nothing,
+  and the rules never heard it. On a screen the rules put up, the words that move the run
+  and the screens (`start`, `pause`, `resume`, `title`, `back`, `close`) now reach the rules
+  as the event `ui`, as any word of the game's own does, and the engine does nothing. What
+  serves any menu is still the engine's there (`open:SCREEN`, the settings' words, `save:`,
+  `load:`, `quit`), and on its own screens every word is the engine's as before.
+- **What was kept reached a screen a tick late**: the rules hear `kept` at the first tick,
+  so a title at the very start showed no Continue and "Best: 0" (four of fifteen games; no
+  item of the list sees it). A screen now reads what the game keeps as `kept.NAME`, from the
+  player's file, from the first frame.
+
+The guide says both, and which words are whose. **From this commit the engine and the guide
+are frozen** until the second large job's runs are judged: the job is written by the second
+reader, who did not write the guide, and the lead does not see what in it the guide does not
+answer. Typos excepted, and recorded before the runs.
+
+### A word given again is pressed again (2026-11-23, after the second large job)
+
+The second large job ([LEVERAGE.md](LEVERAGE.md), the results of 2026-11-23, Night Market)
+asks that every input word act once at its tick, "even when the same word was given at the
+tick before". A script let go of what was held and held the new word between two ticks, and
+a module read an action as pressed only when it had not been held the tick before: so the
+same word twice running was one press. Three of five games failed the items that turn on it;
+two got past it with a hidden button and a chord for every word. The second reader named
+three faults of input. Looked at in the runs, they are one:
+
+- **Mended:** an action let go and held again between two ticks is pressed again
+  (`logic/input.rs`: a hold placed where none stood is a press, whatever the tick before
+  held). A hold made longer while it stands is no press, as before. `5:tap,6:tap` is two
+  presses.
+- **A side of it the live check found:** asking whether a word is one the game takes let go
+  of what the word named and held it again, which was then a press. A word that is only
+  looked at, or refused, must change nothing: what is held at that value is not asked again
+  (`script_run::check_word`). `new_project_check` holds both: a refused step adds no press,
+  and the same word given again adds one.
+- **"A key reaches the rules only through a button" was this fault**, by the two builders'
+  own READMEs: the hidden buttons were there to get a second press and for nothing else.
+- **"The rules cannot change a setting": no fault found.** The builder who spent thirteen
+  requests on a settings screen of its own got it working with the engine's stepping
+  buttons; the cost was finding that out.
+
+### Quit in a headless run, and several words at one tick (2026-11-23, after Day Market)
+
+The second reader's two passes over Day Market found two more faults, both reproduced.
+
+- **Quit did not end a headless run.** A script's Enter on a Quit button was an agent's press
+  (refused as the player's alone), a player's quit was honoured only in a window, the rules
+  that drive a menu of their own had no way to ask for it, and `run.ticks` said the script's
+  schedule where fewer ticks had passed. **Mended:** an engine started for a script
+  (`specula run`) is told so (`Game::played_by_script`): the script's press of Quit from a
+  frame is the player's, and the game file's new `quit` (a key of a module, `"gate.quit"`)
+  asks for it from the rules. The run ends there: no later input, no further tick (none
+  after the tick the rules asked on), the state as it stood, `run.ticks` the ticks that
+  passed, and the line `run.quit` (the tick) in the state whatever the report's lines are.
+  An `--at` tick after it is not read, a followed run reads no step after it, `specula
+  find` ends a way on which the game quit and refuses a search whose own script quit, and
+  a check's or a tuning's run ends as a run does. **Not changed:** `game_act` quit is
+  refused everywhere; a window's Quit button closes the window as before; the rules' `quit`
+  closes no window (an agent can drive the rules: it is said once as a problem there).
+- **Several words at one tick were one press of the last.** A script lets go of a word for
+  the next, and a hold let go before any tick read it was lost. **Mended:** it is a press at
+  the next tick (pressed and released, as a window's press shorter than a tick), so
+  `1:put,1:next_good` acts on both for any game that reads `.pressed`. One action twice at
+  one tick cannot be two `pressed`: every press since the last tick, in order, repeats
+  included, is told to its module as the engine's event `press` (`action`), so a menu the
+  rules drive counts `1:down,1:down` as two. A hold made again before a tick read it stays
+  one press. What no tick has read yet is part of a save (the logic section's version 2;
+  version 1 still loads). No change to the SDK: a project's copy of it builds as it was.
+  The interface's words take another path, a press each, so `0:down,0:down` moves a menu's
+  focus twice. The guide says both in four lines, paid for by wording nearby.
+- **A reviewer's round on it (2026-11-24), mended:** a quit on the tick the game's clock
+  stopped (a run won, or paused, on the tick it quit) was taken after the clock's stop and
+  seen at the next input, so `run.ticks` and `run.quit` said the schedule: the quit is now
+  taken on its tick whatever the clock does. A quit waiting when a save is loaded is gone
+  with the load (`specula find`'s next way took it). A press at the window while the clock
+  is held (a pause menu, the title) no longer acts when it runs again, nor is told as
+  `press`. A word that changes the value of an action already held is looked at without
+  letting go of it, so a followed run, and a search, hear one press for it, as `specula
+  run` does. While the clock is held and no quit was asked, `run.ticks` is still the
+  script's count (it goes on whatever screen is up), as an input's tick is.
+
+### A screenful of text in one kept value (2026-11-23, after Day Market)
+
+Five of ten cold builders' Day Market games put a whole end-of-day summary (about sixteen
+lines, 300 to 600 characters, joined by newlines) into one kept text bound by one label. The
+shell gave a screen no text longer than 256 characters and dropped a longer one without a
+word; the label showed `{work.disp}` as written, and the run's warning said that nothing kept
+`work.disp`, which sent the builder to look for a `cx.set_state` that was there. No page gave
+the limit, and nothing recorded a reason for it.
+
+- **The bound is a label's own now**: a kept text of up to 4,096 bytes reaches a screen whole
+  (`specula_ui::state::MAX_TEXT`, raised from 512 bytes, which a summary of that size would
+  have been cut at). What it bounds is a label's cost a frame (rendered, compared with the
+  last layout, one glyph quad a character); what the modules keep is bounded by their store.
+- **A value that is still not shown is said, with why**: `game_state` lists it under
+  `not_shown` (its key, and a text's length against the bound, or a kind a screen cannot
+  show, with what to do), and a run's problem for a screen that binds it says so. "Nothing
+  keeps" is said only of a key no module keeps.
+- **A run's `ui.texts` holds a text whole** (`ui_tree`'s `text_chars`, up to a label's
+  bound; a page's long texts are at most 64 KiB together). `ui_tree` still cuts at 160
+  characters unless asked.
 
 ## As built
 

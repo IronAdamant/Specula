@@ -1,0 +1,214 @@
+{
+  "leverage": 1,
+  "id": "night",
+  "title": "Night Market: a stall layout editor with a stock of pieces, a night run on its own clock, blueprints, a ledger and a replay",
+  "brief": [
+    "Build a game called Night Market.",
+    "",
+    "The game",
+    "- You run a night-market food stall. Before the night you lay the stall out on a grid; then the night runs by itself, and what you laid out earns or loses money.",
+    "- The stall is a grid 8 cells wide and 5 tall. A cell is (x, y): x from 0 to 7 left to right, y from 0 to 4 bottom to top. Each cell holds at most one piece. There are three kinds of piece: a stove, a table and a lamp. The stock for a night is 3 stoves, 4 tables and 2 lamps; a piece on the grid is taken from the stock, and removed from the grid it goes back.",
+    "- Layout. A cursor moves over the grid one cell at a time (Up / Down / Left / Right) and stops at the edges; it starts at (0, 0) each time Layout is opened. One kind of piece is selected (stove at first); next_piece moves the selection stove, table, lamp, stove...; prev_piece the other way round. place puts the selected piece on the cursor's cell when the cell is empty and the stock of that kind is not used up; otherwise it changes nothing. erase takes the piece off the cursor's cell and back into the stock; on an empty cell it changes nothing. The arrow words in Layout move only the cursor. Escape in Layout goes back to the title. Enter opens the stall (starts a night) when the grid holds at least one stove and one table; otherwise nothing starts and the screen shows the words \"Needs a stove and a table\" until the next word is given in Layout.",
+    "- The grid as it was left stays: the next time Layout is opened, in the same run or in a game started again later, it is there as it was left. A fresh game starts with an empty grid.",
+    "- Blueprints. There are 3 slots, numbered 1 to 3; slot 1 is the chosen one each time Layout is opened. next_slot moves the chosen slot 1, 2, 3, 1... save_slot copies the grid into the chosen slot (replacing what it held; the grid does not change). load_slot replaces the grid with the chosen slot's pieces; on an empty slot it changes nothing. Slots are kept: a game started again later has them as they were left.",
+    "- The night. The night runs from 18:00 to 24:00, which is 360 minutes of game time, the clock. The clock is not the tick count: it has a speed. At speed slow a minute of game time passes every 24 ticks; at speed fast, every 6 ticks; at speed stop, none (the ticks go on, the clock stands, and the screen is still the night's). To keep this exact: the clock keeps a progress number that starts at 0 each night; every tick adds 1 at slow, 4 at fast, 0 at stop; whenever the progress reaches 24 one minute passes and 24 is taken off it (a change of speed keeps what the progress holds). The night starts at clock 0 at speed slow. The words stop, slow and fast set the speed. When the clock reaches 360 the night is over and nothing in that minute is played.",
+    "- Customers. When the night starts the minutes at which customers arrive are drawn, all at once, from a random source seeded by a number given when the game starts (`seed`, default 1): the first customer arrives at minute 5, each next one 4 to 10 whole minutes (each equally likely) after the one before, and the list stops before minute 360. Customers are numbered 1, 2, 3... in order of arrival.",
+    "- Each time the clock reaches a minute, this happens, in this order: (1) every customer arriving that minute joins the queue; the queue holds 3, and one who arrives when it already holds 3 is turned away (lost goes up by 1). (2) Every customer who is queued, seated or cooking and whose wait has reached the patience limit leaves: lost goes up by 1, nothing is paid, the table or the queue place is free at once, and a stove that was cooking for them is idle at once. A customer's wait is the clock minus their arrival minute, and stops counting when their cooking ends. The patience limit is 60 minutes at Easy, 40 at Normal and 30 at Hard. (3) Every stove whose cooking ends this minute becomes idle, and its customer starts eating. (4) Every customer whose eating ends this minute pays, served goes up by 1, and the table is free. (5) While the queue is not empty and a table is free, the customer at the front of the queue sits at the free table with the lowest x (the lowest y among those). (6) Each idle stove, from the lowest x (the lowest y among those), takes the seated customer who has waited longest (the lowest number if equal) among those whose dish has not begun, and starts cooking: 20 minutes if the stove shares an edge with that customer's table, 30 minutes if it does not. Cooking that starts at minute m ends at minute m + 20 or m + 30. Eating lasts 10 minutes. A customer pays 8 coins, or 12 if a lamp shares an edge with their table.",
+    "- A customer's state is queued, seated (at a table, waiting for a stove), cooking or eating. When the night is over, whoever is still in the stall pays nothing and is not counted as lost.",
+    "- The night's result is its coins (taken in the night), served and lost. It depends only on the grid, the difficulty the night started with and the arrival minutes, never on the speed the clock was run at.",
+    "- The ledger. The last 3 finished nights are kept, newest first, each with its coins, served, lost and difficulty. A night is finished when its clock reaches 360. A night given up from the pause is not finished, and is not kept.",
+    "- Replay. The last finished night is kept whole, enough to play it again exactly as it was: its grid, its arrival minutes and its difficulty. While one is kept the title has Replay. Replay plays that night again, with those, whatever the seed, the difficulty setting and the grid are now. It starts at clock 0 at speed slow, the speed words work in it, and when its clock reaches 360 the screen is the summary with the same coins, served and lost as the night had. A replay is not a finished night: the ledger and the kept night stay as they were. Changing the grid or loading a slot later does not change the kept night.",
+    "- It advances in fixed steps of 1/60 second; what happens never depends on how fast frames are drawn, and the same seed and inputs from the same kept things always give the same run.",
+    "",
+    "Screens",
+    "- Title: the game's name, and a menu: Layout, Replay (only while a finished night is kept), Ledger, Settings, Quit. Up / Down move and stop at the first and last entry; Enter chooses. Quit ends the program (in a headless run it ends the run there, the state printed as it stood).",
+    "- Layout: the grid with its pieces and the cursor, and the words \"Layout\", \"Piece: Stove\" (or Table, Lamp), \"Slot: 1\", the stock left of each kind as \"Stove: 3\", \"Table: 4\", \"Lamp: 2\", and short lines saying what Enter and Escape do.",
+    "- Night: the grid with its pieces, the customers (queued ones in a line at the left, seated ones at their tables, told apart by their state), and the words \"Coins: 12\", \"Served: 1\", \"Lost: 0\", the time as \"18:00\" (the clock after 18:00; 23:59 at the last minute) and \"Speed: Slow\" (or Stop, Fast). A replay also shows the word \"Replay\". Escape pauses.",
+    "- Paused: \"Paused\", and a menu: Resume, Title. Escape also resumes. Title gives the night or the replay up and goes to the title.",
+    "- Summary: \"Night over\" (\"Replay over\" for a replay), the coins, served and lost as \"Coins: 96\", \"Served: 11\", \"Lost: 3\", and \"Enter: title\".",
+    "- Ledger: \"Ledger\", then a line for each kept night, newest first, as \"Coins 96, served 11, lost 3, Normal\"; \"No nights yet\" when there are none; and a menu of one entry, Back. Enter or Escape goes to the title.",
+    "- Settings: \"Settings\", and a menu: Volume (0 to 10, 5 at first), Difficulty (Easy, Normal, Hard; Normal at first) and Back, shown as \"Volume: 5\", \"Difficulty: Normal\", \"Back\". Left / Right change the chosen one and stop at either end. Escape goes back to the title. The difficulty of a night is the one set when it starts.",
+    "- Volume, difficulty, the grid, the 3 slots, the ledger and the last finished night are kept: a game started again later comes up with them.",
+    "",
+    "Checkable without hands",
+    "Someone who cannot play it by hand will check it, so the game must offer two things, however you build it:",
+    "1. A headless run: given a seed, a number of ticks, where everything kept is kept (the settings, the grid, the slots, the ledger, the last night), and a script of inputs (at tick T: one of up, down, left, right, enter, escape, place, erase, next_piece, prev_piece, next_slot, save_slot, load_slot, stop, slow, fast, none; each acts once, after T ticks have run and before the next tick runs, even when the same word was given at the tick before; a word at tick 0 acts before anything runs; a word that means nothing on the screen it comes on changes nothing), it starts at the title screen, runs that many ticks with no window and prints the state as one JSON object: {\"tick\" (the ticks run so far in this headless run: N after N ticks, whatever screen it is on), \"screen\" (title, layout, night, paused, summary, ledger, settings), \"menu_index\", \"volume\", \"difficulty\" (the setting: easy, normal, hard), \"texts\" (every string on screen now, in order), \"cursor\": {\"x\", \"y\"}, \"piece\" (stove, table, lamp), \"stock\": {\"stove\", \"table\", \"lamp\"} (what is left), \"grid\": [{\"piece\", \"x\", \"y\"}] (ordered by x, then y), \"slot\" (1 to 3), \"slots\" (three lists, each like grid, empty for an empty slot), \"clock\" (minutes, 0 outside a night; 360 on the summary), \"speed\" (stop, slow, fast; none outside a night), \"coins\", \"served\", \"lost\" (0 outside a night and its summary), \"queue\" (how many are in the queue), \"customers\": [{\"id\", \"state\" (queued, seated, cooking, eating), \"x\", \"y\" (the table's cell; null while queued), \"wait\"}], \"arrivals\" (the arrival minutes of this night or replay, in order; empty outside a night and its summary), \"replaying\" (true in a replay and on its summary), \"replay_ready\" (true while a finished night is kept), \"ledger\": [{\"coins\", \"served\", \"lost\", \"difficulty\"}] (newest first)}.",
+    "2. A frame: after such a run, the view as it would be drawn, written as a PNG 800 pixels wide and 480 tall.",
+    "",
+    "Hand in, in your work folder",
+    "- The game, ready to run.",
+    "- README.md: how to play it, the exact commands for the headless run and the frame, where everything kept is kept, and what you checked yourself and how."
+  ],
+  "acceptance": [
+    {
+      "id": "n01",
+      "kind": "checkable",
+      "text": "The headless run exists, starts at the title screen and prints the state as the brief's JSON object, with every key the brief names."
+    },
+    {
+      "id": "n02",
+      "kind": "checkable",
+      "text": "The frame is written as an 800 x 480 PNG after a headless run."
+    },
+    {
+      "id": "n03",
+      "kind": "behaviour",
+      "text": "With nothing kept, the title's texts are the game's name and Layout, Ledger, Settings, Quit (no Replay), menu_index is 0, and Up / Down stop at the first and last entry."
+    },
+    {
+      "id": "n04",
+      "kind": "behaviour",
+      "text": "In Settings, Left / Right change the volume within 0 to 10 and never past either end (5 at first), and the difficulty among Easy, Normal and Hard (Normal at first); the texts read \"Volume: N\" and \"Difficulty: Normal\"; Escape goes back to the title."
+    },
+    {
+      "id": "n05",
+      "kind": "behaviour",
+      "text": "Volume and difficulty set in one headless run are the values a second run starts with (same place kept), and a fresh place starts with the defaults."
+    },
+    {
+      "id": "n06",
+      "kind": "behaviour",
+      "text": "Layout opens from the title with an empty grid on a fresh place: cursor (0, 0), piece stove, slot 1, stock 3 stoves, 4 tables, 2 lamps, and the texts of the brief (Layout, Piece: Stove, Slot: 1, the three stock lines)."
+    },
+    {
+      "id": "n07",
+      "kind": "behaviour",
+      "text": "In Layout the cursor moves one cell for each of Up, Down, Left, Right (up raises y) and stops at x 0 and 7 and at y 0 and 4; the arrow words never change menu_index and never leave Layout."
+    },
+    {
+      "id": "n08",
+      "kind": "behaviour",
+      "text": "next_piece cycles the selection stove, table, lamp, stove; prev_piece goes the other way; the \"Piece:\" text follows."
+    },
+    {
+      "id": "n09",
+      "kind": "behaviour",
+      "text": "place puts the selected piece on the cursor's cell and the stock of that kind goes down by 1; on an occupied cell, or with that kind's stock at 0 (a 4th stove, a 5th table, a 3rd lamp), it changes nothing."
+    },
+    {
+      "id": "n10",
+      "kind": "behaviour",
+      "text": "erase takes the piece off the cursor's cell and the stock of that kind goes up by 1; on an empty cell it changes nothing; the grid key and the stock texts follow both."
+    },
+    {
+      "id": "n11",
+      "kind": "behaviour",
+      "text": "Escape in Layout goes to the title; choosing Layout again shows the grid as it was left (cursor back at (0, 0)); and a later headless run on the same place shows the same grid."
+    },
+    {
+      "id": "n12",
+      "kind": "behaviour",
+      "text": "next_slot cycles the chosen slot 1, 2, 3, 1; save_slot copies the grid into that slot and leaves the grid as it was; load_slot replaces the grid with the slot's pieces (stock follows); load_slot on an empty slot changes nothing."
+    },
+    {
+      "id": "n13",
+      "kind": "behaviour",
+      "text": "Slots are kept: a later headless run on the same place shows the same three slots, and loading one there gives the grid that was saved."
+    },
+    {
+      "id": "n14",
+      "kind": "behaviour",
+      "text": "Enter in Layout with no stove or no table leaves the screen on layout and adds \"Needs a stove and a table\" to the texts; with at least one stove and one table it starts a night: screen night, clock 0, speed slow, coins, served and lost 0, grid unchanged, the time text 18:00."
+    },
+    {
+      "id": "n15",
+      "kind": "behaviour",
+      "text": "At speed slow the clock goes up by 1 every 24 ticks; at fast every 6 ticks; at stop it does not move while tick goes on and the screen stays night; changing speed in the middle of a minute keeps the part already gone; the time text and \"Speed:\" text follow."
+    },
+    {
+      "id": "n16",
+      "kind": "behaviour",
+      "text": "`arrivals` is a list of whole minutes in order, the first 5, each gap 4 to 10, all under 360; the same seed gives the same list, another seed another; it does not change during the night."
+    },
+    {
+      "id": "n17",
+      "kind": "behaviour",
+      "text": "A customer who arrives with a table free sits at the free table with the lowest x (then lowest y); otherwise joins the queue (state queued, x and y null); with 3 in the queue another arrival is turned away and lost goes up by 1 at once."
+    },
+    {
+      "id": "n18",
+      "kind": "behaviour",
+      "text": "A seated customer is cooked for as the brief says, a stove for one customer at a time: with one stove sharing an edge with the one table, the first customer (arriving at minute 5) is cooking from minute 5 and eating from minute 25; with the stove not next to the table, eating from minute 35."
+    },
+    {
+      "id": "n19",
+      "kind": "behaviour",
+      "text": "After 10 minutes of eating the customer pays 8 coins (served goes up by 1, the table is free), or 12 coins when a lamp shares an edge with their table."
+    },
+    {
+      "id": "n20",
+      "kind": "behaviour",
+      "text": "A customer whose wait reaches the patience limit before their cooking ends leaves: 60 minutes at Easy, 40 at Normal, 30 at Hard; lost goes up by 1, no coins; their table or queue place is free at once and their stove is idle at once (for example, one stove not next to the one table at Hard: the first customer, arriving at 5, leaves at 35 and does not pay)."
+    },
+    {
+      "id": "n21",
+      "kind": "behaviour",
+      "text": "The order inside a minute holds: a table freed by a payment is taken by the front of the queue in the same minute, and a stove freed in that minute or before starts cooking for them in that same minute."
+    },
+    {
+      "id": "n22",
+      "kind": "behaviour",
+      "text": "When the clock reaches 360 the screen is summary, with \"Night over\", \"Coins: N\", \"Served: N\", \"Lost: N\" and \"Enter: title\" matching the state; customers still in the stall give no coins and do not add to lost; Enter returns to the title."
+    },
+    {
+      "id": "n23",
+      "kind": "behaviour",
+      "text": "The result of a night is the same at slow, at fast and at a run that changes speed (with stop in the middle): same seed, same grid, same difficulty, same coins, served and lost."
+    },
+    {
+      "id": "n24",
+      "kind": "behaviour",
+      "text": "Escape in a night pauses (screen paused, texts Paused, Resume, Title; the clock stands); Resume and Escape both continue from the same state; Title goes to the title and the night is given up (nothing added to the ledger, the kept night as it was)."
+    },
+    {
+      "id": "n25",
+      "kind": "behaviour",
+      "text": "After a finished night the ledger (in state and on the Ledger screen, \"Coins N, served N, lost N, Normal\") holds it as its newest line; a later headless run on the same place shows it too; with no night yet the screen says \"No nights yet\"."
+    },
+    {
+      "id": "n26",
+      "kind": "behaviour",
+      "text": "The ledger holds only the last 3 finished nights, newest first: after a fourth the first is gone; a night given up from the pause and a replay add nothing to it."
+    },
+    {
+      "id": "n27",
+      "kind": "behaviour",
+      "text": "After a finished night the title has Replay between Layout and Ledger (replay_ready true), also in a later headless run on the same place."
+    },
+    {
+      "id": "n28",
+      "kind": "behaviour",
+      "text": "Replay plays the kept night again: screen night with replaying true and the word \"Replay\", the same arrivals and grid as the night had, whatever the seed, the grid and the difficulty setting are at that time; at clock 360 the summary (\"Replay over\") shows the same coins, served and lost as the night; the ledger and the kept night are unchanged."
+    },
+    {
+      "id": "n29",
+      "kind": "behaviour",
+      "text": "Changing the grid, loading a slot or choosing another difficulty after a night does not change what Replay plays."
+    },
+    {
+      "id": "n30",
+      "kind": "behaviour",
+      "text": "Two headless runs with the same seed, ticks and script, each starting from its own identical copy of what is kept, print identical states; another seed gives other arrivals."
+    },
+    {
+      "id": "n31",
+      "kind": "behaviour",
+      "text": "The frame in Layout shows the grid, the pieces (the three kinds told apart), the cursor, the selected piece, the stock and the slot, where the state says they are."
+    },
+    {
+      "id": "n32",
+      "kind": "behaviour",
+      "text": "The frame in a night shows the grid and its pieces, the customers (queued at the left, seated at their tables, the four states told apart), and the coins, served, lost, time and speed."
+    },
+    {
+      "id": "n33",
+      "kind": "behaviour",
+      "text": "The frames of the title, settings, ledger, paused and summary screens show their texts, with the chosen entry of a menu marked."
+    },
+    {
+      "id": "n34",
+      "kind": "behaviour",
+      "text": "README.md says how to play, where everything kept is kept, and gives commands for the two checks that work as written."
+    }
+  ]
+}

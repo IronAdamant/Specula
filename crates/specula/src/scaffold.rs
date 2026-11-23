@@ -227,7 +227,8 @@ impl Module for Rules {
         // rules read, a run started or given up, a press of the game's own button, the run's
         // end. In order, so that a tap that comes with the start counts, and a run started and
         // given up in one tick is given up.
-        for event in cx.events().iter().filter(|e| e.from == "engine") {
+        // (Taken, so that this loop may call cx: `cx.events()` only lends the list.)
+        for event in cx.take_events().into_iter().filter(|e| e.from == "engine") {
             let word = |key: &str| event.data.get(key).and_then(Value::as_str);
             match event.name.as_str() {
                 "setting" if word("name") == Some("difficulty") => seconds = seconds_for(word("value").unwrap_or("normal")),
@@ -301,6 +302,12 @@ about: game.json, modules/{{module}}/
 What is here is the smallest game with every part, made by `specula new`: tap five times before
 the time runs out. It has a title screen, a pause menu, settings (volume, language, difficulty),
 won and lost screens, one module with the rules, and its own checks (`specula check .`).
+Shapes by name (a gear, a heart, an arch, a star, a gem...) are a library that recipes and
+`shape2d` items take: `specula call formae_list '{}'` names them all.
+A model (a prop, a pickup, scenery) is a recipe under `assets/models/`: `notes/models.md` is
+how one is written, built and looked at, in three calls.
+3D things, physics (a collider, a body that falls), a light and a sound are each a word on a
+spawn or one call from a module: `notes/world.md`.
 
 Replace this note with what the game is to be (memory_note {id: "brief", ...}): every agent is
 given it at its first call.
@@ -334,13 +341,14 @@ a screen, a screen that moves settings, the words). In a new project they are a 
 tap game: replace them. The other screens (`title`, `pause`, `won`, `lost`) have the same
 form and are read when they are changed; `assets/ui/theme.json` is the look, and needs no
 reading. Delete the sample's `checks/` folder: it checks the tap game. Every call of the SDK
-that a game of this size needs is on this page.
+that a game of this size needs is on this page (3D, physics, sound: `notes/world.md`).
 
-**The loop: edit, run, read.** One command builds the modules as they are on disk, plays the
-game from its start with no window, and prints how it stands as one JSON object:
+**Write the game whole, then run it** (the pages say what the engine will do). One command
+builds the modules, plays the game with no window and prints how it stands as JSON:
 
     specula run . --ticks 40 --inputs "0:enter,5:tap,6:none,10:tap" [--seed 1]
                   [--settings FOLDER] [--frame out.png --size 800x480] [--follow]
+                  [--at 10,20,40] [--keys taps,score]
 
 - The answer is one line: the state, or an error (exit code 1). A build that fails answers
   the compiler's errors (file, line, message). A module whose call fails, or that panics,
@@ -350,27 +358,59 @@ game from its start with no window, and prints how it stands as one JSON object:
   the state, on standard error, when the run ends. A run ends after 30 minutes at most.
 - **Inputs** are words at ticks. `up down left right enter escape` press the interface, as
   keys do. A module's action (`tap` here: `modules/{{module}}/actions.json`) is held until the
-  next input, as a held key is; `none` holds nothing. A word that is both does both. Words
+  next input, as a held key is; the same word again is a press again; words at one tick
+  each act, in order (one action twice is one `.pressed`; the event `press` is each);
+  `none` holds nothing. A word that is both does both. Words
   joined by `+` are held together (`up+shoot`). An action that is not a button takes its
   value (`throttle=0.5`, `move=1/0`). In the rules read `cx.action("tap").pressed` for
   "once" and `.held` for "while held".
+  **Words of the game's own**: `"inputs": {"menu_down": "Key.Down", "restart": "enter"}` in
+  the game file lets a script say them (a source such as `Key.Down` presses the interface
+  only, where `down` would also hold a module's action of that name).
+- **A run read on its way**: `--at 90,180,270` prints the state at each of those ticks, a
+  line each, in one run (it ends at the last unless `--ticks` goes further); `--keys a,b`
+  prints only those lines of the report, and any key below by itself
+  (`--keys game.phase,run.sounds_heard`): it need not be in the report first. What a thing
+  does over time is one run, not one a tick.
+- **When the engine should look for you** (each is one command and no program of yours):
+  a number whose effect you want to see, `specula run . --ticks 120 --set grip=0.2,0.4,0.8`
+  (the rules read it with `cx.param("grip", 0.6)?`: a run for each value, a line each); a
+  number a brief gives only the result of ("the crates stand still", "it lands past x = 3"),
+  `specula tune . --ticks 120 --vary grip=0.1..1 --until "ball.x>3"` (it halves the range to
+  where the condition begins to hold); **"there is a script that wins"**, `specula find .
+  --ticks 1800 --inputs 0:enter --until "phase==won" --words left,right,up,down,none --rise
+  score --never "lives<3"` (it answers the inputs: put them in `checks/runs.json`; `--cells`
+  names the lines that say where the game is, such as `score,ball`; it ends within 90 seconds
+  with the best it came to, and `--seconds` gives it more). None of them is needed
+  to build a game: write it and run it once.
 - **Ticks.** The script counts every tick. The game's own clock ticks only while a run is
-  under way: the title, a pause and an ended run hold it, as they do for a player.
+  under way: the title, a pause and an ended run hold it.
 - **What is printed** is the game file's `"report"`: each line a name and the key whose value
   it shows. Keys: `{{module}}.KEY` (what the module keeps), `setting.NAME`, `game.phase`
   (title, running, paused, won, lost), `game.score`, `game.outcome`, `game.tick`, `run.ticks`,
-  `run.seed`, `ui.screen` (the top screen's name), `ui.focus` and `ui.focus_index` (the
-  focused button, and its place among its screen's buttons), `ui.texts` (every text on
-  screen, in order) and `ui.top_texts` (the top screen's). No `"report"`: all of it.
+  `run.seed`, `ui.screen` (the top screen's name), `ui.focus` (the focused button's
+  words; `ui.focus_id` its id, `ui.focus_index` its place among its screen's buttons),
+  `ui.texts` (the top screen's texts, in order; `ui.all_texts`: the screens underneath too).
+  No `"report"`: all of it. A check's `expect`, and `--until`, `--rise`, `--cells`, `--never`
+  and `--keys`, take a line's name or any of these keys as it stands (`game.phase==won`).
+  **The world itself**, read after the tick's physics, so no rule need copy it:
+  `world./{{module}}/ball.position` (`{"x", "y", "z"}`), `.x`, `.velocity`, `.exists`; everything
+  with a tag, by path: `world.#coin.positions`, `world.#coin.count`. `run.sounds`: every
+  sound the rules asked for so far, in order; `run.sounds_heard`: the same with how loud
+  (`{"sound", "gain"}`: its own gain times the player's volume, so 0 at volume 0).
 - `--seed N` (1 when left out) seeds `cx.random_*`: the same seed and inputs give the same
   run, and the rules never see a seed. `--settings FOLDER` is where the player's settings are
-  read and kept (a file the engine writes in it: the same folder again finds them); without
-  it they are kept nowhere. A window's player has a folder of their own, per user.
-- `--frame` writes what a player would see (the game file's `"view"`, with the interface).
-- `--follow` goes on after the script (`--ticks` may be left out): the state is printed,
-  then each line read from standard input is a step, `TICKS` or `TICKS WORD` (`10 up+shoot`:
-  that input, then ten ticks), and the state is printed after it, until the input ends. It
-  is how a program of yours plays by reaction, in one run, should a script of inputs not do.
+  read and kept (the same folder again finds them); without
+  it they are kept nowhere.
+- `--frame` writes what a player would see (the `"view"`, with the interface).
+- `--follow` goes on after the script: each line of standard input is a step (`TICKS` or
+  `TICKS WORD`, as `10 up+shoot`), and the state is printed after each.
+
+**Models** (props, pickups, scenery) are recipes under `assets/models/`: `notes/models.md`.
+Shapes by name: `specula call formae_list '{}'`.
+
+**3D, physics, light and sound** from a module (a sphere, a model, a collider, a body that
+falls, a lamp, a sound's recipe): `notes/world.md`.
 
 **game.json** (an unknown key is refused, by name)
 
@@ -383,6 +423,23 @@ game from its start with no window, and prints how it stands as one JSON object:
   and it is the sound's volume. A setting of the game's with `"is": "volume"` (any name, its
   own range and default) is the volume in its place.
   Every setting is kept for the player; nothing else is needed for that.
+- `keep`: what outlasts the program (a best score, a run to go on with):
+  `{"best": "{{module}}.best"}`, a name and a key of the rules' state (any value, 4 KiB).
+  The rules only `cx.set_state("best", v)?`: the engine writes it when it changes, where
+  the settings are kept (`--settings FOLDER`), and tells it back as the event `kept`
+  (`name`, `value`) at the first tick, before `run`: `"kept" if word("name") ==
+  Some("best") => best = best.max(..)`. A screen reads it as `kept.best` from the first
+  frame, before any rule has (`"Best: {kept.best}"`, `"visible": "kept.saved"`).
+- `show`: screens the rules put up, `{"shop": "{{module}}.shopping"}`: in a run, while
+  that key is true (or not 0), `assets/ui/shop.json` is up over the game's own with the
+  focus (give it `"modal": true` and a `"layer"` between the hud's and the pause's). Its
+  buttons' words reach the rules as `ui` events (`action`, `screen`), **`start`, `pause`,
+  `resume`, `title` and `back` among them**: on such a screen the engine does none of those
+  itself (a Resume on a pause screen of your own is yours to answer). Escape over it
+  reaches the rules as `ui` with the action `back`; the clock goes on.
+- **A title or a menu of the game's own** (Start and Continue, a shop, a level choice) is
+  that: `"start": "run"`, a shown screen, and the rules answer its buttons. The engine's
+  own `title` and `pause` screens are for a game that needs no more of them.
 - **A setting the rules read** (a difficulty) is four things: `"sim": true` on it here; a
   button on a screen with the action `cycle:NAME` (or `step:NAME:+1`), its text
   `{setting.NAME.text}`; for a choice, a line `setting.NAME.VALUE` for each value in every
@@ -394,7 +451,18 @@ game from its start with no window, and prints how it stands as one JSON object:
 - `view`: how the game is looked at, by the window and by a frame. A 2D game:
   `{"center": [x, y], "height": metres}` (straight on, +x right, +y up: draw with flat cubes
   at z 0). 3D: `{"eye": [x, y, z], "target": [x, y, z], "fov_y_deg": 50}`.
-- `report`: above.
+- `report`: above. `inputs`: words of the game's own for a script, above. `quit`:
+  `"{{module}}.quit"`: while that key is true a headless run ends there (`run.quit`:
+  the tick).
+
+**What the engine does not do** (do not look for it in its source)
+
+- The rules read and write no file; only `keep` outlasts the program. They change no
+  setting (a button does) and open no screen by a call (`open:SCREEN` on a button, or `show`).
+- Escape on a menu goes back; in a run with nothing over the game it pauses (the `pause`
+  screen, `game.phase` is `paused`: no rule ticks until `resume`).
+- At the engine's title no rule ticks, so no button's word reaches the rules there: a run
+  needs `0:enter` first, or `"start": "run"`.
 
 **Screens** (`assets/ui/*.json`; widgets: box, panel, label, button, bar, list, spacer)
 
@@ -405,8 +473,9 @@ game from its start with no window, and prints how it stands as one JSON object:
   language. `"visible"` shows a widget by a condition: `"KEY"`, `"!KEY"`, or a comparison
   (`"setting.difficulty == 'hard'"`, `"{{module}}.left < 3"`; `&&`, `||`).
 - A button's `action` is a word. The engine does `start`, `pause`, `resume`, `title`,
-  `open:SCREEN`, `back`, `quit`, `set:NAME:VALUE`, `step:NAME:+1`, `step:NAME:-1`,
-  `cycle:NAME`, `save:SLOT`, `load:SLOT`; any other word reaches the rules as the event `ui`.
+  `back` (on its own screens only: `show`, above), and everywhere `open:SCREEN`, `quit`,
+  `set:NAME:VALUE`, `step:NAME:+1`, `step:NAME:-1`, `cycle:NAME`, `save:SLOT`, `load:SLOT`;
+  any other word reaches the rules as the event `ui`.
 - On a button that moves a setting, Left and Right step it down and up; Enter does its action.
 - Another language is another file in `assets/strings`: the language setting finds it. The
   game's name on the title screen (`{game.title}`) is the game file's `title`, or the line
@@ -423,17 +492,21 @@ game from its start with no window, and prints how it stands as one JSON object:
   everything there and nothing in the struct: what is kept is what screens show, what
   `outcome` reads and what `report` prints.
 - Input: `cx.action("name")` has `.pressed`, `.held`, `.released` and `.value` (`[f32; 2]`).
-  The actions are `modules/{{module}}/actions.json`: each `{"name", "kind": "button" (or
-  `"axis"`, `"axis2"`), "group", "description", "bindings": ["Key.Space", "Pad.South"]}`.
+  The actions are `modules/{{module}}/actions.json`, `{"format": "specula.input.v1", "actions":
+  [..]}`: each `{"name", "kind": "button" (or `"axis"`, `"axis2"`), "group", "description",
+  "bindings": ["Key.Space", "Pad.South"]}`.
   Sources, the ones most games bind: `Key.A` to `Key.Z`, `Key.0` to `Key.9`, `Key.Up`,
   `Key.Down`, `Key.Left`, `Key.Right`, `Key.Space`, `Key.Enter`, `Key.Escape`, `Key.Tab`,
   `Key.Shift`, `Key.Ctrl`; `Pad.South`, `Pad.East`, `Pad.West`, `Pad.North`, `Pad.DpadUp`
   (`Down`, `Left`, `Right`), `Pad.Start`, `Pad.LeftBumper`, `Pad.RightTrigger` (an axis),
   `Pad.LeftStick` (an axis2); `Mouse.Left`, `Mouse.Right`; `Touch.Tap`. A name the input
   map does not read is refused when the module loads, with the name.
-- Events from the engine, at a tick: `for e in cx.events()`, with `e.from == "engine"`,
+- Events from the engine, at a tick: `for e in cx.take_events()` (the list is then yours,
+  and the loop may call `cx`; `cx.events()` only lends it), with `e.from == "engine"`,
   `e.name` and `e.data.get("key")`: `run` (`phase` is `start` when a run begins; any other
-  `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`).
+  `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`), `press`
+  (`action`: every press, in order); from physics,
+  `contact` and `fell` (`notes/world.md`).
 - The world: `cx.spawn(Spawn::new("cube").name("n").parent("/{{module}}").position(v)
   .scale(v).color("#rrggbb").tags(&["mob"]))?` (an `Id`; `v` is `Vec3::new(x, y, z)`, `f32`),
   `cx.find("/{{module}}/n")?` (an `Option<Id>`), `cx.set(id, Patch::new().position(v)
@@ -451,6 +524,13 @@ game from its start with no window, and prints how it stands as one JSON object:
   the rules take no seed and keep none. A stream goes on from where it was, so a second game
   in one session is another game; `cx.random_restart("stream")?` puts it back at its
   beginning (call it where a run begins, for "the same seed gives the same game again").
+- **The rest of the SDK** (with `notes/world.md` that is all of it; no need to read its
+  source): `cx.random_u32("s")?`;
+  `cx.emit("name", data)?` (an event every module hears next tick);
+  `cx.move_character(id, motion)?` (a `Moved`: `.position`, `.grounded`, `.blocked`);
+  `cx.actions()`; `cx.reloaded()`, `cx.generation()`; `cx.trace(TraceLevel::Info, "code",
+  fields)?`; `cx.request(value)?`. An entity also has `.path()`, `.version()`,
+  `.has_tag("t")`, `.prop("key")`; a `Spawn` and a `Patch` take `.props(value)`.
 
 **Also**
 
@@ -465,6 +545,133 @@ game from its start with no window, and prints how it stands as one JSON object:
   expect, as a file (the sample's was `checks/smoke.json`).
 - `notes/` is what the project remembers. Leave a note of what you decided and why:
   `notes/NAME.md`, with the front matter this file has (`title`, `kind: decision`, `about`).
+"##;
+
+/// What a module can put in the world beyond a coloured cube, in one page: 3D things, physics,
+/// light and sound. Found by making a ball on a ramp by hand (2026-11-21): all of it worked
+/// from a module at the first try, and none of it was said anywhere a module's author is
+/// pointed at. Every word of the SDK and every tool it names is held by a test below.
+const WORLD_NOTE: &str = r##"---
+title: What a module can put in the world (3D, physics, light, sound)
+kind: fact
+about: modules/, assets/sounds/, game.json
+---
+All of it is a spawn, in the module's `start` or `tick` (`use specula_sdk::{Spawn, Vec3}`):
+
+    cx.spawn(Spawn::new("cube").name("floor").parent(ROOT).position(Vec3::new(0.0, -0.1, 0.0))
+        .scale(Vec3::new(8.0, 0.2, 8.0)).color("#8c96a3").collider_box(Vec3::new(1.0, 1.0, 1.0)))?;
+    cx.spawn(Spawn::new("sphere").name("ball").parent(ROOT).position(Vec3::new(-1.0, 4.0, 0.0))
+        .color("#5aa9ff").collider_sphere(0.5).dynamic(1.0))?;
+    cx.spawn(Spawn::model("models/gear.json").name("gear").parent(ROOT))?;
+    cx.spawn(Spawn::new("group").name("lamp").parent(ROOT).position(Vec3::new(2.0, 4.0, 3.0)).light(6.0, 12.0))?;
+
+- **Shapes**: `cube` and `sphere` (1 m across before `.scale`), `quad` (a 1 m floor tile),
+  `group` (draws nothing, holds children), `Spawn::model(recipe)` (a recipe under `assets/`:
+  `notes/models.md`). `.rotation_deg(Vec3)` turns it about X, then Y, then Z. Metres, +Y up.
+- **Physics**: `.collider_box(size)`, `.collider_sphere(radius)`, `.collider_capsule(radius,
+  height)` are in the thing's own units (a cube's own box is 1, 1, 1 whatever its scale). A
+  collider alone stands still; `.dynamic(mass_kg)` makes it fall, roll and be pushed;
+  `.kinematic()` is moved by the rules: set its position each tick (`cx.set`), and it pushes
+  what it meets; it reads a velocity of zero, so keep its speed yourself. **A platform, a
+  lift, a bridge that slides**: `.carries()` after its collider word, and what rests on it
+  rides with it; without it friction alone moves what is on top (a box is dragged along, a
+  ball rolls behind and off the end). **Nothing bounces unless told**: `.bounce(0.5)` after a
+  collider word, on either of the two things that meet (the larger counts). `.friction(0.3)`
+  likewise; it is 0.6 unless given, and two things that meet grip by the geometric mean of
+  theirs (0.6 against 0.15 is 0.3). Gravity is 9.81 m/s2 down. **Push a body** with `cx.push(id, dv)?` (it adds to its velocity: a force
+  held is `acceleration * cx.dt()` each tick; never set the whole `body` to push, which
+  stops its spin). Read a body with `cx.entity(id)?` (`.position()`, `.velocity()`,
+  `.rotation_deg()`); what is near with `cx.query_near("tag", at, radius, 16)?`; **what
+  touches any thing now** with `cx.touching(id)?` (ids; "is it on the ground").
+- **What it will do, so that it need not be measured**: a ball on a surface rolls, and
+  rolling takes its share: a push of `a` moves a resting ball on the ground at `a * 5/7`
+  (push by `a * 7/5` there for `a`; in the air a push of `a` is `a`). Nothing slows a thing
+  in the air; on the ground a rolling ball slows only gently and a sliding box stops by
+  friction. A thing slower than 0.05 m/s for half a second sleeps until it is touched or
+  pushed. **Order in a tick**: the rules run, then physics moves things. So what the rules
+  read (`cx.entity`) is where the last tick left things, a thing spawned or placed in a tick
+  is first moved after it, and what the rules keep in their state is one step behind a
+  thing's place at the end of that tick.
+- **What physics tells the rules**, among `cx.events()` at the next tick (`e.from ==
+  "engine"`, values by `e.data.get("key")`): `contact`, for a thing tagged `contacts` or
+  under a group that is (`.tags(&["contacts"])` on the game's root hears of everything): `kind`
+  is `begin` or `end` (`enter`, `exit` for a trigger), `a` and `b` the two things' paths
+  (when only one is heard it is `a`), `speed` how fast they met (m/s), `point`, `normal`.
+  And `fell`, when a body has dropped 5 m below the lowest thing it could land on (under a
+  board whose underside is at -0.2 that is -5.2: for "below y = -5" compare its place
+  yourself): `entity` (its path), `position`. Put it back at rest (`cx.place_at_rest(id, v)?`) or
+  delete it; a run that ends with one out there says so.
+- **Light**: `.light(intensity, range_m)` on any spawn (1 lights a white surface 1 m away
+  fully). The camera of a 3D game is `game.json`'s `"view": {"eye": [x, y, z], "target": [x,
+  y, z], "fov_y_deg": 50}`.
+- **Sound**: `cx.sound("bounce", Some(position), 1.0)?` plays `assets/sounds/bounce.json`, a
+  recipe: `{"sound": 1, "name": "bounce", "bus": "sfx", "duration": 0.25, "loudness": -20,
+  "layers": [{"name": "thump", "source": {"wave": "sine", "freq": {"points": [[0, 220], [0.2,
+  90]], "curve": "exp"}}, "env": {"attack": 0.002, "decay": 0.18, "sustain": 0, "release":
+  0.04}}]}`. A layer takes `name`, `at` (s), `length`, `gain_db`, `pan`, `source`, `env`,
+  `vibrato`, `arp`, `filters`, `fx`, `repeat`; a source `wave` (`sine`, `square`, `saw`,
+  `triangle`, `noise` with a `color`), `freq`, `duty`, `partials`, `fm`, `unison`, `phase`;
+  a filter is `{"type", "cutoff", "q"}` (`lowpass`, `highpass`, `bandpass`, `notch`, `lp1`,
+  `hp1`); an fx `{"type": ...}` (`distort`, `bitcrush`, `delay`, `reverb`, `tremolo`). A
+  field not there is refused by name, with what the place takes. `specula call audio_preview '{"path": "assets/sounds/bounce.json"}'` measures one without
+  playing it. **Each sound as a WAV file**: `specula run . --ticks 0 --sounds sounds` writes
+  `sounds/NAME.wav` for every recipe, with no engine started. A sound with no file plays nothing and changes nothing: `specula run` names it. The player's
+  `volume` setting scales everything played (the engine does it, on the master bus: no rule is
+  needed, and 0 is silence); a run with no window plays nothing aloud.
+- **Seeing it**: `specula run . --ticks 40 --frame out.png --size 800x480` writes what the
+  camera sees at that tick. Any other field of a spawn (`specula tools world_spawn` lists
+  them) goes in by `.field("name", value)`.
+"##;
+
+/// How a model is made through the engine, in one page: what a measured comparison's cold
+/// builders had to find out by refused builds, a 62 KB design document and scripts of their own
+/// (2026-11-21). Every call it names is held by a test below.
+const MODELS_NOTE: &str = r##"---
+title: How a model is written, built and looked at (recipes)
+kind: fact
+about: assets/models/, assets/style.json
+---
+A model (a prop, a pickup, scenery) is a recipe: one JSON file under `assets/models/`, which
+the engine builds. Three calls, with an engine running on this project:
+
+    specula call model_schema '{}'
+
+says how a recipe is written, whole, with one that builds to start from (`{"of": "extrude"}`:
+one shape, field by field; `{"of": "sdf"}`: a sculpt, with a soft heart to start from). Ask it
+before writing: a field that is guessed wrong is a refused build.
+
+    specula call model_build '{"recipe": "models/NAME.json"}'
+
+builds it and answers its triangles, its bounds, `closed` (true: watertight) and `open_edges`.
+Nothing needs exporting, and no script of your own, to learn those. A recipe that is wrong is
+refused with the field and what is accepted there. `specula call model_build_all '{}'` builds
+every recipe in `assets/models/` and answers a line each (triangles, size, closed, or why it
+was refused).
+
+    specula call studio_sheet '{"recipe": "models/NAME.json"}'
+
+pictures it from four sides in one image (`image.path` in the answer): look at it. For one
+large front view: `"views": ["front"], "tile": 512`. For several models in one image:
+`"subjects": ["models/a.json", "models/b.json"]`. To see the form alone: `"passes": ["colour",
+"clay"]`.
+
+- **Sizes** are metres, +Y up. A mesh shape (`box`, `cylinder`, `sphere`...) stands on y = 0,
+  centred on the Y axis. A part's `ops` move and turn it, in order:
+  `{"op": "rotate", "deg": [90, 0, 0]}`, `{"op": "move", "by": [0, 0.15, 0]}`.
+- **Materials** are the names in `assets/style.json` (`matte`, `painted`, `metal`, `glow` to
+  start with), and a part's `color` is a palette name there or `"#rrggbb"`. Change the style
+  and every model changes with it.
+- **Shapes by name**: `specula call formae_list '{}'` names the library and `formae_get
+  {"name": "gear"}` gives the snippet to paste. A named plane figure lies flat in the ground
+  plane: raise it (`"raise": {"as": "slab", "thickness": 0.05}`) and stand it up with the
+  rotate above. A round solid by name is thousands of triangles unless told: `"detail": 16`
+  for a small prop.
+- **A soft edge** on a raised figure: `"raise": {"as": "bevelled", "thickness": T, "width":
+  W}` or `{"as": "pillow", "thickness": T, "rise": R, "inset": I}`. A figure that narrows to a
+  point or has a sharp notch (a heart, a crescent) takes almost no inset (the refusal says how
+  deep it can go): sculpt those (`model_schema '{"of": "sdf"}'`).
+- **A budget**: `"budget": {"max_triangles": N}` in a recipe refuses a build over it, with the
+  count.
 "##;
 
 const CHECKS_NOTE: &str = r##"---
@@ -544,6 +751,8 @@ pub fn files(name: &str, module: &str) -> Vec<(String, String)> {
     out.push(("notes/brief.md".to_owned(), fill(BRIEF)));
     out.push(("notes/how.md".to_owned(), fill(HOW)));
     out.push(("notes/checks.md".to_owned(), fill(CHECKS_NOTE)));
+    out.push(("notes/models.md".to_owned(), MODELS_NOTE.to_owned()));
+    out.push(("notes/world.md".to_owned(), WORLD_NOTE.to_owned()));
     out.push((".gitignore".to_owned(), GITIGNORE.to_owned()));
     out
 }
@@ -667,10 +876,67 @@ mod tests {
         assert!(source.contains(&format!("name: \"{module}\"")) && source.contains(&format!("const ROOT: &str = \"/{module}\";")));
         let smoke = Json::parse(text("checks/smoke.json")).expect("the check");
         assert_eq!(smoke.get("steps").and_then(Json::as_array).map(<[Json]>::len), Some(6));
-        let (notes, bad) = specula_memoria::Notes::read([("brief", text("notes/brief.md")), ("how", text("notes/how.md")), ("checks", text("notes/checks.md"))]);
+        let (notes, bad) = specula_memoria::Notes::read([("brief", text("notes/brief.md")), ("how", text("notes/how.md")), ("checks", text("notes/checks.md")), ("models", text("notes/models.md")), ("world", text("notes/world.md"))]);
         assert!(bad.is_empty(), "{bad:?}");
+        // The world's page (2026-11-21): one page, pointed at, and every word of the SDK and
+        // every tool it names exists; its sound is a recipe the synthesiser renders.
+        let world = text("notes/world.md");
+        // Eleven half-kilobytes since 2026-11-21 (nine before): what physics will do is said on
+        // it, because each line left out was paid for in runs that measured it.
+        // Twelve since 2026-11-22: the sound recipe's fields, which two builders of the 3D jobs
+        // went to the engine's design pages for (three requests each).
+        assert!(world.len() <= 12 * 512, "notes/world.md is {} bytes: it is one page", world.len());
+        // What physics tells the rules is told under the names and the tag the engine uses.
+        assert!(world.contains(&format!(".tags(&[\"{}\"])", crate::physics_told::CONTACTS_TAG)) && world.contains("`contact`") && world.contains("`fell`") && world.contains(&format!("dropped {} m below", crate::physics_told::FELL_BELOW_M)), "notes/world.md and physics_told differ");
+        assert!(notes.brief().contains("notes/world.md") && text("notes/how.md").contains("notes/world.md"), "the world's page is not pointed at");
+        let sdk = include_str!("../../specula-sdk/src/module.rs");
+        for word in ["model", "rotation_deg", "collider_box", "collider_sphere", "collider_capsule", "dynamic", "kinematic", "light", "query_near", "touching", "push", "place_at_rest", "bounce", "friction", "carries", "velocity", "sound", "entity"] {
+            assert!(world.contains(&format!("{word}(")) && sdk.contains(&format!("pub fn {word}(")), "notes/world.md and the SDK differ on {word}");
+        }
+        // Every public word of the SDK is on one of the two pages a builder reads (2026-11-22:
+        // four of six builders of the 3D jobs searched the SDK's source for signatures, and
+        // twelve words were on no page). `new` is each type's own.
+        let how = text("notes/how.md");
+        let mut unsaid: Vec<&str> = sdk.lines().filter_map(|l| l.trim_start().strip_prefix("pub fn ")).filter_map(|l| l.split('(').next()).filter(|w| *w != "new" && *w != "as_str").filter(|w| ![world, how].iter().any(|page| page.contains(&format!(".{w}(")) || page.contains(&format!("::{w}(")))).collect();
+        unsaid.dedup();
+        assert!(unsaid.is_empty(), "the SDK has words no page of a new project says: {unsaid:?}");
+        // The sound's fields are the synthesiser's own lists.
+        use specula_audio::synth::recipe::{FILTER_NAMES, FX_NAMES, LAYER_FIELDS, SOURCE_FIELDS, WAVE_NAMES};
+        for name in LAYER_FIELDS.iter().chain(SOURCE_FIELDS).chain(WAVE_NAMES).chain(FILTER_NAMES).chain(FX_NAMES) {
+            assert!(world.contains(&format!("`{name}`")), "notes/world.md does not say the sound's `{name}`");
+        }
+        for tool in ["audio_preview", "world_spawn"] {
+            assert!(world.contains(tool) && crate::tools::definitions().iter().any(|d| d.name == tool), "notes/world.md and the engine's tools differ on {tool}");
+        }
+        let from = world.find("{\"sound\": 1").expect("the page's sound");
+        let recipe: String = world[from..world[from..].find('`').map_or(world.len(), |end| from + end)].split_whitespace().collect::<Vec<_>>().join(" ");
+        let sound = specula_audio::Recipe::parse(&recipe).unwrap_or_else(|e| panic!("the page's sound is not a recipe: {e}\n{recipe}"));
+        assert!(specula_audio::synth::render(&sound, &specula_audio::RenderOptions::default()).is_ok(), "the page's sound does not render");
+        // The models' page (2026-11-21): one page, pointed at from the brief and the guide, and
+        // every tool, shape, operation, raise and material it names is one the engine has.
+        let models = text("notes/models.md");
+        assert!(models.len() <= 3 * 1024, "notes/models.md is {} bytes: it is one page", models.len());
+        assert!(notes.brief().contains("notes/models.md") && text("notes/how.md").contains("notes/models.md"), "the models' page is not pointed at");
+        let tools = crate::tools::definitions();
+        for tool in ["model_schema", "model_build", "model_build_all", "studio_sheet", "formae_list", "formae_get"] {
+            assert!(models.contains(tool) && tools.iter().any(|d| d.name == tool), "notes/models.md and the engine's tools differ on {tool}");
+        }
+        for of in ["extrude", "sdf", "box", "cylinder", "sphere", "rotate", "move"] {
+            assert!(models.contains(of) && specula_model::recipe_schema(Some(of)).is_ok(), "notes/models.md names {of}, which a recipe does not take");
+        }
+        let style = specula_model::Style::parse(text("assets/style.json")).expect("the style");
+        for material in ["matte", "painted", "metal", "glow"] {
+            assert!(models.contains(&format!("`{material}`")) && style.materials.contains_key(material), "notes/models.md names the material {material}, which the project's style has not");
+        }
+        // The answer it promises is the answer a build gives, and its example builds here.
+        let example = specula_model::build(specula_model::SCHEMA_EXAMPLE, &specula_model::BuildParams::new(&style)).expect("model_schema's example builds under a new project's style");
+        let report = example.report();
+        assert!(report.get("closed").is_some() && report.get("open_edges").is_some() && models.contains("`closed`") && models.contains("`open_edges`"), "{report:?}");
         let brief = notes.brief();
         assert!(brief.contains("is a new Specula project") && brief.contains("How it is built and checked") && brief.contains("specula run . --ticks"), "{brief}");
+        // The shape library is pointed at where a cold agent already looks (stage 3b of the
+        // library): the brief given at the first call, and the guide.
+        assert!(brief.contains("specula call formae_list") && text("notes/how.md").contains("specula call formae_list"), "{brief}");
         // The guide names every key a game file takes (what the comparison's builders opened
         // the engine's design documents for), and the sample's game file shows a report.
         let how = text("notes/how.md");

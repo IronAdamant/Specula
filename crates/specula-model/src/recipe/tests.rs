@@ -248,6 +248,7 @@ fn every_shape_and_op_builds() {
         // that size: `sdf::tests::a_rounded_shape_is_measured_in_metres`.)
         r#"{"op":"sdf","resolution":48,"tree":{"op":"box","size":[1,0.05,0.6],"roundness":0.2,"round":0.01,"at":[0,0.5,0]}}"#,
         r#"{"op":"sdf","resolution":40,"tree":{"op":"chain","smooth":0.03,"mirror":"x","points":[[0.2,1.4,0,0.05],[0.25,1.1,0,0.045],[0.27,0.85,0.05,0.03],[0.27,0.75,0.1,0.035]]}}"#,
+        r#"{"op":"form","form":"snub_cube","args":{"edge":0.4},"detail":16}"#,
     ];
     for s in shapes {
         let m = build_with(&one_part(s, ""), &[]).unwrap_or_else(|e| panic!("{s}: {e}"));
@@ -742,11 +743,14 @@ const CRESCENT: &str = r#"{ "op": "sdf", "resolution": 24, "tree": { "op": "diff
 fn a_build_keeps_at_most_sixteen_notes() {
     let parts: Vec<String> = (0..20).map(|i| format!(r#"{{ "name": "c{i}", "material": "stone", "shape": {CRESCENT}, "ops": [{{ "op": "move", "by": [{i}, 0, 0] }}] }}"#)).collect();
     let m = build_with(&format!(r#"{{ "name": "crescents", "parts": [{}] }}"#, parts.join(",")), &[]).unwrap();
-    assert_eq!(m.notes.len(), MAX_BUILD_NOTES, "{:?}", m.notes);
-    for (i, n) in m.notes.iter().enumerate() {
-        assert!(n.starts_with(&format!("parts[{i}].shape")) && n.contains("thinner than a cell"), "{i}: {n}");
+    // (A level of detail the build skipped is said beside them, outside the tally's sixteen.)
+    let thin: Vec<&String> = m.notes.iter().filter(|n| n.contains("thinner than a cell")).collect();
+    assert_eq!(thin.len(), MAX_BUILD_NOTES, "{:?}", m.notes);
+    assert!(m.notes.iter().all(|n| n.contains("thinner than a cell") || n.starts_with("lods[")), "{:?}", m.notes);
+    for (i, n) in thin.iter().enumerate() {
+        assert!(n.starts_with(&format!("parts[{i}].shape")), "{i}: {n}");
     }
-    assert_eq!(m.extras.stats.iter().filter(|(_, j)| j.get("thin_edges").is_some()).count(), 20);
+    assert_eq!(m.extras.stats.iter().filter(|(_, j)| j.get("thin_cells").is_some()).count(), 20);
     let tally = Tally::default();
     for i in 0..1000 {
         tally.note(format!("note {i}"));

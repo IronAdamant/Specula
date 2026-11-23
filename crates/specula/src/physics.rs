@@ -113,6 +113,9 @@ pub struct Collider {
     pub mask: Option<Vec<String>>,
     pub friction: f32,
     pub restitution: f32,
+    /// On a kinematic body: what rests on it moves with it (a platform, a lift, a sliding
+    /// bridge): a thing that comes to rest on it is given its speed, and its changes after.
+    pub carries: bool,
 }
 
 pub const DEFAULT_FRICTION: f32 = 0.6;
@@ -127,6 +130,7 @@ impl Default for Collider {
             mask: None,
             friction: DEFAULT_FRICTION,
             restitution: 0.0,
+            carries: false,
         }
     }
 }
@@ -188,6 +192,9 @@ impl Collider {
         }
         if self.restitution != 0.0 {
             f.push(("restitution", Json::from(self.restitution)));
+        }
+        if self.carries {
+            f.push(("carries", Json::from(true)));
         }
         Json::obj(f)
     }
@@ -547,6 +554,10 @@ impl Collider {
         }
         h.write_f32(self.friction);
         h.write_f32(self.restitution);
+        // Written only when set, so that every collider without it hashes as it did.
+        if self.carries {
+            h.write_bool(true);
+        }
         h.finish()
     }
 
@@ -675,7 +686,7 @@ fn check_object_keys(o: &Json, what: &str, allowed: &[&str]) -> Result<(), Strin
 
 const COLLIDER_KEYS: &[&str] = &[
     "shape", "size", "radius", "height", "points", "vertices", "triangles", "columns", "rows", "cell", "heights", "offset", "is_trigger",
-    "layer", "mask", "friction", "restitution", "parts",
+    "layer", "mask", "friction", "restitution", "carries", "parts",
 ];
 const PART_KEYS: &[&str] = &["shape", "size", "radius", "height", "points", "offset", "rotation_deg"];
 
@@ -803,6 +814,7 @@ pub(crate) fn collider_arg(args: &Json) -> Result<Option<Option<Collider>>, Stri
         mask,
         friction: opt_num(c, "friction", "collider.friction")?.unwrap_or(DEFAULT_FRICTION),
         restitution: opt_num(c, "restitution", "collider.restitution")?.unwrap_or(0.0),
+        carries: opt_bool(c, "carries", "collider.carries")?.unwrap_or(false),
     })))
 }
 
@@ -1014,7 +1026,7 @@ impl PhysicsPatch {
 /// so a slower tick (the engine's 30 Hz without a game) takes proportionally more and the
 /// solver sees the same substep length (as stiff) at any tick rate.
 pub fn space_settings(s: &PhysicsSettings, hz: u32) -> specula_physics::Settings {
-    let per_tick = (s.substeps * 60).div_ceil(hz.max(1)).clamp(1, 64);
+    let per_tick = (s.substeps * 60).div_ceil(hz.max(1)).clamp(1, specula_physics::MAX_SUBSTEPS);
     specula_physics::Settings {
         gravity: Vec3::new(s.gravity[0], s.gravity[1], s.gravity[2]),
         substeps: per_tick,
@@ -1469,6 +1481,7 @@ impl Physics {
                             mask,
                             friction: c.friction,
                             restitution: c.restitution,
+                            carries: c.carries,
                         })
                     }
                 };
@@ -2188,6 +2201,52 @@ mod tests {
         assert!((e.position.x + 1.5).abs() < 0.1 && (e.position.y - 0.91).abs() < 0.05, "walked 1.5 m: {:?}", e.position);
         assert_eq!(e.body.unwrap().velocity.x, 1.5, "the walking intent stays");
         assert_eq!(p.space.character_state(hero).map(|s| s.grounded), Some(true));
+    }
+
+    /// The bridge of the comparison's 3D game (2026-11-21), as game code moves it: a slab that
+    /// slides 2 m in 3 s and back, a ball at rest on it. Returns how far the ball is from the
+    /// slab's middle at the end of each leg.
+    fn ball_on_a_bridge(carries: bool) -> [f32; 2] {
+        let mut w = World::default();
+        let mut s = SpawnSpec::new(WShape::Cube);
+        s.name = Some("bridge".into());
+        s.position = Vec3::new(0.0, -0.1, 0.0);
+        s.scale = Vec3::new(2.0, 0.2, 2.0);
+        s.collider = Some(Collider { carries, ..Collider::default() });
+        s.body = Some(Body::new(BodyKind::Kinematic, 1.0));
+        let bridge = w.spawn(s, "t").unwrap().id;
+        let mut b = SpawnSpec::new(WShape::Sphere);
+        b.name = Some("ball".into());
+        b.position = Vec3::new(0.0, 0.25, 0.0);
+        b.scale = Vec3::new(0.5, 0.5, 0.5);
+        b.collider = Some(Collider { shape: ColliderShape::Sphere { radius: 0.5 }, ..Collider::default() });
+        b.body = Some(Body::new(BodyKind::Dynamic, 1.0));
+        let ball = w.spawn(b, "t").unwrap().id;
+        let mut p = Physics::default();
+        run(&mut w, &mut p, None, 30);
+        let mut off = [0.0; 2];
+        for i in 1..=360usize {
+            let x = if i <= 180 { i as f32 / 90.0 } else { (360 - i) as f32 / 90.0 };
+            w.update(&EntityKey::Id(bridge), UpdateSpec { position: Some(Vec3::new(x, -0.1, 0.0)), ..Default::default() }, "game").unwrap();
+            run(&mut w, &mut p, None, 1);
+            if i % 180 == 0 {
+                off[i / 180 - 1] = w.get(ball).unwrap().position.x - x;
+            }
+        }
+        assert_eq!(w.get(bridge).unwrap().body.unwrap().velocity, Vec3::ZERO, "a body moved by its position reads no speed");
+        off
+    }
+
+    #[test]
+    fn a_bridge_that_carries_keeps_a_resting_ball_and_one_that_does_not_leaves_it_behind() {
+        let [first, _] = ball_on_a_bridge(false);
+        assert!(first < -1.0, "friction alone: the ball rolls behind and off the end ({first})");
+        let [first, second] = ball_on_a_bridge(true);
+        assert!(first.abs() < 0.02 && second.abs() < 0.02, "carried there and back: {first} {second}");
+        // The word is kept by a save: it is in the collider as written out, and read back.
+        let c = Collider { carries: true, ..Collider::default() };
+        let back = collider_arg(&Json::obj(vec![("collider", c.to_json())])).unwrap().unwrap().unwrap();
+        assert!(back.carries && back.field_hash() != Collider::default().field_hash());
     }
 
     #[test]

@@ -355,6 +355,43 @@ shorter than a tick still arrive as `pressed`, delta axes sum over the frames, v
 tick. Agents hold actions with `logic_input`, on top of window input; holds carry over a reload. Headless engines get
 only agent input. Modules never see keys (F6).
 
+## What physics tells a module (2026-11-21)
+
+Until this date a module was told nothing of physics: a bounce had to be guessed from a ball's height, and a body
+that rolled off its floor fell for ever with nobody the wiser (found by making a ball on a ramp by hand through a
+new project, the first cold use of 3D and physics from a module). Both are now **events from the engine**
+(`crates/specula/src/physics_told.rs`), pushed after the tick's physics step and heard by every module at the next
+tick, as `ui`, `setting` and `run` are. They are part of the simulation: the same run tells the same events at the
+same ticks, and nothing is kept between ticks to tell them.
+
+- **`contact`**, for a pair of which at least one entity is heard: it carries the tag `contacts`, or a group above
+  it does (a game says which of its things it wants to hear of: a pile of crates is not a thousand events a second;
+  a tag on the game's root hears of everything under it). `kind` is `begin` or `end` for two solid things, `enter`
+  or `exit` for a trigger. `a` and `b` are the entities' paths and `a_id`, `b_id` their ids; when only one is heard
+  it is `a`, and `normal` runs from `a` to `b`. `point`, and `speed` in m/s. At most 32 a tick: what is past that is
+  one last `contact` of `kind` `more` with their `count`.
+- **`Cx::touching(id)`** asks, at any tick, what touches a thing now (for a trigger: what is in it): ids in
+  increasing order, at most 64, as of the last physics step. Any thing with a collider can be asked about, tagged
+  or not, so "is it on the ground" and "what is in this zone" wait for no event. It is answered where the physics
+  is lent to the modules (a tick, and the calls the engine makes for an agent); anywhere else it is refused with
+  `no_physics`.
+- **`fell`**, when a dynamic body passes 5 m beyond everything that stands still or is moved by the rules, in the
+  direction gravity pulls: `entity` (its path), `id`, `position`. Told once, at the tick it passes. At most 8 a tick.
+  With no gravity, or nothing that stands still, nothing can fall out and nothing is told. A kinematic body (a
+  character) is moved by the rules and is never told of.
+
+Neither may crowd out what the game itself says: they are pushed only while 256 of the 1,024 waiting events' room
+is left. `physics_info` lists the bodies that are out of the world now (`out_of_world`), and a headless run
+(`specula run`, `specula check`) that ends with one out there says so beside its state.
+
+**The speed of a `begin` is how fast the two closed while the contact formed.** The physics used to say what the
+solver had left of it at the step they touch: 0.4 m/s for a ball that fell half a metre (3.1 m/s), in `physics_events`
+too. A contact now keeps the fastest its bodies closed before they touch, and the snapshot (version 3) carries it, so
+a run restored at any step of a fall says the same speed to the bit (`a_begin_says_how_fast_the_two_closed...`).
+
+**Limits.** A ragdoll's parts are not entities: their touches are not told as events, and `touching` answers the
+entity they belong to, once. A module hears all of a heard thing's touches or none (it filters by `a` and `b`).
+
 ## Character controller interface
 
 `Cx::move_character(id, motion)` moves a character entity by a displacement (gravity included) and returns

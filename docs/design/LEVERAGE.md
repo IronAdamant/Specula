@@ -123,6 +123,64 @@ It never runs the engine's executable itself. For the engine's tools it starts a
 so it is never listed among a person's projects) and calls it with `examen leverage call RUN TOOL '{json}'`
 or `TOOL @args.json`, which is the engine's own `specula call` with the run's port and identity, logged.
 
+## Another data folder
+
+Every command but `call`, `play` and `check RUN` takes `--data FOLDER` (default `evals/leverage`,
+which works as it always did: its briefs are the same to the byte, held by a test). A data folder is a
+`settings.json` and its `jobs/`. A run keeps the folder it was prepared from, and every later command on
+it (`run`, `judge`, `record`, `report`) reads that one; a `--data` that is not it is refused.
+
+A settings file gives its arms as words (`["engine", "plain"]`: the two arms whose text is in the
+harness's code, measured against `plain`) or as objects, with the arm the others are measured against:
+
+```json
+"arms": [
+  {"name": "none", "kind": "engine", "exe": "base", "text": ["What you have", "- ..."]},
+  {"name": "told", "kind": "engine", "exe": "library", "text": ["What you have", "- ..."]}
+],
+"baseline": "none",
+"brief_names_no": ["Specula", "formae", "library"],
+"change_round": false
+```
+
+- **`kind`** is what the harness does for the arm: `engine` (a project made by `specula new`, an
+  engine the builder may start, its tools through the harness, every call logged) or `plain` (an empty
+  work folder).
+- **`text`** is the "What you have" lines of the brief. `{tool}` (the harness's command), `{run}` (the
+  run's folder), `{work}` (its work folder) and `{docs}` (the documents of the checkout the arm's engine
+  was built in: the first folder above the executable with `docs/design/` and a `Cargo.toml`) are
+  filled in; `{{` and `}}` are a brace. A job's brief differs between arms only by this text.
+- **`exe`** names the engine an `engine` arm runs by a key, which the command line gives a path:
+  `--exe base=PATH --exe library=PATH`, so that one comparison runs arms on two builds. An arm with
+  no key runs the `--exe PATH` given with none.
+- **`brief_names_no`**: the words no job's brief may name (default: `Specula`, `engine`, `Python`,
+  `Rust`, `cargo`, for a comparison with a plain arm); **`change_round`**: `false` when no job changes
+  another's game.
+
+The report puts every arm of a job in its table and adds a section **against the baseline**: each
+cell's mean weighted tokens and requests over the baseline's, and the checks each passed. Its baseline
+is the one the runs were prepared with (`report ROOT --data FOLDER` names another).
+
+`prompt` prints what each builder would be told, and runs nothing: the process's prompt, then each
+job's brief for each arm as `prepare` would write it (with `--exe`, `{docs}` is found; without, it is
+said as a placeholder).
+
+```
+examen leverage check --data evals/leverage-props          # the data is well formed (or --check --data ...)
+examen leverage prompt --data evals/leverage-props --job kit --out ROOT --exe base=BASE --exe library=LIB
+examen leverage prepare kit none 1 --data evals/leverage-props --out ROOT --exe base=BASE --build base
+examen leverage prepare kit found 1 --data evals/leverage-props --out ROOT --exe library=LIB --build library
+examen leverage run ROOT/kit-none-1; examen leverage run ROOT/kit-none-1 --judge
+examen leverage report ROOT
+```
+
+`evals/leverage-props/` is the shape library's comparison (`specula-formae`, stage 3b): props built by
+a cold agent on an engine without the library (`none`), on the engine with it and its pointers and the
+same brief (`found`), and with a brief that names it (`told`), each against `none`. `--build` names
+each arm's engine in the report; without it a run records the commit of the checkout `examen` runs in,
+which is not the engine's when the executable was built elsewhere. The judge's page for an `engine`
+arm is the one the game jobs have (it names `play` and `check` beside `engine start` and `call`).
+
 ## What is and is not controlled
 
 - **Controlled:** the model, the brief, the budget told, the acceptance list, the judge's model and
@@ -959,3 +1017,961 @@ fifth measurement stands: at these sizes the first meeting is not paid back, and
 the engine the cheaper arm is a game that asks for more of what the engine does. Two things the
 runs point at that are not built: the other screens folded into the one read (or a game's words
 changed without reading its screens), and a line in the guide on depth for a game drawn flat.
+
+## Results (2026-11-20: the shape library, the small job)
+
+Another question, with the same harness: does the engine's library of shapes by name
+(`specula-formae`) make props cheaper for a cold agent, and does a cold agent find it? The job
+(`kit`: four pickups for a game, each a model recipe: a gear token with twelve teeth and a hole, a
+heart with softly rounded edges, a five-pointed star, a coin with a raised rim; a headless build
+that prints each one's triangles, closedness and bounds; a frame of each) was built in three arms
+that all build through the engine:
+
+- **`none`**: an engine built without the library (`8b67796d`);
+- **`found`**: an engine with the library and its pointers (`4deccc36`), **and a brief that says
+  not a word of it**, to the byte the brief of `none`: whether it is found by the engine's own
+  pointers (a new project's notes, the tools' descriptions, the documents);
+- **`told`**: the same engine, with one more line in the brief that names the library and its two
+  calls.
+
+Builders: Sonnet 5.5, a cap of 400,000 tokens and an hour. Judges: Opus 5.5, one list of nine
+items, against a build they had not seen. The jobs and the arms are data on the library's branch
+(`evals/leverage-props/`; the harness reads a data folder since that branch). Every run is in
+[perf/leverage/2026-11-20-props](../../perf/leverage/2026-11-20-props/report.md).
+
+**One run is not a measurement and is kept as it came out.** `kit-none-1` never had an engine:
+the harness gave it port 7680, which a Windows service held on this machine; the engine failed to
+start about eight times, and the builder wrote its recipes by guess and built nothing (0 of 9).
+It is in the folder and in the report's tables, **whose means and ratios for `none` therefore
+include it and are not to be quoted**. A third `none` run was made on a free port. The figures
+below are the six runs that had an engine.
+
+| Arm | Weighted tokens (each run) | Mean | Requests | Engine calls | Checks passed |
+|---|---|---|---|---|---|
+| `none` | 447,786; 594,327 | 521,057 | 31; 48 | 50; 158 | 9, 9 of 9 |
+| `found` | 509,455; 663,346 | 586,400 | 44; 52 | 139; 232 | 8, 9 of 9 |
+| `told` | 507,469; 562,963 | 535,216 | 64; 56 | 130; 173 | 9, 9 of 9 |
+
+**What it says.**
+
+- **A cold agent finds the library without being told.** Both `found` builders took shapes by
+  name in two or three of their four recipes, as both `told` builders did. The path works.
+- **On a job this small the library made nothing cheaper.** `found` cost 1.13 times `none` and
+  `told` 1.03 times, for the same checks passed, **and two runs of one arm differ by a third**
+  (447,786 and 594,327 with nothing changed between them): the arms cannot be told apart. No
+  arm wrote fewer words (24,000 to 35,000 tokens written in every run).
+- **Where a build's tokens go is not the shapes.** By the ledgers (`examen leverage where`), in
+  every arm a build is reading (its own project, the engine's documents) and looking up tools
+  and their arguments (11,000 to 38,000 tokens of answers a run for the two together), then
+  calling the engine to build and to look, again and again (8 to 35 steps), with the whole
+  context read again at every request. Writing code is 2,500 to 5,600 of the 24,000 to 35,000
+  tokens a run writes, with the library or without. The `told` builders read a third as much
+  as the `none` builders and called the engine two to four times as often.
+- **Builders wrote their own tooling for what the engine could say in one call.** By the
+  judges' notes, three of the four library-arm builders wrote their own check of watertightness
+  on an exported file, where `model_build`'s report says whether a model is closed; two
+  builders (one in `none`, one in `told`) wrote their build and frame commands in Python; and
+  every builder wrote a script to build four recipes and print four lines. That is the larger
+  cost, and it is the engine's to take away: a call that builds every recipe of a project and
+  prints each one's facts, and a call that frames each. (The same lesson as `specula run` and
+  `specula check` for games, in the passes above.)
+- **A named shape does not carry its own good use.** One `told` builder drew its heart by hand
+  beside a library that has one; one `found` builder asked for a `pillow` with an inset of a
+  tenth of a millimetre and called the square-edged result softly rounded (its judge did not).
+
+**What it does not say.** Four pickups are the smallest job there is: a dozen props, where
+shapes are shared and a style has to hold across them, is the other job written
+(`props`), and it is not run. Two runs a cell cannot show a difference smaller than a third. And
+nothing here measures a project that already holds assets to reuse, which is what the next stage
+builds (ROADMAP M6: a project's own catalogue; the engine telling an agent where everything is).
+
+## Results (2026-11-20: the same job after the builders' blindness was mended)
+
+The result above (found, and not cheaper) made the owner doubt the whole approach, and ask
+whether the builders had been working blind. They had. The runs were read request by request
+and the engine's code beside them (by the lead, by hand, with no agents):
+
+- **No answer of the engine's said whether a model is closed**, and the brief told every builder
+  that `model_build` did (a sentence nobody had checked). The job asked for it, so each builder
+  exported its models and wrote its own check: about 90,000 of 509,000 weighted tokens in one
+  run.
+- **Nothing said how a recipe is written** but a design document of 62 KB (one builder read it
+  whole and carried it through 41 requests: 134,000 weighted tokens) or one refused build a
+  field: 30 to 146 builds a run for four props, up to 77 of them refused.
+- **The shape the job asked for could not be made**: the library's heart takes no soft edge (its
+  point and its notch close an inset at once). One builder spent nine builds finding that out.
+- **A new project said nothing about models**: its notes are about a game.
+
+The engine's parts had been verified for correctness, by tests and by reviewers, and never for
+use: until that comparison nobody had made one prop a game wants with them. Building games
+through the engine had six passes of exactly this treatment (the sections above); building
+models had none, and was measured cold.
+
+**What was mended** (four changes, by hand, on the engine that was measured): every build's
+answer says `closed` and `open_edges`; `model_schema` says a recipe's whole format in one
+answer from the parser's own tables, with an example that builds, and a sculpt's nodes with a
+soft heart that builds; a new project has one page on models (`notes/models.md`), held against
+the engine by a test; a raise that cannot go as deep as asked says what to do instead.
+
+**Measured again**, the same job, the same builder and judge models, the same harness, two runs
+a cell; every run is in
+[perf/leverage/2026-11-20-props-fixed](../../perf/leverage/2026-11-20-props-fixed/report.md):
+
+| Arm | Before the mends (the runs above) | After | Requests before, after | Builds, of which refused: before, after | Checks |
+|---|---|---|---|---|---|
+| `found` (the same brief, to the byte, in both) | 509,455; 663,346 | 219,039; 360,234 | 44, 52; 29, 34 | 53/11, 146/77; 18/2, 22/4 | 8, 9; 9, 9 of 9 |
+| `guided` (new: the brief points at the project's page on models, not at a design document) | | 173,926; 158,904 | 22, 20 | 16/0, 23/3 | 9, 9 of 9 |
+| `none` (an engine without the library, before the mends) | 447,786; 594,327 | not measured again | 31, 48 | 30/7, 68/6 | 9, 9 of 9 |
+
+- **With the brief unchanged, the same job costs half** (289,637 against 586,400 on the means):
+  the engine's own answers and the project's own page did that.
+- **With a brief that points at that page, it costs 0.28 times what it did** (166,415), with two
+  runs 9% apart where the arms before were a third apart, and every check passed.
+- Every builder asked `model_schema` (five or six times a run), took shapes by name in two of
+  four recipes and sculpted the heart from the example; none wrote a check of closedness
+  (each one's script reads `closed` from the engine's answer). The two `guided` builders never
+  opened the design document; the two `found` builders, whose brief still names it, read parts
+  of it, which is most of the difference between the two arms.
+- **What is still paid for and need not be**: every builder still wrote a script of its own to
+  build the four and print their facts (the engine now has a call for that, measured next), and
+  the shell's answers were still indented.
+- **What the judges saw that the list does not ask**: the sculpted heart has a crease down its
+  middle where its two halves join and a ragged seam at its sides, and five to nine thousand
+  triangles where the other props have hundreds; the coin's rim does not show in a front view;
+  a new project's style check fails a prop for being brightly coloured.
+
+**What this does not show.** `none` was not measured again: an engine with the mends and
+without the library does not exist as a build, so the two cannot be told apart here (the
+library by name was used in two of four recipes in every run; the mends are what changed
+between the two columns of `found`). Two runs a cell. One small job. And whether the engine
+pays on a game that needs what it has (3D, physics, sound) is still not measured.
+
+**The lesson, in the owner's words**: "sometimes, you need to pause, if you're seeing same
+numbers despite same attempts, which means something else has gone wrong."
+
+### With one call that builds every recipe, and compact answers (2026-11-20)
+
+Two things the runs above still paid for were then mended: `model_build_all` builds every recipe
+of a folder and answers a line each (triangles, size, closed, or the refusal with where and
+why), and the shell's commands print compact JSON through a pipe (indented for a person at a
+terminal). The `guided` arm again, two runs
+([perf/leverage/2026-11-20-props-build-all](../../perf/leverage/2026-11-20-props-build-all/report.md)):
+
+| | Weighted tokens | Requests | `model_build` calls, refused | Checks |
+|---|---|---|---|---|
+| `guided`, before these two | 173,926; 158,904 | 22, 20 | 16/0, 23/3 | 9, 9 of 9 |
+| `guided`, with them | 158,740; 151,322 | 18, 19 | 13/0, 13/0 | 9, 9 of 9 |
+
+**A small gain, inside what two runs alike differ by** (155,031 against 166,415 on the means:
+7% less, where the two runs of a cell are up to 9% apart). Both builders wrote their four
+recipes in one go, called `model_build_all` (two and three times), and had no build refused.
+Each still wrote one script: the job asks for commands that work from no engine running, and
+that script starts the engine, calls it and stops it. What a run costs now, by its ledger: the
+brief and the project's page, `model_schema` and a few look-ups (about 7,000 tokens of
+answers), the four recipes, two or three rounds of building and looking, the script and the
+README. **The floor for this job through the engine is about 150,000 weighted tokens**; the
+same job cost 510,000 to 660,000 in the first comparison, earlier the same day, in the arm with the old brief.
+
+One run's clock time was thirteen minutes where the others took two or three: its builder ran
+`python -` with a here-document, which hangs on this machine until its time limit. No tokens.
+
+## Results (2026-11-21: six jobs, three in 2D and three in 3D, the engine against none)
+
+The owner asked for the plain comparison again on the engine as it stands (`7f2167f8`: the
+blindness mended, typed `Spawn` words, what physics tells a module, a push and a bounce), and
+for three jobs that need what the engine has. The 3D jobs are a second data folder,
+`evals/leverage-3d`: **small3d** (a ball on a board with rigid-body physics, four coins, three
+lives, three sounds), **medium3d** (three boards, six crates to push, a moving bridge, a menu,
+saved settings, two languages) and **change3d** (a fourth board with a ramp, French, a setting
+for the ball's mass, by a builder who did not build the game). Builders Sonnet 5.5, judges
+Opus 5.5, two runs a cell, 24 runs, all ended `done`, all judged
+([perf/leverage/2026-11-21-2d](../../perf/leverage/2026-11-21-2d/report.md),
+[perf/leverage/2026-11-21-3d](../../perf/leverage/2026-11-21-3d/report.md)).
+
+| Job | Plain (weighted tokens) | Engine | Times plain | Requests, times plain | Checks, plain | Checks, engine |
+|---|---|---|---|---|---|---|
+| small | 67,724 | 120,172 | 1.77 | 1.73 | 14.0 / 14 | 14.0 / 14 |
+| medium | 150,926 | 183,690 | 1.22 | 1.83 | 19.0 / 19 | 19.0 / 19 |
+| change | 103,624 | 121,900 | 1.18 | 1.17 | 9.0 / 9 | 8.5 / 9 |
+| small3d | 136,317 | 220,499 | 1.62 | 2.53 | 15.0 / 15 | 15.0 / 15 |
+| medium3d | 430,514 | 736,712 | 1.71 | 2.85 | 23.5 / 24 | 22.0 / 24 |
+| change3d | 259,524 | 321,007 | 1.24 | 1.58 | 10.5 / 11 | 11.0 / 11 |
+
+**The engine costs more on every job, 3D included.** The 2D figures stand where the sixth pass
+left them (1.61, 1.22 and 1.47 on 2026-11-17): medium the same, change lower, small higher,
+each inside what two measurements of a cell have differed by. At the runner's list prices the
+builds cost 3.15 USD (2D) and 7.92 USD (3D), and the judging 9.58 and 15.83.
+
+**The items that failed.** `change-engine-1` c01: runners sent every 60 ticks where the brief
+says 90 (the builder's constant). `medium3d-plain-1` m22: a Spanish heading wider than the
+frame. `medium3d-engine-1` m10: board 2's crates appear in the state one tick after the board
+changes. `medium3d-engine-2` m16: a ball on the moving bridge is not carried at rest (it moves
+at about twice the bridge's speed, and a push against it speeds it up). Both `medium3d-engine`
+runs, m23: the judge could not see where the volume setting scales a sound (the engine does
+it; the README did not show it). `change3d-plain-1` c02: the hand-written ramp is only its top
+plane, and the ball passes through its sides. The engine's ramp was solid in both runs.
+
+**Where the extra goes: requests.** One `medium3d` run of each arm, by its ledger:
+
+| | Plain (`medium3d-plain-2`) | Engine (`medium3d-engine-2`) |
+|---|---|---|
+| Requests | 17 | 58 |
+| Read again (the context, at each request) | 72,206 | 365,762 |
+| New in the context | 74,218 | 118,582 |
+| Written out | 231,270 | 267,350 |
+
+The engine's builder wrote about what the plain one wrote. Four fifths of the difference is
+the context read again at three times as many requests. Its 58 requests, read one by one
+(`examen leverage trace`): seven to read the brief, the project's pages, the SDK's functions
+and the documents (107,000 weighted tokens); the whole game written at the eighth; first runs,
+frames and the four sounds, all working, by the seventeenth (221,000 so far, less than either
+plain build's whole cost); then **nine requests probing the bridge, seven writing a Python
+wrapper and a driver** so that a headless run takes the brief's inputs and prints the brief's
+state, and **eighteen tuning the ball and the crates** (spin, mass, sleep, bounce), each a run
+that reads a few numbers and changes one constant, at 10,000 to 15,000 weighted tokens a
+request because the context is read again each time.
+
+**What this says.** A plain builder writes its own physics and knows what it will do; the
+engine's builder has a better solver and has to measure it. The judges found the plain builds'
+physics crude (crates that never rotate, a crate at rest with nothing under its centre, a ramp
+with no sides), and little of that is on a list of checks. One judge wrote down as a defect
+that a 4 m/s2 push moved the rolling ball at 2.86: that is 4 x 5/7, what a solid ball that
+rolls without slipping does. Sight of the tools made the first working game cheap; it does
+nothing for not knowing what the world will do.
+
+**Not controlled, and not shown.** Two runs a cell. The jobs are of a size a model writes
+whole (600 to 1,800 lines); nothing here measures a game too large for that, several agents
+in one world, or a frame rate. The bridge's fault is a judge's finding and has not yet been
+reproduced by hand.
+
+## Results (2026-11-22: the same six jobs after the mends, with directed builders)
+
+After the comparison of 2026-11-21 the owner took the results to a second reader, lifted the
+pause and asked for the mends and then the same six jobs again, the engine against none. What
+was built between the two (FIRST_HOUR.md, sections 14 and 15): a guide that says "write the
+game whole, then run it"; a world page corrected on bounce and friction; a slab that carries;
+a run that speaks a brief's own input words and is read at many ticks in one command
+(`--at`, `--keys`), with the world's places and the sounds in the report; a number the rules
+read from the run (`Cx::param`, `--set`), `specula tune` and `specula find`; every sound as a
+file in one command (`--sounds`). Builders Sonnet 5.5, judges Opus 5.5, two runs a cell, 24
+runs, all ended `done`, all judged
+([perf/leverage/2026-11-22-2d](../../perf/leverage/2026-11-22-2d/report.md),
+[perf/leverage/2026-11-22-3d](../../perf/leverage/2026-11-22-3d/report.md)).
+
+**The engine builders of this pass are directed, not cold.** Each engine brief carries a few
+lines "from the lead" (a job's `lead` in its file) that say which of the engine's aids fit the
+job: for the 2D jobs that nothing needs a search, write whole and read with `--at`; for the 3D
+jobs that the bridge is a slab that `.carries()`, that a board is chosen with `--set board=N`
+through `cx.param`, that the sounds come from `--sounds`, and the `find` command for a winning
+script. The owner decided that the lead chooses the aid for a builder before it works. A run's
+record says `led`, and the report names the runs.
+
+| Job | Plain (weighted tokens) | Engine | Times plain | On 2026-11-21 | Requests, times plain | Checks, plain | Checks, engine |
+|---|---|---|---|---|---|---|---|
+| small | 64,391 | 109,050 | 1.69 | 1.77 | 1.75 | 14.0 / 14 | 14.0 / 14 |
+| medium | 143,556 | 206,722 | 1.44 | 1.22 | 2.11 | 18.5 / 19 | 18.5 / 19 |
+| change | 91,320 | 170,723 | 1.87 | 1.18 | 1.90 | 9.0 / 9 | 8.5 / 9 |
+| small3d | 113,730 | 134,867 | 1.19 | 1.62 | 1.63 | 14.0 / 15 | 15.0 / 15 |
+| medium3d | 553,980 | 487,484 | 0.88 | 1.71 | 1.98 | 23.0 / 24 | 23.0 / 24 |
+| change3d | 261,708 | 209,644 | 0.80 | 1.24 | 1.02 | 11.0 / 11 | 11.0 / 11 |
+
+**In 3D the engine arm came level with a plain build or under it; in 2D it did not move, and
+on two jobs it was worse.** What each half says, and how far it can be trusted:
+
+- **Two runs a cell is noise of the size of the differences.** The plain medium3d builds were
+  413,532 and 694,428; the engine's 334,931 and 640,038: the two ranges lie over each other,
+  and 0.88 is not a finding that the engine is cheaper there. The change3d engine runs
+  (188,062 and 231,227) are both under both plain runs (241,494 and 281,921), but each change
+  run starts from its own arm's medium game, so the starts differ. The plain arm alone moved
+  between the two passes by up to 29% (medium3d 430,514 to 553,980; change 103,624 to 91,320)
+  with nothing changed for it. Read the table as: 3D went from clearly dearer to about level;
+  2D stayed clearly dearer.
+- **3D, small: 1.62 to 1.19.** Both engine runs took 13 requests and the same shape: four
+  reads, the game written whole, the sounds in one command, one search, two checks. They
+  passed the item both plain builds failed (score and lives in the picture: the engine draws
+  the HUD). What is left of the gap is the first meeting (834 lines of project read before a
+  line is written, against none).
+- **3D, medium: 1.71 to 0.88, and one run of the two met a fault of the engine.** The second
+  run took 27 requests and 334,931. The first took 52 and 640,038: 25 of its requests went to
+  board 3, where its ball would not cross on the bridge. The bridge carried what was at rest
+  on it from the start, and gave nothing to a ball that rolled onto it while it moved: as
+  first built, a carrier handed on only its changes of speed, so the ball had none of the
+  bridge's speed and was thrown back by twice it at the turn. The builder read the physics
+  sources, found a script by hand, and said in its README that `find` had not found one (it
+  had not, in 90 s and again in 500 s). **Mended after the runs and not measured**: what comes
+  to rest on a carrier is given its speed (PHYSICS.md); on that builder's own game the mended
+  engine's search takes the ball across to the far slab, and still finds no winning script
+  for board 3 in 90 s. A search that finds nothing costs the requests spent asking; say so in a
+  brief before pointing a builder at it for a board of that kind.
+- **3D, change: 1.24 to 0.80.** 21 requests each, as many as plain. Both used `find` for the
+  new board and it found (the judges note the found scripts lose two lives on the way).
+- **A fault found by the first engine builder of the pass, mended before the rest ran.** A
+  game put back from a save lost the events the rules had still to be told ("the run
+  begins"), so a script `find` answered as winning did not win in a run of its own. That run
+  (259,647 weighted tokens, 29 requests) is kept apart and is not in the table; the six 3D
+  engine runs are on the engine with the mend (`bafa9b7d`). The 2D engine runs were made on
+  the engine before it (`d663616f`); a 2D game of these jobs uses no save.
+- **2D: more ways to check brought more checking.** The engine builders did what the
+  direction said (the game written whole, no wrapper, no probing of physics), and then spent
+  about twice the plain builders' requests on verifying: reading states at many ticks, one
+  more run for each thing the brief names. The brief's line that says the engine can search
+  invited searches the direction had said were not needed (one change builder ran `find`
+  three times and wrote a driver script: 232,978 against its pair's 108,468). At these sizes
+  a plain build is five to eleven requests, and a project that must be read first cannot be
+  cheaper than that; the 2D jobs are below the size at which the engine pays.
+- **Checks passed are level** on every job (the engine one better on small3d, half an item
+  worse on change).
+
+**What it cost**: 38.65 USD at the runner's list prices (2D lane 13.70, 3D lane 23.91, the
+run kept apart 1.04); the judging is about two thirds of it.
+
+**What this pass does not show.** A cold engine builder on the mended engine (every engine
+run here was directed); the carrying mend; more than two runs a cell; any job larger than
+medium3d, which is where the engine's share of the work should grow.
+
+## Results (2026-11-22: cold builders, five runs a cell, and the large job)
+
+The third pass over the same jobs, made to answer what the second could not. A second
+reader's review of the second pass said, rightly: its engine builders were directed by lead
+lines the plain builders did not get, the aids named in those lines had been built from
+these very jobs, two runs a cell cannot tell level from cheaper, and nothing larger than
+medium3d had been measured. So this pass is **cold** (the jobs' lead lines are left out of
+every brief: `"lead": false` in both settings files), **five runs a cell**, and adds the 2D
+`large` job, written on 2026-11-17 and never measured until now (three runs a cell; the
+report's settings line says five, which is the data folder's figure). The engine is
+`74007d71`: the mends of the second reader's bug list ([FIRST_HOUR.md](FIRST_HOUR.md),
+section 16) and the carrying mend. Builders Sonnet 5.5, judges Opus 5.5. 66 builds, every one
+ended by itself and was judged; none failed to run. Records:
+[perf/leverage/2026-11-22-cold-2d](../../perf/leverage/2026-11-22-cold-2d/report.md),
+[perf/leverage/2026-11-22-cold-3d](../../perf/leverage/2026-11-22-cold-3d/report.md).
+
+| Job | Engine, weighted tokens (lowest to highest) | Plain (lowest to highest) | Engine over plain | Directed pass, two runs | Requests, engine / plain | Checks passed, engine / plain |
+|---|---|---|---|---|---|---|
+| small | 109,928 (101,814 to 116,902) | 64,679 (61,552 to 68,206) | **1.70** | 1.69 | 11.0 / 6.0 | 13.8 / 14.0 of 14 |
+| medium | 216,807 (176,386 to 277,822) | 131,034 (117,355 to 144,041) | **1.65** | 1.44 | 20.4 / 8.2 | 18.8 / 18.8 of 19 |
+| change | 128,636 (116,644 to 150,840) | 99,709 (77,535 to 114,273) | **1.29** | 1.87 | 15.0 / 10.4 | 8.6 / 9.0 of 9 |
+| large | 1,594,268 (1,128,330 to 2,097,197) | 269,351 (210,352 to 306,759) | **5.92** | not run | 81.7 / 13.7 | 28.3 / 31.0 of 31 |
+| small3d | 153,419 (125,961 to 195,611) | 111,514 (91,610 to 131,578) | **1.38** | 1.19 | 15.6 / 7.0 | 14.8 / 15.0 of 15 |
+| medium3d | 456,692 (284,962 to 628,612) | 452,168 (327,088 to 571,317) | **1.01** | 0.88 | 35.4 / 19.8 | 22.4 / 23.6 of 24 |
+| change3d | 189,977 (156,410 to 286,867) | 280,116 (265,013 to 300,072) | **0.68** | 0.80 | 18.8 / 21.8 | 11.0 / 10.8 of 11 |
+
+**What the figures support, and what they do not.**
+
+- **One job is cheaper through the engine: the 3D change (0.68).** Four of the five engine
+  runs cost less than every plain run. It is the job where a builder comes to a game that is
+  already there and adds a board: the engine's project is read once and the change is small,
+  while a plain build is a renderer and a physics of the builder's own to read again.
+- **Medium 3D is level (1.01), with fewer checks passed** (22.4 against 23.6 of 24), so it is
+  not level in what was delivered. Four of the five engine games failed one item the same way
+  (m23, below).
+- **Everything in 2D, and the small 3D job, costs more through the engine: 1.3 to 1.7 times.**
+  With five runs a cell the ranges of the two arms do not meet on small or on medium (on
+  small3d the dearest plain run is above the cheapest engine run).
+  This is the fourth measurement of the small job at about 1.7; it has not moved since the
+  first hour's passes ended, and no mend of the last two rounds moved it.
+- **The large job is the finding of the pass: 5.9 times a plain build, and three checks
+  fewer.** The page has said since M5 that the engine should pay where a game is larger. On
+  the one larger job measured, it is the other way round, and by far.
+- **Cold against directed** changes less than the review feared: small is the same (1.70,
+  1.69), the 3D jobs are a little dearer cold and tell the same story, medium is dearer and
+  change cheaper. The lead lines were not what made 3D come level.
+
+**Why the large job cost six times as much: read request by request.** The three engine
+builders took 87, 97 and 61 requests against 13, 10 and 18. Of those, **29, 47 and 23 were
+spent reading the engine's own documents and source**, a third of the first run's cost, about half of the
+third's and nearly three fifths of the second's. What they went looking for, in the order the
+ledgers show it:
+
+1. **How a game keeps anything between two runs of the program.** The job asks for a best
+   score and a saved run that a later headless run finds. The project shell keeps the
+   player's settings and nothing else; a module has no way to keep a value of its own, and
+   no page says so. Each builder searched the SDK, the handler, the shell, `SAVES.md` and
+   `MODULES.md` for one (`persist`, `kept`, `slot`, `best score`), found none, and shipped
+   a game that fails both items (l23 and l26, failed by all three; the plain builds write
+   a small file and pass). **This is a hole in the engine, not in a page.**
+2. **How screens beyond the five the shell names are opened and closed** (a shop between
+   waves), and what Escape and a "back" do on each: read from `shell.rs` and the UI crate's
+   source. Two of the three failed the pause item (l22): one never showed the paused screen
+   by name, one had a Resume button whose word the rules never heard.
+3. **How a text takes numbers in three languages** (`LOCALISATION.md`, the shell's source).
+
+A plain builder of the same job reads nothing: the first of them wrote the game in six
+requests and checked it in four.
+
+**The other items the engine arm failed, each a thing of the engine's:**
+
+- **m23, "silent at volume 0", failed by four of five medium3d engine games.** The line that
+  shows it (`run.sounds_heard`, built for exactly this item the day before) is read only if
+  the builder writes it into the game file's report. None did; the judges asked for it by
+  name with `--keys` and were refused, since `--keys` takes the report's own names. An aid a
+  cold builder does not reach for is not there. (The search is reached for: the brief names
+  it, and every cold builder of the 3D jobs ran `find` unasked.)
+- **m01, once:** `--set board=2` on a game that begins at its title. The run said so (the new
+  warning), and the builder wrote in its README that it had found no way to begin in play
+  (the game file's `"start": "run"` is on the guide).
+- **m12 and m13:** crates that a ball cannot move; one plain game failed m13 too.
+
+**Where the request count comes from at the smaller sizes.** As before: a plain small build
+is six requests, the same six in all five runs (61,552 to 68,206 weighted tokens). An engine
+build reads the project, writes four or five files where plain writes one, and runs the game
+more often. That floor is the project itself, and nothing built in the last two rounds
+touches it.
+
+**What it cost**: 110.35 USD at the runner's list prices (2D 54.94, 3D 55.41). The builds
+are 33.44 of it and the judging 76.91: a judge on Opus costs more than twice what the builder
+it judges does.
+
+**What follows.** The claim this page has carried, that the engine pays where a game is
+larger, is not supported by the one larger job measured. It should be read as an aim, not a
+finding, until a larger job shows it. The mends that the ledgers name, in the order of what
+they cost: a game's own data kept between runs (a best score, a saved run), with its line
+in the guide; opening, closing and naming screens of the game's own; a run's lines read by
+their keys without first being written into the report (`--keys run.sounds_heard`). After
+them the large job is measured again, engine arm only, against the three plain runs here.
+
+## Results (2026-11-22: the large job again, after what it ran out of was built)
+
+Stage 1 of the plan the owner and the lead agreed after the cold comparison
+([FIRST_HOUR.md](FIRST_HOUR.md), section 17): a game's kept data, screens the rules put up, a
+key read by itself, `ui.texts` and `ui.focus`, five lines on what the engine does not do. Then
+the large job again: engine arm only, five cold runs on `93c46983`, against the three plain
+runs of the cold comparison. Every run ended by itself and was judged. Records:
+[perf/leverage/2026-11-22-large-after-holes](../../perf/leverage/2026-11-22-large-after-holes/report.md).
+Cost: 22.90 USD at list prices (builds 12.31, judging 10.59).
+
+| | Before (three runs) | After (five runs) | Plain (three runs) |
+|---|---|---|---|
+| Weighted tokens, mean | 1,594,268 | 1,510,680 | 269,351 |
+| Lowest to highest | 1,128,330 to 2,097,197 | 1,004,823 to 2,319,609 | 210,352 to 306,759 |
+| Engine over plain | 5.92 | **5.61** | |
+| Requests, mean | 81.7 | 76.4 | 13.7 |
+| Checks passed, of 31 | 28.3 | **30.2** | 31.0 |
+| Requests that read the engine's documents and source, a run | 29, 47, 23 | 20, 41, 23, 27, and about 25 steps inside other requests | 0 |
+
+**The mends fixed what was delivered and not what it cost.** The two items every engine game
+had failed (the saved run, the best score) pass in all five; the shop is a screen of its own
+in every game. The cost did not move: 5.61 against 5.92 is inside either pass's own range.
+The second reader had put the figure after these mends at 2.6 to 3 times, by taking the
+source-reading out of the ledgers; the lead had expected about the same. Both were wrong, and
+for one reason: **the builders read as much as before, about the next things.**
+
+What they went to the source for this time, from the five ledgers:
+
+- **A title button that begins a run in another way** ("Continue"): whether a button's word
+  reaches the rules at the title (it does not: no rule ticks there), whether a button can do
+  two things, what `start` does exactly. Read from `action.rs`, `run.rs` and `shell.rs` in
+  all five runs. Two games failed the pause item for a screen put between the pause and
+  the title to work round it.
+- **`keep` and `show` themselves**: the builders searched the design pages
+  for more than the guide's three lines each (when is a kept value written, what comes
+  first at a start).
+- **A text with numbers in it in three languages**, a state's exact types, data files
+  beside the rules, what Escape and "back" do on each screen: as in the cold pass.
+- All five builders opened the engine's source (the bar is none). The fifth did it inside
+  requests that began by reading its own project, 33 of them.
+
+**What this says.** A hole closed uncovers the next. A game of this size meets the project
+shell's exact behaviour in a dozen places, and a guide of sixteen kilobytes cannot hold all
+of it; whatever it leaves out costs a builder twenty requests in the source. A plain builder
+never has the question, because everything its game does is in the thousand lines it wrote.
+So the cost at this size is not a list of missing features. It is that the shell decides
+things the builder must then find out. The second reader's other half was right: without
+any source-reading the engine arm would still be near three times plain, on its ordinary
+loop of small runs at a large context.
+
+**Against the bars agreed on 2026-11-22**: the large job is to come to 1.0 or under, and
+above 1.5 after stage 2 means the design is wrong. Stage 1 alone leaves it at 5.6. Stage 2
+as planned (a smaller project to start from, the SDK's signatures, one command for a brief's
+checks) is about the number and size of requests and may bring it to three or four; it
+will not bring it to one. What would have to change for that is in the handoff, as a
+question for the owner.
+
+## Results (2026-11-23: the large job after the guide was put right, and two variants of the brief)
+
+A second reader's review of stage 1 ([FIRST_HOUR.md](FIRST_HOUR.md), section 17, "What a
+second reader found in it") did two things. It listed faults, mended in `ff4b1298`: among
+them Escape over a screen the rules put up, and a guide that was wrong on Escape and silent
+on what every builder had gone to the source for (a title or a menu of the game's own, what
+`keep` leaves to the rules, the kinds a state's value is read as). And it asked for two
+cheap measurements before anything larger was built: the large job with no path to the
+engine's repository in the brief, and with the builder told to check the game by one command.
+
+Three cells on `ff4b1298`, the large job, five cold runs each, all ended by themselves and
+judged. **control**: the engine arm's brief unchanged (added by the lead: the guide had
+changed, so the variants alone could not be told from it). **nodocs**: the same brief, the
+line that points at the engine's documents replaced by one that says the project's pages are
+all there is. **batch**: the same brief, telling the builder to write what the brief asks as
+checks and play them with `specula check`, the sample's checks kept as a model. The variants
+are arms as data: [evals/leverage-probes](../../evals/leverage-probes/settings.json).
+Records: [perf/leverage/2026-11-23-large-control](../../perf/leverage/2026-11-23-large-control/report.md),
+[perf/leverage/2026-11-23-large-probes](../../perf/leverage/2026-11-23-large-probes/report.md).
+Cost: 48.35 USD (builds 15.42, judging 32.92).
+
+| Cell | Weighted tokens, mean (lowest to highest) | Over plain (269,351) | Requests | Checks of 31 | Commands into the engine's repository, a run |
+|---|---|---|---|---|---|
+| cold comparison, `74007d71`, three runs | 1,594,268 (1,128,330 to 2,097,197) | 5.92 | 81.7 | 28.3 | |
+| stage 1, `93c46983` | 1,510,680 (1,004,823 to 2,319,609) | 5.61 | 76.4 | 30.2 | 40, 78, 46 in the first three |
+| **control, `ff4b1298`** | **516,514** (411,391 to 638,415) | **1.92** | 35.0 | 30.6 | 8, 4, 6, 10, 0 |
+| nodocs | 532,140 (467,840 to 614,579) | 1.98 | 33.8 | 30.4 | 1, 0, 0, 0, 0 |
+| batch | 644,396 (442,423 to 798,332) | 2.39 | 40.0 | 30.8 | 1, 2, 12, 2, 4 |
+
+(The last column counts commands in a builder's stream that name the repository's documents
+or crates by any spelling of its path; a stream says a command more than once, so the
+figures are for holding against each other, not counts of requests.)
+
+**The large job is at 1.92 times a plain build, from 5.61, and the cause is what one commit
+put right, most of it in the guide.** Between stage 1's five runs and the control's the job,
+the brief to the word and the model are the same, cold; the engine differs by `ff4b1298`
+alone (the guide's lines, Escape over a shown screen told to the rules, a key printed as
+`null`). The measurement cannot part the guide's lines from the mend of Escape. The fifteen runs of the three cells lie between
+411,391 and 798,332; stage 1's five lay between 1,004,823 and 2,319,609. The builders of
+the control read the engine's source a fifth as often, and one not at all. What changed
+their reading was about twenty lines: that a title or a menu of the game's own is
+`"start": "run"`, a shown screen and rules that answer its buttons; that Escape over such a
+screen is the rules'; that the rules only set the state `keep` names; how a state's value
+is read. Stage 1 had built the means and left those lines out, and each builder paid twenty
+to forty requests to find them.
+
+**What the lead got wrong the day before**, and it is this page's own section above that
+says it: "the cost at this size is not a list of missing features; it is that the shell
+decides things a builder must find out". The second half was right and the conclusion drawn
+from it was not. The shell does decide things; the builder does not need to find them out
+if the guide says them at the place they are needed, and saying them cost a day. The second
+reader's review said so in its third answer ("one worked example of a two-screen flow would
+answer most of the requests on the title and Escape"), and its two measurements were the
+right thing to do before a larger change.
+
+**The two variants.**
+
+- **No path to the repository changes nothing more** (1.98 against 1.92). With the guide
+  put right the builders hardly go there; without the path they do not go at all, and it
+  costs the same. The path was not what sent them.
+- **Told to check by one command costs more, not less** (2.39 against 1.92, in ranges that
+  overlap). The builders wrote checks and played them two to six times a run, and played
+  single runs nearly as often as before (6 to 18 against the control's 14 to 22): the
+  checks were added to the looking, not put in its place. One game more passed all 31.
+
+**Against the bars agreed on 2026-11-22.** The large job is to come to 1.0 or under, and
+above 1.5 after stage 2 means the design is wrong. It stands at 1.92 before stage 2. Every
+engine run still costs more than every plain run (the cheapest 411,391, the dearest plain
+306,759). What is left, by the control's ledgers: about 19 runs of the game a build (14 to
+22), each at a context that ends near 85,000 tokens where a plain build's ends near 50,000;
+four or five requests reading the project at the start; and no reading of the source to
+speak of.
+
+**A fault the runs show, not mended yet: a button that says `resume` on a pause screen of
+the game's own does nothing.** Five of the fifteen games failed the pause item the same way
+(Enter on Resume leaves the game paused; only Escape resumes). `resume` is a word the engine
+answers itself, and where the game is not paused by the engine it answers nothing and the
+rules never hear it (read in one of the five: its rules wait for the event `resume` from a
+screen the game file shows). The engine's own words on a screen the rules put up are a trap
+the guide does not name.
+
+## Results (2026-11-23: a second large job, written by the second reader: Night Market)
+
+The test both of the second reader's reviews asked for, and the lead's own worry: is 1.92 on
+the large job a fact about the engine, or about a guide fitted to one brief? A second, different
+large job, written by the second reader (who did not write the guide), frozen before it was
+measured; the engine and its guide frozen at `3207626c` before the job was seen; five engine
+and five plain runs the same afternoon, cold, the plain arm fresh. The job is
+[evals/leverage/jobs/night.json](../../evals/leverage/jobs/night.json) as it was given, one word
+changed at the owner's choice (its id, for a rule of the harness the lead had not told the
+second reader of). The second reader wrote down, for the owner and not the lead, which of the
+job's requirements the guide leaves unanswered. No pilot. Records:
+[perf/leverage/2026-11-23-night](../../perf/leverage/2026-11-23-night/report.md).
+Cost: 25.83 USD (builds 10.82, judging 15.00).
+
+**The rule set before the number:** engine over plain at or under 2.2, the guide generalises;
+above 3.0, it was fitted to one brief; between, the runs are doubled.
+
+| Arm | Weighted tokens, mean (lowest to highest) | Requests | Lines left | Checks of 34 |
+|---|---|---|---|---|
+| plain | 148,378 (130,807 to 167,306) | 7.4 (7 or 8 in every run) | 598 to 745 | 33.8 |
+| engine | 1,096,486 (523,399 to 1,834,602) | 61.4 (28 to 95) | 1,581 to 2,512 | 32.2 |
+
+**Engine over plain: 7.39 (95% interval 4.99 to 10.17; with the judges' cost counted, 3.64). By the rule, 1.92 was fitted to one brief.** Every engine run
+costs more than three times every plain run. All five engine builders opened the engine's
+source (8 to 26 steps into the repository each).
+
+**What they went looking for**, from the five ledgers, and none of it was asked by the first
+large job:
+
+- **A word that acts once at its tick, each time it is given.** The brief says every input
+  word acts once, "even when the same word was given at the tick before". The engine's
+  scripts hold a module's action until the next input, as a held key (the guide says so), so
+  the same word twice running is one press. Every builder searched the documents and
+  `script_run.rs` for it ("held until", "same word", "re-press") and found that the engine
+  has no such thing. **Three of the five games then failed the items it decides** (the
+  cursor, the piece, the slot: n07, n08, n12): with `none` between two words they pass, as
+  the brief gives them they do not. This is not a line missing from the guide. A script
+  cannot say "press it again".
+- **Keys that do things on a screen with no button for them** (place, erase, the speed
+  words): "shortcut" and "hotkey", searched for in the UI's pages and source by all five.
+- **A grid with a cursor on it and a list**, as widgets; how a state's value is typed; what
+  Quit does in a headless run.
+
+**The plain builds.** Seven or eight requests, two minutes, about 650 lines, 34 of 34 in
+four of five. The second reader had expected 22 requests and 450,000 to 650,000 weighted
+tokens for a plain build of this job, a larger sitting than the first large job's; it was
+smaller (148,378 against 269,351). A model writes this game whole, in one file, in one go.
+Neither large job is large for a plain build.
+
+**What the two large jobs say together.**
+
+- With a guide that answers what a job's builders will ask, the engine arm costs about
+  twice a plain build (1.92). With one that does not, five to seven times (5.92, 5.61,
+  7.39). The guide answered the first job's questions because they had been read off its
+  ledgers. A new game asks new ones, and a guide of sixteen kilobytes cannot hold every
+  game's.
+- So the lead's reading of 2026-11-22, withdrawn the day after, stands in its first half and
+  now in its second too: at this size the project shell decides things (how a run begins,
+  what a press is, what a screen may hold) that a builder must find out, and a plain builder
+  decides them all in code it wrote. Twenty lines moved one job because they were that
+  job's twenty lines.
+- **Where the brief's model and the engine's differ, the engine arm also delivers less**
+  (three games failed the same items on what a press is). A plain build has no model of its
+  own to differ.
+- The one job of the eight measured where the engine is cheaper is still the 3D change
+  (0.68), where a plain build is a renderer and a physics of the builder's own to read and
+  write again. On the 2D games of menus, rules and a headless run, a plain build is one
+  sitting at every size tried.
+
+**Against the bars of 2026-11-22.** The first bar (a game that outgrows one sitting costs no
+more through the engine) has not been tested: no job yet outgrows one sitting for a plain
+build, and on the two that were meant to, the engine costs two to seven times as much. The
+rule the owner and the lead set says what that means: above 1.5 after the mends, the design
+is wrong, not short of mends. What the engine is for (3D, physics, sound, content at a
+scale no one file holds, several agents at once) is what none of these jobs asks of it.
+
+### The second reader's assessment of this result, and what it corrects (2026-11-23)
+
+The second reader recomputed every run from its token counts (they match), held the result
+against the note it had sealed with the owner before the runs, and read this section. The
+figures stand. Four statements above say more than the runs do:
+
+- **The headline has two figures.** Builders alone: 7.39, 95% interval 4.99 to 10.17 (the
+  second reader's resampling), wholly above 3.0, so the rule's verdict holds. With the
+  judges' cost counted: 3.64, interval 2.71 to 4.59. Judging a plain game costs about twice
+  building it, which is why the two differ so.
+- **"A script cannot say press it again" is too strong.** The engine's script runner cannot
+  press a held action twice running. Two of the five builders got past that with a hidden
+  button and a chord for every word, which the guide does not mention, and passed the items;
+  three said so in their README and failed them.
+- **"Five to seven times where the guide does not answer" is two jobs**, the first measured
+  twice (5.92, 5.61) and this one (7.39): two data points, not a rule.
+- **"The engine arm also delivers less" is weakly held.** 32.2 against 33.8 of 34; one judge
+  passed n28 on the behaviour for which two others failed it (the state's `grid` in a
+  replay, which the brief does not settle). With that ruled one way for all, 32.8 against
+  33.8.
+
+And the conclusion drawn in the handoff, "stop mending for 2D games", goes beyond one job
+chosen to ask what the guide does not answer. What the runs do say, in the second reader's
+words: where a plain model can write the whole game from a clear spec in one request, the
+engine arm loses on cost, and its cost is in friction that can be named, plus the number of
+requests.
+
+**The friction named**, with its share of each engine builder's cost by the second reader's
+hand count (rough): the delivery of input, 26 to 48%. Three things, and they are the
+engine's to mend, not a guide's to explain:
+
+1. The same word of a module's on two inputs running is one press.
+2. A key cannot reach the rules on a screen the rules put up unless a button stands for it.
+3. The rules cannot change a setting, so a settings screen of the game's own is awkward.
+
+**And the shape of the work**: a plain builder writes the game whole at its second request
+and checks it in a few batches of a script of its own; an engine builder plays 19 to 63
+single runs at a context of 50,000 to 140,000 tokens. The engine arm's brief forbids "a
+program of yours around" the run command; the plain arm has no such line.
+
+**The sealed note against what happened** (the second reader's own account): of the three
+gaps it had sealed, the first was met through a neighbour it had listed only as a risk (the
+repeated word); the second cost nothing, because the brief itself gave the answer away; the
+third cost nothing, as expected. Its forecast of a plain build was three to four times too
+high. Neither of the two who write and read these jobs can yet say what a job will cost
+either arm.
+
+**What follows, agreed with the owner:** the three input faults mended in the engine; then
+this job again, unchanged, with a fresh plain arm, as a test of those mends and of nothing
+more; a third job, sized by a pilot of its plain arm alone, since no plain build so far has
+needed more than one sitting. Jobs that ask for 3D and for several agents at once run
+beside this line, not in its place.
+
+## Results (2026-11-23: Night Market again after one mend, and a third job, Day Market)
+
+Two measurements on one build (`1dc2f432`; the engine is `3bb629b5`), cold briefs, builders
+Sonnet 5.5, judges Opus 5.5, the rule written into the handoff before either number: for each
+job by itself, engine over plain in the builders' weighted tokens at or under 2.2, the engine
+holds on that job; above 3.0, it does not; between, the runs are doubled. Records:
+`perf/leverage/2026-11-23-night-again` and `perf/leverage/2026-11-23-day`.
+
+| | Night Market again | Day Market |
+|---|---|---|
+| Runs, engine and plain | 5 and 5 | 10 and 10 (doubled by the rule: 2.74 after five and five) |
+| Engine, weighted tokens (mean; lowest to highest) | 471,262; 289,548 to 590,538 | 987,209; 710,147 to 1,739,856 |
+| Plain | 130,754; 124,057 to 139,615 | 328,019; 278,043 to 370,369 |
+| **Engine over plain, builders** (95% interval, resampled) | **3.60** (2.74 to 4.41) | **3.01** (2.49 to 3.67) |
+| Engine over plain, builders with judges | 2.13 (1.82 to 2.45) | 1.84 (1.56 to 2.14) |
+| Requests, engine and plain | 15 to 37; 6 to 8 | 30 to 79; 11 to 17 |
+| Minutes | 12 and 2 | 15 and 5 |
+| Checks passed | 33.8 and 33.8 of 34 | 54.2 and 59.8 of 61 |
+| Engine builders that read the repository | 4 of 5 (0 to 4 requests) | 10 of 10 (1 to 15 requests) |
+| Cost at list prices (USD) | 21.01 | about 84 (builds 24, judging 60 with two judgings that left no verdict) |
+
+**By the rule, the engine holds on neither job.** By the point estimates, that is: both intervals
+(2.74 to 4.41, 2.49 to 3.67) reach into the band between 2.2 and 3.0, so neither is settled
+as the first Night Market was (7.39, wholly above 3.0).
+
+**What the one mend did.** Night Market was 7.39 with 32.2 of 34 checks; with a word given
+again pressed again it is 3.60 with the checks level. The engine arm's cost halved
+(1,096,486 to 471,262); the plain arm, built fresh, came in where it had been (148,378 then,
+130,754 now). One fault of the engine's was half of that job's cost.
+
+**Day Market is the first job nobody who knows the engine shaped**, and a plain build of it is
+still one sitting: 11 to 17 requests, five minutes, about 1,300 lines of Python, all ten
+within 14% of their mean. So the first bar of the success definition (a game that outgrows
+one sitting) is still untested.
+
+**Why the engine arm passes fewer checks on Day Market** (68 failed items against 12):
+
+- *A fault of the engine's, in five of ten games:* the Evening screen shows a placeholder
+  (`{work.disp}`) where its text should be. A text a module keeps for a screen is dropped
+  without a word when it is longer than 256 characters (`MAX_SHOWN_TEXT`), and the run's
+  warning then says "nothing keeps" the value, which is untrue and points the wrong way. No
+  page a builder reads gives the limit.
+- *A gap of the engine's, in four of ten:* the rules cannot end a headless run, so "Quit
+  prints the state as it stood" fails. Night Market's judges noted the same.
+- *About thirty of the rest are a judge saying it did not get there:* no visitor ever walked
+  out, the 99-unit cap was never reached, never enough coins for an upgrade. Judges of the
+  plain games reached those states, at least once by writing a saved slot by hand. **The two
+  arms are not equally easy to judge**, and this table's checks understate the engine games
+  by an amount nobody has measured. Two judges of engine games ran out of their 30 minutes
+  with no verdict and were judged again with 60 (as were all ten runs of the doubling, both
+  arms); day-engine-1's judge, in 30 minutes, marked fifteen items it had not exercised, and
+  is left as it judged.
+
+**What the engine builders went to the repository for** (Day Market): what happens to
+several words given at one tick (asked most often), a key with no button, how a
+script's inputs are read, how a run is ended. New questions again, though fewer requests
+were spent on them than on Night Market the first time (1 to 15 here; 20 to 41 on the first
+large job before its guide was mended).
+
+**One run was recorded by hand.** The builder of day-engine-8 stopped every `examen` process
+by name to clear a run of its game that hung, and so stopped the harness that watched it.
+The builder ran to its own end; its cost is from its stream (`leverage record`), and the
+harness's row shows no price or request count for it (the stream has 43 requests). A harness
+a builder can stop by name is a fault of the harness.
+
+**The reading, kept to what the runs say.** The job the guide was
+fitted to stands at 1.9; a job it was not fitted to at 7.4, and 3.6 after one mend; a new job at
+3.0; each one sitting for a plain builder. Where it
+was far above that, a fault of the engine's was found and its mend moved the figure (7.39 to
+3.60). Nothing here shows the engine at or under a plain build's cost on a 2D game; nothing
+tests a game larger than a sitting. Counting the judges, the engine arm is about twice a
+plain build's cost on both jobs.
+
+**Not done, and frozen until the second reader has read these runs:** the 256-character
+limit and its warning; a run the rules can end; judging the two arms on equal terms.
+
+### The second reader's assessment and two review passes, and what they correct (2026-11-23)
+
+The second reader recomputed every figure from the runs' token counts, read the engine at
+the pushed commit in two independent passes, ran the build, the tests and clippy on Linux
+(3,579 tests passed), and reproduced the faults below with tests of its own. The builders'
+ratios, the account of the hand-recorded run and the mend's effect on Night Market hold.
+Corrected above, in place:
+
+- **Day Market with the judges counted is 1.84 (1.56 to 2.14), not 1.86.** The lead's script
+  read the discarded first judging of the two runs judged again.
+- **The placeholder fault is five of ten games, not six**, by the verdicts' own words.
+- **"1.9, 3.6 and 3.0" read as a trend and left 7.39 out.**
+- **Both intervals, not Day Market's alone, reach into the band between 2.2 and 3.0.** "Does
+  not hold" is what the point estimates say; the runs do not settle it.
+
+What the lead had not said, or had wrong:
+
+- **Several words at one tick are a second fault of input, still open**: the runner gives
+  every word of a tick before any tick runs, each letting go of the one before, so the rules
+  see one press of the last. The lead had called the faults of input one fault.
+- **Quit is refused before it is ignored**: a script's press on a Quit button is an agent's
+  to the shell, and quitting is the player's alone; and a run reports the tick its script
+  had reached, not the ticks that played.
+- **The judging is not blind** (a run's brief names its arm) **and not equal** (the time
+  given, and how far a judge can reach). The second reader's count: 31 of the engine arm's
+  68 failed items are a state not reached; none of the plain arm's 12.
+- **The lead's brief to the clean agent was not neutral**: it asked for words that act once
+  at their tick, the lesson of Night Market, on the day the engine was mended for it. A fair
+  thing for a brief to ask, and a weaker independent test than it looks.
+- **Day Market is not large**, and should not be enlarged from its own pilot: the job that
+  outgrows a sitting needs an author who has not seen these ledgers.
+
+**Agreed next** (the owner: "Fix all"): the three faults mended (a long text shown, and a
+dropped one said truly; a quit that ends a headless run with the state as it stood; several
+words at one tick each acting in order); the guide otherwise frozen and Day Market's brief
+untouched; then Day Market again with fresh plain runs; its games judged again by both arms
+from one shared pack of scripts, the first verdicts kept. A good figure there will say the
+faults are gone, not that the engine generalises: the job will then be one the engine was
+mended against, as the first large job was.
+
+## Results (2026-11-24: Day Market again after three mends, judged twice, and two single builders)
+
+Day Market, the job unchanged, ten engine and ten fresh plain runs on `5c416dc3` (the three
+mends of FIRST_HOUR.md section 17: a long kept text, quit under a script, several words at
+one tick), cold briefs, builders Sonnet 5.5, judges Opus 5.5. The rule and the figure to
+hold against (3.01) were written before the runs. Records: `perf/leverage/2026-11-24-day-again`
+(the last judging of each run, and every judging before it) and
+`perf/leverage/2026-11-24-blank-slate`.
+
+| | Day Market, 2026-11-23 | Day Market again |
+|---|---|---|
+| Engine, weighted tokens (mean; lowest to highest) | 987,209; 710,147 to 1,739,856 | 902,731; 680,966 to 1,311,905 |
+| Plain | 328,019; 278,043 to 370,369 | 342,402; 272,054 to 396,568 |
+| **Engine over plain, builders** (95% interval, resampled) | **3.01** (2.49 to 3.67) | **2.64** (2.26 to 3.08) |
+| Engine over plain, builders with judges, first judging | 1.84 (1.56 to 2.14) | 1.75 (1.50 to 2.00); 2.07 (1.65 to 2.53) with the five judges that ran out of time counted |
+| Engine, the middle run (median) | 870,002 | 877,690 |
+| Requests, engine and plain | 30 to 79; 11 to 17 | 27 to 67 (mean 39); 10 to 19 (mean 14) |
+| Minutes | 15 and 5 | 13 and 5 |
+| Checks passed, each judge finding its own inputs | 54.2 and 59.8 of 61 | 55.9 and 60.3 |
+| Checks passed, every judge given the same pack of scripts | not judged so | **59.0 and 60.5** |
+| Engine builders that opened the repository | 10 of 10 (1 to 15 requests) | 9 of 10 (1 to 10 requests) |
+
+**By the rule the result is between the bars** (above 2.2, at or under 3.0), where the rule
+says to double the runs before anything is said. They were not doubled: twenty and twenty is
+the owner's to ask for. What can be said without it: the interval (2.26 to 3.08) lies wholly
+above 2.2, so on this job the engine does not hold; and it overlaps the interval of the day
+before (2.49 to 3.67) almost entirely, so **the three mends did not show as a change in what
+a build costs.** The engine arm's mean fell by 9% and the plain arm's rose by 4%; both are
+inside what either arm moves by between two days. **The move from 3.01 to 2.64 is within
+noise:** the change in the ratio, resampled, lies between -1.13 and +0.32; the middle engine
+run did not move (870,002, then 877,690); and one run of 1,739,856 in the first set, with
+none as dear in the second, is about 70% of the fall.
+
+**What the mends did change is what was delivered.** No game shows a placeholder for a long
+text (five of ten did), and no game fails the Quit item (four of ten did). All ten builders
+took presses from the `press` event and asked to quit by the `quit` key, from the guide's
+three new statements; none read `.pressed`. The engine arm's failed items fell from 68 to 51
+at the first judging; the judging was not quite the same as the day before (the five judges
+judged again had a real 60 minutes for the first time, below).
+
+**The judging, done twice.** Of those 51 failed items, 40 are a judge saying it never reached
+the state (no walk-out, the 99-unit cap, too few coins for an upgrade, a frame not taken);
+the plain arm's ten games fail 7 items in all. So every game of both arms was judged again by
+a fresh judge given the same pack of input scripts (43 scenarios, written from the brief and
+validated the day before on four games of 2026-11-23), with 60 minutes. **With the same route
+to every state the arms are 59.0 and 60.5 of 61**: by the arithmetic the gap of 4.4 checks
+was 1.5 of the games and 2.9 of the judging, **which reads more exact than it is.** The gap
+of 1.5 has an interval of 0.0 to 3.3. Two judges of one engine game agree less than two of a
+plain one: 57 of 610 items changed between the two judgings (44 from fail to pass, 13 from
+pass to fail; agreement beyond chance, kappa, 0.16) against 6 of 610 for the plain games,
+which are at the ceiling and so bound nothing. The pack and the 60 minutes came together and
+cannot be told apart. And the 13 that went from pass to fail are mostly a pack judge that
+did not run a scenario: the pack brings a noise of its own. What stands: the engine games
+are about one to two checks of 61 behind, and the first judging overstated it; by how much
+is not measured. What the engine games still fail, 20 items in ten games
+against 5: mostly the drawn frame (d58 to d61, 8 of the 20: no mark on the chosen row, a
+stall or a till not drawn as the state has it), then single items (a slot not emptied in
+what is kept, a record read back wrong, a menu row not kept across a pause). The first
+judging of each run is kept in its record; the figure with the judges above is the first
+judging's, and with the pack judging in its place it is 1.50 (1.36 to 1.66), which says the
+pack costs a plain game's judge more than an engine game's and nothing about the builds.
+
+**What the builders went to the repository for:** a screen with a list of rows whose number
+changes (asked by most of them), a text with numbers in it in two languages (`msg` and
+`args`), where a run's seed is read. One builder spent ten requests there (267,019 weighted
+tokens, a fifth of its cost); the other eight, four or fewer, two of them only listing or
+searching the documents. One builder (day-engine-1) opened nothing outside its project. (The
+lead first wrote seven of ten, from `examen leverage trace`: it knows the repository by one
+spelling of its path and missed two builders that wrote it another way. The same undercount
+may stand in earlier results' counts of builders that read the repository.)
+
+**Where the cost is,** unchanged: 39 requests against 14, each carrying a context that ends
+near 130,000 tokens (111,000 to 170,000) against a plain build's 60,000 to 70,000. Two in five
+of an engine build's requests are runs of the game.
+
+**Faults of the measurement, said so that the figures are read with them:**
+
+- *The judges' 60 minutes were never given.* The lead's scripts changed the limit in each
+  run's own file; the harness reads it from the data folder's settings. Every judging before
+  this one that was said to have 60 minutes had 30 and happened to end in time. Five judges
+  of this pass (four engine games, one plain) ran out of 30 minutes with no verdict and were
+  judged again from a copy of the data folder with the limit raised; the pack judging used
+  the same. One pack judging took 43 minutes.
+- *One judging was recorded by hand* (day-engine-4's second): the judge stopped process trees
+  by their ids when it finished and the watching harness went with them before it recorded.
+  Its figures are from the judge's stream and the verdict is the judge's own file.
+- *The pack was given by a line in the judge's rules and a folder beside its page*, not by
+  the harness: `examen leverage` has no way to hand a judge more than the job's list.
+- One engine builder kept settings folders of its trial runs outside its own folder, in the
+  runs' root. Nothing else was there to be read.
+- The judging is still not blind: a judge's page names the arm.
+
+**Two single builders, started beside the ten** (the owner: two blank-slate agents, one on
+each market, neither knowing of the other, the lead only watching). Read as: one cold engine
+builder each, by the same harness, in a root of their own. *Night Market:* 304,256 weighted
+tokens, 18 requests, five minutes, 34 of 34 checks, nothing opened outside its project; the
+plain arm of the day before averaged 130,754, so about 2.3 times, on one run. It is the
+second cheapest of the six engine builds of Night Market on the mended engine (the five of
+the day before: 289,548 to 590,538). *Day Market:* 1,156,305 weighted tokens, 50 requests, 55 of 61 at its own judge's
+inputs, thirteen steps in the repository (the list of rows, `msg`, how a run's line is
+read by key): inside the ten's range, at its dear end. One run each is an observation, not a
+measurement.
+
+**Cost at list prices:** about 160 USD (builds 26; the first judging 55 with the five that
+left no verdict; the pack judging 61; the rest the judgings judged again). The lead had said
+about 85 before the runs: the pack judging and the judges that ran out were not in it.
+
+**The reading.** On a job nobody shaped for the engine, with its known faults mended, a build
+through the engine costs about two and a half times a plain one and delivers nearly the
+same game (1.5 checks of 61 fewer, most of them the drawn frame). Mending faults moved what
+is delivered and not what it costs. The cost is the number of requests and the context each
+carries, as it has been since 2026-11-21, and no mend of a fault touches that. A plain build
+of this job is still one sitting (10 to 19 requests), so the first bar of the success
+definition is still untested.
+
+### The second reader's assessment and a second verification, and what they correct (2026-11-24)
+
+Two readers recomputed every figure from the raw cost and verdict files, the second without
+the first's report: 2.64 holds (2.26 to 3.07), the patch in the bundle is the code on `main`
+line for line, all twelve engine runs record `5c416dc3`. The label they give the result:
+**does not hold at 2.2; not decided at 3.0; about 2.6 times a plain build.** What they
+corrected is corrected in place above:
+
+- The single Night Market build is the second cheapest of six, not the cheapest.
+- Nine of ten builders opened the repository, not seven (the lead's tool missed a spelling of
+  the path).
+- With the judges counted, 1.75 leaves out the five judges that ran out of time; with them
+  it is 2.07 (1.65 to 2.53). Both are given.
+- "With the judging unchanged" was untrue of five runs.
+- The move from 3.01 to 2.64 is noise from one dear run, not a small gain. The commit that
+  recorded this pass is headed "2.64 times a plain build, from 3.01" and reads as a gain; it
+  is pushed and stays as it is.
+- "Most of the gap was the judging" is half supported: the gap is smaller than the first
+  judging said; how much of it was the judging is a reasonable guess and not a measurement.
+- About 160 USD stands (the second verification: about 158).
+
+**Several words at one tick, asked about and tested directly.** One game's README
+(day-engine-5) says several words at one tick on its Settings screen "can act on the row the
+focus had before the tick"; a pack judge marked it from the README without seeing it. That
+screen is the engine's own (buttons that step a setting, the engine's focus). Played by the
+lead: Down then Right at one tick, Down twice then Right, Right then Down then Right, and
+the same at the tick straight after the screen opens, all act in order as the brief asks,
+and Escape then Down at one tick acts in order on the way out. **One case does not:** Enter
+on the title (the rules' own menu) with Down and Right at the same tick. The Settings screen
+comes up, its focus moves down, and the Right is lost. A word that follows, in the same
+tick, the word by which the rules put an engine's screen up is not all given to that
+screen: the screen is shown a tick after the rules ask. Six pack judges gave three words at
+one tick on the title menu and saw them act in order. Left open with the other three of
+FIRST_HOUR.md section 17; not mended.
+
+**The measuring ends here** (the owner, 2026-11-24: "we're no longer doing any further
+testing. We did as much reduction as we can. We need to move on with finishing shape, sfx,
+recipe and template libraries, and then rest of part 4 and onwards."). Where it stands, for
+whoever takes it up again: on jobs of this size a build through the engine costs about two
+to three times a plain one and delivers nearly the same game; the one job where it is
+cheaper is the 3D change (0.68); the cost is the number of requests and the context each
+carries; no job measured outgrows one sitting of a plain builder, so the first bar of the
+success definition was never tested; three agents on one game were never measured. Faults of
+the harness found and not mended, to mend before any measurement is taken up again: a
+judge's time limit set in a run's file is not read; a judge's stream is written over by the
+next judging of the same run (the streams of the five judges that ran out are lost); a pack
+cannot be handed to a judge; a judge's page names the arm; `trace` knows the repository by
+one spelling of its path.

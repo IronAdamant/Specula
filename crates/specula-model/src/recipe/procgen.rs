@@ -60,8 +60,11 @@ macro_rules! sdf_node {
     };
 }
 
+/// What every SDF node may take beside its own fields ([`sdf_node!`] appends them, in this order).
+pub(super) const SDF_SHARED: usize = 13;
+
 /// SDF nodes: primitives (centred on `at`) and groups.
-const SDF_NODES: &[(&str, &[Field])] = &[
+pub(super) const SDF_NODES: &[(&str, &[Field])] = &[
     ("sphere", sdf_node!(r("radius", Num))),
     ("box", sdf_node!(r("size", Vec3), o("corner", Num), o("roundness", Num))),
     ("cylinder", sdf_node!(r("radius", Num), r("height", Num), o("radius_top", Num), o("corner", Num), o("roundness", Num))),
@@ -836,18 +839,23 @@ impl Ctx<'_> {
             j.push(("owners_work", Json::from(work)));
             j.push(("owners_unanswered", Json::from(unanswered)));
         }
-        // Where a part is thinner than a cell, edges more than two triangles share
-        // ([`sdf::SdfStats::thin_edges`]): said with where, and in the model's notes.
+        // Where a part is thinner than a cell ([`sdf::SdfStats::thin_cells`]): said with where,
+        // and in the model's notes. The mesh is a surface there, and a coarse one.
         if let Some((lo, hi)) = st.thin_at {
             let at = |v: [f32; 3]| Json::arr(v.map(|x| Json::Num(dmath::round_f64(f64::from(x) * 1e4) / 1e4)));
-            j.push(("thin_edges", Json::from(st.thin_edges)));
+            j.push(("thin_cells", Json::from(st.thin_cells)));
             j.push(("thin_at", Json::arr([at(lo), at(hi)])));
             if !self.coarse {
                 self.tally.note(format!(
-                    "{}: {} edges are shared by more than two triangles, between {:?} and {:?} (in the sculpt's own frame, before any operation on it or its part): something there is thinner than a cell ({:.4} m), so the mesh is not a surface there; raise \"resolution\" or thicken it",
-                    n.path, st.thin_edges, lo, hi, st.cell
+                    "{}: {} cells between {:?} and {:?} (in the sculpt's own frame, before any operation on it or its part) hold something thinner than a cell ({:.4} m): each of its sides has vertices of its own, so the mesh is a closed surface there, but it is drawn by the cells' vertices alone (no finer than a cell); raise \"resolution\" or thicken it",
+                    n.path, st.thin_cells, lo, hi, st.cell
                 ));
             }
+        }
+        // (None, by construction: said if a fault ever made one.)
+        if st.tangled_edges > 0 {
+            j.push(("tangled_edges", Json::from(st.tangled_edges)));
+            self.tally.note(format!("{}: {} edges of the sculpt's mesh are shared by other than two triangles: a fault of the mesher, not of the recipe", n.path, st.tangled_edges));
         }
         self.stat(&n.path, Json::obj(j));
         check_extent(&shape, &n.path)?;

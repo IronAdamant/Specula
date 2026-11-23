@@ -70,6 +70,7 @@ mod scaffold;
 mod safe_path;
 pub mod savegame;
 pub mod physics;
+pub mod physics_told;
 mod physics_tools;
 mod joint_tools;
 mod ragdoll_tools;
@@ -136,6 +137,7 @@ mod timeline;
 mod timeline_tools;
 mod l10n_tools;
 mod memory_tools;
+mod formae_tools;
 pub mod launch_cli;
 pub mod launch_client;
 pub mod launch_engine;
@@ -585,6 +587,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         }
     };
     let scripted = script.is_some();
+    // (The numbers the run's rules may read: the host has them before a module loads.)
+    let script_params = script.as_ref().map(|s: &script_run::Spec| s.set.clone()).unwrap_or_default();
     let mut startup = Startup::begin();
     if args.project.is_some() {
         // `--project` makes that folder the working directory. Every other folder the command
@@ -990,8 +994,14 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         // state ([`Engine::serve_game_clock`]).
         engine.clock.set_paused(true);
         engine.script_clock = Some(false);
+        engine.logic.set_params(script_params);
     }
     engine.game = game.take();
+    if scripted {
+        if let Some(game) = engine.game.as_mut() {
+            game.played_by_script();
+        }
+    }
     engine.start_game();
     startup.mark("game");
     if args.paused {
@@ -1293,6 +1303,13 @@ struct Engine {
     /// run's clock running, by its own last wish. The clock itself stands still but for the
     /// script's ticks.
     script_clock: Option<bool>,
+    /// Under a script: the game asked to quit (its Quit, or its rules' `quit`) and no tick has
+    /// run since. Told to the script with its next ticks, which do not run ([`Engine::play_ticks`]).
+    script_quit: bool,
+    /// The hosted game's own last wish for the clock, whoever has it: true while its title,
+    /// its pause or an ended run hold it ([`Engine::serve_game_clock`]). Window input fed then
+    /// presses nothing in the game ([`logic::LogicHost::feed_window`]).
+    game_holds_clock: bool,
     /// What the start-up build (`--run`) could not load, for the hosted game to show.
     run_reports: run_modules::Reports,
     /// World folders saved in this run, and the identity key that first saved each (its creator
@@ -1537,6 +1554,8 @@ impl Engine {
             playtest_pumping: false,
             game_clock_held: None,
             script_clock: None,
+            script_quit: false,
+            game_holds_clock: false,
             run_reports: run_modules::Reports::default(),
             world_folders: std::collections::BTreeMap::new(),
             commits: authority::CallCommits::default(),
@@ -1869,6 +1888,9 @@ impl Engine {
             self.nav_tick();
             // Physics steps on the same fixed tick, after the game moved what it moves.
             self.physics_tick();
+            // What physics has to tell the rules (a touch, a body out of the world): heard at
+            // the next tick, as every event from the engine is.
+            self.tell_modules_of_physics();
             // World-space effects' tracks (cosmetic: read only), as of the tick's end.
             let tick_end = self.world.world_time() + 1.0 / f64::from(self.clock.hz());
             self.vfx.tick(&self.world, self.world_generation, tick_end);
@@ -1881,7 +1903,13 @@ impl Engine {
             // A game that stopped the clock on this tick (its run ended, it paused) has no
             // further tick: the ones still due in this advance, and any still queued by a step,
             // do not run behind it.
-            if self.serve_game_clock() == Some(true) {
+            // Under a script, a game that asked to quit on this tick (its rules' `quit`) has no
+            // further tick either, and the quit is taken on this tick whatever the clock does: a
+            // run that ended, or paused, on the tick it quit on quit on it (a reviewer,
+            // 2026-11-24: taken after the clock's stop, it was seen a call later).
+            let quit = self.script_quit_asked();
+            let held = self.serve_game_clock() == Some(true);
+            if quit || held {
                 self.clock.cancel_steps();
                 break;
             }
@@ -1961,6 +1989,9 @@ impl Engine {
     /// starts it as its own doing, and `time_control` says the game did. Returns what was done.
     pub(crate) fn serve_game_clock(&mut self) -> Option<bool> {
         let paused = self.game.as_mut()?.take_clock()?;
+        // (What the game itself wants, whoever has the clock: its own pause, its title, an
+        // ended run hold it; an agent's pause or a stepping playtest do not.)
+        self.game_holds_clock = paused;
         // A playtest owns the clock while it runs: it holds it paused and steps it tick by
         // tick, so the same spec makes the same calls at the same ticks. The game's wish
         // changes nothing then (a run begun by a step is ticked by the playtest's steps, and
@@ -1992,6 +2023,10 @@ impl Engine {
     pub(crate) fn play_ticks(&mut self, n: u64) -> u64 {
         // A press since the last tick may have started, paused or ended the run.
         self.serve_game_clock();
+        // A game that asked to quit has no further tick (the script is told: `quit`).
+        if self.script_quit_asked() || n == 0 {
+            return 0;
+        }
         let before = self.clock.tick();
         // (The clock stands still under a script, whatever was done to it: its ticks are the
         // ones asked for here, each once.)
@@ -2005,6 +2040,18 @@ impl Engine {
             self.clock.cancel_steps();
         }
         self.clock.tick() - before
+    }
+
+    /// Under a script (`specula run`): whether the hosted game has asked to quit since the
+    /// script was last told ([`Game::take_quit`]: its Quit, pressed by the script that stands
+    /// in for the player, or its rules' `quit`). Anywhere else a quit is not taken here: a
+    /// window's is the window loop's, and a served engine's is nobody's.
+    fn script_quit_asked(&mut self) -> bool {
+        if self.script_clock.is_some() && !self.script_quit && self.game.as_mut().is_some_and(|g| g.take_quit()) {
+            specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "game.quit", game = self.game_name.as_str(), tick = self.clock.tick());
+            self.script_quit = true;
+        }
+        self.script_quit
     }
 
     /// The clock as the hosted game wants it, set as the game's own doing.
@@ -2092,7 +2139,11 @@ impl Engine {
         if modal {
             self.logic.feed_window_idle(dt.as_secs_f32());
         } else {
-            self.logic.feed_window(&self.input, dt.as_secs_f32());
+            // Held by the game itself (its title, its pause, a run that ended): nothing pressed
+            // now acts when it runs again. A clock an agent paused or steps is not the game's:
+            // a person's presses between its steps are latched as ever.
+            let held = self.game_holds_clock;
+            self.logic.feed_window(&self.input, dt.as_secs_f32(), held);
         }
         if self.lex_live.has_input() {
             if modal {
@@ -3554,6 +3605,10 @@ impl Engine {
                 let mut answer = self.clock_json();
                 if let Some(ran) = played {
                     answer.set("played", Json::from(ran));
+                    // The game asked to quit: told once, and the script gives nothing after it.
+                    if std::mem::take(&mut self.script_quit) {
+                        answer.set("quit", Json::Bool(true));
+                    }
                 }
                 if let Some(running) = self.script_clock {
                     answer.set("game_clock", Json::from(if running { "running" } else { "held" }));
@@ -4112,6 +4167,11 @@ impl Engine {
         if !self.logic.is_empty() {
             info.set("modules", self.logic.summary());
             info.set("module_sounds", self.module_sounds.to_json());
+            let unread = self.logic.params_unread();
+            if !unread.is_empty() {
+                info.set("params_read", Json::from(self.logic.params_len() - unread.len()));
+                info.set("params_unread", Json::arr(unread.into_iter().map(Json::from)));
+            }
         }
         if let Some(game) = &self.game {
             info.set("game", Json::obj([("name", Json::from(self.game_name.as_str())), ("status", game.status())]));

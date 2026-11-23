@@ -264,6 +264,11 @@ pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
         }
         Cli::Open { which, front, engine_args } => open(ctx, &which, front, &engine_args),
         Cli::Run(args) => run_game(ctx, &args),
+        Cli::Tune(args) => tune_game(ctx, &args),
+        Cli::Find(args) => match game_folder(ctx, &args.which) {
+            Ok(folder) => run_in(ctx, &folder, &args, Kept::AsAsked),
+            Err(no) => no,
+        },
         Cli::Check(args) => check_game(ctx, &args),
         Cli::Stop { target } => {
             let (list, _) = ctx.store.load();
@@ -666,11 +671,177 @@ const RUN_LOCK_WAIT: Duration = Duration::from_secs(90);
 /// `specula run`: an engine of this run's own plays the script with no window and ends; its
 /// answer is read from a file in a folder of this run's own, which goes when it is read.
 fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
-    match game_folder(ctx, &args.which) {
-        Ok(folder) => run_in(ctx, &folder, args, Kept::AsAsked),
-        Err(no) => no,
+    let folder = match game_folder(ctx, &args.which) {
+        Ok(folder) => folder,
+        Err(no) => return no,
+    };
+    // One parameter with several values: the run is played once for each, a line each.
+    let Some(swept) = args.set.iter().position(|(_, values)| values.len() > 1) else {
+        let (code, mut answer) = run_in(ctx, &folder, args, Kept::AsAsked);
+        if let (0, Some(out)) = (code, &args.sounds) {
+            match write_sounds(&folder, out) {
+                Ok(written) => drop(answer.set(RUN_SOUNDS, Json::Arr(written))),
+                Err(why) => return why,
+            }
+        }
+        return (code, answer);
+    };
+    let mut lines = Vec::new();
+    let mut failed = false;
+    for value in &args.set[swept].1 {
+        let mut one = args.clone();
+        one.set[swept].1 = vec![*value];
+        let (code, answer) = run_in(ctx, &folder, &one, Kept::AsAsked);
+        failed |= code != 0;
+        let set = Json::obj([(args.set[swept].0.as_str(), Json::Num(*value))]);
+        match (code, answer.get(RUN_AT).and_then(Json::as_array)) {
+            (0, Some(states)) => {
+                lines.extend(states.iter().map(|state| Json::obj([("set", set.clone()), ("state", state.clone())])));
+                if answer.get(RUN_AT_IS_ALL).is_none() {
+                    lines.push(Json::obj([("set", set), ("state", answer.get(RUN_REPORT).cloned().unwrap_or(Json::Null))]));
+                }
+            }
+            (0, None) => lines.push(Json::obj([("set", set), ("state", answer.get(RUN_REPORT).cloned().unwrap_or(Json::Null))])),
+            _ => {
+                // (A run that could not be made says why, and the values after it are not tried:
+                // a build that fails fails for every one.)
+                lines.push(Json::obj([("set", set), ("error", answer)]));
+                break;
+            }
+        }
     }
+    (i32::from(failed), Json::obj([(CHECK_LINES, Json::Arr(lines))]))
 }
+
+/// Most sounds one run writes out.
+const MAX_SOUNDS_WRITTEN: usize = 64;
+/// The key a run's answer has the sounds it wrote under.
+const RUN_SOUNDS: &str = "sounds_written";
+
+/// `--sounds DIR`: every sound of the game (`assets/sounds/NAME.json`, a recipe) rendered and
+/// written as `DIR/NAME.wav`, 16 bits, as the game would play it. No engine is started for it:
+/// a brief that asks for each sound as a file cost a builder of the comparison three requests
+/// and an engine left running (`audio_preview`), and the files landed in a captures folder.
+/// Returns a line for each file written.
+fn write_sounds(project: &Path, out: &Path) -> Result<Vec<Json>, (i32, Json)> {
+    use specula_audio::{synth, wav};
+    let from = project.join("assets").join("sounds");
+    let out = std::path::absolute(out).unwrap_or_else(|_| out.to_path_buf());
+    let mut recipes: Vec<PathBuf> = match std::fs::read_dir(&from) {
+        Ok(entries) => entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "json") && p.is_file()).collect(),
+        Err(_) => Vec::new(),
+    };
+    recipes.sort();
+    if recipes.is_empty() {
+        return Err(refusal("no_sounds", format!("{} has no sound to write: a sound is a recipe, NAME.json, there (notes/world.md)", from.display())));
+    }
+    if recipes.len() > MAX_SOUNDS_WRITTEN {
+        return Err(refusal("too_many_sounds", format!("{} has {} recipes; --sounds writes at most {MAX_SOUNDS_WRITTEN}", from.display(), recipes.len())));
+    }
+    crate::disk::book().make_dir(crate::disk::Category::Captures, &out, crate::disk::Need::Essential).map_err(|e| refusal("no_sounds", format!("{}: {e}", out.display())))?;
+    let mut written = Vec::new();
+    for path in recipes {
+        let bad = |why: String| refusal("bad_sound", format!("{}: {why}", path.display()));
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if size > crate::module_sounds::MAX_RECIPE_BYTES {
+            return Err(bad(format!("{size} bytes; a sound's recipe is at most {} KiB", crate::module_sounds::MAX_RECIPE_BYTES >> 10)));
+        }
+        let text = std::fs::read_to_string(&path).map_err(|e| bad(e.to_string()))?;
+        let recipe = synth::Recipe::parse(&text).map_err(|e| bad(e.to_string()))?;
+        if recipe.rendered_seconds() > crate::module_sounds::MAX_SOUND_S {
+            return Err(bad(format!("{:.1} s long; a game's sound is at most {} s", recipe.rendered_seconds(), crate::module_sounds::MAX_SOUND_S)));
+        }
+        let sound = synth::render(&recipe, &synth::RenderOptions::default()).map_err(|e| bad(e.to_string()))?;
+        let bytes = wav::encode(&sound.samples, sound.channels, sound.rate, wav::WavFormat::Pcm16).map_err(|e| bad(e.to_string()))?;
+        let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let file = out.join(format!("{name}.wav"));
+        crate::disk::book().write(crate::disk::Category::Captures, "sounds", &file, &bytes, crate::disk::Need::Essential).map_err(|e| bad(format!("{}: {e}", file.display())))?;
+        let seconds = sound.samples.len() as f64 / (f64::from(sound.channels.max(1)) * f64::from(sound.rate.max(1)));
+        written.push(Json::obj([("sound", Json::from(name.as_str())), ("file", Json::from(file.to_string_lossy().as_ref())), ("seconds", Json::Num((seconds * 1000.0).round() / 1000.0))]));
+    }
+    Ok(written)
+}
+
+/// `specula tune`: the value of one parameter at which a condition begins to hold, looked for
+/// by halving the range. Each try is a whole run of its own, from the game's start, with that
+/// value: nothing of one try is in the next, and a value found is one a plain `specula run
+/// --set` plays again. It needs the condition to hold at one end of the range and not at the
+/// other; where it holds at both, or at neither, it says so with the two states, and looks no
+/// further (a condition that comes and goes inside the range is not one a halving finds).
+fn tune_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
+    let folder = match game_folder(ctx, &args.which) {
+        Ok(folder) => folder,
+        Err(no) => return no,
+    };
+    let (Some((name, low, high)), Some(until)) = (args.vary.clone(), args.until.clone()) else { return refusal("usage", "specula tune needs --vary and --until") };
+    let tries = args.tries.unwrap_or(DEFAULT_TUNE_TRIES).max(2);
+    let mut lines = Vec::new();
+    let at = |value: f64, lines: &mut Vec<Json>| -> Result<bool, Json> {
+        let mut one = args.clone();
+        one.vary = None;
+        one.until = None;
+        // (What the condition reads is printed for it, where it is a key and no line.)
+        one.also.extend(until.names());
+        one.set.push((name.clone(), vec![value]));
+        let state = match run_in(ctx, &folder, &one, Kept::AsAsked) {
+            (0, answer) => {
+                // A number no rule reads decides nothing: every try would be the same run.
+                let unread = crate::script_run::unread_words(&name);
+                if answer.get("problems").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).any(|p| p.starts_with(&unread)) {
+                    return Err(refusal("unread_parameter", format!("{unread}: --vary takes a name the rules read with cx.param(\"{name}\", default)")).1);
+                }
+                answer.get(RUN_REPORT).cloned().unwrap_or(Json::Null)
+            }
+            (_, why) => return Err(why),
+        };
+        if let Some(line) = until.unread(&state).first() {
+            let mut e = refusal("unknown_line", format!("'{line}' is read by --until and the game's report has no such line (game.json, \"report\")")).1;
+            e.set("state", state);
+            return Err(e);
+        }
+        let holds = until.holds(&state);
+        lines.push(Json::obj([("set", Json::obj([(name.as_str(), Json::Num(value))])), ("holds", Json::Bool(holds)), ("state", state)]));
+        Ok(holds)
+    };
+    let ends = at(low, &mut lines).and_then(|a| at(high, &mut lines).map(|b| (a, b)));
+    let (mut holds_at, mut fails_at) = match ends {
+        Err(why) => {
+            lines.push(why);
+            return (1, Json::obj([(CHECK_LINES, Json::Arr(lines))]));
+        }
+        Ok((true, false)) => (low, high),
+        Ok((false, true)) => (high, low),
+        Ok((both, _)) => {
+            let words = if both { "holds at both ends of the range: every value tried is one that does" } else { "holds at neither end of the range: widen it, or the condition is not one this number decides" };
+            lines.push(Json::obj([("found", Json::Bool(false)), ("until", Json::from(until.text().as_str())), ("why", Json::from(format!("the condition {words}").as_str())), ("tries", Json::from(lines.len() as u64))]));
+            return (i32::from(!both), Json::obj([(CHECK_LINES, Json::Arr(lines))]));
+        }
+    };
+    while (lines.len() as u64) < tries {
+        let middle = (holds_at + fails_at) / 2.0;
+        match at(middle, &mut lines) {
+            Ok(true) => holds_at = middle,
+            Ok(false) => fails_at = middle,
+            Err(why) => {
+                lines.push(why);
+                return (1, Json::obj([(CHECK_LINES, Json::Arr(lines))]));
+            }
+        }
+    }
+    lines.push(Json::obj([
+        ("found", Json::Bool(true)),
+        ("until", Json::from(until.text().as_str())),
+        ("parameter", Json::from(name.as_str())),
+        ("holds_at", Json::Num(holds_at)),
+        ("fails_at", Json::Num(fails_at)),
+        ("tries", Json::from(lines.len() as u64)),
+        ("note", Json::from("the condition begins to hold between the two: holds_at is the nearest value tried at which it does")),
+    ]));
+    (0, Json::obj([(CHECK_LINES, Json::Arr(lines))]))
+}
+
+/// The runs `specula tune` makes when it is not told how many.
+const DEFAULT_TUNE_TRIES: u64 = 10;
 
 /// Where a headless run's player settings are read and kept.
 #[derive(Clone, Copy)]
@@ -795,7 +966,7 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
                 continue;
             }
         };
-        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), frame, size: check.size, follow: false };
+        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), set: check.set.iter().map(|(name, value)| (name.clone(), vec![*value])).collect(), also: check.expect.iter().map(|(key, _)| key.clone()).collect(), frame, size: check.size, ..Default::default() };
         // A check's settings are the folder it names, or none: never the folder the command
         // itself was given, which is some player's own.
         let named = check.settings.as_ref().map(|name| scratch.join(name));
@@ -837,8 +1008,13 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
             }
         }
         // What the game says is wrong with its own files is the same in every run: said once.
-        if problems.is_none() {
-            problems = answer.get("problems").cloned();
+        // A number this check set and no rule read is this check's own: said on its line.
+        let (own, shared): (Vec<Json>, Vec<Json>) = answer.get("problems").and_then(Json::as_array).unwrap_or(&[]).iter().cloned().partition(|p| p.as_str().is_some_and(|p| p.starts_with(crate::script_run::UNREAD_BEGINS)));
+        if !own.is_empty() {
+            line.set("problems", Json::Arr(own));
+        }
+        if problems.is_none() && !shared.is_empty() {
+            problems = Some(Json::Arr(shared));
         }
         lines.push(line);
         // A game that does not build, or a game file that does not load, fails every check
@@ -919,6 +1095,21 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
         frame: args.frame.as_ref().map(absolute),
         size: args.size.unwrap_or((960, 540)),
         follow: args.follow,
+        at: args.at.clone(),
+        keys: args.keys.clone(),
+        // What a condition reads is printed for it, where it is a key and no line of the report.
+        also: args.also.iter().cloned().chain(args.until.iter().chain(&args.never).flat_map(crate::script_run::Until::names)).chain(args.rise.iter().cloned()).chain(args.cells.iter().cloned()).take(specula_ludus::game::MAX_REPORT).collect(),
+        set: args.set.iter().map(|(name, values)| (name.clone(), values[0])).collect(),
+        find: args.until.clone().filter(|_| !args.words.is_empty()).map(|until| crate::script_run::Find {
+            until,
+            words: args.words.clone(),
+            rise: args.rise.clone(),
+            cells: args.cells.clone(),
+            step: args.step.unwrap_or(crate::script_run::DEFAULT_STEP),
+            tries: args.tries.unwrap_or(crate::script_run::DEFAULT_FIND_TRIES),
+            never: args.never.clone(),
+            seconds: args.seconds.unwrap_or(crate::script_run::DEFAULT_FIND_SECONDS),
+        }),
         out: scratch.join("answer.json"),
     };
     if let Some(parent) = spec.frame.as_ref().and_then(|f| f.parent()).filter(|p| !p.as_os_str().is_empty()) {
@@ -938,6 +1129,10 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
         let mut command = std::process::Command::new(&ctx.exe);
         command.arg("--project").arg(&folder).arg("--script").arg(&spec_file).arg("--port").arg(port.to_string());
         command.arg("--captures").arg(scratch.join("captures")).args(["--trace-file", "off"]);
+        // (A search keeps the situations it reached as saves: in this run's own folder, gone with it.)
+        if spec.find.is_some() {
+            command.arg("--saves").arg(scratch.join("saves"));
+        }
         // Where this run's player settings are read and kept: the folder the command named, or
         // nowhere (and then the engine is not listed either: it is this command's own).
         match kept {
@@ -1060,12 +1255,14 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
         return done((1, answer.get("error").cloned().unwrap_or_else(|| refusal("no_answer", "the run's answer could not be read").1)));
     }
     let mut out = Json::obj([(RUN_REPORT, answer.get("report").cloned().unwrap_or(Json::Null))]);
-    for beside in ["problems", "log", RUN_FOLLOWED] {
+    // (A search that found nothing made its run and has no script: an answer, and exit code 1.)
+    let unfound = answer.get("searched").is_some() && answer.get("report").and_then(|r| r.get("found")).and_then(Json::as_bool) != Some(true);
+    for beside in ["problems", "log", RUN_FOLLOWED, RUN_AT, RUN_AT_IS_ALL] {
         if let Some(value) = answer.get(beside) {
             out.set(beside, value.clone());
         }
     }
-    done((0, out))
+    done((i32::from(unfound), out))
 }
 
 /// The key a headless run's answer has its report under ([`answer`] prints the report alone,
@@ -1073,6 +1270,10 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kep
 const RUN_REPORT: &str = "run_report";
 /// The key that says a run was followed: its states were printed as it went, by the engine.
 const RUN_FOLLOWED: &str = "followed";
+/// The states at the ticks `--at` named, in order; and whether the last of them is the run's
+/// last state (then that one is not printed twice).
+const RUN_AT: &str = "at";
+const RUN_AT_IS_ALL: &str = "at_is_all";
 
 /// The longest line of a followed run's engine that is still read as one (a state is far
 /// shorter: a module keeps a bounded number of bounded values).
@@ -1087,6 +1288,16 @@ fn log_line(line: &Json) -> String {
         None => format!("the game's tick {} (before this run's first)", word("tick")),
     };
     format!("specula run: {} logged at {when}: {}", word("module"), word("message"))
+}
+
+/// A command's answer as text: indented for a person at a terminal, compact (one line, no
+/// spaces between its parts) for a reader through a pipe. The same JSON either way.
+fn answer_text(json: &Json, for_a_person: bool) -> String {
+    if for_a_person {
+        json.to_pretty()
+    } else {
+        json.to_string()
+    }
 }
 
 /// A line of a command's answer, on its standard output. That it could not be written (its
@@ -1153,7 +1364,7 @@ pub fn respawn(argv: &[String], folder: &Path, quiet: bool) -> Result<(), String
 /// The command line's whole answer: prints the JSON (stdout, or stderr for a failure to reach
 /// an engine) and returns the exit code. The one place the commands print.
 pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
-    let a_run = matches!(cli, Cli::Run(_) | Cli::Check(_));
+    let a_run = matches!(cli, Cli::Run(_) | Cli::Check(_) | Cli::Tune(_) | Cli::Find(_));
     let (code, json) = match Ctx::from_env(settings) {
         Ok(ctx) => run(cli, &ctx),
         Err(why) => refusal("no_per_user_folder", why),
@@ -1174,8 +1385,17 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
         for line in json.get("log").and_then(Json::as_array).unwrap_or(&[]) {
             eprintln!("{}", log_line(line));
         }
-        // (A followed run printed each state as it went: its last is not said twice.)
-        if json.get(RUN_FOLLOWED).is_none() {
+        // (The sounds written, beside the state: a line each, where the game's problems are said.)
+        for sound in json.get(RUN_SOUNDS).and_then(Json::as_array).unwrap_or(&[]) {
+            eprintln!("specula run: wrote {} ({} s)", sound.get("file").and_then(Json::as_str).unwrap_or("?"), sound.get("seconds").and_then(Json::as_f64).unwrap_or(0.0));
+        }
+        // The states on the way (`--at`), a line each, in order.
+        for state in json.get(RUN_AT).and_then(Json::as_array).unwrap_or(&[]) {
+            put(&state.to_string());
+        }
+        // (A followed run printed each state as it went: its last is not said twice. Nor is
+        // the last of `--at` when the run ended there.)
+        if json.get(RUN_FOLLOWED).is_none() && json.get(RUN_AT_IS_ALL).is_none() {
             put(&report.to_string());
         }
         return code;
@@ -1187,7 +1407,11 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
         return code;
     }
     // (`help` is words for a person: printed as text.)
-    let text = json.get("help").and_then(Json::as_str).map_or_else(|| json.to_pretty(), str::to_owned);
+    // An answer is indented for a person at a terminal and compact for whoever reads it through
+    // a pipe: an agent pays for every space, and a measured comparison's builders stripped them
+    // by hand and read refusals as "isnotafieldof" (2026-11-21). The JSON is the same.
+    let for_a_person = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let text = json.get("help").and_then(Json::as_str).map_or_else(|| answer_text(&json, for_a_person), str::to_owned);
     if code == 2 {
         eprintln!("{text}");
     } else {
@@ -1199,6 +1423,17 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An answer through a pipe is one line with no spaces between its parts, and the same
+    /// JSON as a person at a terminal is shown.
+    #[test]
+    fn an_answer_is_compact_through_a_pipe_and_indented_for_a_person() {
+        let answer = Json::obj([("message", Json::from("'ops' is not a field of 'extrude'")), ("lods", Json::arr([Json::obj([("triangles", Json::from(288.0))])])), ("closed", Json::Bool(true))]);
+        let (piped, shown) = (answer_text(&answer, false), answer_text(&answer, true));
+        assert_eq!(piped, r#"{"message":"'ops' is not a field of 'extrude'","lods":[{"triangles":288}],"closed":true}"#, "compact, and the words inside a string keep their spaces");
+        assert!(!piped.contains('\n') && shown.contains('\n') && shown.len() > piped.len());
+        assert_eq!(Json::parse(&piped).unwrap(), Json::parse(&shown).unwrap());
+    }
 
     fn scratch(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("specula-launch-run-{test}-{}", std::process::id()));

@@ -22,8 +22,10 @@ const ALLOWED: [(&str, usize); 69] = [
     // game's report alone on a line, what the game says is wrong with its files and what its
     // modules logged beside it, and a refusal as one line where the state would have been;
     // a followed run's states are passed on as they come. And one test's own "skipped: this
-    // user can't make a link here" (AGENTS.md rule 7: a test that can't run says why and passes).)
-    ("crates/specula/src/launch_run.rs", 6),
+    // user can't make a link here" (AGENTS.md rule 7: a test that can't run says why and passes).
+    // And one that prints nothing: the command's standard output is asked whether it is a
+    // terminal, so that an answer is indented for a person and compact through a pipe.)
+    ("crates/specula/src/launch_run.rs", 8),
     ("crates/specula/src/leases.rs", 1),
     ("crates/specula/src/lex_live.rs", 5),
     ("crates/specula/src/lib.rs", 28),

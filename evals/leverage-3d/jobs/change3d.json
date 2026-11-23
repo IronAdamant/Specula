@@ -1,0 +1,39 @@
+{
+  "leverage": 1,
+  "id": "change3d",
+  "title": "Three changes to Roll, by someone who did not build it",
+  "lead": [
+    "Make the three changes in one go, then run the game's own checks once (`{tool} check {run}`) if it has them.",
+    "Board 4's two scripts (the coin in the air; clearing the board) are searches the engine makes: `{tool} find {run} --ticks 2400 --until \"LINE OP VALUE\" --words right,left,up,down,none --rise score --cells score,ball`, started on board 4 the way this game starts on a board, with its report's own line names. Write no player of your own.",
+    "What the ball's mass does to the crates is three runs of one script read at the same ticks (--at), one for each ball."
+  ],
+  "change_of": "medium3d",
+  "brief": [
+    "The folder you are given holds a finished game, Roll, built by someone else. You have no notes from them beyond what is in the folder. Make three changes to it, and break nothing that worked.",
+    "",
+    "The changes",
+    "1. A fourth board, after board 3. One slab, x from -4 to 4 and z from -2 to 2, top face at y = 0. A ramp stands on it: a slab 2 long, 2 deep (z from -1 to 1) and 0.2 thick whose top face rises from y = 0 at x = -1 to y = 0.7 at x = 1 (tilted about the z axis), so that a ball rolled up it toward +x leaves its top edge and flies. The ball starts at (-3, 1.25, 0). Coins at (-2, 0.25, 0), at (2.2, 1.2, 0) (in the air beyond the ramp's top: taken in flight) and at (3.5, 0.25, 1.5). The play screen says \"Board 4 of 4\" (boards 1 to 3 now say \"of 4\"), the run is won when board 4 is cleared, and the headless run's board option takes 4.",
+    "2. A third language, French, beside English and Spanish: every word the game shows, on every screen.",
+    "3. A Ball setting on the Settings screen, between Language and Back: Light, Normal, Heavy (Left / Right change it; Normal at first). It sets the ball's mass: Light 0.5 kg, Normal 1 kg, Heavy 3 kg. A push still accelerates the ball by 4 m/s2 whatever its mass; what changes is how hard the ball strikes the crates. It is kept between runs like the other settings.",
+    "",
+    "Still checkable without hands",
+    "- The headless run, the frame and the sounds work as before. The state gains \"ball_kind\" (light, normal, heavy), and \"language\" may be fr.",
+    "",
+    "Hand in, in the same folder",
+    "- The changed game, ready to run.",
+    "- CHANGES.md: what you changed and where, what you checked and how, and anything you found in the game that was wrong before you touched it."
+  ],
+  "acceptance": [
+    {"id": "c01", "kind": "behaviour", "text": "Clearing board 3 begins board 4 (never the won screen); board 4 has the slab, the ramp and the three coins of the brief, the ball starts at (-3, 1.25, 0), and the board option of the headless run takes 4."},
+    {"id": "c02", "kind": "behaviour", "text": "On board 4 a ball pushed right from its start rolls up the ramp (its y rises above 0.5 while its x is between -1 and 1) and leaves the top in flight (its y is above 0.6 at some tick with x greater than 1); the ramp is solid (the ball never passes through it from the side or from above)."},
+    {"id": "c03", "kind": "behaviour", "text": "There is a script that takes the coin in the air at (2.2, 1.2, 0) in flight, and one that clears board 4: the screen is then won."},
+    {"id": "c04", "kind": "behaviour", "text": "The play screen says the board \"of 4\" on every board in every language."},
+    {"id": "c05", "kind": "behaviour", "text": "The language setting cycles English, Spanish, French; in French every text on the title, settings, play, paused, won and lost screens is French (none English or Spanish, none missing), and `language` is fr."},
+    {"id": "c06", "kind": "behaviour", "text": "The Settings screen has Ball between Language and Back, with Light, Normal, Heavy changed by Left / Right, Normal by default, shown in the chosen language; `ball_kind` in the state follows it."},
+    {"id": "c07", "kind": "behaviour", "text": "The ball's mass matters to the crates and not to the pushes: on board 2 the same script of pushes moves the ball alike on an empty stretch for light, normal and heavy (its x within 0.1 at the tick before it reaches the crates), and the heavy ball moves the crates further than the light one (the sum of the six crates' displacements 120 ticks after the strike is larger for heavy than for light)."},
+    {"id": "c08", "kind": "behaviour", "text": "The Ball setting is kept between runs with volume and language; settings saved by the game before the change still load (the ball then Normal)."},
+    {"id": "c09", "kind": "behaviour", "text": "Nothing that passed before the change fails now: every item of the medium job's list that the game passed before the change still passes on the changed game (read with \"of 4\", and the run won at board 4, where the change says so); an item that failed before the change is not held against it."},
+    {"id": "c10", "kind": "checkable", "text": "The frame of board 4 shows the slab, the ramp as a tilted slab, the ball and the coins not yet taken; the frame is still an 800 x 480 PNG."},
+    {"id": "c11", "kind": "behaviour", "text": "CHANGES.md says what was changed and where, and what was checked."}
+  ]
+}

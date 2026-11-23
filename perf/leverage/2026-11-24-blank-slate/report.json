@@ -1,0 +1,299 @@
+{
+  "leverage": 1,
+  "baseline": "plain",
+  "against_baseline": [
+    {
+      "job": "day",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 1156305,
+      "baseline_weighted": null,
+      "times": null,
+      "requests_times": null,
+      "passed": "55.0 / 61",
+      "baseline_passed": null
+    },
+    {
+      "job": "night",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 304256,
+      "baseline_weighted": null,
+      "times": null,
+      "requests_times": null,
+      "passed": "34.0 / 34",
+      "baseline_passed": null
+    }
+  ],
+  "runs": [
+    {
+      "run": "day-engine-1",
+      "job": "day",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "5c416dc37b",
+      "builder": {
+        "tokens": 157851,
+        "tool_uses": 54,
+        "duration_s": 976.8,
+        "by_kind": {
+          "input": 100,
+          "cache_write": 152506,
+          "cache_read": 5146528,
+          "output": 90184,
+          "requests": 50,
+          "context_at_end": 157851
+        },
+        "weighted": 1156305,
+        "cost_usd": 2.0267168000000004,
+        "turns": 55,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 31,
+        "refused": 4,
+        "args_bytes": 5353,
+        "answer_bytes": 17976,
+        "by_tool": {
+          "(run)": 31
+        }
+      },
+      "left": {
+        "files": 27,
+        "bytes": 141304,
+        "text_lines": 3495,
+        "lines_by_kind": {
+          ".json": 1257,
+          ".md": 470,
+          ".py": 169,
+          ".rs": 1580,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50864,
+        "text_lines": 879,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 381,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 53,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 55,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Enter on a Language/Difficulty/Season row of Settings also changes that setting (README admits it); the brief gives Enter no meaning there.",
+        "An input at the run's last tick is refused by the play command ('would never be given'), while the brief says a word at tick T acts after T ticks.",
+        "The setting values in the state show a Left/Right change on the tick of the word while menu_index and length follow a tick later (inconsistent timing inside one state)."
+      ],
+      "judge": {
+        "tokens": 115218,
+        "tool_uses": 52,
+        "duration_s": 1155.9,
+        "by_kind": {
+          "input": 96,
+          "cache_write": 109873,
+          "cache_read": 3298828,
+          "output": 48097,
+          "requests": 48,
+          "context_at_end": 115218
+        },
+        "weighted": 707805,
+        "cost_usd": 2.5010736,
+        "turns": 53,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 91,
+          "refused": 3,
+          "args_bytes": 52845,
+          "answer_bytes": 4320401,
+          "by_tool": {
+            "(run)": 91
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d14",
+          "evidence": "Cheese with 2 coins: coins and stock unchanged, 'Not enough coins' shown, gone after the next word (put). The 99-unit cap could not be reached with the coins available."
+        },
+        {
+          "id": "d35",
+          "evidence": "Seen: v1 at till from 31, ends 35, paid 20, coins/taken/served/rep up, sales entry; bargain pays tenth less in formula check. Not seen: units leaving the batch with fewest days_left (never had two batches of a good on sale)."
+        },
+        {
+          "id": "d37",
+          "evidence": "No queued wait ever reached patience in my runs, but no walk-out ever happened, so the leaving effects (goods back, rep -2, walked_out +1) were not seen."
+        },
+        {
+          "id": "d39",
+          "evidence": "Second till (80 coins) never affordable in my runs; not checked."
+        },
+        {
+          "id": "d47",
+          "evidence": "Cool box bought 50->10, upgrades [cool_box], row 'Cool box: owned', again no change; Second till with 50: Not enough coins, no change. Extra crates (crate_limit 12, 'of 12') never affordable; not checked."
+        },
+        {
+          "id": "d60",
+          "evidence": "Only the Morning frame was looked at (texts shown, chosen row in bold); title, slots, settings, upgrades, paused, evening and season-over frames not viewed."
+        }
+      ]
+    },
+    {
+      "run": "night-engine-1",
+      "job": "night",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "5c416dc37b",
+      "builder": {
+        "tokens": 62948,
+        "tool_uses": 22,
+        "duration_s": 325.2,
+        "by_kind": {
+          "input": 36,
+          "cache_write": 57603,
+          "cache_read": 781958,
+          "output": 30804,
+          "requests": 18,
+          "context_at_end": 62948
+        },
+        "weighted": 304256,
+        "cost_usd": 0.6167198,
+        "turns": 23,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 16,
+        "refused": 0,
+        "args_bytes": 2632,
+        "answer_bytes": 6039,
+        "by_tool": {
+          "(run)": 16
+        }
+      },
+      "left": {
+        "files": 22,
+        "bytes": 107812,
+        "text_lines": 1459,
+        "lines_by_kind": {
+          ".json": 278,
+          ".md": 433,
+          ".rs": 729,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50864,
+        "text_lines": 879,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 381,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 32,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 34,
+          "of": 34
+        }
+      },
+      "defects": [
+        "A headless run of --ticks 0 prints every key as null (screen null, not title): the state is only written on the first tick.",
+        "While paused, speed reports the night's speed (e.g. fast) rather than a value tied to the pause; harmless but not stated in the README.",
+        "In the title and ledger frames, long lines ('Night Market', ledger lines) run past the right edge of the text panel.",
+        "The random stream is not reseeded per night, so a second night in the same run gets different arrivals than a first night with the same seed (documented in README)."
+      ],
+      "judge": {
+        "tokens": 101966,
+        "tool_uses": 44,
+        "duration_s": 766.4,
+        "by_kind": {
+          "input": 74,
+          "cache_write": 96621,
+          "cache_read": 2415296,
+          "output": 29167,
+          "requests": 37,
+          "context_at_end": 101966
+        },
+        "weighted": 508215,
+        "cost_usd": 1.8396631999999997,
+        "turns": 45,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 49,
+          "refused": 0,
+          "args_bytes": 10940,
+          "answer_bytes": 67370,
+          "by_tool": {
+            "(run)": 49
+          }
+        }
+      },
+      "failed": []
+    }
+  ]
+}

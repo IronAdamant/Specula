@@ -126,6 +126,10 @@ struct Info {
     hooks: Vec<HookInfo>,
 }
 
+/// The engine's event a module hears for each press of one of its actions since the last tick,
+/// in order (`action`: the action's name).
+pub const PRESS_EVENT: &str = "press";
+
 #[derive(Clone, Debug)]
 pub(crate) struct EventRec {
     pub name: String,
@@ -191,6 +195,9 @@ pub(crate) struct Shared {
     /// The store's hash for the desync detector, until the store changes (see `save`).
     pub store_hash: std::cell::Cell<Option<u64>>,
 }
+
+/// Most parameters one run is given.
+pub const MAX_PARAMS: usize = 32;
 
 /// Most RNG streams one module keeps: a new name past it is refused with `rng_full`. Save games
 /// write at most this many (the handler allows no more) and read at most this many, so a save
@@ -330,6 +337,7 @@ struct CallParts<'a> {
     log: &'a mut VecDeque<LogLine>,
     pending_events: usize,
     fp: &'a mut FpLog,
+    params: &'a BTreeMap<String, Param>,
 }
 
 /// Runs one call of `code` as module `name`, with the world recorded in full. On failure the
@@ -349,6 +357,7 @@ fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input:
         pending_events: parts.pending_events,
         sounds: Vec::new(),
         log: parts.log,
+        params: parts.params,
         state_undo: Vec::new(),
         rng_undo: Vec::new(),
         traced: 0,
@@ -409,6 +418,26 @@ pub struct LogicHost {
     sounds_dropped: u64,
     /// Builders' modules waiting for the owner or a granted lead ([`proposals`]).
     pub(crate) proposals: proposals::Proposals,
+    /// Numbers a run was given for its rules to read (`specula run --set friction=0.3`;
+    /// `Cx::param`): the run's, as its script and its seed are, set once before a module loads
+    /// and never changed by one. A window's game has none, and every `param` answers its default.
+    params: BTreeMap<String, Param>,
+}
+
+/// A number a run was given, and whether any rule has asked for it: a name nothing reads is a
+/// name mistyped (`--set bord=3`), and the run would play as written and say nothing.
+#[derive(Debug, Default)]
+pub struct Param {
+    pub value: f64,
+    read: std::sync::atomic::AtomicBool,
+}
+
+impl Param {
+    /// The number, noted as read.
+    pub fn read(&self) -> f64 {
+        self.read.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.value
+    }
 }
 
 impl Default for LogicHost {
@@ -426,6 +455,7 @@ impl Default for LogicHost {
             pads: None,
             pad_override: None,
             staged: None,
+            params: BTreeMap::new(),
             hash_scratch: Vec::new(),
             module_events: Vec::new(),
             fp: FpLog::default(),
@@ -529,6 +559,21 @@ fn describe(code: &ModuleCode, tick: u64) -> Result<(Info, ModuleInput), WorldEr
 }
 
 impl LogicHost {
+    /// The numbers this run's rules may read (`Cx::param`). Set before a module loads.
+    pub fn set_params(&mut self, params: impl IntoIterator<Item = (String, f64)>) {
+        self.params = params.into_iter().take(MAX_PARAMS).map(|(name, value)| (name, Param { value, read: Default::default() })).collect();
+    }
+
+    /// How many numbers the run was given.
+    pub fn params_len(&self) -> usize {
+        self.params.len()
+    }
+
+    /// The run's numbers no rule has asked for so far, by name.
+    pub fn params_unread(&self) -> Vec<&str> {
+        self.params.iter().filter(|(_, p)| !p.read.load(std::sync::atomic::Ordering::Relaxed)).map(|(name, _)| name.as_str()).collect()
+    }
+
     pub fn new() -> LogicHost {
         LogicHost::default()
     }
@@ -576,10 +621,11 @@ impl LogicHost {
         mover: &'a mut Box<dyn CharacterMover>,
         log: &'a mut VecDeque<LogLine>,
         fp: &'a mut FpLog,
+        params: &'a BTreeMap<String, Param>,
         pending: usize,
         name: &str,
     ) -> CallParts<'a> {
-        CallParts { shared: shared.entry(name.to_owned()).or_default(), mover: &mut **mover, log, pending_events: pending, fp }
+        CallParts { shared: shared.entry(name.to_owned()).or_default(), mover: &mut **mover, log, pending_events: pending, fp, params }
     }
 
     /// An event from the engine itself (`from: "engine"`), delivered to every module with the
@@ -589,6 +635,11 @@ impl LogicHost {
     /// rules read (`setting`), the run's end (`outcome`); docs/design/FIRST_HOUR.md. `false`:
     /// not taken (no module is loaded to hear it, the name is not an event's, or
     /// [`MAX_PENDING_EVENTS`] are already waiting).
+    /// How many events wait for the next tick.
+    pub fn pending_events(&self) -> usize {
+        self.pending_events.len()
+    }
+
     pub fn push_engine_event(&mut self, name: &str, data: Value, tick: u64) -> bool {
         if self.slots.is_empty() || !specula_sdk::valid_name(name, 64) || self.pending_events.len() >= MAX_PENDING_EVENTS {
             return false;
@@ -672,7 +723,7 @@ impl LogicHost {
             Phase::Hook => "hook",
             Phase::Stop => "stop",
         };
-        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, self.pending_events.len(), name);
+        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, &self.params, self.pending_events.len(), name);
         let result = match invoke(&slot.code, name, parts, call, input, world, tick, what) {
             Ok(mut done) => match commit(world, mark, &agent, phase) {
                 Ok(()) => {
@@ -746,7 +797,7 @@ impl LogicHost {
         let mut stop_error = None;
         if let Some(old) = self.slots.get(&name).filter(|s| s.disabled.is_none()) {
             let stop = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("reason", "reload");
-            let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, self.pending_events.len(), &name);
+            let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, &self.params, self.pending_events.len(), &name);
             match invoke(&old.code, &name, parts, entry::STOP, &stop, world, tick, "stop") {
                 Ok(done) => {
                     events.extend(done.events);
@@ -770,7 +821,7 @@ impl LogicHost {
             .with("reloaded", reloaded)
             .with("generation", generation);
         let t1 = Instant::now();
-        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, self.pending_events.len() + events.len(), &name);
+        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, &self.params, self.pending_events.len() + events.len(), &name);
         let started = invoke(&code, &name, parts, entry::START, &start, world, tick, "start");
         let start_ms = t1.elapsed().as_secs_f64() * 1000.0;
         // 3. Commit, or put everything back.
@@ -933,8 +984,10 @@ impl LogicHost {
         .with("module", name)
     }
 
-    /// One window frame's input, for every module's actions (gamepads polled here).
-    pub fn feed_window(&mut self, events: &[Event], dt_s: f32) {
+    /// One window frame's input, for every module's actions (gamepads polled here). `held`: the
+    /// game's clock is held (its title, a pause, a run that ended), and nothing pressed now acts
+    /// in the game ([`ModuleInput::feed_held`]).
+    pub fn feed_window(&mut self, events: &[Event], dt_s: f32, held: bool) {
         if self.slots.values().all(|s| s.input.is_empty()) {
             return;
         }
@@ -947,7 +1000,11 @@ impl LogicHost {
             None => &[],
         };
         for slot in self.slots.values_mut() {
-            slot.input.feed(events, states, dt_s);
+            if held {
+                slot.input.feed_held(events, states, dt_s);
+            } else {
+                slot.input.feed(events, states, dt_s);
+            }
         }
     }
 
@@ -1055,8 +1112,18 @@ impl LogicHost {
             if slot.disabled.is_some() {
                 continue;
             }
-            let actions = slot.input.take_tick();
-            let input = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("actions", actions).with("events", events.clone());
+            let (actions, presses) = slot.input.take_tick_and_presses();
+            // Every press since the last tick, in order, repeats included, as events of the
+            // engine's own to this module alone (`press`, with `action`): what `pressed` cannot
+            // say, as two presses of one action between two ticks (a script's `1:down,1:down`).
+            let events = if presses.is_empty() {
+                events.clone()
+            } else {
+                let mut all = events.as_list().map(<[Value]>::to_vec).unwrap_or_default();
+                all.extend(presses.iter().map(|action| EventRec { name: PRESS_EVENT.to_owned(), data: Value::map().with("action", action.as_str()), from: "engine".to_owned(), tick }.to_value()));
+                Value::List(all)
+            };
+            let input = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("actions", actions).with("events", events);
             let t = Instant::now();
             let result = self.call(&name, entry::TICK, &input, world, tick, Phase::Tick, commit);
             let took = t.elapsed();

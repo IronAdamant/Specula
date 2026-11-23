@@ -588,7 +588,11 @@ fn colours(f: &AssetFacts, rules: &StyleRules, palette: &Palette, r: &mut Report
         match reads_as {
             None => {
                 let exempt = n.names.iter().any(|nm| p.exempt.iter().any(|(e, _)| e == nm));
-                if colourful && !exempt {
+                // "Saturation belongs to the families": a style that names no family has set
+                // no such rule, and every colour of it would read as a neutral. (A new
+                // project's style has none: every coloured prop failed this check, under every
+                // sheet, for every builder and judge of a measured comparison.)
+                if colourful && !exempt && !p.families.is_empty() {
                     sat += share;
                     if sat_list.len() < LISTED_COLOURS {
                         sat_list.push(row(("chroma", Json::from((sv as f64 * 1000.0).round() / 1000.0))));
@@ -999,5 +1003,12 @@ categories = ["stone", "enemy"]
         let rep = check(&stone(&[("#8c96a3", 5.0), ("#4f6b3a", 5.0)]), &r2, &palette(&r2));
         let e = rep.errors().find(|e| e.check == "neutral_saturation").expect("moss over 25%");
         assert!((e.value - 0.5).abs() < 1e-6);
+        // A style that names no family has no neutrals to hold to grey: the same surface passes.
+        let mut r3 = rules();
+        r3.palette.exempt.clear();
+        r3.palette.families.clear();
+        let rep = check(&stone(&[("#8c96a3", 5.0), ("#4f6b3a", 5.0)]), &r3, &palette(&r3));
+        let found = rep.findings.iter().find(|x| x.check == "neutral_saturation").expect("still measured");
+        assert!(found.passed && found.value == 0.0, "a style with no families failed a coloured surface: {found:?}");
     }
 }

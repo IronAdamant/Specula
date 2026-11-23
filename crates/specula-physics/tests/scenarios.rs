@@ -845,3 +845,170 @@ fn hashes_survive_random_edits() {
         }
     }
 }
+
+/// A landing's begin event says how fast the two closed, not what the solver left of it at
+/// the step they touch (it said 0.4 m/s for a ball that fell half a metre: found when the
+/// rules of a game were first told of a touch, 2026-11-21). And a run restored from a snapshot
+/// taken at any step of the fall says the same speed to the bit (the rules hear it).
+#[test]
+fn a_begin_says_how_fast_the_two_closed_and_a_restored_run_says_the_same() {
+    use specula_core::bytes::{ByteReader, ByteWriter};
+    let scene = || {
+        let mut s = Space::default();
+        ground(&mut s);
+        dynamic(&mut s, 2, Shape::sphere(0.5), v3(0.0, 1.0, 0.0));
+        s
+    };
+    let begin = |s: &mut Space, steps: usize| -> Option<(usize, f32)> {
+        (0..steps).find_map(|i| s.step(DT).events.iter().find(|e| e.kind == EventKind::ContactBegin).map(|e| (i, e.speed)))
+    };
+    let mut a = scene();
+    let (at, speed) = begin(&mut a, 120).expect("it lands");
+    // Half a metre of free fall: the square root of 2 x 9.81 x 0.5 is 3.13 m/s.
+    assert!((2.8..=3.3).contains(&speed), "a ball that fell 0.5 m began its contact at {speed} m/s");
+    for taken in 0..=at {
+        let mut b = scene();
+        for _ in 0..taken {
+            assert!(b.step(DT).events.iter().all(|e| e.kind != EventKind::ContactBegin));
+        }
+        let mut w = ByteWriter::new();
+        b.save_state(&mut w);
+        let bytes = w.into_bytes();
+        let mut c = scene();
+        let mut r = ByteReader::new(&bytes);
+        c.restore_state(&mut r).unwrap();
+        r.finish().unwrap();
+        let (later, again) = begin(&mut c, 120).expect("the restored one lands");
+        assert_eq!((taken + later, again.to_bits()), (at, speed.to_bits()), "restored after {taken} steps");
+    }
+}
+
+/// The bridge of the comparison's 3D game (2026-11-21): a ball at rest on a slab that slides 2 m
+/// in 3 s and back. Returns the ball's place less the slab's, at the end of each leg.
+fn ball_on_a_sliding_slab(carries: bool) -> [f32; 2] {
+    let mut s = Space::default();
+    let mut slab = ColliderDesc::new(Shape::cuboid(v3(1.0, 0.1, 1.0)));
+    slab.carries = carries;
+    s.insert(5, BodyDesc::new(BodyKind::Kinematic, Pose::at(v3(0.0, -0.1, 0.0)), Some(slab))).unwrap();
+    dynamic(&mut s, 2, Shape::sphere(0.25), v3(0.0, 0.25, 0.0));
+    for _ in 0..30 {
+        s.step(DT);
+    }
+    let mut off = [0.0; 2];
+    for i in 1..=360 {
+        let x = if i <= 180 { i as f32 / 90.0 } else { (360 - i) as f32 / 90.0 };
+        s.move_kinematic(5, Pose::at(v3(x, -0.1, 0.0)));
+        s.step(DT);
+        if i % 180 == 0 {
+            off[i / 180 - 1] = s.body(2).unwrap().pose.p.x - x;
+        }
+    }
+    off
+}
+
+#[test]
+fn a_ball_on_a_sliding_slab_rolls_behind_it_unless_the_slab_carries() {
+    // Honest contact: friction spins the ball up, and it settles at 2/7 of the slab's speed. It
+    // is left behind (and off the slab's end, 1 m back) well before the first leg ends.
+    let [first, _] = ball_on_a_sliding_slab(false);
+    assert!(first < -1.0, "left behind: {first}");
+    // A slab that carries: what rests on it has the slab's speed and takes its changes, so a
+    // ball at rest on it stays at rest on it, through the turn at the far end too.
+    let [first, second] = ball_on_a_sliding_slab(true);
+    assert!(first.abs() < 0.02 && second.abs() < 0.02, "carried: {first} {second}");
+}
+
+/// A long slab that carries, sliding at 1 m/s along x from the first step, with a static floor
+/// far off at x = 100 for what is to rest on something else. `step` moves the slab and steps.
+fn sliding_carrier() -> (Space, impl FnMut(&mut Space)) {
+    let mut s = Space::default();
+    let mut slab = ColliderDesc::new(Shape::cuboid(v3(30.0, 0.1, 2.0)));
+    slab.carries = true;
+    s.insert(5, BodyDesc::new(BodyKind::Kinematic, Pose::at(v3(0.0, -0.1, 0.0)), Some(slab))).unwrap();
+    s.insert(6, BodyDesc::new(BodyKind::Static, Pose::at(v3(100.0, -0.1, 0.0)), Some(ColliderDesc::new(Shape::cuboid(v3(5.0, 0.1, 2.0)))))).unwrap();
+    let mut x = 0.0f32;
+    (s, move |s: &mut Space| {
+        x += DT;
+        s.move_kinematic(5, Pose::at(v3(x, -0.1, 0.0)));
+        s.step(DT);
+    })
+}
+
+/// What comes to rest on a carrier that already moves is carried as what was there from the
+/// start (the comparison of 2026-11-22: a ball that rolled onto the sliding bridge had none of
+/// the bridge's speed, and was thrown back by twice it at the turn).
+#[test]
+fn a_ball_that_lands_on_a_carrier_already_moving_is_carried() {
+    let (mut s, mut step) = sliding_carrier();
+    for _ in 0..30 {
+        step(&mut s);
+    }
+    dynamic(&mut s, 2, Shape::sphere(0.25), v3(1.0, 0.75, 0.0));
+    for _ in 0..60 {
+        step(&mut s);
+    }
+    let slab = |s: &Space| s.body(5).unwrap().pose.p.x;
+    let off = s.body(2).unwrap().pose.p.x - slab(&s);
+    for _ in 0..180 {
+        step(&mut s);
+    }
+    let b = s.body(2).unwrap();
+    assert!((b.pose.p.x - slab(&s) - off).abs() < 0.03 && (b.velocity.x - 1.0).abs() < 0.03, "carried from its landing: {} then {}, at {}", off, b.pose.p.x - slab(&s), b.velocity.x);
+}
+
+/// A ball that bounces on a carrier is given the carrier's speed once: it keeps it in the air.
+#[test]
+fn a_ball_that_bounces_on_a_carrier_is_given_its_speed_once() {
+    let (mut s, mut step) = sliding_carrier();
+    let mut ball = ColliderDesc::new(Shape::sphere(0.25));
+    ball.restitution = 0.8;
+    s.insert(2, BodyDesc::new(BodyKind::Dynamic, Pose::at(v3(0.0, 1.25, 0.0)), Some(ball))).unwrap();
+    let mut landings = 0;
+    let mut falling = true;
+    for _ in 0..600 {
+        step(&mut s);
+        let vy = s.body(2).unwrap().velocity.y;
+        if falling && vy > 0.5 {
+            landings += 1;
+        }
+        falling = vy <= 0.5;
+    }
+    let vx = s.body(2).unwrap().velocity.x;
+    assert!(landings >= 3 && (vx - 1.0).abs() < 0.05, "after {landings} bounces the ball moves at {vx}");
+}
+
+/// A body that came off a carrier and rests on something else owes the carrier nothing: back on
+/// it, it is given the carrier's speed at once and not left to friction. So is one told to be at
+/// rest (a ball put back after a fall).
+#[test]
+fn what_left_a_carrier_or_was_put_at_rest_is_carried_afresh() {
+    let (mut s, mut step) = sliding_carrier();
+    dynamic(&mut s, 2, Shape::cuboid(v3(0.25, 0.25, 0.25)), v3(0.0, 0.25, 0.0));
+    for _ in 0..60 {
+        step(&mut s);
+    }
+    assert!((s.body(2).unwrap().velocity.x - 1.0).abs() < 0.03, "the box rides");
+    // Onto the still floor, with the speed it had: friction stops it there.
+    s.set_pose(2, Pose::at(v3(98.0, 0.25, 0.0)));
+    for _ in 0..120 {
+        step(&mut s);
+    }
+    assert!(s.body(2).unwrap().velocity.x.abs() < 0.03, "the box stopped on the floor");
+    // Back on the carrier: within two steps it has the carrier's speed (friction alone gives a
+    // fifth of it in that time).
+    let on_slab = |s: &Space| Pose::at(v3(s.body(5).unwrap().pose.p.x, 0.25, 0.0));
+    let at = on_slab(&s);
+    s.set_pose(2, at);
+    for _ in 0..3 {
+        step(&mut s);
+    }
+    assert!((s.body(2).unwrap().velocity.x - 1.0).abs() < 0.05, "given the speed afresh: {}", s.body(2).unwrap().velocity.x);
+    // Put at rest where it is (it never left the carrier): carried again, at once.
+    let at = on_slab(&s);
+    s.set_pose(2, at);
+    s.set_velocity(2, Vec3::ZERO, Vec3::ZERO);
+    for _ in 0..3 {
+        step(&mut s);
+    }
+    assert!((s.body(2).unwrap().velocity.x - 1.0).abs() < 0.05, "put at rest and carried: {}", s.body(2).unwrap().velocity.x);
+}

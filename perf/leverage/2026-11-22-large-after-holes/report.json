@@ -1,0 +1,659 @@
+{
+  "leverage": 1,
+  "baseline": "plain",
+  "against_baseline": [
+    {
+      "job": "large",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 1510680,
+      "baseline_weighted": null,
+      "times": null,
+      "requests_times": null,
+      "passed": "30.2 / 31",
+      "baseline_passed": null
+    }
+  ],
+  "runs": [
+    {
+      "run": "large-engine-1",
+      "job": "large",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "93c469831d",
+      "builder": {
+        "tokens": 139054,
+        "tool_uses": 59,
+        "duration_s": 689,
+        "by_kind": {
+          "input": 116,
+          "cache_write": 133709,
+          "cache_read": 4760659,
+          "output": 72301,
+          "requests": 58,
+          "context_at_end": 139054
+        },
+        "weighted": 1004823,
+        "cost_usd": 1.7341439000000005,
+        "turns": 60,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 24,
+        "refused": 1,
+        "args_bytes": 16105,
+        "answer_bytes": 16120,
+        "by_tool": {
+          "(run)": 24
+        }
+      },
+      "left": {
+        "files": 27,
+        "bytes": 75923,
+        "text_lines": 1497,
+        "lines_by_kind": {
+          ".json": 482,
+          ".md": 428,
+          ".rs": 568,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50225,
+        "text_lines": 867,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 369,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 29,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 31,
+          "of": 31
+        }
+      },
+      "defects": [
+        "Escape in the shop opens the Pause menu (the brief says Escape does nothing there); README admits it.",
+        "After Enter on a won screen, Enter on Start of the title that comes up does nothing (screen stays title for 200 ticks); after Title from the pause, Down+Enter on Continue also does nothing in the same run. A new run can only begin in a later headless run.",
+        "The play HUD ('Score : 0 Pieces : 0 Vague 0 sur 8 Porte : 10') is drawn over the title, settings and shop frames, but is not in texts; on the title it says wave 0.",
+        "On the title after giving up from the pause, the report still lists the old run's enemies and bolts.",
+        "In title and shop frames a non-chosen button is drawn filled blue (Start, Next wave) besides the focus ring on the chosen one, which makes the marked entry less clear.",
+        "The settings screen's dimmed title text shows through behind the settings panel."
+      ],
+      "judge": {
+        "tokens": 93134,
+        "tool_uses": 51,
+        "duration_s": 752.5,
+        "by_kind": {
+          "input": 90,
+          "cache_write": 87789,
+          "cache_read": 2623425,
+          "output": 29801,
+          "requests": 45,
+          "context_at_end": 93134
+        },
+        "weighted": 521174,
+        "cost_usd": 1.8233769999999998,
+        "turns": 52,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 75,
+          "refused": 0,
+          "args_bytes": 14689,
+          "answer_bytes": 135798,
+          "by_tool": {
+            "(run)": 75
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "large-engine-2",
+      "job": "large",
+      "arm": "engine",
+      "n": 2,
+      "from": null,
+      "engine_build": "93c469831d",
+      "builder": {
+        "tokens": 226447,
+        "tool_uses": 125,
+        "duration_s": 1272.1,
+        "by_kind": {
+          "input": 214,
+          "cache_write": 221102,
+          "cache_read": 13711976,
+          "output": 134364,
+          "requests": 107,
+          "context_at_end": 226447
+        },
+        "weighted": 2319609,
+        "cost_usd": 3.5996735999999996,
+        "turns": 126,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 45,
+        "refused": 3,
+        "args_bytes": 8201,
+        "answer_bytes": 21777,
+        "by_tool": {
+          "(run)": 44,
+          "(find)": 1
+        }
+      },
+      "left": {
+        "files": 28,
+        "bytes": 82172,
+        "text_lines": 1728,
+        "lines_by_kind": {
+          ".json": 493,
+          ".md": 476,
+          ".rs": 740,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50225,
+        "text_lines": 867,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 369,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 29,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 31,
+          "of": 31
+        }
+      },
+      "defects": [
+        "Escape in the shop is not ignored: after Escape there, Down/Enter on Next wave did nothing for 220+ ticks (game stalls until Escape is pressed again); the brief says Escape does nothing there. README admits it.",
+        "Every frame of title, settings and shop (and under the HUD in play) shows an unresolved '@hud.pause' label top-left, a raw string key, untranslated in every language.",
+        "Title and shop frames paint one entry blue (Start, Next wave) besides the focus ring on the chosen entry, so two entries look marked.",
+        "menu_index is null on the play and paused screens.",
+        "Bolts still in flight when the shop opens stay frozen and carry into the next wave; enemies stay in the state on the lost screen."
+      ],
+      "judge": {
+        "tokens": 100597,
+        "tool_uses": 54,
+        "duration_s": 661,
+        "by_kind": {
+          "input": 98,
+          "cache_write": 95252,
+          "cache_read": 3056910,
+          "output": 30357,
+          "requests": 49,
+          "context_at_end": 100597
+        },
+        "weighted": 576639,
+        "cost_usd": 1.98093,
+        "turns": 55,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 68,
+          "refused": 6,
+          "args_bytes": 32446,
+          "answer_bytes": 104930,
+          "by_tool": {
+            "(run)": 68
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "large-engine-3",
+      "job": "large",
+      "arm": "engine",
+      "n": 3,
+      "from": null,
+      "engine_build": "93c469831d",
+      "builder": {
+        "tokens": 150874,
+        "tool_uses": 71,
+        "duration_s": 970.4,
+        "by_kind": {
+          "input": 138,
+          "cache_write": 145529,
+          "cache_read": 6308126,
+          "output": 80559,
+          "requests": 69,
+          "context_at_end": 150874
+        },
+        "weighted": 1215657,
+        "cost_usd": 2.0187946,
+        "turns": 72,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 40,
+        "refused": 1,
+        "args_bytes": 6011,
+        "answer_bytes": 20796,
+        "by_tool": {
+          "(run)": 38,
+          "(find)": 2
+        }
+      },
+      "left": {
+        "files": 28,
+        "bytes": 91035,
+        "text_lines": 1537,
+        "lines_by_kind": {
+          ".json": 510,
+          ".md": 431,
+          ".rs": 577,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50225,
+        "text_lines": 867,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 369,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 28,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 30,
+          "of": 31
+        }
+      },
+      "defects": [
+        "The shop's Mason line drops its price ('full') whenever the gate is at its starting health, though Mason is always 4 coins.",
+        "Escape while paused does not resume (stays paused), though actions.json calls it 'Pause and resume' and the code means it to.",
+        "menu_index prints 0 on the play screen, though README says it is null there.",
+        "'best' prints null at tick 0 (README admits it is set from tick 1).",
+        "In the settings frame the title's name shows through and over the edge of the settings panel (overlapping text).",
+        "On title and shop the Start / Next wave buttons are always filled blue (primary style), which can be mistaken for the chosen entry; the chosen one is marked only by an outline.",
+        "The full 8-wave win could only be reached here with the test option --set gate=N; README says the builder could not find an unaided win either."
+      ],
+      "judge": {
+        "tokens": 89141,
+        "tool_uses": 52,
+        "duration_s": 833.1,
+        "by_kind": {
+          "input": 94,
+          "cache_write": 83796,
+          "cache_read": 2630151,
+          "output": 29609,
+          "requests": 47,
+          "context_at_end": 89141
+        },
+        "weighted": 515899,
+        "cost_usd": 1.7889542000000003,
+        "turns": 53,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 86,
+          "refused": 2,
+          "args_bytes": 45275,
+          "answer_bytes": 369197,
+          "by_tool": {
+            "(run)": 86
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "l13",
+          "evidence": "Shop opens at wave 1's end (screen shop, enemies and bolts empty, Escape does nothing) with texts [Shop, Coins: 5, Next: wave 2 of 8, Quick hands: level 0 of 2, 5 coins, Heavy bolts: level 0 of 1, 12 coins, Mason: gate 10 of 10, full, Next wave]: Mason's price (4 coins) is not shown whenever the gate is full, which is the usual case after wave 1."
+        }
+      ]
+    },
+    {
+      "run": "large-engine-4",
+      "job": "large",
+      "arm": "engine",
+      "n": 4,
+      "from": null,
+      "engine_build": "93c469831d",
+      "builder": {
+        "tokens": 205191,
+        "tool_uses": 86,
+        "duration_s": 1234.7,
+        "by_kind": {
+          "input": 166,
+          "cache_write": 199846,
+          "cache_read": 9860050,
+          "output": 124202,
+          "requests": 83,
+          "context_at_end": 205191
+        },
+        "weighted": 1856988,
+        "cost_usd": 3.027741000000001,
+        "turns": 87,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 46,
+        "refused": 3,
+        "args_bytes": 10128,
+        "answer_bytes": 25270,
+        "by_tool": {
+          "(run)": 44,
+          "(check)": 2
+        }
+      },
+      "left": {
+        "files": 31,
+        "bytes": 98171,
+        "text_lines": 2072,
+        "lines_by_kind": {
+          ".json": 971,
+          ".md": 443,
+          ".rs": 639,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50225,
+        "text_lines": 867,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 369,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 27,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 29,
+          "of": 31
+        }
+      },
+      "defects": [
+        "Escape in the shop (and on the won/lost screens) opens a hidden engine pause: the next Enter is swallowed and a purchase is not made (Escape then Enter on Quick hands left coins 35; only the second Enter bought). The brief says Escape does nothing in the shop. The engine also warns that paused.json is drawn under shop/won.",
+        "Title from the pause leads to an engine 'bounce' screen: screen value not in the brief's list, its Start continues a saved run, and the previous run's enemies stay in the printed state.",
+        "In the menu frames a second button (Start on the title, Next wave in the shop) is always filled blue while the chosen entry only has an outline, so the mark is ambiguous.",
+        "Numbers in texts use thousands separators ('Best: 1,540', French '1 660') where the brief shows 'Best: 120'; harmless but differs from the brief's form.",
+        "Language and difficulty stop at the ends of their lists rather than cycling; allowed by the list item but noted."
+      ],
+      "judge": {
+        "tokens": 109084,
+        "tool_uses": 62,
+        "duration_s": 891.6,
+        "by_kind": {
+          "input": 114,
+          "cache_write": 103739,
+          "cache_read": 3766218,
+          "output": 38740,
+          "requests": 57,
+          "context_at_end": 109084
+        },
+        "weighted": 700110,
+        "cost_usd": 2.3584116,
+        "turns": 63,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 90,
+          "refused": 3,
+          "args_bytes": 56818,
+          "answer_bytes": 310007,
+          "by_tool": {
+            "(run)": 90
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "l22",
+          "evidence": "Escape pauses (enemies, bolts and guard frozen ticks 101-199) and Resume continues from the same state; but Title from the pause gives screen 'bounce' (not title), with enemies still in the state, and its Start resumes the saved run's shop instead of a new run."
+        },
+        {
+          "id": "l25",
+          "evidence": "Start on the title removed the save (saved false, no Continue next run); lost and won runs removed it; Title from the pause kept it. But Start on the title shown after pause->Title did not remove the save: it opened the saved run's shop."
+        }
+      ]
+    },
+    {
+      "run": "large-engine-5",
+      "job": "large",
+      "arm": "engine",
+      "n": 5,
+      "from": null,
+      "engine_build": "93c469831d",
+      "builder": {
+        "tokens": 154901,
+        "tool_uses": 77,
+        "duration_s": 756.4,
+        "by_kind": {
+          "input": 130,
+          "cache_write": 149556,
+          "cache_read": 6059238,
+          "output": 72665,
+          "requests": 65,
+          "context_at_end": 154901
+        },
+        "weighted": 1156324,
+        "cost_usd": 1.9310577999999998,
+        "turns": 78,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 35,
+        "refused": 0,
+        "args_bytes": 7596,
+        "answer_bytes": 18590,
+        "by_tool": {
+          "(run)": 34,
+          "(find)": 1
+        }
+      },
+      "left": {
+        "files": 31,
+        "bytes": 87010,
+        "text_lines": 1616,
+        "lines_by_kind": {
+          ".json": 527,
+          ".md": 470,
+          ".rs": 600,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50225,
+        "text_lines": 867,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 369,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 28,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 30,
+          "of": 31
+        }
+      },
+      "defects": [
+        "Escape in the shop (and on title, won and lost) opens the pause instead of doing nothing, as the README admits; the brief says Escape does nothing in the shop.",
+        "Title from the pause leads to an extra 'bridge' screen (reported screen value 'bridge', not in the brief's list) that needs another Enter.",
+        "The settings screen is drawn over the title, and the game's name shows partly hidden behind the settings panel.",
+        "The first walker of a wave does not move on the tick it appears (x stays 20 for its first tick), so it trails its own 1.5 s spacing by one tick of walking (2.225 vs 2.25 units)."
+      ],
+      "judge": {
+        "tokens": 117199,
+        "tool_uses": 75,
+        "duration_s": 1025.7,
+        "by_kind": {
+          "input": 132,
+          "cache_write": 111854,
+          "cache_read": 4679845,
+          "output": 40328,
+          "requests": 66,
+          "context_at_end": 117199
+        },
+        "weighted": 809574,
+        "cost_usd": 2.637888999999999,
+        "turns": 76,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 90,
+          "refused": 5,
+          "args_bytes": 106133,
+          "answer_bytes": 452737,
+          "by_tool": {
+            "(run)": 90
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "l22",
+          "evidence": "Escape at tick 300 shows paused [Paused, Resume, Title]; enemies and bolts frozen through tick 400; Resume continues from the same positions. But Title from the pause gives screen 'bridge' (texts [name, Best: 0, Title]), a screen not in the brief. It needs a second Enter to reach the title screen."
+        }
+      ]
+    }
+  ]
+}

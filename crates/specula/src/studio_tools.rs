@@ -20,6 +20,10 @@ pub const MAX_SUBJECTS: usize = 12;
 pub const MAX_SHEET_SUBJECTS: usize = 48;
 /// Subjects one `style_check` covers (variants included).
 pub const MAX_STYLE_SUBJECTS: usize = 96;
+/// Recipes one `model_build_all` builds (a line each, each under [`MAX_BUILD_ALL_ROW`] bytes).
+pub const MAX_BUILD_ALL: usize = 48;
+/// The most one of `model_build_all`'s lines is, as JSON.
+pub const MAX_BUILD_ALL_ROW: usize = 512;
 /// Subjects one `studio_stage` frame shows.
 pub const MAX_STAGE_SUBJECTS: usize = 6;
 /// Tiles one sheet may have (subjects × views × passes).
@@ -152,6 +156,9 @@ pub enum StudioCall {
     Compare { from: CompareFrom, sheet: SheetSpec, format: Format },
     Check { subject: SubjectSpec, siblings: Option<Vec<SubjectSpec>>, tile: u32, image: bool, format: Format },
     Style { subjects: Vec<SubjectSpec>, folder: Option<String>, variants: bool, format: Format },
+    /// `model_build_all`: every recipe of a folder built, a line each (a refused one says why
+    /// and the rest are still built).
+    BuildAll { folder: String },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -409,6 +416,15 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<StudioCall, String>> {
             }
             Ok(StudioCall::Style { subjects, folder, variants: bool_arg(args, "variants")?.unwrap_or(true), format: format(args)? })
         })(),
+        "model_build_all" => (|| {
+            check_keys(args, name, &[&["folder"]])?;
+            let folder = match string_arg(args, "folder")? {
+                Some(f) if !f.is_empty() && f.len() <= 256 && !f.contains("..") && !f.starts_with(['/', '\\']) && !f.contains(':') => f.trim_end_matches(['/', '\\']).to_string(),
+                Some(_) => return Err("'folder' is a folder under the assets root, like \"models\"".into()),
+                None => "models".to_string(),
+            };
+            Ok(StudioCall::BuildAll { folder })
+        })(),
         _ => return None,
     };
     Some(r)
@@ -578,6 +594,17 @@ pub fn definitions() -> Vec<ToolDef> {
             ),
         },
         ToolDef {
+            name: "model_build_all".into(),
+            description: format!(
+                "Build every model recipe in a folder under the assets root (default \"models\"), as model_build builds one, and answer one \
+                 line a recipe: its triangles, its size in metres [x, y, z], the height its lowest point stands at, closed (watertight) and \
+                 open_edges; or, for a recipe that is refused, the error, where in the recipe, and why. One recipe refused does not stop the \
+                 rest. At most {MAX_BUILD_ALL} recipes a call (a folder with more: name a smaller folder). No script of your own is needed to \
+                 build a project's models and say each one's facts: this is that. Texture graphs in the folder are left out."
+            ),
+            input_schema: schema(vec![("folder", Json::obj([("type", Json::from("string")), ("maxLength", Json::from(256)), ("description", Json::from("A folder under the assets root (default \"models\")."))]))], &[]),
+        },
+        ToolDef {
             name: "style_check".into(),
             description: "The game's style.toml rules (found next to the recipe or above it in the assets root) on recipes, without rendering: triangle and texture \
                           budgets, material count, scale ranges and aspect (height over footprint), palette distance (Oklab, from the nearest blend of style.json palette \
@@ -609,6 +636,37 @@ mod tests {
 
     fn bad(name: &str, args: &str) -> String {
         parse(name, &Json::parse(args).unwrap()).unwrap().expect_err("should fail")
+    }
+
+    /// A line of `model_build_all` says what a measured comparison's builders each wrote a script
+    /// to print (triangles, size, where it stands, closed), from `model_build`'s own answer; a
+    /// refusal says the error, where and why; and a line is bounded whatever the answer was.
+    #[test]
+    fn a_line_of_model_build_all_is_a_models_facts_or_why_it_was_refused() {
+        let style = specula_model::Style::parse(r##"{ "style": "t", "palette": { "ink": "#202020" }, "materials": { "metal": { "color": "#9aa3ad", "roughness": 0.4 } } }"##).unwrap();
+        let model = specula_model::build(specula_model::SCHEMA_EXAMPLE, &specula_model::BuildParams::new(&style)).unwrap();
+        let row = crate::studio::build_all_row("models/token.json", &model.report(), false);
+        let num = |k: &str| row.get(k).and_then(Json::as_f64).unwrap_or(f64::NAN);
+        assert_eq!((row.get("recipe").and_then(Json::as_str), row.get("name").and_then(Json::as_str)), (Some("models/token.json"), Some("token")));
+        assert_eq!((row.get("closed").and_then(Json::as_bool), num("open_edges")), (Some(true), 0.0), "{row}");
+        assert_eq!(num("triangles"), model.lods[0].triangle_count() as f64);
+        let size: Vec<f64> = row.get("size_m").and_then(Json::as_array).unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        assert!((size[0] - 0.3).abs() < 0.01 && (size[1] - 0.3).abs() < 0.01 && (size[2] - 0.04).abs() < 0.005 && num("stands_at_m").abs() < 0.005, "{row}");
+        assert!(row.to_string().len() <= MAX_BUILD_ALL_ROW);
+        // A refusal: the recipe's own error, where, and why, the message cut.
+        let long = "x".repeat(2000);
+        let refusal = Json::obj([("error", Json::from("recipe_invalid")), ("message", Json::from("the whole message")), ("recipe_error", Json::obj([("code", Json::from("UnknownField")), ("path", Json::from("parts[0].rotate")), ("message", Json::from(long.as_str()))]))]);
+        let row = crate::studio::build_all_row("models/bad.json", &refusal, true);
+        assert_eq!((row.get("error").and_then(Json::as_str), row.get("at").and_then(Json::as_str)), (Some("UnknownField"), Some("parts[0].rotate")));
+        assert_eq!(row.get("message").and_then(Json::as_str).map(str::len), Some(240));
+        assert!(row.to_string().len() <= MAX_BUILD_ALL_ROW && row.get("closed").is_none());
+        // An answer that was not a recipe's refusal (a build that failed another way) still says so.
+        let row = crate::studio::build_all_row("models/odd.json", &Json::obj([("error", Json::from("timeout")), ("message", Json::from("the build took too long"))]), true);
+        assert_eq!((row.get("error").and_then(Json::as_str), row.get("message").and_then(Json::as_str)), (Some("timeout"), Some("the build took too long")));
+        assert_eq!(crate::studio::build_all_row("models/none.json", &Json::Null, true).get("error").and_then(Json::as_str), Some("build_failed"));
+        // The tool is defined with a limit on its argument, and declared open as model_build is.
+        let def = definitions().into_iter().find(|d| d.name == "model_build_all").expect("defined");
+        assert!(def.input_schema.get("properties").and_then(|p| p.get("folder")).and_then(|f| f.get("maxLength")).is_some());
     }
 
     #[test]
@@ -661,6 +719,11 @@ mod tests {
         assert!(matches!(ok("style_check", r#"{"folder": "recipes/"}"#), StudioCall::Style { folder: Some(ref f), .. } if f == "recipes"));
         assert!(bad("style_check", r#"{"folder": "../x"}"#).contains("folder"));
         assert!(bad("style_check", "{}").contains("not both"));
+        // Every recipe of a folder: `models` unless another is named; a folder out of the assets is refused.
+        assert!(matches!(ok("model_build_all", "{}"), StudioCall::BuildAll { ref folder } if folder == "models"));
+        assert!(matches!(ok("model_build_all", r#"{"folder": "props/"}"#), StudioCall::BuildAll { ref folder } if folder == "props"));
+        assert!(bad("model_build_all", r#"{"folder": "../x"}"#).contains("folder") && bad("model_build_all", r#"{"recipe": "a.json"}"#).contains("recipe"));
+        assert_eq!(crate::tools::CallerThread::of("model_build_all"), Some(crate::tools::CallerThread::Studio), "it is listed and waited for on the caller's thread");
         assert!(matches!(ok("studio_stage", "{}"), StudioCall::Stage { ref subjects, .. } if subjects.is_empty()));
         assert!(bad("studio_stage", r#"{"rig": "noon"}"#).contains("rig"));
         assert!(parse("studio_other", &Json::Null).is_none());

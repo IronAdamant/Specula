@@ -129,6 +129,13 @@ impl Outcome {
 
 /// Most lines of a game's report (what a headless run prints).
 pub const MAX_REPORT: usize = 64;
+/// Most values a game keeps for the player ([`GameFile::keep`]).
+pub const MAX_KEEP: usize = 16;
+/// The longest name of a kept value: with what stands before it in the player's file
+/// ([`crate::settings::KEPT`]) it is a name that file's reader takes (64 characters).
+pub const MAX_KEEP_NAME: usize = 48;
+/// Most screens the rules put up ([`GameFile::show`]).
+pub const MAX_SHOW: usize = 8;
 
 /// How the game is looked at: by its window with no camera of an agent's, and by a headless
 /// run's frame.
@@ -192,6 +199,27 @@ pub struct GameFile {
     /// What a headless run prints (`specula run`): each line a name and the key whose value
     /// it shows, in this order. Empty: the run prints everything it can see.
     pub report: Vec<(String, String)>,
+    /// Words a headless run's script may use beside the game's own, each with the input it
+    /// stands for (`"menu_down": "down"`, `"restart": "enter"`, `"fire": "up+shoot"`): a game
+    /// whose brief names its inputs is run in the brief's words, with no program between.
+    pub inputs: Vec<(String, String)>,
+    /// What the game keeps for the player between one run of the program and the next (a best
+    /// score, a run to go on with): each a name, and the key of a module whose value is kept
+    /// under it (`"best": "gate.best"`). The engine writes a value when the module changes
+    /// it, beside the player's settings, and tells it to the modules when the game starts.
+    pub keep: Vec<(String, String)>,
+    /// Screens of the game's own that the rules put up: each a screen (a file under
+    /// `assets/ui`) and the key of a module; while the run is under way and what the module
+    /// keeps there is true (or a number that is not 0, or text that is not empty), the
+    /// screen is up over the game's own and has the focus (`"shop": "gate.shopping"`). The
+    /// clock goes on: its buttons' words reach the rules, which take it down again.
+    pub show: Vec<(String, String)>,
+    /// The key of a module that asks for the program to end (`"gate.quit"`): while it is true
+    /// (or a number that is not 0, or text that is not empty) after a tick, a headless run by
+    /// a script (`specula run`) ends there, the state as it stood. A menu the rules drive
+    /// themselves has a Quit too. In a window it closes nothing: the window's game ends by a
+    /// button whose action is `quit`, pressed by the person (an agent can drive the rules).
+    pub quit: Option<String>,
 }
 
 impl Default for GameFile {
@@ -207,6 +235,10 @@ impl Default for GameFile {
             outcome: Outcome::default(),
             view: None,
             report: Vec::new(),
+            inputs: Vec::new(),
+            keep: Vec::new(),
+            show: Vec::new(),
+            quit: None,
         }
     }
 }
@@ -232,7 +264,7 @@ impl GameFile {
     }
 
     pub fn from_json(json: &Json) -> Result<GameFile, Problem> {
-        unknown_keys(json, &["format", "title", "tick_hz", "modules", "start", "screens", "locale", "settings", "outcome", "view", "report"], "")?;
+        unknown_keys(json, &["format", "title", "tick_hz", "modules", "start", "screens", "locale", "settings", "outcome", "view", "report", "inputs", "keep", "show", "quit"], "")?;
         if json.get("format").and_then(Json::as_str) != Some(FORMAT) {
             return Err(Problem::new("format", "bad_format", format!("a game file says \"format\": \"{FORMAT}\"")));
         }
@@ -316,6 +348,48 @@ impl GameFile {
                 game.report.push((name.clone(), key.to_owned()));
             }
         }
+        if let Some(inputs) = json.get("inputs") {
+            let words = inputs.as_object().filter(|w| w.len() <= MAX_REPORT).ok_or_else(|| Problem::new("inputs", "bad_inputs", format!("\"inputs\" is an object of at most {MAX_REPORT} words: a word a script may use, and the input it stands for (\"menu_down\": \"down\")")))?;
+            let word_ok = |w: &str| key_ok(w) && !w.contains([',', ':']);
+            for (word, means) in words {
+                let here = format!("inputs.{word}");
+                if !word_ok(word) || word.contains(['+', '=']) {
+                    return Err(Problem::new(&here, "bad_name", "a word is 1 to 64 characters with no blank, comma, colon, + or ="));
+                }
+                let means = means.as_str().filter(|m| word_ok(m)).ok_or_else(|| Problem::new(&here, "bad_input", "a word stands for an input: \"down\", \"enter\", an action of a module, or several joined by + (\"up+shoot\")"))?;
+                game.inputs.push((word.clone(), means.to_owned()));
+            }
+        }
+        if let Some(keep) = json.get("keep") {
+            let names = keep.as_object().filter(|k| k.len() <= MAX_KEEP).ok_or_else(|| Problem::new("keep", "bad_keep", format!("\"keep\" is an object of at most {MAX_KEEP} names: a name, and the key of a module whose value is kept for the player under it (\"best\": \"gate.best\")")))?;
+            for (name, key) in names {
+                let here = format!("keep.{name}");
+                if !key_ok(name) || name.contains('.') || name.chars().count() > MAX_KEEP_NAME {
+                    return Err(Problem::new(&here, "bad_name", format!("a kept value's name is 1 to {MAX_KEEP_NAME} characters with no blank and no dot")));
+                }
+                // (What a module keeps: the engine's own lines are not a game's to keep.)
+                let of_a_module = |k: &&str| key_ok(k) && k.split_once('.').is_some_and(|(module, key)| !key.is_empty() && !["run", "ui", "game", "setting", "world"].contains(&module));
+                let key = key.as_str().filter(of_a_module).ok_or_else(|| Problem::new(&here, "bad_key", "a kept value names what a module keeps: \"gate.best\" (module gate, its state key best)"))?;
+                game.keep.push((name.clone(), key.to_owned()));
+            }
+        }
+        if let Some(show) = json.get("show") {
+            let screens = show.as_object().filter(|k| k.len() <= MAX_SHOW).ok_or_else(|| Problem::new("show", "bad_show", format!("\"show\" is an object of at most {MAX_SHOW} screens: a screen's name, and the key of a module that says when it is up (\"shop\": \"gate.shopping\")")))?;
+            for (screen, key) in screens {
+                let here = format!("show.{screen}");
+                if !key_ok(screen) || screen.contains(['.', '/', '\\']) {
+                    return Err(Problem::new(&here, "bad_name", "a shown screen is named as its file under assets/ui is, without .json: \"shop\""));
+                }
+                let of_a_module = |k: &&str| key_ok(k) && k.split_once('.').is_some_and(|(module, key)| !key.is_empty() && !["run", "ui", "game", "setting", "world"].contains(&module));
+                let key = key.as_str().filter(of_a_module).ok_or_else(|| Problem::new(&here, "bad_key", "a shown screen names what a module keeps, which says when it is up: \"gate.shopping\""))?;
+                game.show.push((screen.clone(), key.to_owned()));
+            }
+        }
+        if let Some(quit) = json.get("quit") {
+            let of_a_module = |k: &&str| key_ok(k) && k.split_once('.').is_some_and(|(module, key)| !key.is_empty() && !["run", "ui", "game", "setting", "world"].contains(&module));
+            let key = quit.as_str().filter(of_a_module).ok_or_else(|| Problem::new("quit", "bad_key", "\"quit\" names what a module keeps, which says when the program is to end: \"gate.quit\""))?;
+            game.quit = Some(key.to_owned());
+        }
         Ok(game)
     }
 
@@ -381,6 +455,18 @@ impl GameFile {
         if !self.report.is_empty() {
             file.set("report", Json::Obj(self.report.iter().map(|(name, key)| (name.clone(), Json::Str(key.clone()))).collect()));
         }
+        if !self.inputs.is_empty() {
+            file.set("inputs", Json::Obj(self.inputs.iter().map(|(word, means)| (word.clone(), Json::Str(means.clone()))).collect()));
+        }
+        if !self.keep.is_empty() {
+            file.set("keep", Json::Obj(self.keep.iter().map(|(name, key)| (name.clone(), Json::Str(key.clone()))).collect()));
+        }
+        if !self.show.is_empty() {
+            file.set("show", Json::Obj(self.show.iter().map(|(screen, key)| (screen.clone(), Json::Str(key.clone()))).collect()));
+        }
+        if let Some(quit) = &self.quit {
+            file.set("quit", Json::Str(quit.clone()));
+        }
         file
     }
 }
@@ -389,6 +475,43 @@ impl GameFile {
 mod tests {
     use super::*;
     use crate::cond::Val;
+
+    /// What a game keeps for the player and the screens its rules put up are names and the
+    /// keys of a module, and come back as written.
+    #[test]
+    fn keep_and_show_name_what_a_module_keeps() {
+        let with = |more: &str| GameFile::parse(&format!(r#"{{"format": "specula.game.v1", "title": "g", {more}}}"#));
+        let game = with(r#""keep": {"best": "gate.best", "run": "gate.saved.wave"}, "show": {"shop": "gate.shopping"}"#).unwrap();
+        assert_eq!(game.keep, [("best".to_owned(), "gate.best".to_owned()), ("run".to_owned(), "gate.saved.wave".to_owned())]);
+        assert_eq!(game.show, [("shop".to_owned(), "gate.shopping".to_owned())]);
+        assert_eq!(GameFile::from_json(&game.to_json()).unwrap(), game);
+        let code = |more: &str| with(more).unwrap_err().code;
+        assert_eq!(code(r#""keep": ["best"]"#), "bad_keep");
+        assert_eq!(code(r#""keep": {"my.best": "gate.best"}"#), "bad_name");
+        // A name is one the player's file's reader takes with what stands before it.
+        assert!(with(&format!(r#""keep": {{"{}": "gate.best"}}"#, "n".repeat(MAX_KEEP_NAME))).is_ok());
+        assert_eq!(code(&format!(r#""keep": {{"{}": "gate.best"}}"#, "n".repeat(MAX_KEEP_NAME + 1))), "bad_name");
+        for key in ["best", "setting.volume", "game.score", "run.ticks", "gate."] {
+            assert_eq!(code(&format!(r#""keep": {{"best": "{key}"}}"#)), "bad_key", "{key}");
+            assert_eq!(code(&format!(r#""show": {{"shop": "{key}"}}"#)), "bad_key", "{key}");
+        }
+        assert_eq!(code(r#""show": {"ui/shop": "gate.shopping"}"#), "bad_name");
+        let many: Vec<String> = (0..=MAX_KEEP).map(|i| format!(r#""k{i}": "gate.k{i}""#)).collect();
+        assert_eq!(code(&format!(r#""keep": {{{}}}"#, many.join(","))), "bad_keep");
+    }
+
+    /// The rules' own Quit is a key of a module, and comes back as written; none is no quit.
+    #[test]
+    fn quit_names_what_a_module_keeps() {
+        let with = |more: &str| GameFile::parse(&format!(r#"{{"format": "specula.game.v1", "title": "g"{more}}}"#));
+        assert_eq!(with("").unwrap().quit, None);
+        let game = with(r#", "quit": "gate.quit""#).unwrap();
+        assert_eq!(game.quit.as_deref(), Some("gate.quit"));
+        assert_eq!(GameFile::from_json(&game.to_json()).unwrap(), game);
+        for key in [r#""quit""#, r#""game.phase""#, r#""run.ticks""#, r#""gate.""#, "true", r#"["gate.quit"]"#] {
+            assert_eq!(with(&format!(r#", "quit": {key}"#)).unwrap_err().code, "bad_key", "{key}");
+        }
+    }
 
     const FULL: &str = r#"{
         "format": "specula.game.v1",
@@ -433,6 +556,12 @@ mod tests {
         assert_eq!(bad(r#""view": {"center": [1, 2], "height": 3, "zoom": 2}"#), "unknown_key");
         assert_eq!(bad(r#""view": {"eye": [1, 2, 3], "target": [1, 2, 3]}"#), "bad_view");
         assert_eq!(bad(r#""report": ["tick"]"#), "bad_report");
+        let words = GameFile::parse(r#"{"format": "specula.game.v1", "title": "Hold", "inputs": {"menu_down": "down", "fire": "up+shoot"}}"#).unwrap();
+        assert_eq!(words.inputs, vec![("menu_down".to_owned(), "down".to_owned()), ("fire".to_owned(), "up+shoot".to_owned())]);
+        assert_eq!(GameFile::from_json(&words.to_json()).unwrap(), words);
+        assert_eq!(bad(r#""inputs": ["down"]"#), "bad_inputs");
+        assert_eq!(bad(r#""inputs": {"a+b": "down"}"#), "bad_name");
+        assert_eq!(bad(r#""inputs": {"go": 5}"#), "bad_input");
         assert_eq!(bad(r#""report": {"tick": 5}"#), "bad_key");
         assert_eq!(bad(r#""report": {"a b": "run.ticks"}"#), "bad_name");
     }

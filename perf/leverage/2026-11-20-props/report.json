@@ -1,0 +1,1031 @@
+{
+  "leverage": 1,
+  "baseline": "none",
+  "against_baseline": [
+    {
+      "job": "kit",
+      "arm": "found",
+      "baseline": "none",
+      "weighted": 586401,
+      "baseline_weighted": 430481,
+      "times": 1.36,
+      "requests_times": 1.41,
+      "passed": "8.5 / 9",
+      "baseline_passed": "6.0 / 9"
+    },
+    {
+      "job": "kit",
+      "arm": "told",
+      "baseline": "none",
+      "weighted": 535216,
+      "baseline_weighted": 430481,
+      "times": 1.24,
+      "requests_times": 1.76,
+      "passed": "9.0 / 9",
+      "baseline_passed": "6.0 / 9"
+    }
+  ],
+  "runs": [
+    {
+      "run": "kit-found-1",
+      "job": "kit",
+      "arm": "found",
+      "n": 1,
+      "from": null,
+      "engine_build": "4deccc36",
+      "builder": {
+        "tokens": 92420,
+        "tool_uses": 52,
+        "duration_s": 477.7,
+        "by_kind": {
+          "input": 88,
+          "cache_write": 87075,
+          "cache_read": 2823386,
+          "output": 23637,
+          "requests": 44,
+          "context_at_end": 92420
+        },
+        "weighted": 509455,
+        "cost_usd": 0.8671845999999999,
+        "turns": 53,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": true,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 139,
+        "refused": 23,
+        "args_bytes": 6717,
+        "answer_bytes": 164182,
+        "by_tool": {
+          "model_build": 45,
+          "(tools)": 20,
+          "sight_frame": 19,
+          "world_spawn": 18,
+          "world_delete": 17,
+          "model_export": 16,
+          "engine.start": 7,
+          "engine.stop": 7,
+          "formae_get": 3,
+          "formae_list": 1
+        }
+      },
+      "left": {
+        "files": 35,
+        "bytes": 187971,
+        "text_lines": 980,
+        "lines_by_kind": {
+          ".json": 440,
+          ".md": 249,
+          ".py": 163,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36870,
+        "text_lines": 689,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 192,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 6,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 8,
+          "of": 9
+        }
+      },
+      "defects": [
+        "Heart: the recipe's pillow raise uses inset 0.0001, so the 'rounded' rim is a straight vertical wall with square edges on front and back. README's 'gentle dome ... rim is soft' describes something the mesh does not have.",
+        "assets/style.json promises 'soft bevel on every rim' and 'a warm metal for the gear and coin', but no prop is bevelled and the gear and coin use `painted`, not `metal`.",
+        "Closedness is measured by the builder's own script on the exported .glb, not by the engine's model_build closed flag that the brief names (README says so).",
+        "Every frames run leaves another run folder of PNG/JSON files under work/captures, and these accumulate."
+      ],
+      "judge": {
+        "tokens": 34407,
+        "tool_uses": 21,
+        "duration_s": 189.1,
+        "by_kind": {
+          "input": 30,
+          "cache_write": 29062,
+          "cache_read": 323451,
+          "output": 9230,
+          "requests": 15,
+          "context_at_end": 34407
+        },
+        "weighted": 114853,
+        "cost_usd": 0.4819062,
+        "turns": 22,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 31,
+          "refused": 7,
+          "args_bytes": 1512,
+          "answer_bytes": 27934,
+          "by_tool": {
+            "model_build": 8,
+            "(tools)": 6,
+            "model_export": 4,
+            "sight_frame": 4,
+            "world_delete": 4,
+            "world_spawn": 4,
+            "engine.start": 2,
+            "engine.stop": 2,
+            "(run)": 1
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "k05",
+          "evidence": "The frame reads clearly as a heart, with two lobes on top and a point down. The edges are not rounded, though. heart.glb has a flat back cap at z=-0.025 (62 tris, nz=-1) and a flat front cap at z=0.025 (62 tris, nz=+1). The 18 vertex rings between them all sit within 0.1 mm of the outline (xmax 0.15000 at z=-0.025 vs 0.14990 at z=0.025), and 2048 of the 2300 triangles have nz=0. So the side is a vertical wall meeting both caps at a right angle: the 'pillow' raise used inset 0.0001, so it never domes."
+        }
+      ]
+    },
+    {
+      "run": "kit-found-2",
+      "job": "kit",
+      "arm": "found",
+      "n": 2,
+      "from": null,
+      "engine_build": "4deccc36",
+      "builder": {
+        "tokens": 105204,
+        "tool_uses": 58,
+        "duration_s": 508,
+        "by_kind": {
+          "input": 104,
+          "cache_write": 99859,
+          "cache_read": 3652779,
+          "output": 34628,
+          "requests": 52,
+          "context_at_end": 105204
+        },
+        "weighted": 663346,
+        "cost_usd": 1.1112019000000002,
+        "turns": 59,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": true,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 232,
+        "refused": 79,
+        "args_bytes": 10049,
+        "answer_bytes": 289040,
+        "by_tool": {
+          "model_build": 138,
+          "model_export": 40,
+          "engine.stop": 15,
+          "engine.start": 14,
+          "sight_frame": 13,
+          "world_delete": 13,
+          "world_spawn": 13,
+          "(tools)": 10,
+          "formae_get": 5
+        }
+      },
+      "left": {
+        "files": 36,
+        "bytes": 200086,
+        "text_lines": 965,
+        "lines_by_kind": {
+          ".json": 440,
+          ".md": 250,
+          ".py": 147,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36870,
+        "text_lines": 689,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 192,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 7,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "The README and style description say every token has a 'warm face colour', but the gear uses token_metal/steel (grey, #aeb8c4), which is not warm.",
+        "The coin's raised rim cannot be seen in its only frame (flat head-on lighting). The README admits this.",
+        "The star's points reach radius 0.1577, so its tip-circle diameter is 0.315. Only its x width is exactly 0.300; it is still about 0.3 across.",
+        "The build command writes .glb exports into assets/models/exports as a side effect of the watertight check."
+      ],
+      "judge": {
+        "tokens": 30983,
+        "tool_uses": 19,
+        "duration_s": 180.9,
+        "by_kind": {
+          "input": 26,
+          "cache_write": 25638,
+          "cache_read": 258011,
+          "output": 7422,
+          "requests": 13,
+          "context_at_end": 30983
+        },
+        "weighted": 94985,
+        "cost_usd": 0.4052502,
+        "turns": 20,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 24,
+          "refused": 0,
+          "args_bytes": 1524,
+          "answer_bytes": 28425,
+          "by_tool": {
+            "model_build": 8,
+            "model_export": 4,
+            "sight_frame": 4,
+            "world_delete": 4,
+            "world_spawn": 4,
+            "engine.start": 2,
+            "engine.stop": 2
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "kit-none-1",
+      "job": "kit",
+      "arm": "none",
+      "n": 1,
+      "from": null,
+      "engine_build": "8b67796d",
+      "builder": {
+        "tokens": 65816,
+        "tool_uses": 30,
+        "duration_s": 179.4,
+        "by_kind": {
+          "input": 46,
+          "cache_write": 60471,
+          "cache_read": 991158,
+          "output": 14916,
+          "requests": 23,
+          "context_at_end": 65816
+        },
+        "weighted": 249331,
+        "cost_usd": 0.49025179999999996,
+        "turns": 31,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 1,
+        "refused": 1,
+        "args_bytes": 0,
+        "answer_bytes": 0,
+        "by_tool": {
+          "engine.start": 4,
+          "(tools)": 1,
+          "engine.stop": 1
+        }
+      },
+      "left": {
+        "files": 27,
+        "bytes": 44617,
+        "text_lines": 810,
+        "lines_by_kind": {
+          ".json": 439,
+          ".md": 243,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36472,
+        "text_lines": 683,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 186,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 0,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 0,
+          "of": 2
+        },
+        "all": {
+          "passed": 0,
+          "of": 9
+        }
+      },
+      "defects": [
+        "README admits that nothing was ever built or framed by the engine; recipe op names, fields, orientation and tool arguments are guesses.",
+        "build.sh sends engine start's output to /dev/null, so when it fails it exits 1 silently with no reason shown.",
+        "build.sh does not reshape the engine's answers into the per-prop {name, triangles, closed, bounds} JSON the brief asks for.",
+        "No frame commands are given: the sight_frame arguments are left as '{...}'."
+      ],
+      "judge": {
+        "tokens": 18966,
+        "tool_uses": 10,
+        "duration_s": 77.9,
+        "by_kind": {
+          "input": 16,
+          "cache_write": 13621,
+          "cache_read": 106789,
+          "output": 3247,
+          "requests": 8,
+          "context_at_end": 18966
+        },
+        "weighted": 43956,
+        "cost_usd": 0.1953298,
+        "turns": 11,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 0,
+          "refused": 0,
+          "args_bytes": -0,
+          "answer_bytes": -0,
+          "by_tool": {
+            "engine.start": 2,
+            "engine.stop": 1
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "k01",
+          "evidence": "Ran README's `sh <runs>/kit-none-1/work/build.sh`: exit 1, no output. Its first step `examen leverage engine start` returns engine_exited (exit code 1); port 7680 is held by svchost PID 33736. No recipe was built. build.sh would also only print the engine's raw answer, not the {name, triangles, closed, bounds} JSON the brief asks for."
+        },
+        {
+          "id": "k02",
+          "evidence": "README's frame command is a placeholder (`sight_frame '{...}'`, 'arguments are NOT settled') and needs the engine, which will not start. No PNG exists anywhere in work/."
+        },
+        {
+          "id": "k03",
+          "evidence": "No frame or build could be made (see k01/k02), so the teeth and the hole were never seen."
+        },
+        {
+          "id": "k04",
+          "evidence": "No build ran, so no bounds were reported (see k01)."
+        },
+        {
+          "id": "k05",
+          "evidence": "No heart frame exists (see k02)."
+        },
+        {
+          "id": "k06",
+          "evidence": "No star frame or bounds exist (see k01/k02)."
+        },
+        {
+          "id": "k07",
+          "evidence": "No coin frame or bounds exist (see k01/k02)."
+        },
+        {
+          "id": "k08",
+          "evidence": "The headless build never reported closedness for any recipe (see k01), and there are no frames to judge the shared style from."
+        },
+        {
+          "id": "k09",
+          "evidence": "From a fresh start (no engine running), build.sh exits 1 with nothing printed, and the frame command is not a runnable command ('{...}')."
+        }
+      ]
+    },
+    {
+      "run": "kit-none-2",
+      "job": "kit",
+      "arm": "none",
+      "n": 2,
+      "from": null,
+      "engine_build": "8b67796d",
+      "builder": {
+        "tokens": 103295,
+        "tool_uses": 47,
+        "duration_s": 340.4,
+        "by_kind": {
+          "input": 62,
+          "cache_write": 97950,
+          "cache_read": 2039267,
+          "output": 24272,
+          "requests": 31,
+          "context_at_end": 103295
+        },
+        "weighted": 447786,
+        "cost_usd": 0.8385707,
+        "turns": 48,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": true,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 50,
+        "refused": 7,
+        "args_bytes": 1955,
+        "answer_bytes": 98723,
+        "by_tool": {
+          "model_build": 22,
+          "(tools)": 8,
+          "model_export": 5,
+          "sight_frame": 5,
+          "world_spawn": 5,
+          "engine.stop": 4,
+          "world_delete": 4,
+          "engine.start": 3,
+          "world_env": 1
+        }
+      },
+      "left": {
+        "files": 35,
+        "bytes": 516792,
+        "text_lines": 976,
+        "lines_by_kind": {
+          ".json": 439,
+          ".md": 255,
+          ".py": 154,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36472,
+        "text_lines": 683,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 186,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 7,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "The coin's raised rim barely shows in its front frame (only a thin line); the relief is real in the geometry but the frame shows little depth.",
+        "The heart is 13,448 triangles, far more than the other props (36 to 576), because it is an sdf sculpt.",
+        "kit.py uses the work folder (<runs>/kit-none-2/work) as the engine project, not <runs>/kit-none-2 as the brief's engine commands do; it works, but it differs from the brief.",
+        "The build command takes about 1.5 minutes because it calls examen once per tool call."
+      ],
+      "judge": {
+        "tokens": 30136,
+        "tool_uses": 20,
+        "duration_s": 323.1,
+        "by_kind": {
+          "input": 28,
+          "cache_write": 24791,
+          "cache_read": 281495,
+          "output": 5563,
+          "requests": 14,
+          "context_at_end": 30136
+        },
+        "weighted": 86981,
+        "cost_usd": 0.36599899999999996,
+        "turns": 21,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 25,
+          "refused": 0,
+          "args_bytes": 1288,
+          "answer_bytes": 30691,
+          "by_tool": {
+            "model_build": 8,
+            "model_export": 4,
+            "sight_frame": 4,
+            "world_delete": 4,
+            "world_spawn": 4,
+            "engine.start": 2,
+            "engine.stop": 2,
+            "world_env": 1
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "kit-none-3",
+      "job": "kit",
+      "arm": "none",
+      "n": 3,
+      "from": null,
+      "engine_build": "8b67796d",
+      "builder": {
+        "tokens": 101232,
+        "tool_uses": 59,
+        "duration_s": 493.1,
+        "by_kind": {
+          "input": 96,
+          "cache_write": 95887,
+          "cache_read": 3354068,
+          "output": 27793,
+          "requests": 48,
+          "context_at_end": 101232
+        },
+        "weighted": 594327,
+        "cost_usd": 0.9970767999999999,
+        "turns": 60,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": true,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 158,
+        "refused": 12,
+        "args_bytes": 8069,
+        "answer_bytes": 207869,
+        "by_tool": {
+          "model_build": 60,
+          "model_export": 36,
+          "sight_frame": 19,
+          "world_delete": 18,
+          "world_spawn": 18,
+          "engine.stop": 9,
+          "engine.start": 8,
+          "(tools)": 7
+        }
+      },
+      "left": {
+        "files": 35,
+        "bytes": 173695,
+        "text_lines": 1312,
+        "lines_by_kind": {
+          ".json": 783,
+          ".md": 250,
+          ".py": 151,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36472,
+        "text_lines": 683,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 186,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 7,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "The heart's bottom point is cut flat about 17 mm wide (outline points +-0.00841 at y = 0), not a true point. The README admits this.",
+        "The gear is a dull dark grey (metal/steel) in its frame. That does not fit the style's own 'one bold colour each' description.",
+        "Under 'Expected output', the README shows a text table, but the command actually prints JSON. It is a small documentation mismatch.",
+        "In the straight-on frame the coin's rim shows only as a faint ring, so the frame alone barely shows the raised rim."
+      ],
+      "judge": {
+        "tokens": 36575,
+        "tool_uses": 22,
+        "duration_s": 177.9,
+        "by_kind": {
+          "input": 32,
+          "cache_write": 31230,
+          "cache_read": 374664,
+          "output": 8080,
+          "requests": 16,
+          "context_at_end": 36575
+        },
+        "weighted": 116936,
+        "cost_usd": 0.48650080000000007,
+        "turns": 23,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 30,
+          "refused": 0,
+          "args_bytes": 1670,
+          "answer_bytes": 33480,
+          "by_tool": {
+            "model_build": 8,
+            "sight_frame": 6,
+            "world_delete": 6,
+            "world_spawn": 6,
+            "model_export": 4,
+            "engine.start": 3,
+            "engine.stop": 3
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "kit-told-1",
+      "job": "kit",
+      "arm": "told",
+      "n": 1,
+      "from": null,
+      "engine_build": "4deccc36",
+      "builder": {
+        "tokens": 75849,
+        "tool_uses": 70,
+        "duration_s": 410.3,
+        "by_kind": {
+          "input": 128,
+          "cache_write": 70504,
+          "cache_read": 2707061,
+          "output": 29701,
+          "requests": 64,
+          "context_at_end": 75849
+        },
+        "weighted": 507469,
+        "cost_usd": 0.8499881,
+        "turns": 71,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": true,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 130,
+        "refused": 66,
+        "args_bytes": 3740,
+        "answer_bytes": 239107,
+        "by_tool": {
+          "model_build": 88,
+          "(tools)": 16,
+          "engine.stop": 5,
+          "model_export": 5,
+          "sight_frame": 5,
+          "world_delete": 5,
+          "world_spawn": 5,
+          "engine.start": 3,
+          "formae_get": 3,
+          "formae_list": 1,
+          "studio_check": 1,
+          "tools_catalog": 1
+        }
+      },
+      "left": {
+        "files": 37,
+        "bytes": 166347,
+        "text_lines": 965,
+        "lines_by_kind": {
+          ".json": 418,
+          ".md": 253,
+          ".py": 166,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36870,
+        "text_lines": 689,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 192,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 7,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "The front frames cannot show the coin's rim or any prop's thickness. The coin's front frame is a flat brass disc, as the README admits.",
+        "The heart's bevel is only 3 segments, so the rounding is faceted. The heart outline is two arcs with straight sides, not a classic heart curve.",
+        "The gear teeth have straight flanks (not involute). That is fine for a token.",
+        "The star is 0.3 wide but 0.285 tall (tip to tip sideways).",
+        "The `closed` flag comes from the builder's own Python check on the exported glb, not from the closed flag the engine's model_build reports.",
+        "Python 3 is needed for both checks. It is not part of the engine."
+      ],
+      "judge": {
+        "tokens": 35915,
+        "tool_uses": 23,
+        "duration_s": 233.2,
+        "by_kind": {
+          "input": 32,
+          "cache_write": 30570,
+          "cache_read": 384320,
+          "output": 8144,
+          "requests": 16,
+          "context_at_end": 35915
+        },
+        "weighted": 117396,
+        "cost_usd": 0.48443200000000003,
+        "turns": 24,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 27,
+          "refused": 0,
+          "args_bytes": 1224,
+          "answer_bytes": 37232,
+          "by_tool": {
+            "sight_frame": 6,
+            "world_delete": 6,
+            "world_spawn": 6,
+            "model_build": 4,
+            "model_export": 4,
+            "engine.start": 3,
+            "engine.stop": 3,
+            "(tools)": 1
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "kit-told-2",
+      "job": "kit",
+      "arm": "told",
+      "n": 2,
+      "from": null,
+      "engine_build": "4deccc36",
+      "builder": {
+        "tokens": 90565,
+        "tool_uses": 73,
+        "duration_s": 349.8,
+        "by_kind": {
+          "input": 112,
+          "cache_write": 85220,
+          "cache_read": 2864310,
+          "output": 33979,
+          "requests": 56,
+          "context_at_end": 90565
+        },
+        "weighted": 562963,
+        "cost_usd": 0.9673250000000004,
+        "turns": 74,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": true,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 173,
+        "refused": 37,
+        "args_bytes": 6530,
+        "answer_bytes": 232697,
+        "by_tool": {
+          "model_build": 76,
+          "(tools)": 22,
+          "sight_frame": 18,
+          "world_delete": 18,
+          "world_spawn": 18,
+          "model_export": 15,
+          "formae_get": 4,
+          "engine.start": 3,
+          "engine.stop": 3,
+          "formae_list": 1,
+          "world_list": 1
+        }
+      },
+      "left": {
+        "files": 31,
+        "bytes": 75535,
+        "text_lines": 914,
+        "lines_by_kind": {
+          ".js": 113,
+          ".json": 425,
+          ".md": 248,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36870,
+        "text_lines": 689,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 192,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 7,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "The 'closed' flag is the kit's own edge test on the exported glTF, not the engine's report. The README admits it was never tried on a known-open mesh, and I did not test it against one either.",
+        "The heart's outline is hand-made (two circular lobes on a right-angled point) rather than the library heart. It reads fine but is a little stiff, as the README says. It is 0.274 tall for 0.3 wide.",
+        "The coin's front frame shows the rim only faintly (a thin ring). The raised rim is clear only from an angle, and the README's frames give no angled view.",
+        "The frames command leaves engine capture folders under work/captures each time it runs."
+      ],
+      "judge": {
+        "tokens": 33806,
+        "tool_uses": 23,
+        "duration_s": 162.9,
+        "by_kind": {
+          "input": 30,
+          "cache_write": 28461,
+          "cache_read": 339586,
+          "output": 6643,
+          "requests": 15,
+          "context_at_end": 33806
+        },
+        "weighted": 102780,
+        "cost_usd": 0.4285852000000001,
+        "turns": 24,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 42,
+          "refused": 6,
+          "args_bytes": 1879,
+          "answer_bytes": 41643,
+          "by_tool": {
+            "model_build": 10,
+            "sight_frame": 9,
+            "world_spawn": 7,
+            "(tools)": 6,
+            "world_delete": 6,
+            "model_export": 4,
+            "engine.start": 3,
+            "engine.stop": 3
+          }
+        }
+      },
+      "failed": []
+    }
+  ]
+}

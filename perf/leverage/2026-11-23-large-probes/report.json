@@ -1,0 +1,1274 @@
+{
+  "leverage": 1,
+  "baseline": "nodocs",
+  "against_baseline": [
+    {
+      "job": "large",
+      "arm": "batch",
+      "baseline": "nodocs",
+      "weighted": 644396,
+      "baseline_weighted": 532140,
+      "times": 1.21,
+      "requests_times": 1.18,
+      "passed": "30.8 / 31",
+      "baseline_passed": "30.4 / 31"
+    }
+  ],
+  "runs": [
+    {
+      "run": "large-batch-1",
+      "job": "large",
+      "arm": "batch",
+      "n": 1,
+      "from": null,
+      "engine_build": "ff4b129814",
+      "builder": {
+        "tokens": 73717,
+        "tool_uses": 33,
+        "duration_s": 803.9,
+        "by_kind": {
+          "input": 62,
+          "cache_write": 68372,
+          "cache_read": 1671959,
+          "output": 37940,
+          "requests": 31,
+          "context_at_end": 73717
+        },
+        "weighted": 442423,
+        "cost_usd": 0.8202078999999999,
+        "turns": 34,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 19,
+        "refused": 4,
+        "args_bytes": 1803,
+        "answer_bytes": 10737,
+        "by_tool": {
+          "(run)": 16,
+          "(check)": 3
+        }
+      },
+      "left": {
+        "files": 30,
+        "bytes": 87116,
+        "text_lines": 1947,
+        "lines_by_kind": {
+          ".json": 1026,
+          ".md": 423,
+          ".rs": 469,
+          ".toml": 19,
+          ".txt": 10
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50724,
+        "text_lines": 875,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 377,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 29,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 31,
+          "of": 31
+        }
+      },
+      "defects": [
+        "Adding --at print points can change how a long run unfolds: same inputs, 12720 ticks, --at 6000 vs --at 5000,6000 gives wave-5 runners 0.2 units (4 ticks) apart at tick 6000, and with --at at every 100 ticks the Next-wave Enter after wave 3 was missed; plain runs and repeated identical commands are deterministic. Whether the cause is the game or the engine is unclear.",
+        "On lost/won and then the title, the report still lists the last run's enemies (state not cleared after a run ends).",
+        "Shop and title frames draw the first or last button (Start, Next wave) in the blue 'primary' style besides the focus outline, so two entries look highlighted.",
+        "Mason's shop line does not say how far it is bought (brief: each thing with its price and how far it is bought); it is unlimited, so this is minor.",
+        "README's headless command writes the kept folder into work/kept; the judge used a scratch folder instead."
+      ],
+      "judge": {
+        "tokens": 123778,
+        "tool_uses": 58,
+        "duration_s": 1575,
+        "by_kind": {
+          "input": 108,
+          "cache_write": 118433,
+          "cache_read": 4070250,
+          "output": 37688,
+          "requests": 54,
+          "context_at_end": 123778
+        },
+        "weighted": 743614,
+        "cost_usd": 2.515706,
+        "turns": 59,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 122,
+          "refused": 10,
+          "args_bytes": 59362,
+          "answer_bytes": 595390,
+          "by_tool": {
+            "(run)": 122
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "large-batch-2",
+      "job": "large",
+      "arm": "batch",
+      "n": 2,
+      "from": null,
+      "engine_build": "ff4b129814",
+      "builder": {
+        "tokens": 89245,
+        "tool_uses": 42,
+        "duration_s": 1199.6,
+        "by_kind": {
+          "input": 68,
+          "cache_write": 83900,
+          "cache_read": 1973482,
+          "output": 45589,
+          "requests": 34,
+          "context_at_end": 89245
+        },
+        "weighted": 530236,
+        "cost_usd": 0.9889742,
+        "turns": 43,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 21,
+        "refused": 5,
+        "args_bytes": 2012,
+        "answer_bytes": 22380,
+        "by_tool": {
+          "(run)": 15,
+          "(check)": 5,
+          "(find)": 1
+        }
+      },
+      "left": {
+        "files": 29,
+        "bytes": 90732,
+        "text_lines": 1896,
+        "lines_by_kind": {
+          ".json": 910,
+          ".md": 427,
+          ".rs": 540,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50724,
+        "text_lines": 875,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 377,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 29,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 31,
+          "of": 31
+        }
+      },
+      "defects": [
+        "After buying Heavy bolts (and when a line changes to its 'full' text) the shop focus jumps back to Quick hands, so a second Enter meant for the same line buys Quick hands instead (seen: 35 -> 23 -> 18 coins, quick 1).",
+        "The play HUD (Score/Coins/Wave/Gate) is drawn behind the title, settings and shop menus in frames, though those strings are not in the state's texts.",
+        "With the start_gate test aid the shop shows 'Mason: gate 86/10' (gate above its max); only reachable through the test aid.",
+        "An input at tick 0 is lost (the title is not up yet); README says so."
+      ],
+      "judge": {
+        "tokens": 96118,
+        "tool_uses": 40,
+        "duration_s": 774.6,
+        "by_kind": {
+          "input": 68,
+          "cache_write": 90773,
+          "cache_read": 1955392,
+          "output": 31187,
+          "requests": 34,
+          "context_at_end": 96118
+        },
+        "weighted": 465008,
+        "cost_usd": 1.7412744000000002,
+        "turns": 41,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 52,
+          "refused": 6,
+          "args_bytes": 7718,
+          "answer_bytes": 47734,
+          "by_tool": {
+            "(run)": 51,
+            "(check)": 1
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "large-batch-3",
+      "job": "large",
+      "arm": "batch",
+      "n": 3,
+      "from": null,
+      "engine_build": "ff4b129814",
+      "builder": {
+        "tokens": 101649,
+        "tool_uses": 53,
+        "duration_s": 1124.9,
+        "by_kind": {
+          "input": 90,
+          "cache_write": 96304,
+          "cache_read": 3041730,
+          "output": 54222,
+          "requests": 45,
+          "context_at_end": 101649
+        },
+        "weighted": 695753,
+        "cost_usd": 1.2317890000000002,
+        "turns": 54,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 38,
+        "refused": 4,
+        "args_bytes": 3445,
+        "answer_bytes": 26786,
+        "by_tool": {
+          "(run)": 33,
+          "(check)": 4,
+          "(find)": 1
+        }
+      },
+      "left": {
+        "files": 30,
+        "bytes": 93336,
+        "text_lines": 1941,
+        "lines_by_kind": {
+          ".json": 931,
+          ".md": 457,
+          ".rs": 534,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50724,
+        "text_lines": 875,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 377,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 29,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 31,
+          "of": 31
+        }
+      },
+      "defects": [
+        "What is kept (best, saved run) reaches the rules only at tick 1, so an input at tick 0 on the title meets a menu without Continue (README says so).",
+        "After Title from the pause, the report still carries the abandoned run's score, coins, wave and gate_health while on the title screen.",
+        "Spanish end screens read 'Enter: titulo', using the English key name 'Enter' (French uses 'Entree').",
+        "On the title the Start button is always drawn blue (primary style), so it can look chosen when focus is on another entry; the focused entry is shown only by an outline."
+      ],
+      "judge": {
+        "tokens": 98596,
+        "tool_uses": 52,
+        "duration_s": 798.1,
+        "by_kind": {
+          "input": 94,
+          "cache_write": 93251,
+          "cache_read": 3046286,
+          "output": 30144,
+          "requests": 47,
+          "context_at_end": 98596
+        },
+        "weighted": 572006,
+        "cost_usd": 1.9585211999999999,
+        "turns": 53,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 78,
+          "refused": 2,
+          "args_bytes": 33504,
+          "answer_bytes": 246075,
+          "by_tool": {
+            "(run)": 78
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "large-batch-4",
+      "job": "large",
+      "arm": "batch",
+      "n": 4,
+      "from": null,
+      "engine_build": "ff4b129814",
+      "builder": {
+        "tokens": 112293,
+        "tool_uses": 56,
+        "duration_s": 1026.6,
+        "by_kind": {
+          "input": 92,
+          "cache_write": 106948,
+          "cache_read": 3560354,
+          "output": 61704,
+          "requests": 46,
+          "context_at_end": 112293
+        },
+        "weighted": 798332,
+        "cost_usd": 1.4010513999999998,
+        "turns": 57,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 36,
+        "refused": 5,
+        "args_bytes": 5454,
+        "answer_bytes": 22138,
+        "by_tool": {
+          "(run)": 29,
+          "(check)": 6,
+          "(find)": 1
+        }
+      },
+      "left": {
+        "files": 29,
+        "bytes": 82978,
+        "text_lines": 1603,
+        "lines_by_kind": {
+          ".json": 560,
+          ".md": 466,
+          ".rs": 545,
+          ".toml": 19,
+          ".txt": 13
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50724,
+        "text_lines": 875,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 377,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 28,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 30,
+          "of": 31
+        }
+      },
+      "defects": [
+        "Enter on Resume in the pause menu does nothing; the game can only be resumed with Escape.",
+        "Spanish end screens say 'Enter: título' (the English key name, not translated as on the French 'Entrée : titre').",
+        "The lost screen's state still lists the enemies that were on the field when the gate fell."
+      ],
+      "judge": {
+        "tokens": 106228,
+        "tool_uses": 49,
+        "duration_s": 944.8,
+        "by_kind": {
+          "input": 94,
+          "cache_write": 100883,
+          "cache_read": 3081507,
+          "output": 30147,
+          "requests": 47,
+          "context_at_end": 106228
+        },
+        "weighted": 585083,
+        "cost_usd": 2.0266813999999997,
+        "turns": 50,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 68,
+          "refused": 1,
+          "args_bytes": 57214,
+          "answer_bytes": 92593,
+          "by_tool": {
+            "(run)": 68
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "l22",
+          "evidence": "Escape pauses and nothing moves (walker x 19.775 from tick 11 to 60); Title works; but Enter on Resume (focus 0) does nothing: screen stays paused 40+ ticks after (tried twice). Only Escape again resumes."
+        }
+      ]
+    },
+    {
+      "run": "large-batch-5",
+      "job": "large",
+      "arm": "batch",
+      "n": 5,
+      "from": null,
+      "engine_build": "ff4b129814",
+      "builder": {
+        "tokens": 112798,
+        "tool_uses": 54,
+        "duration_s": 2034.7,
+        "by_kind": {
+          "input": 88,
+          "cache_write": 107453,
+          "cache_read": 3218663,
+          "output": 59793,
+          "requests": 44,
+          "context_at_end": 112798
+        },
+        "weighted": 755236,
+        "cost_usd": 1.3497843000000003,
+        "turns": 55,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 31,
+        "refused": 5,
+        "args_bytes": 10470,
+        "answer_bytes": 34741,
+        "by_tool": {
+          "(run)": 21,
+          "(check)": 6,
+          "(find)": 4
+        }
+      },
+      "left": {
+        "files": 29,
+        "bytes": 93940,
+        "text_lines": 2043,
+        "lines_by_kind": {
+          ".json": 1004,
+          ".md": 427,
+          ".rs": 593,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50724,
+        "text_lines": 875,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 377,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 29,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 31,
+          "of": 31
+        }
+      },
+      "defects": [
+        "Start (title) and Next wave (shop) are always drawn in the bright primary style, so with focus elsewhere two entries look highlighted; the focused entry is marked only by an outline.",
+        "README says only that a windowed player's kept data is in 'a folder of their own, per user' and does not name the path.",
+        "Before Start the report gives wave 0 and gate_health 0 (README notes this)."
+      ],
+      "judge": {
+        "tokens": 116494,
+        "tool_uses": 56,
+        "duration_s": 1015.3,
+        "by_kind": {
+          "input": 98,
+          "cache_write": 111149,
+          "cache_read": 3470688,
+          "output": 42572,
+          "requests": 49,
+          "context_at_end": 116494
+        },
+        "weighted": 698963,
+        "cost_usd": 2.4351616000000003,
+        "turns": 57,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 77,
+          "refused": 4,
+          "args_bytes": 76436,
+          "answer_bytes": 152890,
+          "by_tool": {
+            "(run)": 77
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "large-nodocs-1",
+      "job": "large",
+      "arm": "nodocs",
+      "n": 1,
+      "from": null,
+      "engine_build": "ff4b129814",
+      "builder": {
+        "tokens": 93535,
+        "tool_uses": 50,
+        "duration_s": 653.9,
+        "by_kind": {
+          "input": 78,
+          "cache_write": 88190,
+          "cache_read": 2597332,
+          "output": 48906,
+          "requests": 39,
+          "context_at_end": 93535
+        },
+        "weighted": 614579,
+        "cost_usd": 1.1017091999999997,
+        "turns": 51,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 28,
+        "refused": 0,
+        "args_bytes": 5613,
+        "answer_bytes": 17732,
+        "by_tool": {
+          "(run)": 25,
+          "(find)": 2,
+          "(check)": 1
+        }
+      },
+      "left": {
+        "files": 29,
+        "bytes": 77125,
+        "text_lines": 1594,
+        "lines_by_kind": {
+          ".json": 491,
+          ".md": 420,
+          ".rs": 664,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50724,
+        "text_lines": 875,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 377,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 29,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 31,
+          "of": 31
+        }
+      },
+      "defects": [
+        "The shop reopens with the focus left where it was last (on Next wave) instead of the first entry; the first shop opens at Quick hands.",
+        "Buying Heavy bolts swaps its button and throws the focus back to the top entry (Quick hands).",
+        "Spanish end screens read 'Enter: titulo', keeping the English key name 'Enter'."
+      ],
+      "judge": {
+        "tokens": 145563,
+        "tool_uses": 81,
+        "duration_s": 1567.9,
+        "by_kind": {
+          "input": 138,
+          "cache_write": 140218,
+          "cache_read": 6239796,
+          "output": 51005,
+          "requests": 69,
+          "context_at_end": 145563
+        },
+        "weighted": 1054415,
+        "cost_usd": 3.3903551999999997,
+        "turns": 82,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 112,
+          "refused": 5,
+          "args_bytes": 134280,
+          "answer_bytes": 2036360,
+          "by_tool": {
+            "(run)": 112
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "large-nodocs-2",
+      "job": "large",
+      "arm": "nodocs",
+      "n": 2,
+      "from": null,
+      "engine_build": "ff4b129814",
+      "builder": {
+        "tokens": 77453,
+        "tool_uses": 36,
+        "duration_s": 485.1,
+        "by_kind": {
+          "input": 66,
+          "cache_write": 72108,
+          "cache_read": 1763638,
+          "output": 40255,
+          "requests": 33,
+          "context_at_end": 77453
+        },
+        "weighted": 467840,
+        "cost_usd": 0.8674778000000002,
+        "turns": 37,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 26,
+        "refused": 0,
+        "args_bytes": 3668,
+        "answer_bytes": 14424,
+        "by_tool": {
+          "(run)": 26
+        }
+      },
+      "left": {
+        "files": 28,
+        "bytes": 74913,
+        "text_lines": 1726,
+        "lines_by_kind": {
+          ".json": 717,
+          ".md": 428,
+          ".rs": 550,
+          ".toml": 19,
+          ".txt": 12
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50724,
+        "text_lines": 875,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 377,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 29,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 31,
+          "of": 31
+        }
+      },
+      "defects": [
+        "At tick 0 the state is not ready: the title shows the unresolved text 'Best: {work.best}' and no Continue even when a save exists, so Down at tick 0 lands on Settings instead of Continue.",
+        "Positions are rounded to 4 decimals every tick, so movement drifts: a brute goes about 1.002 units/s (x 18.4469 where 18.45 is expected), and bolts a little under 14/s.",
+        "Bolts still in flight when a wave ends stay frozen through the shop and carry on into the next wave in an unbroken run.",
+        "Volume changes nothing that can be heard: no sounds are attached, as the README admits."
+      ],
+      "judge": {
+        "tokens": 106089,
+        "tool_uses": 53,
+        "duration_s": 1258.8,
+        "by_kind": {
+          "input": 94,
+          "cache_write": 100744,
+          "cache_read": 3150302,
+          "output": 35444,
+          "requests": 47,
+          "context_at_end": 106089
+        },
+        "weighted": 618274,
+        "cost_usd": 2.1452683999999995,
+        "turns": 54,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 105,
+          "refused": 2,
+          "args_bytes": 87468,
+          "answer_bytes": 793404,
+          "by_tool": {
+            "(run)": 105
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "large-nodocs-3",
+      "job": "large",
+      "arm": "nodocs",
+      "n": 3,
+      "from": null,
+      "engine_build": "ff4b129814",
+      "builder": {
+        "tokens": 86193,
+        "tool_uses": 39,
+        "duration_s": 683.3,
+        "by_kind": {
+          "input": 66,
+          "cache_write": 80848,
+          "cache_read": 1980816,
+          "output": 45523,
+          "requests": 33,
+          "context_at_end": 86193
+        },
+        "weighted": 526823,
+        "cost_usd": 0.9768355999999999,
+        "turns": 40,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 45,
+        "refused": 1,
+        "args_bytes": 8102,
+        "answer_bytes": 16544,
+        "by_tool": {
+          "(run)": 44,
+          "(find)": 1
+        }
+      },
+      "left": {
+        "files": 28,
+        "bytes": 71347,
+        "text_lines": 1472,
+        "lines_by_kind": {
+          ".json": 500,
+          ".md": 442,
+          ".rs": 511,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50724,
+        "text_lines": 875,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 377,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 28,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 30,
+          "of": 31
+        }
+      },
+      "defects": [
+        "The pause menu's Resume button does nothing (its action 'resume' never reaches the rules); only Escape leaves the pause.",
+        "A run of 0 ticks shows best 0 and saved false whatever is kept (kept values arrive at tick 1); README admits it.",
+        "On the settings screen, 'texts' also lists the title's strings under the overlay (title name, Best, Start, Settings, Quit)."
+      ],
+      "judge": {
+        "tokens": 118629,
+        "tool_uses": 65,
+        "duration_s": 1031.5,
+        "by_kind": {
+          "input": 120,
+          "cache_write": 113284,
+          "cache_read": 4484569,
+          "output": 40499,
+          "requests": 60,
+          "context_at_end": 118629
+        },
+        "weighted": 792677,
+        "cost_usd": 2.6136457999999996,
+        "turns": 66,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 83,
+          "refused": 4,
+          "args_bytes": 80109,
+          "answer_bytes": 557452,
+          "by_tool": {
+            "(run)": 83
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "l22",
+          "evidence": "Escape pauses (enemy x frozen at 19.625 for 40 ticks) and Title returns to the title, but Enter on Resume (menu_index 0) does nothing: screen stayed paused through ticks 101-140 in three runs; only Escape resumed."
+        }
+      ]
+    },
+    {
+      "run": "large-nodocs-4",
+      "job": "large",
+      "arm": "nodocs",
+      "n": 4,
+      "from": null,
+      "engine_build": "ff4b129814",
+      "builder": {
+        "tokens": 87702,
+        "tool_uses": 37,
+        "duration_s": 674,
+        "by_kind": {
+          "input": 72,
+          "cache_write": 82357,
+          "cache_read": 2179146,
+          "output": 47420,
+          "requests": 36,
+          "context_at_end": 87702
+        },
+        "weighted": 558033,
+        "cost_usd": 1.0216865999999998,
+        "turns": 38,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 33,
+        "refused": 1,
+        "args_bytes": 6019,
+        "answer_bytes": 15548,
+        "by_tool": {
+          "(run)": 32,
+          "(find)": 1
+        }
+      },
+      "left": {
+        "files": 28,
+        "bytes": 77491,
+        "text_lines": 1753,
+        "lines_by_kind": {
+          ".json": 740,
+          ".md": 427,
+          ".rs": 567,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50724,
+        "text_lines": 875,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 377,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 28,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 30,
+          "of": 31
+        }
+      },
+      "defects": [
+        "Pause menu: Enter on Resume does nothing; only Escape leaves the pause.",
+        "The gate is drawn red (low-health colour) behind the title and settings screens, because gate_health is 0 before any run.",
+        "Each Continue restarts the lane source, so every continued wave uses the same lane sequence (4,10,6,2,6,6,2,4,8,2... for seed 1).",
+        "A saved run is read without bounds: a save with gate 99 is accepted and the shop shows 'gate 99 of 14'.",
+        "After buying a shop item, the marked entry sometimes jumps (to Quick hands after Heavy was bought).",
+        "Spanish end screens say 'Enter: titulo' (the key's English name)."
+      ],
+      "judge": {
+        "tokens": 102326,
+        "tool_uses": 45,
+        "duration_s": 647.8,
+        "by_kind": {
+          "input": 78,
+          "cache_write": 96981,
+          "cache_read": 2275700,
+          "output": 29661,
+          "requests": 39,
+          "context_at_end": 102326
+        },
+        "weighted": 497179,
+        "cost_usd": 1.82452,
+        "turns": 46,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 52,
+          "refused": 4,
+          "args_bytes": 47186,
+          "answer_bytes": 843526,
+          "by_tool": {
+            "(run)": 52
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "l22",
+          "evidence": "Escape pauses and nothing moves (enemy x 19.3 frozen ticks 31-90); Title (down, Enter) returns to title. But Enter on Resume (menu_index 0) does nothing: still paused 40 ticks later, in four scripts with and without shoot held; only Escape resumes."
+        }
+      ]
+    },
+    {
+      "run": "large-nodocs-5",
+      "job": "large",
+      "arm": "nodocs",
+      "n": 5,
+      "from": null,
+      "engine_build": "ff4b129814",
+      "builder": {
+        "tokens": 84603,
+        "tool_uses": 44,
+        "duration_s": 513.4,
+        "by_kind": {
+          "input": 56,
+          "cache_write": 79258,
+          "cache_read": 1610967,
+          "output": 46640,
+          "requests": 28,
+          "context_at_end": 84603
+        },
+        "weighted": 493425,
+        "cost_usd": 0.9446407000000002,
+        "turns": 45,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 18,
+        "refused": 0,
+        "args_bytes": 3390,
+        "answer_bytes": 13803,
+        "by_tool": {
+          "(run)": 18
+        }
+      },
+      "left": {
+        "files": 28,
+        "bytes": 72166,
+        "text_lines": 1468,
+        "lines_by_kind": {
+          ".json": 476,
+          ".md": 433,
+          ".rs": 540,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50724,
+        "text_lines": 875,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 377,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 28,
+          "of": 29
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 30,
+          "of": 31
+        }
+      },
+      "defects": [
+        "Pause menu Resume button does nothing (action name 'resume' not handled); only Escape resumes.",
+        "At tick 0 (--at 0) the screen is reported as 'hud' with empty texts and saved null, a value outside the brief's screen list; title appears from tick 1.",
+        "Numbers over 999 are shown with a thousands separator ('Best: 1,540', 'Score : 1 480') rather than the brief's plain form."
+      ],
+      "judge": {
+        "tokens": 106497,
+        "tool_uses": 66,
+        "duration_s": 1096.1,
+        "by_kind": {
+          "input": 118,
+          "cache_write": 101152,
+          "cache_read": 4006609,
+          "output": 34107,
+          "requests": 59,
+          "context_at_end": 106497
+        },
+        "weighted": 697754,
+        "cost_usd": 2.2931497999999992,
+        "turns": 67,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 73,
+          "refused": 2,
+          "args_bytes": 114666,
+          "answer_bytes": 271456,
+          "by_tool": {
+            "(run)": 73
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "l22",
+          "evidence": "Escape pauses and nothing moves (enemies/bolts frozen 301-340); Escape again continues; Title returns to title. But Enter on Resume (menu_index 0) leaves the screen paused indefinitely (tick 310 enter, still paused at 330): paused.json button action 'resume' while lib.rs only accepts 'resume_game' or 'back'."
+        }
+      ]
+    }
+  ]
+}

@@ -44,7 +44,7 @@ pub use math::{Aabb, Pose};
 pub use shape::Shape;
 pub use space::{
     read_joint_desc, write_joint_desc, BodyDesc, BodyKind, BodyView, ColliderDesc, ContactView, Event, EventKind, FastBody, Filter, Hit, JointView, Settings,
-    Space, StepReport,
+    Space, StepReport, MAX_SUBSTEPS,
 };
 
 use specula_core::Json;

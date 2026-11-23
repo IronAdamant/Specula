@@ -1,0 +1,1137 @@
+{
+  "leverage": 1,
+  "baseline": "plain",
+  "against_baseline": [
+    {
+      "job": "night",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 1096486,
+      "baseline_weighted": 148378,
+      "times": 7.39,
+      "requests_times": 8.3,
+      "passed": "32.2 / 34",
+      "baseline_passed": "33.8 / 34"
+    }
+  ],
+  "runs": [
+    {
+      "run": "night-engine-1",
+      "job": "night",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "fdf25620d7",
+      "builder": {
+        "tokens": 139970,
+        "tool_uses": 64,
+        "duration_s": 994.4,
+        "by_kind": {
+          "input": 126,
+          "cache_write": 134625,
+          "cache_read": 5584098,
+          "output": 82058,
+          "requests": 63,
+          "context_at_end": 139970
+        },
+        "weighted": 1137107,
+        "cost_usd": 1.9177418,
+        "turns": 65,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 58,
+        "refused": 1,
+        "args_bytes": 8217,
+        "answer_bytes": 21356,
+        "by_tool": {
+          "(run)": 58
+        }
+      },
+      "left": {
+        "files": 26,
+        "bytes": 82088,
+        "text_lines": 2512,
+        "lines_by_kind": {
+          ".json": 1270,
+          ".md": 450,
+          ".rs": 773,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50882,
+        "text_lines": 876,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 378,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 29,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 31,
+          "of": 34
+        }
+      },
+      "defects": [
+        "Headless input: a game word given again (at the next tick or later, with no different word between) acts only once. The brief says each word acts every time it is given; the README admits this.",
+        "Escape on the Paused screen does nothing (should resume).",
+        "During a replay the state's 'grid' key shows the current Layout grid, not the replayed night's grid. The frame and the play use the kept grid.",
+        "The night HUD panel shows a stray empty focused button below the speed line.",
+        "README notes that a word at the last tick (tick N with --ticks N) is refused, and that with --ticks 0 the kept things are not yet loaded.",
+        "On the summary, customers' 'wait' shows clock 360 minus arrival, a minute that was never played (cosmetic)."
+      ],
+      "judge": {
+        "tokens": 110703,
+        "tool_uses": 55,
+        "duration_s": 628.1,
+        "by_kind": {
+          "input": 96,
+          "cache_write": 105358,
+          "cache_read": 3392956,
+          "output": 32531,
+          "requests": 48,
+          "context_at_end": 110703
+        },
+        "weighted": 633744,
+        "cost_usd": 2.172459200000001,
+        "turns": 56,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 48,
+          "refused": 1,
+          "args_bytes": 11391,
+          "answer_bytes": 70467,
+          "by_tool": {
+            "(run)": 48
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "n07",
+          "evidence": "Inputs 2:right,3:right,4:right moved the cursor only to (1,0), and 6:up,7:up only to (1,1). Even 5:right,7:right,... with nothing between moved once in total. Only with 'none' between each word did it reach (7,4) and back to (0,0), stopping at the edges, with menu_index 0 and still in layout. So the cursor does not move one cell for each word."
+        },
+        {
+          "id": "n08",
+          "evidence": "2:next_piece,4:next_piece,6:next_piece stopped at table (texts 'Piece: Table'), and three prev_piece did the same. Only with 'none' between did it cycle stove,table,lamp,stove and back."
+        },
+        {
+          "id": "n24",
+          "evidence": "Escape pauses (texts Paused, Resume, Title; clock stays 8). Enter on Resume continues from clock 8, and Title gives up with the ledger unchanged. But Escape in Paused never resumes: 400:escape, also with 'none' before and after, and 500/501/502:escape, left the screen paused up to tick 700."
+        }
+      ]
+    },
+    {
+      "run": "night-engine-2",
+      "job": "night",
+      "arm": "engine",
+      "n": 2,
+      "from": null,
+      "engine_build": "fdf25620d7",
+      "builder": {
+        "tokens": 121060,
+        "tool_uses": 67,
+        "duration_s": 754.3,
+        "by_kind": {
+          "input": 112,
+          "cache_write": 115715,
+          "cache_read": 4405589,
+          "output": 60453,
+          "requests": 56,
+          "context_at_end": 121060
+        },
+        "weighted": 887580,
+        "cost_usd": 1.5081729000000001,
+        "turns": 68,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 30,
+        "refused": 0,
+        "args_bytes": 4029,
+        "answer_bytes": 16582,
+        "by_tool": {
+          "(run)": 30
+        }
+      },
+      "left": {
+        "files": 27,
+        "bytes": 113068,
+        "text_lines": 1581,
+        "lines_by_kind": {
+          ".json": 424,
+          ".md": 430,
+          ".rs": 708,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50882,
+        "text_lines": 876,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 378,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 30,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 32,
+          "of": 34
+        }
+      },
+      "defects": [
+        "The headless run does not honour 'each acts once, even when the same word was given at the tick before': a Layout/Night word (right, up, place, enter, ...) repeated in a script counts once unless a none is put between, even when 2 or more ticks apart (README admits it). Enter in Layout right after the title's Enter is also ignored without a none between.",
+        "A word at tick 0 does nothing (0:enter leaves the title); the state at tick 0 has screen null.",
+        "Quit in a headless run does not end the run: the printed tick is the full --ticks count (30), not the tick of Quit.",
+        "During a replay the state's grid key shows the editor grid, not the grid being replayed.",
+        "On the title and paused screens the first button is always drawn filled blue (primary style) while the focus ring is elsewhere, so two entries look marked."
+      ],
+      "judge": {
+        "tokens": 114453,
+        "tool_uses": 47,
+        "duration_s": 752.2,
+        "by_kind": {
+          "input": 78,
+          "cache_write": 109108,
+          "cache_read": 2632388,
+          "output": 29643,
+          "requests": 39,
+          "context_at_end": 114453
+        },
+        "weighted": 547917,
+        "cost_usd": 1.9925136000000003,
+        "turns": 48,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 55,
+          "refused": 1,
+          "args_bytes": 13096,
+          "answer_bytes": 68187,
+          "by_tool": {
+            "(run)": 55
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "n07",
+          "evidence": "With a none between words the cursor moves one cell a word, up raises y, stops at x 0/7 and y 0/4, menu_index stays null, screen stays layout. But the same word given twice in a script without a none between (2:right,3:right,4:right, or every 2 ticks 25:right..41:right, 11:up..19:up) moves only one cell: not one cell for each Up/Down/Left/Right."
+        },
+        {
+          "id": "n28",
+          "evidence": "Replay run with seed 7, Hard and another grid: night, replaying true, \"Replay\", seed-1 arrivals, Replay over 24/3/49, ledger and kept night unchanged; the frame draws the kept grid. But the state's grid key during the replay is the current editor grid (table(1,1), stove(2,1)), not the night's grid, while customers sit at (1,0)."
+        }
+      ]
+    },
+    {
+      "run": "night-engine-3",
+      "job": "night",
+      "arm": "engine",
+      "n": 3,
+      "from": null,
+      "engine_build": "fdf25620d7",
+      "builder": {
+        "tokens": 190703,
+        "tool_uses": 112,
+        "duration_s": 1391.8,
+        "by_kind": {
+          "input": 190,
+          "cache_write": 185358,
+          "cache_read": 10527444,
+          "output": 109994,
+          "requests": 95,
+          "context_at_end": 190703
+        },
+        "weighted": 1834602,
+        "cost_usd": 2.8944964000000004,
+        "turns": 113,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 63,
+        "refused": 0,
+        "args_bytes": 7544,
+        "answer_bytes": 14214,
+        "by_tool": {
+          "(run)": 63
+        }
+      },
+      "left": {
+        "files": 29,
+        "bytes": 116823,
+        "text_lines": 1723,
+        "lines_by_kind": {
+          ".json": 459,
+          ".md": 475,
+          ".rs": 770,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50882,
+        "text_lines": 876,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 378,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 29,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 31,
+          "of": 34
+        }
+      },
+      "defects": [
+        "Any input word given again without a different word in between is ignored (cursor words, next_piece, prev_piece, next_slot, place, erase, save/load, speed words), even many ticks apart; the brief requires each to act. The README admits this.",
+        "On the title and paused frames the first entry is always drawn filled blue (primary style) while the focus is shown only by a ring, so two entries look highlighted when the focus is not on the first.",
+        "menu_index is null on layout and night screens (the brief does not say what it should be there).",
+        "Cooking customers (tan on a brown table) are hard to tell from an empty table in the night frame."
+      ],
+      "judge": {
+        "tokens": 75878,
+        "tool_uses": 59,
+        "duration_s": 994.4,
+        "by_kind": {
+          "input": 106,
+          "cache_write": 70533,
+          "cache_read": 2311155,
+          "output": 30145,
+          "requests": 53,
+          "context_at_end": 75878
+        },
+        "weighted": 470113,
+        "cost_usd": 1.629819,
+        "turns": 60,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 113,
+          "refused": 2,
+          "args_bytes": 99153,
+          "answer_bytes": 5946301,
+          "by_tool": {
+            "(run)": 113
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "n07",
+          "evidence": "With 'none' between words the cursor moves one cell each way (up raises y) and stops at x 0/7, y 0/4, menu_index unchanged, screen stays layout. But 0:enter,2:right,3:right,4:right leaves cursor at (1,0), not (3,0): the same word given again without a different word between counts once (README admits it), against the brief's 'each acts once ... even when the same word was given at the tick before'."
+        },
+        {
+          "id": "n08",
+          "evidence": "With none between: next_piece table, lamp, stove; prev_piece lamp, table, stove; Piece: text follows. But 2:next_piece,12:next_piece (ten ticks apart, no other word between) gives table, not lamp; 2:next_piece,4:next_piece,6:next_piece stays table. Repeated words are swallowed, so the cycle does not happen with a plain script."
+        },
+        {
+          "id": "n12",
+          "evidence": "With none between: next_slot 1->2->3->1, save_slot copies grid and leaves it, load_slot on empty slot 2 nothing, load_slot slot 1 restores grid and stock (table 3->4). But 2:next_slot,3:next_slot gives slot 2, not 3: the repeated word counts once, so the cycle fails with a plain script."
+        }
+      ]
+    },
+    {
+      "run": "night-engine-4",
+      "job": "night",
+      "arm": "engine",
+      "n": 4,
+      "from": null,
+      "engine_build": "fdf25620d7",
+      "builder": {
+        "tokens": 95536,
+        "tool_uses": 34,
+        "duration_s": 523.2,
+        "by_kind": {
+          "input": 56,
+          "cache_write": 90191,
+          "cache_read": 1505594,
+          "output": 52009,
+          "requests": 28,
+          "context_at_end": 95536
+        },
+        "weighted": 523399,
+        "cost_usd": 1.0315253999999998,
+        "turns": 35,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 19,
+        "refused": 1,
+        "args_bytes": 2573,
+        "answer_bytes": 7317,
+        "by_tool": {
+          "(run)": 19
+        }
+      },
+      "left": {
+        "files": 25,
+        "bytes": 79458,
+        "text_lines": 1708,
+        "lines_by_kind": {
+          ".json": 402,
+          ".md": 457,
+          ".rs": 830,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50882,
+        "text_lines": 876,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 378,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 31,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 33,
+          "of": 34
+        }
+      },
+      "defects": [
+        "Quit in a headless run does not end the run there: down x3, enter logged 'quit' at tick 3 but the run printed tick 100 (the --ticks given) rather than stopping at the Quit.",
+        "During a replay the reported grid is the current layout, not the replayed night's grid, so the state contradicts the frame and the customers' tables.",
+        "The Layout cursor in the state keeps its last layout value during a night (e.g. cursor (1,0) shown in a night); harmless but not reset.",
+        "A stray empty button (the hidden ping button) is drawn at the bottom right of every frame (README admits it)."
+      ],
+      "judge": {
+        "tokens": 90986,
+        "tool_uses": 36,
+        "duration_s": 630.5,
+        "by_kind": {
+          "input": 56,
+          "cache_write": 85641,
+          "cache_read": 1344778,
+          "output": 25009,
+          "requests": 28,
+          "context_at_end": 90986
+        },
+        "weighted": 366630,
+        "cost_usd": 1.4544876,
+        "turns": 37,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 44,
+          "refused": 1,
+          "args_bytes": 8622,
+          "answer_bytes": 72572,
+          "by_tool": {
+            "(run)": 44
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "n28",
+          "evidence": "Replay after editing the grid (stove (0,0) removed), Hard and seed 7: screen night, replaying true, 'Replay' text, seed-1 arrivals, summary 'Replay over' 40/4/47 same as the night, ledger unchanged, and the frame draws the kept grid. But the state's grid key during the replay is the edited current grid (no stove at (0,0)), not the night's grid, so the state does not show the same grid as the night had."
+        }
+      ]
+    },
+    {
+      "run": "night-engine-5",
+      "job": "night",
+      "arm": "engine",
+      "n": 5,
+      "from": null,
+      "engine_build": "fdf25620d7",
+      "builder": {
+        "tokens": 139998,
+        "tool_uses": 69,
+        "duration_s": 945.3,
+        "by_kind": {
+          "input": 130,
+          "cache_write": 134653,
+          "cache_read": 5422084,
+          "output": 77817,
+          "requests": 65,
+          "context_at_end": 139998
+        },
+        "weighted": 1099740,
+        "cost_usd": 1.8592503999999999,
+        "turns": 70,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 48,
+        "refused": 6,
+        "args_bytes": 5655,
+        "answer_bytes": 13978,
+        "by_tool": {
+          "(run)": 48
+        }
+      },
+      "left": {
+        "files": 24,
+        "bytes": 86074,
+        "text_lines": 2139,
+        "lines_by_kind": {
+          ".json": 827,
+          ".md": 438,
+          ".rs": 855,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50882,
+        "text_lines": 876,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 378,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 32,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 34,
+          "of": 34
+        }
+      },
+      "defects": [
+        "Every frame shows a column of 8 small unlabelled buttons at the bottom right: the game's hidden counter buttons (its way of making repeated words count) are drawn on screen.",
+        "A headless run with --ticks 0 and a kept folder prints defaults (ledger [], replay_ready false, no Replay on the title), not the kept things; kept values only arrive at the first tick (the README admits this).",
+        "The kept folder also holds engine bookkeeping (engine.instances, projects.json) and the c1..c7 press counters in settings.json.",
+        "During a replay the state's grid and stock show the replayed night's grid, not the layout grid; the README says so."
+      ],
+      "judge": {
+        "tokens": 117527,
+        "tool_uses": 39,
+        "duration_s": 875.5,
+        "by_kind": {
+          "input": 50,
+          "cache_write": 112182,
+          "cache_read": 1797087,
+          "output": 30870,
+          "requests": 25,
+          "context_at_end": 117527
+        },
+        "weighted": 474336,
+        "cost_usd": 1.8744733999999996,
+        "turns": 40,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 52,
+          "refused": 0,
+          "args_bytes": 9688,
+          "answer_bytes": 76118,
+          "by_tool": {
+            "(run)": 52
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "night-plain-1",
+      "job": "night",
+      "arm": "plain",
+      "n": 1,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 35269,
+        "tool_uses": 8,
+        "duration_s": 149.5,
+        "by_kind": {
+          "input": 16,
+          "cache_write": 29924,
+          "cache_read": 189347,
+          "output": 22190,
+          "requests": 8,
+          "context_at_end": 35269
+        },
+        "weighted": 167306,
+        "cost_usd": 0.3605627,
+        "turns": 9,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 2,
+        "bytes": 27395,
+        "text_lines": 681,
+        "lines_by_kind": {
+          ".md": 31,
+          ".py": 650
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 32,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 34,
+          "of": 34
+        }
+      },
+      "defects": [
+        "Customer squares cover the table's letter in night frames (table shown only by its brown border); no legend for the customer state colours.",
+        "Arrival generator is seeded once per game start, so a second night in the same headless run gets a different list from the first with the same seed (defensible reading of the brief).",
+        "Window mode untested by the builder (stated in README); not checked by the judge either."
+      ],
+      "judge": {
+        "tokens": 62123,
+        "tool_uses": 23,
+        "duration_s": 248.4,
+        "by_kind": {
+          "input": 34,
+          "cache_write": 56778,
+          "cache_read": 690914,
+          "output": 25505,
+          "requests": 17,
+          "context_at_end": 62123
+        },
+        "weighted": 267623,
+        "cost_usd": 1.1026428000000001,
+        "turns": 24,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "night-plain-2",
+      "job": "night",
+      "arm": "plain",
+      "n": 2,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 32374,
+        "tool_uses": 10,
+        "duration_s": 120.5,
+        "by_kind": {
+          "input": 16,
+          "cache_write": 27029,
+          "cache_read": 173157,
+          "output": 17941,
+          "requests": 8,
+          "context_at_end": 32374
+        },
+        "weighted": 140823,
+        "cost_usd": 0.3048737,
+        "turns": 11,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 2,
+        "bytes": 26744,
+        "text_lines": 721,
+        "lines_by_kind": {
+          ".md": 31,
+          ".py": 690
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 32,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 34,
+          "of": 34
+        }
+      },
+      "defects": [
+        "Eating-state colour was only seen in the legend; no captured frame happened to contain an eating customer (drawing code uses the same colour table).",
+        "README's own example headless command defaults the save file next to the game script if --save is left out, so a casual run writes into work/."
+      ],
+      "judge": {
+        "tokens": 66796,
+        "tool_uses": 31,
+        "duration_s": 623.9,
+        "by_kind": {
+          "input": 36,
+          "cache_write": 61451,
+          "cache_read": 734066,
+          "output": 26704,
+          "requests": 18,
+          "context_at_end": 66796
+        },
+        "weighted": 283776,
+        "cost_usd": 1.1726452,
+        "turns": 32,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "night-plain-3",
+      "job": "night",
+      "arm": "plain",
+      "n": 3,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 33276,
+        "tool_uses": 9,
+        "duration_s": 131.5,
+        "by_kind": {
+          "input": 14,
+          "cache_write": 27931,
+          "cache_read": 148730,
+          "output": 19645,
+          "requests": 7,
+          "context_at_end": 33276
+        },
+        "weighted": 148026,
+        "cost_usd": 0.32307499999999995,
+        "turns": 10,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 3,
+        "bytes": 24276,
+        "text_lines": 598,
+        "lines_by_kind": {
+          ".json": 1,
+          ".md": 43,
+          ".py": 554
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 32,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 34,
+          "of": 34
+        }
+      },
+      "defects": [
+        "Customer numbers on the night frame are drawn as id mod 10, so customers 1 and 11 look the same apart from their state colour.",
+        "On the paused screen the frame shows only the menu, not the night underneath it (allowed by the brief, but the night is hidden)."
+      ],
+      "judge": {
+        "tokens": 64644,
+        "tool_uses": 27,
+        "duration_s": 353.1,
+        "by_kind": {
+          "input": 38,
+          "cache_write": 59299,
+          "cache_read": 732343,
+          "output": 26220,
+          "requests": 19,
+          "context_at_end": 64644
+        },
+        "weighted": 278496,
+        "cost_usd": 1.1454126,
+        "turns": 28,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "night-plain-4",
+      "job": "night",
+      "arm": "plain",
+      "n": 4,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 34133,
+        "tool_uses": 9,
+        "duration_s": 133.5,
+        "by_kind": {
+          "input": 14,
+          "cache_write": 28788,
+          "cache_read": 151791,
+          "output": 20750,
+          "requests": 7,
+          "context_at_end": 34133
+        },
+        "weighted": 154928,
+        "cost_usd": 0.3378591,
+        "turns": 10,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 4,
+        "bytes": 35505,
+        "text_lines": 745,
+        "lines_by_kind": {
+          ".json": 1,
+          ".md": 48,
+          ".py": 696
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 32,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 34,
+          "of": 34
+        }
+      },
+      "defects": [
+        "Menus are drawn with a '> ' marker, but the bitmap font has no '>' glyph, so only the colour shows the chosen entry.",
+        "Opening Layout also resets the selected piece to Stove; the brief only asks for the cursor and slot to reset (the README states this choice)."
+      ],
+      "judge": {
+        "tokens": 66268,
+        "tool_uses": 36,
+        "duration_s": 390.2,
+        "by_kind": {
+          "input": 42,
+          "cache_write": 60923,
+          "cache_read": 884375,
+          "output": 23629,
+          "requests": 21,
+          "context_at_end": 66268
+        },
+        "weighted": 282778,
+        "cost_usd": 1.137007,
+        "turns": 37,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "night-plain-5",
+      "job": "night",
+      "arm": "plain",
+      "n": 5,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 30926,
+        "tool_uses": 9,
+        "duration_s": 112.6,
+        "by_kind": {
+          "input": 14,
+          "cache_write": 25581,
+          "cache_read": 136314,
+          "output": 17037,
+          "requests": 7,
+          "context_at_end": 30926
+        },
+        "weighted": 130807,
+        "cost_usd": 0.28635340000000004,
+        "turns": 10,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 2,
+        "bytes": 26461,
+        "text_lines": 651,
+        "lines_by_kind": {
+          ".md": 43,
+          ".py": 608
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 31,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 33,
+          "of": 34
+        }
+      },
+      "defects": [
+        "Paused frame: night texts are moved to the top-left where the queue column is drawn, so queue boxes and numbers overlap the time and speed text.",
+        "Ledger frame does not mark its chosen menu entry (Back).",
+        "The > menu marker is not in the 5x7 font and draws as a blank; the chosen entry is shown only by colour and indent.",
+        "Ledger entries in the state hold difficulty capitalised (Normal) while the top-level difficulty key is lowercase."
+      ],
+      "judge": {
+        "tokens": 68265,
+        "tool_uses": 36,
+        "duration_s": 330.2,
+        "by_kind": {
+          "input": 50,
+          "cache_write": 62920,
+          "cache_read": 1113400,
+          "output": 29678,
+          "requests": 25,
+          "context_at_end": 68265
+        },
+        "weighted": 338430,
+        "cost_usd": 1.3197999999999999,
+        "turns": 37,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "n33",
+          "evidence": "title, settings and summary frames show their texts with the chosen entry in yellow; but the ledger frame does not mark its chosen entry Back (renderer only highlights title/settings/paused), and in paused.png the queued customer boxes are drawn over the 18:50 and Speed: Fast texts, which are partly hidden."
+        }
+      ]
+    }
+  ]
+}

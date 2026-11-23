@@ -205,6 +205,9 @@ pub struct TreeArgs {
     pub limit: usize,
     /// Lay out now for the current display, instead of reading the last frame's layout.
     pub fresh: bool,
+    /// Longest text a widget carries, in characters (`specula_ui::agent::MAX_ENTRY_TEXT`
+    /// unless asked; a page's long texts together are at most `MAX_PAGE_TEXT` bytes).
+    pub text_chars: usize,
 }
 
 pub struct CheckArgs {
@@ -481,7 +484,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<UiCall, String>> {
 }
 
 fn parse_tree(args: &Json) -> Result<TreeArgs, String> {
-    check_keys(args, "ui_tree", &[&["surface", "screen", "only", "offset", "limit", "fresh"]])?;
+    check_keys(args, "ui_tree", &[&["surface", "screen", "only", "offset", "limit", "fresh", "text_chars"]])?;
     let only = match string_arg(args, "only")? {
         None => Only::Named,
         Some(s) => Only::parse(s).ok_or("'only' must be named, interactive or all")?,
@@ -497,6 +500,7 @@ fn parse_tree(args: &Json) -> Result<TreeArgs, String> {
         offset: int_arg(args, "offset", 0, 100_000)?.unwrap_or(0) as usize,
         limit: int_arg(args, "limit", 1, MAX_TREE_PAGE as u64)?.unwrap_or(100) as usize,
         fresh: bool_arg(args, "fresh")?.unwrap_or(false),
+        text_chars: int_arg(args, "text_chars", 1, specula_ui::state::MAX_TEXT as u64)?.map_or(specula_ui::agent::MAX_ENTRY_TEXT, |n| n as usize),
     })
 }
 
@@ -634,6 +638,7 @@ pub fn definitions() -> Vec<ToolDef> {
                 ("offset", int(0, 100_000, "Skip this many widgets (a page's next_offset).")),
                 ("limit", int(1, MAX_TREE_PAGE as u64, "Widgets per page (default 100).")),
                 ("fresh", t("boolean", "Lay out now for the current display even if the last frame did.")),
+                ("text_chars", int(1, specula_ui::state::MAX_TEXT as u64, "Longest text a widget carries, in characters (default 160; a page's longer texts are 64 KiB at most together, the rest cut at 160).")),
             ]),
         },
         ToolDef {

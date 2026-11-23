@@ -17,7 +17,7 @@ use std::path::Path;
 
 use specula_core::Json;
 
-use crate::leverage::{absolute, costs_dir, fmt, num, posix, read_cost, read_run, repo, settings, text, truthy, R, TOKEN_KINDS};
+use crate::leverage::{absolute, costs_dir, fmt, num, posix, read_cost, read_run, repo, run_data, settings_in, text, truthy, R, TOKEN_KINDS};
 use crate::leverage_report::{dumps_len, home, scrub, step_kind, Place};
 
 /// One tool use of a request.
@@ -270,7 +270,8 @@ pub fn trace_of(run: &Path, judge: bool) -> R<Json> {
     }
     let cost = read_cost(&run)?.get(who).cloned().unwrap_or(Json::Null);
     let by_kind = cost.get("by_kind").cloned().unwrap_or(Json::Null);
-    let weights = read_run(&run)?.get("settings").and_then(|s| s.get("token_weights")).cloned().filter(|w| truthy(Some(w))).map_or_else(|| settings().map(|s| s.get("token_weights").cloned().unwrap_or(Json::Null)), Ok)?;
+    let r = read_run(&run)?;
+    let weights = r.get("settings").and_then(|s| s.get("token_weights")).cloned().filter(|w| truthy(Some(w))).map_or_else(|| settings_in(&run_data(&r)).map(|s| s.get("token_weights").cloned().unwrap_or(Json::Null)), Ok)?;
     let w: Vec<f64> = TOKEN_KINDS.iter().map(|k| num(&weights, k).unwrap_or(0.0)).collect();
     let n = reqs.len();
 

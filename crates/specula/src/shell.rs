@@ -59,9 +59,18 @@ const MAX_SCREENS: usize = 64;
 const MAX_TABLES: usize = 32;
 const MAX_FILE: u64 = 512 << 10;
 /// Most module values a screen is shown, the longest text among them, and most rows of a list.
+/// The text's bound is a label's own (`specula_ui::state::MAX_TEXT`, in bytes): a text is
+/// copied here only when it changes and compared in place on every tick, and what the modules
+/// keep is already at most `logic::handler::MAX_STATE_BYTES` a module, so the bound is what a
+/// label can show whole, not what this copy costs. (It was 256 characters, from when the shell
+/// was first built, with no reason given: a summary of a day of sixteen lines in one kept text
+/// was dropped, and the screen showed `{work.disp}`; 2026-11-23, five of ten builders' games.)
 const MAX_SHOWN: usize = 512;
-const MAX_SHOWN_TEXT: usize = 256;
+const MAX_SHOWN_TEXT: usize = specula_ui::state::MAX_TEXT;
 const MAX_ROWS: usize = 64;
+/// Most of the values the modules keep and the screens are not given that the shell lists
+/// with why ([`Unshown`]; `game_state`'s `not_shown`).
+const MAX_UNSHOWN: usize = 32;
 /// Most events waiting for the modules (a held button at a title screen must not grow without
 /// bound while the clock stands still).
 const MAX_EVENTS: usize = 256;
@@ -216,7 +225,7 @@ impl Shown {
             Value::Bool(b) => Some(Shown::Bool(*b)),
             Value::Int(n) => Some(Shown::Int(*n)),
             Value::Num(n) if n.is_finite() => Some(Shown::Num(*n)),
-            Value::Str(s) if s.chars().count() <= MAX_SHOWN_TEXT => Some(Shown::Text(s.clone())),
+            Value::Str(s) if s.len() <= MAX_SHOWN_TEXT => Some(Shown::Text(s.clone())),
             _ => None,
         };
         let fields = |map: &BTreeMap<String, Value>| -> Vec<(String, Shown)> { map.iter().take(32).filter_map(|(k, v)| scalar(v).map(|s| (k.clone(), s))).collect() };
@@ -253,7 +262,7 @@ impl Shown {
             match v {
                 Value::Bool(_) | Value::Int(_) => true,
                 Value::Num(n) => n.is_finite(),
-                Value::Str(s) => s.chars().count() <= MAX_SHOWN_TEXT,
+                Value::Str(s) => s.len() <= MAX_SHOWN_TEXT,
                 _ => false,
             }
         }
@@ -346,6 +355,53 @@ impl Shown {
     }
 }
 
+/// Why a value a module keeps is not given to the screens: a screen that binds it shows its
+/// `{module.key}` as written, and a run says this, not that nothing keeps it (2026-11-23: a
+/// summary over the length was dropped with no word, and the run's warning sent the builder
+/// to look for a `cx.set_state` that was there).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Unshown {
+    /// A text longer than [`MAX_SHOWN_TEXT`] bytes: its length.
+    Long(usize),
+    /// A kind a screen cannot show, in words.
+    Kind(&'static str),
+    /// Past the first [`MAX_SHOWN`] values the modules keep.
+    Past,
+}
+
+impl Unshown {
+    /// Why `value` is not shown ([`Shown::of`] found nothing in it).
+    fn of(value: &Value) -> Unshown {
+        match value {
+            Value::Str(s) => Unshown::Long(s.len()),
+            Value::Null => Unshown::Kind("null"),
+            Value::Num(_) => Unshown::Kind("a number that is not finite"),
+            Value::Map(map) => match map.get("msg") {
+                Some(Value::Str(_)) => Unshown::Kind("a map whose \"msg\" is longer than a string-table key (128 bytes)"),
+                _ => Unshown::Kind("a map without a \"msg\" (a line of the string tables)"),
+            },
+            // (Shown always: a list is rows, a scalar is itself.)
+            Value::Bool(_) | Value::Int(_) | Value::List(_) => Unshown::Kind("a value"),
+        }
+    }
+
+    /// What is wrong and what to do, in words.
+    fn words(&self) -> String {
+        match self {
+            Unshown::Long(bytes) => format!(
+                "a text of {bytes} bytes, longer than the {MAX_SHOWN_TEXT} a screen is given: keep it shorter, or keep it in parts (several keys, or a list of maps a screen shows as rows)"
+            ),
+            Unshown::Kind(kind) => format!("{kind}, which a screen cannot show: keep a text, a number, true or false, a map with \"msg\" and \"args\", or a list of maps (rows)"),
+            Unshown::Past => format!("past the first {MAX_SHOWN} values the modules keep, which are all the screens are given: keep fewer keys (what belongs together under one, as a list or a map)"),
+        }
+    }
+}
+
+/// Whether `have` is `module.key`, made of the two without a copy.
+fn is_key(have: &str, module: &str, key: &str) -> bool {
+    have.len() == module.len() + 1 + key.len() && have.starts_with(module) && have.as_bytes()[module.len()] == b'.' && have.ends_with(key)
+}
+
 /// The interface: the toolkit's instance for the window, a second one for captures (so a
 /// capture never touches what the player sees), and the state both are bound to.
 struct Face {
@@ -394,11 +450,24 @@ pub struct Shell {
     strings: Vec<(String, Arc<Strings>)>,
     /// What the modules keep, as last seen: `<module>.<key>`.
     shown: Vec<(String, Shown)>,
+    /// What the modules keep that the screens are not given, and why: the first
+    /// [`MAX_UNSHOWN`], and whether there were more.
+    unshown: Vec<(String, Unshown)>,
+    unshown_more: bool,
     events_out: Vec<(String, Value)>,
+    /// What each of the game file's `keep` names last had in its module, in their order: a
+    /// value is written to the player's file when it differs from this, and not looked at
+    /// otherwise (nothing is copied a tick).
+    kept_seen: Vec<Option<Value>>,
     events_dropped: u64,
     clock_wish: Option<bool>,
     requests: Vec<GameRequest>,
     quit: bool,
+    /// A headless run by a script (`specula run`): the script stands in for the player, so its
+    /// press of Quit is the player's, and the rules' `quit` ends the run ([`Game::played_by_script`]).
+    script_player: bool,
+    /// The rules asked to quit where nothing ends by it (a window, a served engine): said once.
+    rules_quit_said: bool,
     refused: u32,
     refused_told: u32,
     title_sent: bool,
@@ -421,6 +490,17 @@ fn value_of(shown: &[(String, Shown)], settings: &Settings, runs: u64, phase: Ph
         _ => {}
     }
     shown.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.val())
+}
+
+/// Whether a key's value says "yes", as `show` and `quit` read it: true, a number that is not 0,
+/// text that is not empty.
+fn truthy(value: Option<Val>) -> bool {
+    match value {
+        Some(Val::Bool(b)) => b,
+        Some(Val::Num(n)) => n != 0.0,
+        Some(Val::Text(t)) => !t.is_empty(),
+        None => false,
+    }
 }
 
 fn note(problems: &mut Vec<String>, what: String) {
@@ -474,11 +554,16 @@ impl Shell {
             tables: Vec::new(),
             strings: Vec::new(),
             shown: Vec::new(),
+            unshown: Vec::new(),
+            unshown_more: false,
             events_out: Vec::new(),
+            kept_seen: Vec::new(),
             events_dropped: 0,
             clock_wish: None,
             requests: Vec::new(),
             quit: false,
+            script_player: false,
+            rules_quit_said: false,
             refused: 0,
             refused_told: 0,
             title_sent: false,
@@ -772,7 +857,18 @@ impl Shell {
     /// to the game (the event `ui`) carries with it, so one module can tell two buttons that
     /// say the same word apart. `Err`: a code to branch on, and why.
     fn press_from(&mut self, word: &str, from: Option<(&str, &str)>, player: bool) -> Result<(), (&'static str, String)> {
-        let action = Action::parse(word).map_err(|why| ("bad_action", why))?;
+        let mut action = Action::parse(word).map_err(|why| ("bad_action", why))?;
+        // On a screen the rules put up, the words that move the run and the screens are the
+        // rules': `start`, `pause`, `resume`, `title`, `back`, `close` reach them as the event
+        // `ui`, as any word of the game's own does, and the engine does nothing. A pause
+        // screen of the rules' own with a button that says `resume` was answered by the
+        // engine, which had paused nothing, and the rules never heard it (five of fifteen
+        // games of 2026-11-23). What serves any menu stays the engine's there too: settings
+        // (`set:`, `step:`, `cycle:`), `open:SCREEN`, `save:`, `load:`, `quit`.
+        let rules_own = from.is_some_and(|(_, screen)| self.game.show.iter().any(|(shown, _)| shown == screen));
+        if rules_own && matches!(action, Action::Start | Action::Pause | Action::Resume | Action::Title | Action::Back | Action::Close) {
+            action = Action::Game(word.to_owned());
+        }
         let screens: Vec<String> = self.face.as_ref().map(|f| f.screens.clone()).unwrap_or_default();
         let has = |name: &str| screens.iter().any(|s| s == name);
         match self.run.act(&action, &mut self.settings, player, &has) {
@@ -801,19 +897,46 @@ impl Shell {
     /// in place: an entry that has not changed costs a comparison, and nothing is marked for
     /// the screens to be filled again.
     fn see(&mut self, modules: &ModuleStates) {
-        let mut n = 0;
-        'all: for (module, store) in modules.each() {
+        self.see_each(modules.each());
+    }
+
+    /// [`Shell::see`], from each module's name and what it keeps. A value the screens are not
+    /// given is listed with why ([`Unshown`]), kept in place as what is shown is.
+    fn see_each<'m>(&mut self, each: impl Iterator<Item = (&'m str, &'m BTreeMap<String, Value>)>) {
+        let (mut n, mut m) = (0, 0);
+        let mut more = false;
+        'all: for (module, store) in each {
             for (key, value) in store {
-                if n >= MAX_SHOWN {
-                    break 'all;
-                }
-                let same_key = self.shown.get(n).is_some_and(|(k, _)| k.len() == module.len() + 1 + key.len() && k.starts_with(module) && k.as_bytes()[module.len()] == b'.' && k.ends_with(key.as_str()));
-                // As it was: no copy is made of it.
-                if same_key && self.shown[n].1.is(value) {
-                    n += 1;
+                let past = n >= MAX_SHOWN;
+                let shown = if past {
+                    None
+                } else {
+                    let same_key = self.shown.get(n).is_some_and(|(k, _)| is_key(k, module, key));
+                    // As it was: no copy is made of it.
+                    if same_key && self.shown[n].1.is(value) {
+                        n += 1;
+                        continue;
+                    }
+                    Shown::of(value)
+                };
+                let Some(shown) = shown else {
+                    if m == MAX_UNSHOWN {
+                        more = true;
+                        if past {
+                            break 'all;
+                        }
+                        continue;
+                    }
+                    let why = if past { Unshown::Past } else { Unshown::of(value) };
+                    match self.unshown.get_mut(m) {
+                        Some((k, w)) if is_key(k, module, key) => *w = why,
+                        Some(entry) => *entry = (format!("{module}.{key}"), why),
+                        None => self.unshown.push((format!("{module}.{key}"), why)),
+                    }
+                    m += 1;
                     continue;
-                }
-                let Some(shown) = Shown::of(value) else { continue };
+                };
+                let same_key = self.shown.get(n).is_some_and(|(k, _)| is_key(k, module, key));
                 if same_key {
                     if self.shown[n].1 != shown {
                         self.shown[n].1 = shown;
@@ -835,6 +958,8 @@ impl Shell {
             self.shown.truncate(n);
             self.stale = true;
         }
+        self.unshown.truncate(m);
+        self.unshown_more = more;
     }
 
     /// The value a key names, for a condition: a module's (`gate.hp`), a setting's
@@ -865,7 +990,7 @@ impl Shell {
     fn fill(&mut self) {
         let score = self.score();
         let language = self.language_setting();
-        let screen = self.run.visible().last().map(|s| (*s).to_owned()).unwrap_or_default();
+        let screen = self.up().last().cloned().unwrap_or_default();
         let s = &mut self.state;
         s.reset();
         // The player's language's lines; where it has no table of its own, the first's, as
@@ -921,6 +1046,31 @@ impl Shell {
                 None => {}
             }
         }
+        // What the game keeps for the player, as the player's file has it: `kept.NAME`. A
+        // screen shows it from the first frame, before any rule has ticked and heard it (a
+        // title's "Best: 1,540", a Continue that is there only with a run to go on with).
+        for (name, _) in &self.game.keep {
+            let key = format!("kept.{name}");
+            match self.kept.kept(name) {
+                Some(Json::Bool(b)) => {
+                    s.set_bool(&key, *b);
+                }
+                Some(Json::Num(n)) if specula_core::dmath::fract_f64(*n) == 0.0 && n.abs() < 9.0e15 => {
+                    s.set_int(&key, *n as i64);
+                }
+                Some(Json::Num(n)) => {
+                    s.set_num(&key, *n);
+                }
+                Some(Json::Str(t)) => {
+                    s.set_str(&key, t);
+                }
+                // (A list or a map is there: true, for a condition.)
+                Some(Json::Arr(_) | Json::Obj(_)) => {
+                    s.set_bool(&key, true);
+                }
+                Some(Json::Null) | None => {}
+            }
+        }
         for (key, shown) in &self.shown {
             shown.put(key, s);
         }
@@ -928,8 +1078,8 @@ impl Shell {
 
     /// Shows the screens the run says are up, and hides the rest.
     fn sync_screens(&mut self) {
+        let up = self.up();
         let Some(face) = &mut self.face else { return };
-        let up: Vec<String> = self.run.visible().into_iter().map(str::to_owned).collect();
         for name in &face.screens {
             let want = up.iter().any(|u| u == name);
             if face.ui.is_visible(name) != want {
@@ -970,20 +1120,25 @@ impl Shell {
                     backed |= matches!(&**action, "back" | "resume" | "close");
                     let from = self.face.as_ref().map(|f| (f.ui.widget_id(*widget).unwrap_or("").to_owned(), f.ui.screen_name(widget.screen).to_owned()));
                     let from = from.as_ref().map(|(widget, screen)| (widget.as_str(), screen.as_str()));
+                    // (A script that stands in for the player presses Quit as the player would.)
+                    let player = self.as_player(action, player);
                     if let Err((_, why)) = self.press_from(action, from, player) {
                         self.say(&why, ToastKind::Warn);
                     }
                 }
-                // A menu's "back" with no action of its own.
+                // A menu's "back" with no action of its own. Over a screen the rules put up it
+                // is the rules' to answer: the screen is theirs to take down.
                 UiEvent::Back { .. } if !backed => {
                     backed = true;
-                    let _ = self.press("back", player);
+                    if !self.back_to_rules() {
+                        let _ = self.press("back", player);
+                    }
                 }
                 UiEvent::Back { .. } | UiEvent::Refused { .. } => {}
             }
         }
         // Back while only the game's own screen is up (no menu took it): the pause menu.
-        if !backed && !events.consumed.navigation && self.input.pressed(PAUSE) && self.run.phase() == Phase::Running && self.run.stack().is_empty() {
+        if !backed && !events.consumed.navigation && self.input.pressed(PAUSE) && self.run.phase() == Phase::Running && self.run.stack().is_empty() && !self.back_to_rules() {
             let _ = self.press("pause", player);
         }
     }
@@ -1065,7 +1220,7 @@ impl Shell {
             })),
             ("runs", Json::from(self.run.runs())),
             ("tick_hz", Json::from(self.game.tick_hz)),
-            ("screens", Json::arr(self.run.visible().into_iter().filter(|s| self.has_screen(s)).map(Json::from))),
+            ("screens", Json::arr(self.up().iter().filter(|s| self.has_screen(s)).map(|s| Json::from(s.as_str())))),
             ("locale", Json::from(self.settings.locale())),
         ]);
         if let Some(tick) = self.run.ended_at() {
@@ -1095,6 +1250,14 @@ impl Shell {
         if !self.problems.is_empty() {
             j.set("problems", Json::arr(self.problems.iter().map(|p| Json::from(p.as_str()))));
         }
+        // What the modules keep that no screen is given, and why: a screen that binds one shows
+        // its key as written, and a run says why from this.
+        if !self.unshown.is_empty() {
+            j.set("not_shown", Json::arr(self.unshown.iter().map(|(key, why)| Json::obj([("key", Json::from(key.as_str())), ("why", Json::from(why.words()))]))));
+            if self.unshown_more {
+                j.set("not_shown_more", Json::Bool(true));
+            }
+        }
         j
     }
 }
@@ -1117,12 +1280,16 @@ impl Game for Shell {
     }
 
     fn start(&mut self, _ctx: &mut Ctx) {
+        // What the game kept for the player is told first: the rules have it before they hear
+        // that a run begins.
+        self.tell_kept();
         let effects = self.run.began(&self.settings);
         self.apply(effects, false);
     }
 
     fn after_modules(&mut self, ctx: &mut Ctx, modules: &ModuleStates) {
         self.see(modules);
+        self.keep_values(modules);
         // (The run is asked with what it reads lent beside it: nothing is copied a tick.)
         let (runs, phase) = (self.run.runs(), self.run.phase());
         let effects = {
@@ -1133,6 +1300,11 @@ impl Game for Shell {
         if !effects.is_empty() {
             self.apply(effects, false);
         }
+        self.rules_quit();
+    }
+
+    fn played_by_script(&mut self) {
+        self.script_player = true;
     }
 
     fn see_modules(&mut self, modules: &ModuleStates) {
@@ -1159,6 +1331,10 @@ impl Game for Shell {
 
     fn modules(&self) -> Vec<String> {
         self.game.modules.clone()
+    }
+
+    fn volume(&self) -> Option<f32> {
+        self.settings.fraction("volume").map(|v| v as f32)
     }
 
     fn told(&mut self, problem: &str) {
@@ -1275,6 +1451,18 @@ impl Game for Shell {
     fn use_settings(&mut self, text: Option<&str>, store: &SettingsStore) {
         let text_size = self.scale_of("text_size");
         self.store = store.clone();
+        // A file that is there and is no settings file (damaged, another format) holds nothing
+        // that can be read, and is not written over: what the game kept for the player in it
+        // may still be put right by hand.
+        let text = text.filter(|text| {
+            let is = Kept::is_file(text);
+            if !is {
+                let why = "the settings file is not a settings file (damaged, or another format): left as it is, defaults used, nothing saved over it";
+                self.store.problem = Some(why.to_owned());
+                note(&mut self.problems, format!("the saved settings: {why}"));
+            }
+            is
+        });
         if let Some(text) = text {
             for problem in self.settings.read_text(text) {
                 note(&mut self.problems, format!("the saved settings: {problem}"));
@@ -1345,6 +1533,16 @@ impl Game for Shell {
         if let Some(tick) = self.run.ended_at() {
             j.set("ended_at", Json::from(tick));
         }
+        // What the modules have not been told yet (a run that began, a setting, a button's
+        // word: told at the next tick). It is part of where the game stands: a save made
+        // between the telling and the tick lost it, and the game loaded was a game whose
+        // rules never heard that their run began (found by `specula find`, 2026-11-22: a
+        // script it found from a save of the start did not win in a run of its own). Each
+        // is its name and its data as the module host encodes a value, so that a number
+        // comes back as the kind of number it was.
+        if !self.events_out.is_empty() {
+            j.set("events", Json::arr(self.events_out.iter().map(|(name, data)| Json::arr([Json::from(name.as_str()), Json::from(specula_core::base64::encode(&data.encode()).as_str())]))));
+        }
         Some(Ok(j.to_string().into_bytes()))
     }
 
@@ -1363,20 +1561,183 @@ impl Game for Shell {
         };
         // (A save from before runs were kept has none: one run, if it was ever under way.)
         let runs = j.get("runs").and_then(Json::as_u64).unwrap_or(u64::from(phase != Phase::Title));
-        Ok(Box::new((phase, j.get("ended_at").and_then(Json::as_u64), runs)))
+        // (A save from before the waiting events were kept has none.)
+        let mut events: Vec<(String, Value)> = Vec::new();
+        for event in j.get("events").and_then(Json::as_array).unwrap_or(&[]).iter().take(MAX_EVENTS) {
+            let pair = event.as_array().filter(|p| p.len() == 2);
+            let (Some(name), Some(data)) = (pair.and_then(|p| p[0].as_str()), pair.and_then(|p| p[1].as_str())) else {
+                return Err("the game's part of the save has an event that is not a name and its data".to_owned());
+            };
+            let data = specula_core::base64::decode(data).ok().and_then(|bytes| Value::decode(&bytes).ok()).ok_or_else(|| format!("the game's part of the save has an event ('{name}') whose data cannot be read"))?;
+            events.push((name.to_owned(), data));
+        }
+        Ok(Box::new((phase, j.get("ended_at").and_then(Json::as_u64), runs, events)))
     }
 
-    fn apply_state(&mut self, ctx: &mut Ctx, state: Box<dyn std::any::Any>) {
-        if let Ok(saved) = state.downcast::<(Phase, Option<u64>, u64)>() {
+    fn apply_state(&mut self, _: &mut Ctx, state: Box<dyn std::any::Any>) {
+        self.put_back(state);
+    }
+}
+
+impl Shell {
+    /// Whether a press of `action` from a frame is the player's: the window's own input is
+    /// (`player`); under a script (`specula run`), which stands in for the player, its press of
+    /// Quit is too. Nothing else of the player's alone is widened, and an agent's `game_act`
+    /// never comes through here.
+    fn as_player(&self, action: &str, player: bool) -> bool {
+        player || (self.script_player && action == "quit")
+    }
+
+    /// The rules' own Quit (the game file's `quit`), after a tick: it ends a run by a script;
+    /// anywhere else it is said once and ends nothing (an agent can drive the rules, and agents
+    /// never close a person's window: there a button whose action is `quit` does).
+    fn rules_quit(&mut self) {
+        let Some(key) = &self.game.quit else { return };
+        if !truthy(self.value(key)) {
+            return;
+        }
+        if self.script_player {
+            self.quit = true;
+        } else if !self.rules_quit_said {
+            self.rules_quit_said = true;
+            note(&mut self.problems, format!("the rules asked to quit ({key}, the game file's \"quit\"): that ends a headless run (specula run) there; in a window the game ends by a button whose action is quit"));
+        }
+    }
+
+    /// Escape (or a pad's back) while a screen the rules put up is on top: told to the rules as
+    /// the event `ui` with the action `back` and the screen's name, and nothing else is done.
+    /// The game is not paused over the rules' own screen, and the screen is not closed: the
+    /// rules take it down by its key, or do nothing (a shop Escape does nothing in). Whether
+    /// such a screen was on top. (A second reader, 2026-11-23: four of five games paused in
+    /// their shop, against their brief, and the guide gave them no way out.)
+    fn back_to_rules(&mut self) -> bool {
+        if self.run.phase() != Phase::Running || !self.run.stack().is_empty() {
+            return false;
+        }
+        let Some(top) = self.up().pop().filter(|top| self.game.show.iter().any(|(screen, _)| screen == top)) else { return false };
+        if self.events_out.len() < MAX_EVENTS {
+            self.events_out.push(("ui".to_owned(), Value::map().with("action", "back").with("screen", top.as_str())));
+        } else {
+            self.events_dropped += 1;
+        }
+        true
+    }
+}
+
+impl Shell {
+    /// The screens that are up, the bottom first: the phase's own, then the game's own that
+    /// its rules put up (the game file's `show`, while a run is under way or paused), then
+    /// the ones opened over them (a pause menu, the settings).
+    fn up(&self) -> Vec<String> {
+        let own = self.run.visible();
+        let opened = self.run.stack().len();
+        let (below, above) = own.split_at(own.len() - opened);
+        let mut up: Vec<String> = below.iter().map(|s| (*s).to_owned()).collect();
+        if matches!(self.run.phase(), Phase::Running | Phase::Paused) {
+            let (runs, phase) = (self.run.runs(), self.run.phase());
+            // (Under a pause menu too: the pause is over what was up.)
+            let at = if phase == Phase::Paused { up.len().saturating_sub(1) } else { up.len() };
+            let mut shown: Vec<String> = Vec::new();
+            for (screen, key) in &self.game.show {
+                let on = truthy(value_of(&self.shown, &self.settings, runs, phase, key));
+                if on && !up.contains(screen) && !shown.contains(screen) {
+                    shown.push(screen.clone());
+                }
+            }
+            up.splice(at..at, shown);
+        }
+        up.extend(above.iter().map(|s| (*s).to_owned()));
+        up
+    }
+}
+
+impl Shell {
+    /// Tells the modules each value the game keeps for the player and the player's file has
+    /// (the game file's `keep`): an event `kept` from the engine, with `name` and `value`, at
+    /// the next tick. Once a name: a save that held the telling is not told twice.
+    fn tell_kept(&mut self) {
+        for (name, _) in &self.game.keep {
+            let Some(value) = self.kept.kept(name) else { continue };
+            // (A value larger than one the game may keep was not written by it: a file changed
+            // by hand. It is not told.)
+            if value.to_string().len() > MAX_KEPT_BYTES {
+                note(&mut self.problems, format!("\"keep\": '{name}' in the settings file is larger than a kept value ({MAX_KEPT_BYTES} bytes): not told to the rules"));
+                continue;
+            }
+            let told = Value::map().with("name", name.as_str()).with("value", Value::from_json(value));
+            // A telling a save brought back is of the save's day: the player's file is newer.
+            let waiting = self.events_out.iter().position(|(event, data)| event == "kept" && data.get("name").and_then(Value::as_str) == Some(name.as_str()));
+            match waiting {
+                Some(at) => self.events_out[at].1 = told,
+                None if self.events_out.len() < MAX_EVENTS => self.events_out.push(("kept".to_owned(), told)),
+                None => {}
+            }
+        }
+    }
+
+    /// Keeps for the player what the game file's `keep` names, as the modules have it after
+    /// this tick: written to the player's file (where one is kept) when a value changed.
+    fn keep_values(&mut self, modules: &ModuleStates) {
+        let Shell { game, kept_seen, kept, settings_dirty, problems, stale, .. } = self;
+        if kept_seen.len() != game.keep.len() {
+            kept_seen.resize(game.keep.len(), None);
+        }
+        for (i, (name, key)) in game.keep.iter().enumerate() {
+            // (A module that is not running keeps nothing new: what was kept stays.)
+            let Some(value) = modules.dotted(key) else { continue };
+            if kept_seen[i].as_ref() == Some(value) {
+                continue;
+            }
+            kept_seen[i] = Some(value.clone());
+            let json = value.to_json();
+            let size = json.to_string().len();
+            if size > MAX_KEPT_BYTES {
+                note(problems, format!("\"keep\": '{name}' ({key}) is {size} bytes as JSON and a kept value is at most {MAX_KEPT_BYTES}: it is not kept"));
+                continue;
+            }
+            // All of it together stays a file that is read again (2026-11-23: sixteen values
+            // at their most made a file its own reader refused).
+            let whole = kept.to_text().len() + size + name.len() + 16;
+            if whole > MAX_KEPT_TOTAL {
+                note(problems, format!("\"keep\": with '{name}' ({size} bytes) the player's file would be {whole} bytes, and what a game keeps is {MAX_KEPT_TOTAL} at most in all: it is not kept"));
+                continue;
+            }
+            if kept.keep(name, json) {
+                *settings_dirty = true;
+                // (A screen may show it: `kept.NAME`.)
+                *stale = true;
+            }
+        }
+    }
+}
+
+/// The largest value a game keeps for the player, as JSON text.
+const MAX_KEPT_BYTES: usize = 4096;
+/// The largest the player's file is let grow by what a game keeps: under what its reader
+/// takes ([`crate::user_settings::MAX_BYTES`]), with room for the settings.
+const MAX_KEPT_TOTAL: usize = 48 << 10;
+
+impl Shell {
+    /// Puts the run back as a save had it ([`Game::apply_state`]).
+    fn put_back(&mut self, state: Box<dyn std::any::Any>) {
+        if let Ok(saved) = state.downcast::<(Phase, Option<u64>, u64, Vec<(String, Value)>)>() {
+            let saved = *saved;
             self.run.restore(saved.0, saved.1, saved.2);
             // What was pressed before the load was pressed in another run: it is not told to
-            // the modules the save brought back.
-            self.events_out.clear();
+            // the modules the save brought back. What the saved game's modules had still to
+            // be told is.
+            self.events_out = saved.3;
+            // A quit asked before the load was asked in another run: the game brought back has
+            // asked for none (no save holds one; a run that quit is over).
+            self.quit = false;
+            // And what the game keeps for the player, which no save holds: the rules a save
+            // brought back have its own values, older than the player's.
+            self.kept_seen.clear();
+            self.tell_kept();
             // The clock is as the phase says: only a run under way ticks.
             self.clock_wish = Some(saved.0 != Phase::Running);
-            let _ = ctx;
             self.laid_out = None;
-        self.stale = true;
+            self.stale = true;
         }
     }
 }
@@ -1402,6 +1763,80 @@ mod tests {
         let mut out = Vec::new();
         shell.take_module_events(&mut out);
         out
+    }
+
+    /// What the game keeps for the player is told to the rules before a run begins, once a
+    /// name; and a screen the rules put up is over the game's own and under a pause.
+    #[test]
+    fn kept_values_are_told_and_the_rules_screens_are_up() {
+        let game = GAME.replace("\"outcome\"", "\"keep\": { \"best\": \"gate.best\", \"run\": \"gate.saved\" }, \"show\": { \"shop\": \"gate.shopping\" }, \"outcome\"");
+        let mut shell = Shell::build("gate", ShellFiles::builtin(&game)).expect("a shell");
+        let file = "{\"format\": \"specula.settings.v1\", \"values\": {\"volume\": 3, \"kept.best\": 40, \"kept.other\": 1}}";
+        shell.use_settings(Some(file), &SettingsStore { kind: "per_user", agents_save: false, problem: None });
+        shell.tell_kept();
+        shell.tell_kept();
+        let told = events(&mut shell);
+        assert_eq!(told, vec![("kept".to_owned(), Value::map().with("name", "best").with("value", 40i64))], "the one name the file has, once");
+        assert_eq!(shell.settings.get("volume"), Some(&Val::Num(3.0)), "a setting beside it is as it was");
+        // What the game kept stays in the player's file when a setting is written.
+        shell.press("step:volume:-1", true).unwrap();
+        let text = shell.take_settings().expect("the file");
+        assert!(text.contains("\"kept.best\": 40") && text.contains("\"volume\": 2"), "{text}");
+        // The rules' own screen: up while a run is under way and its key is true.
+        assert_eq!(shell.up(), ["title"]);
+        shell.shown.push(("gate.shopping".to_owned(), Shown::Bool(true)));
+        assert_eq!(shell.up(), ["title"], "not at the title");
+        shell.press("start", true).unwrap();
+        assert_eq!(shell.up(), ["hud", "shop"]);
+        // The words that move the run are the rules' on a screen the rules put up: a Resume on
+        // a pause screen of the game's own is told to them, and the engine pauses and resumes
+        // nothing. What serves any menu is still done by the engine there.
+        shell.press_from("resume", Some(("go", "shop")), true).unwrap();
+        shell.press_from("title", Some(("out", "shop")), true).unwrap();
+        let heard = events(&mut shell);
+        assert_eq!(heard.iter().filter(|(name, _)| name == "ui").map(|(name, data)| (name.as_str(), data.get("action").and_then(Value::as_str), data.get("screen").and_then(Value::as_str))).collect::<Vec<_>>(), [("ui", Some("resume"), Some("shop")), ("ui", Some("title"), Some("shop"))]);
+        assert_eq!((shell.up(), shell.run.phase()), (vec!["hud".to_owned(), "shop".to_owned()], Phase::Running), "the run is as it was");
+        shell.press_from("open:settings", Some(("s", "shop")), true).unwrap();
+        assert_eq!(shell.up(), ["hud", "shop", "settings"]);
+        shell.press("back", true).unwrap();
+        // On the engine's own pause screen `resume` is the engine's, as it was.
+        shell.press("pause", true).unwrap();
+        shell.press_from("resume", Some(("resume", "pause")), true).unwrap();
+        assert_eq!(shell.run.phase(), Phase::Running);
+        assert!(events(&mut shell).iter().all(|(_, data)| data.get("action").and_then(Value::as_str) != Some("resume")));
+        // What was kept is on a screen from the first frame, under `kept.NAME`.
+        shell.fill();
+        assert_eq!(shell.state.get("kept.best").and_then(|v| v.as_f64()), Some(40.0));
+        assert!(shell.state.get("kept.run").is_none(), "nothing kept under it yet");
+        // Escape over the rules' own screen is the rules' to answer: told, and nothing done.
+        assert!(shell.back_to_rules());
+        assert_eq!(events(&mut shell).last(), Some(&("ui".to_owned(), Value::map().with("action", "back").with("screen", "shop"))));
+        assert_eq!((shell.up(), shell.run.phase()), (vec!["hud".to_owned(), "shop".to_owned()], Phase::Running));
+        shell.press("pause", true).unwrap();
+        assert!(!shell.back_to_rules(), "under a pause it is the pause's");
+        shell.press("resume", true).unwrap();
+        // A telling that waits (a save's, of its own day) takes the player's file's value.
+        shell.events_out = vec![("kept".to_owned(), Value::map().with("name", "best").with("value", 5i64))];
+        shell.tell_kept();
+        assert_eq!(events(&mut shell), vec![("kept".to_owned(), Value::map().with("name", "best").with("value", 40i64))]);
+        // A file that is there and is no settings file is never written over (a second reader,
+        // 2026-11-23: the first change after such a start replaced it with defaults, and the
+        // file holds what the game kept for the player).
+        let mut damaged = Shell::build("gate", ShellFiles::builtin(&game)).expect("a shell");
+        damaged.use_settings(Some("{\"format\": \"specula.settings.v1\", \"values\": {\"kept.best\": 40"), &SettingsStore { kind: "folder", agents_save: true, problem: None });
+        assert!(damaged.store.problem.as_deref().is_some_and(|p| p.contains("not a settings file")) && !damaged.store.saving());
+        damaged.press("step:volume:-1", true).unwrap();
+        assert_eq!(damaged.take_settings(), None);
+        let unread = SettingsStore { kind: "folder", agents_save: true, problem: Some("the settings file is 70000 bytes".into()) };
+        assert!(!unread.saving());
+        shell.press("pause", true).unwrap();
+        assert_eq!(shell.up(), ["hud", "shop", "pause"]);
+        shell.press("open:settings", true).unwrap();
+        assert_eq!(shell.up(), ["hud", "shop", "pause", "settings"]);
+        shell.press("back", true).unwrap();
+        shell.press("resume", true).unwrap();
+        shell.shown[0].1 = Shown::Int(0);
+        assert_eq!(shell.up(), ["hud"], "taken down by the key");
     }
 
     /// A choice's value is words too: shown by the line `setting.NAME.VALUE` of the player's
@@ -1642,7 +2077,15 @@ mod tests {
     #[test]
     fn what_a_module_keeps_is_what_a_screen_is_given() {
         assert_eq!(Shown::of(&Value::Int(3)), Some(Shown::Int(3)));
-        assert_eq!(Shown::of(&Value::Str("x".repeat(MAX_SHOWN_TEXT + 1))), None, "a long text is not for a label");
+        // A screenful of text is shown whole, its lines with it (a day's summary in one kept
+        // text, 2026-11-23); past a label's own bound it is not, and why is said
+        // (`a_kept_value_no_screen_is_given_is_said_with_why`).
+        let summary: String = (1..=60).map(|i| format!("Line {i:02}: sold 12 apples for 36 coins, 3 spoiled\n")).collect();
+        assert!(summary.len() > 2000 && summary.len() <= MAX_SHOWN_TEXT);
+        assert_eq!(Shown::of(&Value::Str(summary.clone())), Some(Shown::Text(summary)));
+        assert_eq!(Shown::of(&Value::Str("x".repeat(MAX_SHOWN_TEXT))), Some(Shown::Text("x".repeat(MAX_SHOWN_TEXT))));
+        assert_eq!(Shown::of(&Value::Str("x".repeat(MAX_SHOWN_TEXT + 1))), None, "past a label's bound");
+        assert_eq!(MAX_SHOWN_TEXT, specula_ui::state::MAX_TEXT, "what is given is what a label shows whole");
         assert_eq!(Shown::of(&Value::Null), None);
         let msg = Value::map().with("msg", "hud.wave").with("args", Value::map().with("wave", 2i64).with("of", 5i64));
         assert_eq!(Shown::of(&msg), Some(Shown::Msg("hud.wave".into(), vec![("of".into(), Shown::Int(5)), ("wave".into(), Shown::Int(2))])));
@@ -1694,6 +2137,70 @@ mod tests {
         assert_eq!(state.get("reads").map(Json::to_string).as_deref(), Some(r#"{"gate.hp":3,"gate.score":40,"gate.won":null}"#));
     }
 
+    /// A day's summary of many lines in one kept text reaches the screen that binds it whole:
+    /// in the state, in the label laid out, and in the tree a run reads its texts from.
+    #[test]
+    fn a_long_text_of_many_lines_is_shown_whole() {
+        let mut files = ShellFiles::builtin(GAME);
+        let screen = r#"{"format": "specula.ui.screen.v1", "name": "sum", "input": "hud", "root": {"type": "panel", "children": [{"type": "label", "text": "{work.disp}"}]}}"#;
+        files.screens.push(("sum".into(), screen.into()));
+        let mut shell = Shell::build("gate", files).expect("a shell");
+        let summary: String = (1..=16).map(|i| format!("Stall {i:02}: 12 sold, 36 coins, 1 spoiled\n")).collect::<String>() + "Day 3 ends: 576 coins";
+        assert!(summary.len() > 600);
+        let store: BTreeMap<String, Value> = [("disp".to_owned(), Value::Str(summary.clone()))].into();
+        shell.see_each([("work", &store)].into_iter());
+        assert!(shell.unshown.is_empty(), "{:?}", shell.unshown);
+        shell.refresh();
+        assert!(matches!(shell.state.get("work.disp"), Some(specula_ui::state::Value::Str(s)) if *s == summary));
+        let display = shell.display;
+        let face = shell.face.as_mut().expect("an interface");
+        face.ui.show("sum").unwrap();
+        let view = Shell::viewport(&face.ui, &display, (800, 480), 1.0);
+        let opts = specula_ui::agent::TreeOpts { screen: Some("sum".into()), text_chars: specula_ui::state::MAX_TEXT, ..Default::default() };
+        let tree = face.ui.inspect(&shell.state, &view, |ui| ui.tree_page(&opts));
+        let texts: Vec<&str> = tree.get("widgets").and_then(Json::as_array).unwrap().iter().filter_map(|w| w.get("text").and_then(Json::as_str)).collect();
+        assert_eq!(texts, [summary.as_str()], "the label shows the text whole, its lines with it");
+        // A tree asked for no more than its own entries cuts it, as it always did.
+        let short = face.ui.inspect(&shell.state, &view, |ui| ui.tree_page(&specula_ui::agent::TreeOpts { screen: Some("sum".into()), ..Default::default() }));
+        let text = short.get("widgets").and_then(Json::as_array).unwrap()[0].get("text").and_then(Json::as_str).unwrap().to_owned();
+        assert_eq!(text.chars().count(), specula_ui::agent::MAX_ENTRY_TEXT + 1);
+        assert!(text.ends_with('…'));
+    }
+
+    /// What the modules keep that no screen is given is listed with why, in `game_state`:
+    /// a text past the bound with its length, a kind with what a screen can show; and taken
+    /// off the list when it is shown again. The list is bounded.
+    #[test]
+    fn a_kept_value_no_screen_is_given_is_said_with_why() {
+        let mut shell = shell();
+        let mut store: BTreeMap<String, Value> = BTreeMap::new();
+        store.insert("disp".into(), Value::Str("y".repeat(MAX_SHOWN_TEXT + 10)));
+        store.insert("hp".into(), Value::Int(3));
+        store.insert("inv".into(), Value::map().with("apples", 3i64));
+        store.insert("none".into(), Value::Null);
+        shell.see_each([("gate", &store)].into_iter());
+        let state = shell.game_state().unwrap();
+        let listed: Vec<(String, String)> = state.get("not_shown").and_then(Json::as_array).unwrap().iter().map(|n| (n.get("key").and_then(Json::as_str).unwrap().to_owned(), n.get("why").and_then(Json::as_str).unwrap().to_owned())).collect();
+        assert_eq!(listed.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["gate.disp", "gate.inv", "gate.none"]);
+        assert!(listed[0].1.contains(&format!("{} bytes", MAX_SHOWN_TEXT + 10)) && listed[0].1.contains(&format!("the {MAX_SHOWN_TEXT}")), "{}", listed[0].1);
+        assert!(listed[1].1.contains("without a \"msg\"") && listed[2].1.starts_with("null"), "{listed:?}");
+        assert_eq!(shell.value("gate.hp"), Some(Val::Num(3.0)), "what is shown is as it was");
+        assert!(state.get("not_shown_more").is_none());
+        // Shorter, it is shown, and no longer listed.
+        store.insert("disp".into(), Value::Str("Day 1".into()));
+        store.remove("inv");
+        store.remove("none");
+        shell.see_each([("gate", &store)].into_iter());
+        assert!(shell.game_state().unwrap().get("not_shown").is_none());
+        assert_eq!(shell.value("gate.disp"), Some(Val::Text("Day 1".into())));
+        // Bounded: the first so many, and that there were more.
+        let many: BTreeMap<String, Value> = (0..MAX_UNSHOWN + 5).map(|i| (format!("k{i:03}"), Value::Null)).collect();
+        shell.see_each([("gate", &many)].into_iter());
+        let state = shell.game_state().unwrap();
+        assert_eq!(state.get("not_shown").and_then(Json::as_array).map(<[Json]>::len), Some(MAX_UNSHOWN));
+        assert_eq!(state.get("not_shown_more").and_then(Json::as_bool), Some(true));
+    }
+
     #[test]
     fn the_run_ends_when_the_modules_state_says_so_and_a_save_keeps_where_it_stood() {
         let mut shell = shell();
@@ -1715,8 +2222,17 @@ mod tests {
         // The game's part of a save, and back.
         let bytes = shell.save_state().unwrap().unwrap();
         let parsed = shell.parse_state(&bytes).unwrap();
-        let saved = parsed.downcast::<(Phase, Option<u64>, u64)>().unwrap();
-        assert_eq!(*saved, (Phase::Ended(Ended::Lost), Some(77), 1));
+        let saved = parsed.downcast::<(Phase, Option<u64>, u64, Vec<(String, Value)>)>().unwrap();
+        assert_eq!(*saved, (Phase::Ended(Ended::Lost), Some(77), 1, Vec::new()));
+        // What the modules have still to be told is in the save, each number the kind it
+        // was, and a load tells it in place of whatever waited before the load.
+        shell.events_out = vec![("run".to_owned(), Value::map().with("phase", "start").with("tick", 5i64).with("speed", 0.5))];
+        let bytes = shell.save_state().unwrap().unwrap();
+        shell.events_out = vec![("ui".to_owned(), Value::map().with("action", "pressed_before_the_load"))];
+        let parsed = shell.parse_state(&bytes).unwrap();
+        shell.put_back(parsed);
+        assert_eq!(events(&mut shell), [("run".to_owned(), Value::map().with("phase", "start").with("tick", 5i64).with("speed", 0.5))]);
+        assert!(shell.parse_state(br#"{"format": "specula.shell.save.v1", "phase": "running", "events": [["run", "not base64 of a value"]]}"#).is_err());
         assert!(shell.parse_state(b"{}").is_err() && shell.parse_state(br#"{"format": "specula.shell.save.v1", "phase": "flying"}"#).is_err());
     }
 
@@ -1785,6 +2301,144 @@ mod tests {
         e.game_act(&who, "start");
         let ran = e.play_ticks(100_000);
         assert!(ran <= crate::game::STEPS_AT_MOST && e.clock.queued() == 0, "{ran}");
+    }
+
+    /// Quit under a script (`specula run`): the script stands in for the player, so its press
+    /// of Quit from a frame, or the rules' own `quit`, asks to quit. An agent's press by word
+    /// (`game_act`) is refused there too, and without a script neither is anyone's but the
+    /// window's player's, as it was.
+    #[test]
+    fn under_a_script_its_quit_and_the_rules_quit_are_the_players() {
+        let game = GAME.replace("\"outcome\"", "\"quit\": \"gate.quit\", \"outcome\"");
+        let mut windowed = Shell::build("gate", ShellFiles::builtin(&game)).unwrap();
+        // Not a script's: a synthetic frame's Quit is an agent's, the window's own the player's.
+        assert!(!windowed.as_player("quit", false) && windowed.as_player("quit", true));
+        assert!(windowed.press_from("quit", None, windowed.as_player("quit", false)).is_err());
+        assert!(!windowed.take_quit());
+        windowed.press_from("quit", None, windowed.as_player("quit", true)).unwrap();
+        assert!(windowed.take_quit());
+        // The rules ask to quit: said once, and nothing quits.
+        windowed.press("start", true).unwrap();
+        windowed.shown = vec![("gate.quit".into(), Shown::Bool(true))];
+        windowed.rules_quit();
+        windowed.rules_quit();
+        assert!(!windowed.take_quit());
+        assert_eq!(windowed.problems.iter().filter(|p| p.contains("the rules asked to quit")).count(), 1, "{:?}", windowed.problems);
+        // A script's: its frame's Quit is the player's, and nothing else of the player's alone is.
+        let mut scripted = Shell::build("gate", ShellFiles::builtin(&game)).unwrap();
+        scripted.played_by_script();
+        assert!(scripted.as_player("quit", false) && !scripted.as_player("start", false));
+        scripted.press_from("quit", None, scripted.as_player("quit", false)).unwrap();
+        assert!(scripted.take_quit());
+        // An agent's press by word (what `game_act` does) is refused under a script as anywhere.
+        assert_eq!(scripted.press_from("quit", None, false).map_err(|(code, _)| code), Err("players_only"));
+        assert!(!scripted.take_quit());
+        // The rules' quit, while its key is true (a number not 0 too), and not while it is not.
+        scripted.press("start", true).unwrap();
+        for (value, quits) in [(Shown::Bool(false), false), (Shown::Int(0), false), (Shown::Bool(true), true), (Shown::Int(2), true)] {
+            scripted.shown = vec![("gate.quit".into(), value)];
+            scripted.rules_quit();
+            assert_eq!(scripted.take_quit(), quits);
+        }
+        assert!(scripted.problems.iter().all(|p| !p.contains("the rules asked to quit")));
+        // A quit asked before a save is loaded was asked in another run: the game put back
+        // has asked for none (`specula find` loads a save after a way that quit).
+        scripted.shown = vec![("gate.quit".into(), Shown::Bool(true))];
+        scripted.rules_quit();
+        let saved = scripted.save_state().unwrap().unwrap();
+        let parsed = scripted.parse_state(&saved).unwrap();
+        scripted.put_back(parsed);
+        assert!(!scripted.take_quit(), "a load takes the waiting quit away");
+        // A game file with no `quit` asks for nothing, whatever its rules keep.
+        let mut plain = shell();
+        plain.played_by_script();
+        plain.shown = vec![("gate.quit".into(), Shown::Bool(true))];
+        plain.rules_quit();
+        assert!(!plain.take_quit());
+    }
+
+    /// A game that asks to quit under a script has no further tick: none after the one it asked
+    /// on, none in the script's next ticks until the script was told (once), and the engine of
+    /// no script takes its quit at all (a window's is the window loop's).
+    #[test]
+    fn under_a_script_a_quit_ends_the_ticks_where_the_game_stood() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        /// A game whose rules ask to quit at its third tick; with `hold`, its clock stops on that
+        /// same tick (its run ended there, or it paused).
+        struct QuitsAt {
+            ticks: u64,
+            quit: bool,
+            clock: Option<bool>,
+            hold: bool,
+        }
+        impl Game for QuitsAt {
+            fn name(&self) -> &str {
+                "quits"
+            }
+            fn tick(&mut self, _ctx: &mut Ctx) {
+                self.ticks += 1;
+                self.quit |= self.ticks == 3;
+                if self.ticks == 3 && self.hold {
+                    self.clock = Some(true);
+                }
+            }
+            fn take_quit(&mut self) -> bool {
+                std::mem::take(&mut self.quit)
+            }
+            fn take_clock(&mut self) -> Option<bool> {
+                self.clock.take()
+            }
+        }
+        e.game_name = "quits".into();
+        e.game = Some(Box::new(QuitsAt { ticks: 0, quit: false, clock: Some(false), hold: false }));
+        e.clock.set_paused(true);
+        e.script_clock = Some(false);
+        e.start_game();
+        assert_eq!(e.play_ticks(10), 3, "the tick it asked on is the last");
+        assert_eq!((e.play_ticks(10), e.clock.tick()), (0, 3), "and no tick runs until the script was told");
+        assert!(std::mem::take(&mut e.script_quit), "told once");
+        assert_eq!(e.play_ticks(2), 2, "a game put back (a search's load) goes on");
+        // The clock held on the very tick the game quits (it won, or paused, and quit): the quit
+        // is taken on that tick, with the ticks that tell the script so.
+        let before = e.clock.tick();
+        e.script_quit = false;
+        e.script_clock = Some(false);
+        e.game = Some(Box::new(QuitsAt { ticks: 0, quit: false, clock: Some(false), hold: true }));
+        assert_eq!(e.play_ticks(10), 3);
+        assert!(e.script_quit, "the quit is taken on the tick its clock stopped, not at the next call");
+        assert_eq!((e.clock.tick() - before, e.script_clock), (3, Some(false)), "and the clock is held as the game asked");
+        e.script_quit = false;
+        // No script: the game's quit is not taken here.
+        e.script_clock = None;
+        e.game = Some(Box::new(QuitsAt { ticks: 0, quit: true, clock: None, hold: false }));
+        assert!(!e.script_quit_asked());
+        assert_eq!(e.game.as_mut().map(|g| g.take_quit()), Some(true), "left for the window loop, which a headless engine has not");
+    }
+
+    /// Whether the window's presses act in the game is the game's own clock wish (its title, its
+    /// pause, an ended run hold it), never the engine clock: an agent's pause, a step or a
+    /// playtest stepping the clock leaves a person's presses latched as ever.
+    #[test]
+    fn the_game_holds_the_clock_by_its_own_wish_and_an_agents_pause_is_not_it() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        let who = specula_protocol::SessionInfo { id: "held-test".into(), client_name: "t".into(), client_version: "1".into(), protocol_version: "x".into() };
+        e.game_name = "gate".into();
+        e.game = Some(Box::new(shell()));
+        e.start_game();
+        e.serve_game_clock();
+        assert!(e.game_holds_clock, "the title holds it");
+        e.game_act(&who, "start");
+        assert!(!e.game_holds_clock && !e.clock.paused());
+        // An agent pauses the engine's clock, or steps it: the game's own run is under way.
+        e.clock.set_paused(true);
+        e.serve_game_clock();
+        assert!(!e.game_holds_clock, "an agent's pause is not the game's");
+        e.playtest_pumping = true;
+        e.game_act(&who, "pause");
+        assert!(e.game_holds_clock, "the game's own pause, even while a playtest has the clock");
+        e.playtest_pumping = false;
+        e.game_act(&who, "resume");
+        assert!(!e.game_holds_clock);
     }
 
     /// The engine does what a press asks of the clock, except while a playtest has the clock:

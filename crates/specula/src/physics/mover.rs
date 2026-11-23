@@ -53,6 +53,15 @@ impl CharacterMover for PhysicsMover {
         "physics P2 character controller (sweep and slide, steps, slopes, snapping, platforms, pushing)"
     }
 
+    fn touching(&self, id: u64) -> Option<Vec<u64>> {
+        // (A ragdoll's parts are not entities: the entity they belong to is, once.)
+        let physics = self.physics.as_ref()?;
+        let mut ids: Vec<u64> = physics.space.touching(id).into_iter().map(|k| ragdoll::unkey(k).map_or(k, |(e, _)| e)).filter(|k| *k != id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        Some(ids)
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

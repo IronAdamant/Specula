@@ -696,6 +696,7 @@ pub fn access(tool: &str) -> Option<Access> {
         // authority (Site::L10nReview, also when a table is written with project_*).
         "l10n_get" | "l10n_check" => ReadOnly,
         "memory_get" | "memory_list" | "memory_why" => ReadOnly,
+        "formae_list" | "formae_get" | "model_schema" => ReadOnly,
         "memory_note" => World("project"),
         "l10n_set" => World("project"),
         // Posts one plan of board tasks (task_plan's store rules).
@@ -785,7 +786,7 @@ pub fn access(tool: &str) -> Option<Access> {
         "agent_hello" => Open("names the caller's own session; engine writer names, granted names and authority roles are refused"),
         "time_control" => Open("the clock is shared on purpose: any agent pauses or steps it for its checks (a playtest owns it while one runs); the answer's set_by names who moved it last"),
         "window_view" => Open("points the human's window, which a human's input always takes back; nothing in the world changes"),
-        "model_build" => Open("builds are derived data from recipes on disk: building changes no entity and no file"),
+        "model_build" | "model_build_all" => Open("builds are derived data from recipes on disk: building changes no entity and no file"),
         "model_reload" => Open("re-reads recipes and anim sets from disk (the files are the truth); animation graphs that use a changed set resettle as the exempt writer anim_reload, journaled; nothing an agent made is replaced"),
         "world_save" => Open("a checkpoint of the shared world under its current name; another name (it renames the live world: autosave, evidence and board files), or overwrite over a world folder the caller didn't save this run, needs the lead (lead_only)"),
         "perf_zones" => Open("reads the profiler; switching it is refused while another agent's capture records (capture_in_progress)"),

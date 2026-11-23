@@ -90,6 +90,8 @@ enum Kind {
     Ranges,
     /// An identifier (a part name, a texture name).
     Name,
+    /// A form's parameters by name (`args` of a `form` shape or outline: `recipe::form`).
+    FormArgs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,8 +126,18 @@ const OUTLINE: &[Field] = &[
     o("jitter", Num),
     o("scale", Vec2),
     o("offset", Vec2),
+    o("form", Name),
+    o("args", FormArgs),
+    o("detail", Int),
 ];
 const JITTER: &[Field] = &[o("offset", Vec3), o("rotate", Vec3), o("scale", Num)];
+
+/// A recipe's own fields (the parser refuses any other; [`schema`] says what each is).
+const TOP_FIELDS: &[&str] =
+    &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures", "wind", "edits"];
+/// A part's fields (likewise).
+const PART_FIELDS: &[&str] =
+    &["name", "material", "color", "when", "shape", "include", "generate", "params", "ops", "smooth_angle", "lod_detail", "bones", "blend", "texture", "uv_scale", "note"];
 
 /// Shape generators (a part's `shape`).
 const SHAPES: &[(&str, &[Field])] = &[
@@ -168,6 +180,7 @@ const SHAPES: &[(&str, &[Field])] = &[
     ("intersection", procgen::CSG_FIELDS),
     ("sdf", procgen::SDF_FIELDS),
     ("figure", procgen::FIGURE_FIELDS),
+    ("form", form::FORM_FIELDS),
 ];
 
 /// Operations (a part's `ops`, the recipe's `finish`).
@@ -197,6 +210,44 @@ const OPS: &[(&str, &[Field])] = &[
 /// Names of every shape generator (for docs and tools).
 pub fn shape_names() -> Vec<&'static str> {
     SHAPES.iter().map(|(n, _)| *n).collect()
+}
+
+/// A shape generator's fields as the recipe's own field table declares them: `(name, required,
+/// what it takes)`, for tools that show them (`formae_list`'s figure); `None` for no such
+/// generator.
+pub fn shape_fields(name: &str) -> Option<Vec<(&'static str, bool, &'static str)>> {
+    SHAPES.iter().find(|(n, _)| *n == name).map(|(_, fields)| fields.iter().map(|f| (f.name, f.required, f.kind.word())).collect())
+}
+
+impl Kind {
+    /// What a field of this kind takes, in a word or two.
+    fn word(self) -> &'static str {
+        match self {
+            Num => "number",
+            Int => "whole number",
+            Bool => "true or false",
+            Axis => "axis",
+            Color => "colour",
+            Vec2 => "[x, y]",
+            Vec3 => "[x, y, z]",
+            Scale => "number or [x, y, z]",
+            Nums => "numbers",
+            Rows => "rows of numbers",
+            Colors => "colours",
+            Outline => "outline",
+            Jitter => "jitter",
+            Operands => "shapes",
+            Sdf | Sdfs => "distance-field nodes",
+            Obj(_) => "object",
+            Objs(_) => "objects",
+            Material => "material",
+            Choice(_) => "one of a list",
+            ShapeOps => "a shape",
+            Ranges => "ranges",
+            Name => "name",
+            FormArgs => "a form's parameters",
+        }
+    }
 }
 
 /// Names of every operation.
@@ -575,9 +626,19 @@ impl Parser<'_> {
                 Json::Arr(_) => self.value(path, Rows, v)?,
                 Json::Obj(_) => {
                     let n = self.node(path, v, "outline", OUTLINE, false)?;
-                    let forms = ["points", "rect", "sides", "arch", "star"].iter().filter(|f| n.get(f).is_some()).count();
+                    let forms = ["points", "rect", "sides", "arch", "star", "form"].iter().filter(|f| n.get(f).is_some()).count();
                     if forms != 1 {
-                        return Err(e(path, ErrorCode::WrongType, "an outline needs exactly one of points, rect, sides (+radius), arch, star (+radius, inner)"));
+                        return Err(e(path, ErrorCode::WrongType, "an outline needs exactly one of points, rect, sides (+radius), arch, star (+radius, inner), form (+args, detail)"));
+                    }
+                    if n.get("form").is_some() {
+                        // (A field that would do nothing beside a form is refused, never ignored: its
+                        // own numbers are in `args`.)
+                        if let Some(k) = ["radius", "inner", "segments", "roundness"].iter().find(|k| n.get(k).is_some()) {
+                            return Err(e(&n.at(k), ErrorCode::Geometry, format!("\"{k}\" would do nothing beside a \"form\": the form's own numbers go in \"args\"")));
+                        }
+                        self.check_form(&n, true)?;
+                    } else if let Some(k) = ["args", "detail"].iter().find(|k| n.get(k).is_some()) {
+                        return Err(e(&n.at(k), ErrorCode::Geometry, format!("\"{k}\" is a \"form\" outline's: it would do nothing here")));
                     }
                     if (n.get("sides").is_some() || n.get("star").is_some()) && n.get("radius").is_none() {
                         return Err(e(&n.at("radius"), ErrorCode::MissingField, "sides/star outlines need a radius"));
@@ -587,6 +648,7 @@ impl Parser<'_> {
                 _ => return Err(type_err(path, "an outline: a list of [x, z] points or an object")),
             },
             Jitter => Val::Obj(self.node(path, v, "jitter", JITTER, false)?),
+            FormArgs => self.form_args(path, v)?,
             Operands | Sdf | Sdfs | Obj(_) | Objs(_) | Material | Choice(_) | ShapeOps | Ranges | Name => self.procgen_value(path, kind, v)?,
         })
     }
@@ -609,7 +671,9 @@ impl Parser<'_> {
             }
             let Some(f) = schema.iter().find(|f| f.name == k) else {
                 let names: Vec<&str> = schema.iter().map(|f| f.name).collect();
-                return Err(e(&fpath, ErrorCode::UnknownField, format!("'{op}' accepts: {}{}", names.join(", "), if with_op { ", when, note" } else { "" })));
+                // An outline written as a library word (`{"heart": ...}`) is told how to name it.
+                let hint = if op == "outline" { form::library_hint(k, false).map_or(String::new(), |h| format!("; {h}")) } else { String::new() };
+                return Err(e(&fpath, ErrorCode::UnknownField, format!("'{k}' is not a field of '{op}'{hint}; it accepts: {}{}", names.join(", "), if with_op { ", when, note" } else { "" })));
             };
             if node.get(k).is_some() {
                 return Err(e(&fpath, ErrorCode::WrongType, "duplicate field"));
@@ -620,6 +684,9 @@ impl Parser<'_> {
             if node.get(f.name).is_none() {
                 return Err(e(&format!("{path}.{}", f.name), ErrorCode::MissingField, format!("'{op}' needs '{}'", f.name)));
             }
+        }
+        if op == "form" {
+            self.check_form(&node, false)?;
         }
         Ok(node)
     }
@@ -633,7 +700,10 @@ impl Parser<'_> {
             .ok_or_else(|| e(&format!("{path}.op"), ErrorCode::MissingField, format!("every {what} needs \"op\"")))?;
         let Some((_, schema)) = table.iter().find(|(n, _)| *n == name) else {
             let names: Vec<&str> = table.iter().map(|(n, _)| *n).collect();
-            return Err(e(&format!("{path}.op"), ErrorCode::UnknownOp, format!("unknown {what} '{name}' (known: {})", names.join(", "))));
+            // A shape the modeller does not know may be one of the shape library's: said first,
+            // with how to write it (or the library's nearest names).
+            let hint = if what == "shape" { form::library_hint(name, true).map_or(String::new(), |h| format!("; {h}")) } else { String::new() };
+            return Err(e(&format!("{path}.op"), ErrorCode::UnknownOp, format!("unknown {what} '{name}'{hint} (known {what}s: {})", names.join(", "))));
         };
         self.node(path, v, name, schema, true)
     }
@@ -818,11 +888,10 @@ impl Recipe {
         if obj.iter().any(|(k, _)| k == "texgraph") {
             return Err(e("texgraph", ErrorCode::WrongType, "this file is a texture graph, not a recipe: use it from a recipe's \"textures\" (\"textures\": {\"stone\": \"<this file's name>\"}) and a part's \"texture\""));
         }
-        const TOP: &[&str] =
-            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures", "wind", "edits"];
+        const TOP: &[&str] = TOP_FIELDS;
         for (k, _) in obj {
             if !TOP.contains(&k.as_str()) {
-                return Err(e(k, ErrorCode::UnknownField, format!("a recipe accepts: {}", TOP.join(", "))));
+                return Err(e(k, ErrorCode::UnknownField, format!("'{k}' is not a field of a recipe; it accepts: {}", TOP.join(", "))));
             }
         }
         let get = |k: &str| obj.iter().find(|(n, _)| n == k).map(|(_, v)| v);
@@ -970,11 +1039,10 @@ impl Recipe {
         for (i, pj) in items.iter().enumerate() {
             let path = format!("parts[{i}]");
             let po = pj.as_object().ok_or_else(|| type_err(&path, "a part object"))?;
-            const PART: &[&str] =
-                &["name", "material", "color", "when", "shape", "include", "generate", "params", "ops", "smooth_angle", "lod_detail", "bones", "blend", "texture", "uv_scale", "note"];
+            const PART: &[&str] = PART_FIELDS;
             for (k, _) in po {
                 if !PART.contains(&k.as_str()) {
-                    return Err(e(&format!("{path}.{k}"), ErrorCode::UnknownField, format!("a part accepts: {}", PART.join(", "))));
+                    return Err(e(&format!("{path}.{k}"), ErrorCode::UnknownField, format!("'{k}' is not a field of a part; it accepts: {}", PART.join(", "))));
                 }
             }
             let pget = |k: &str| po.iter().find(|(n, _)| n == k).map(|(_, v)| v);
@@ -1120,6 +1188,11 @@ pub struct Model {
     /// Every material preset `lods[0].parts` uses, resolved from the style.
     pub materials: Vec<(String, MaterialPreset)>,
     pub bounds: Bounds,
+    /// Edges of the finest level that are not shared by exactly two triangles, after welding
+    /// equal positions ([`MeshData::open_edge_count`]): 0 for a closed (watertight) mesh. Counted
+    /// once, when the model is built, so that every answer about a model can say whether it is
+    /// closed without anyone exporting it to find out.
+    pub open_edges: usize,
     /// Stable hash of every LOD and the collider (same recipe + params + seed ⇒ same hash on
     /// every platform).
     pub hash: u64,
@@ -1238,6 +1311,10 @@ impl Model {
                 })),
             ),
             ("bounds", Json::obj([("min", v3(b.min)), ("max", v3(b.max))])),
+            // Whether the finest level is a closed (watertight) mesh, and how many of its edges
+            // are not shared by exactly two triangles when it is not.
+            ("closed", Json::Bool(self.open_edges == 0)),
+            ("open_edges", Json::Num(self.open_edges as f64)),
             ("materials", Json::arr(self.materials.iter().map(|(n, _)| Json::Str(n.clone())))),
             (
                 "collider",
@@ -1521,6 +1598,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     Ok(Model {
         name: recipe.name.clone(),
         bounds: lods[0].bounds(),
+        open_edges: lods[0].open_edge_count(),
         lods,
         lod_ratios: ratios,
         collider,
@@ -2293,7 +2371,7 @@ impl Ctx<'_> {
     fn ranged(&self, n: &Node, name: &str, default: f64, lo: f64, hi: f64) -> Result<f32, RecipeError> {
         let v = self.num(n, name, default)?;
         if v < lo || v > hi {
-            return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("{v} is outside {lo}..{hi}")).with_numbers(v, if v > hi { hi } else { lo }));
+            return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("\"{name}\" is {v}, outside {lo}..{hi}")).with_numbers(v, if v > hi { hi } else { lo }));
         }
         if self.coarse && matches!(name, "bevel" | "corner_bevel") && lo <= 0.0 {
             return Ok(0.0);
@@ -2318,7 +2396,9 @@ impl Ctx<'_> {
     fn round(&self, what: &'static str, count: &'static str, c: Counted, turn_deg: f32, radius_m: f32, ring: bool) {
         if !self.coarse {
             let other = if c.value > c.range.0 as u32 { c.range.0 as u32 } else { c.value + 1 };
-            let alone = (c.grows != crate::facet::Grows::Fourfold).then(|| (other, (c.alone)(other) as u64));
+            // (A sphere's prediction is what it makes, and a line over a form's is its bound: no
+            // second count is asked of either.)
+            let alone = matches!(c.grows, crate::facet::Grows::Linear { .. } | crate::facet::Grows::Square).then(|| (other, (c.alone)(other) as u64));
             self.tally.round_notes.borrow_mut().push(crate::facet::Note {
                 alone,
                 what,
@@ -2343,7 +2423,7 @@ impl Ctx<'_> {
         let v = self.num(n, name, default as f64)?;
         let r = dmath::round_f64(v);
         if r < lo as f64 || r > hi as f64 {
-            return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("{v} is outside {lo}..{hi}")).with_numbers(v, if r > hi as f64 { hi as f64 } else { lo as f64 }));
+            return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("\"{name}\" is {v}, outside {lo}..{hi}")).with_numbers(v, if r > hi as f64 { hi as f64 } else { lo as f64 }));
         }
         let r = r as u32;
         if self.coarse {
@@ -2462,7 +2542,11 @@ impl Ctx<'_> {
                 if n.get("segments").is_some() && n.get("arch").is_none() && !rounded {
                     return Err(e(&n.at("segments"), ErrorCode::Geometry, "\"segments\" is an \"arch\" outline's, or a \"rect\" outline's with \"roundness\": it would do nothing here"));
                 }
-                let mut p: Vec<V2> = if let Some(pv) = n.get("points") {
+                let mut p: Vec<V2> = if n.get("form").is_some() {
+                    let bevel = if self.ranged(n, "bevel", 0.0, 0.0, 100.0)? > 0.0 { 2 } else { 1 };
+                    let rs = self.int(n, "resample", 1, 1, 64)? as usize;
+                    self.form_outline(n, path, max_points, bevel * rs * later)?
+                } else if let Some(pv) = n.get("points") {
                     self.rows(pv, &n.at("points"), (2, 2), max_points)?.iter().map(|r| [r[0], r[1]]).collect()
                 } else if n.get("rect").is_some() {
                     let s = size2("rect")?;
@@ -2494,7 +2578,7 @@ impl Ctx<'_> {
                     let inner = self.positive(n, "inner", 0.5 * outer as f64)?;
                     poly::star(pts, outer, inner, 90.0 + rot)
                 };
-                if n.get("rotate").is_some() && (n.get("points").is_some() || n.get("rect").is_some() || n.get("arch").is_some()) {
+                if n.get("rotate").is_some() && (n.get("points").is_some() || n.get("rect").is_some() || n.get("arch").is_some() || n.get("form").is_some()) {
                     let (s, c) = dmath::sin_cos_deg(rot);
                     let (s, c) = (s as f32, c as f32);
                     p = p.iter().map(|q| [q[0] * c - q[1] * s, q[0] * s + q[1] * c]).collect();
@@ -2749,10 +2833,12 @@ impl Ctx<'_> {
             }
             "union" | "difference" | "intersection" => return self.csg_shape(n),
             "sdf" | "figure" => return self.sdf_shape(n),
+            "form" => return self.form_shape(n),
             other => return Err(e(&n.path, ErrorCode::UnknownOp, format!("unknown shape '{other}'"))),
         };
         self.tally.grow(&n.path, 0, predicted)?;
         let mut s = build()?;
+        self.hold_closed(n, &s)?;
         self.tally.made_now(&n.path, &mut s);
         self.tally.settle(predicted, s.triangle_count());
         check_extent(&s, &n.path)?;
@@ -3063,7 +3149,10 @@ fn smooth_path(path: &[V3], scales: &[f32], smooth: u32, closed: bool) -> (Vec<V
     (out, sc)
 }
 
+mod form;
 mod procgen;
+mod schema;
+pub use schema::{schema, SCHEMA_EXAMPLE, SCHEMA_FIRST_BYTES};
 pub use procgen::{generator_names, sdf_names};
 
 #[cfg(test)]

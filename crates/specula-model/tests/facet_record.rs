@@ -285,3 +285,116 @@ fn a_scatter_measures_its_round_items() {
     let r = the(&m, "parts[0].generate.items[0].shape");
     assert!(r.measured() && (r.turn_deg - 72.0).abs() < 1e-3 && r.radius_m >= 0.15 * 0.5 && r.radius_m <= 0.15 * 2.0, "{r:?}");
 }
+
+/// A form by name (`specula-formae`) is a round shape like any other: a ball of radius 0.1 at
+/// detail 24 scaled by ten is measured as the same ball built at radius 1 (the turn as built,
+/// the radius and how far a facet stands in scaled), and so is a curved outline by name
+/// extruded; under a taper, which is not affine, a curved form says it is not measured.
+#[test]
+fn a_forms_facets_are_measured_in_the_finished_model() {
+    let ball = |r: f32| format!(r#"{{"op":"form","form":"sphere","args":{{"radius":{r}}},"detail":24}}"#);
+    let truth = one(&ball(1.0), "");
+    let scaled = one(&ball(0.1), r#"{"op":"scale","by":10}"#);
+    let (t, s) = (&truth.extras.round, &scaled.extras.round);
+    assert!(!t.is_empty() && t.len() == s.len(), "{t:?} {s:?}");
+    for (a, b) in t.iter().zip(s) {
+        assert!(a.what == "sphere" && a.count == "detail" && a.count_value == 24 && a.measured() && b.measured(), "{a:?} {b:?}");
+        assert!(near(b.turn_deg, a.turn_deg, 1e-5) && near(b.radius_m, a.radius_m, 1e-5) && near(b.sag_m(), a.sag_m(), 1e-4), "{a:?} against {b:?}");
+        assert!(near(a.radius_m, 1.0, 1e-5) && a.turn_deg > 0.0 && a.turn_deg < 30.0, "{a:?}");
+    }
+    let out = |r: f32| format!(r#"{{"op":"extrude","outline":{{"form":"circle","args":{{"radius":{r}}},"detail":16}},"height":0.5}}"#);
+    let (a, b) = (the(&one(&out(1.0), ""), "parts[0].shape"), the(&one(&out(0.5), r#"{"op":"scale","by":2}"#), "parts[0].shape"));
+    assert!(a.what == "circle" && near(a.turn_deg, 22.5, 1e-4) && near(a.radius_m, 1.0, 1e-5), "{a:?}");
+    assert!(b.measured() && near(b.turn_deg, a.turn_deg, 1e-5) && near(b.radius_m, 1.0, 1e-5) && near(b.sag_m(), a.sag_m(), 1e-4), "{a:?} against {b:?}");
+    for shape in [ball(1.0), r#"{"op":"form","form":"torus","detail":16}"#.to_string(), out(1.0)] {
+        let m = one(&shape, r#"{"op":"taper","from":1,"to":3}"#);
+        assert!(!m.extras.round.is_empty() && m.extras.round.iter().all(|r| !r.measured() && r.unmeasured.is_some_and(|u| u.contains("tapered"))), "{shape}: {:?}", m.extras.round);
+    }
+}
+
+/// **A form's record names a greatest detail that builds** (the faceting record's fourth round:
+/// advice only ever a count that builds): for solids whose triangles grow as a line and as the
+/// square of their detail, and for outlines by name, the record's range is the library's least
+/// detail to a most no greater than its greatest, and the same shape asked at that most is built
+/// (a part's and the model's limits hold), its record measured.
+#[test]
+fn a_forms_most_detail_builds() {
+    let s = style();
+    let shapes = [
+        r#"{"op":"form","form":"sphere","detail":24}"#.to_string(),
+        r#"{"op":"form","form":"torus","detail":16}"#.to_string(),
+        r#"{"op":"form","form":"cylinder","detail":40}"#.to_string(),
+        r#"{"op":"form","form":"cube_sphere","detail":12}"#.to_string(),
+        r#"{"op":"form","form":"capsule","detail":9}"#.to_string(),
+        r#"{"op":"form","form":"circle","raise":{"as":"bevelled","thickness":0.2,"width":0.05,"round":true},"detail":30}"#.to_string(),
+        r#"{"op":"extrude","outline":{"form":"heart","detail":10},"height":0.2}"#.to_string(),
+        r#"{"op":"extrude","outline":{"form":"ellipse","detail":9},"height":0.2}"#.to_string(),
+    ];
+    for shape in shapes {
+        let m = one(&shape, "");
+        assert!(!m.extras.round.is_empty(), "{shape}: no record");
+        for r in &m.extras.round {
+            // (Every one of these has finer details that build, and a solid's record says so; an
+            // outline's may stop where its count steps past the square of the ratio: see
+            // `form_rounds`.)
+            let solid = shape.contains(r#""op":"form""#);
+            assert!(r.count == "detail" && r.least == 8 && r.most >= r.count_value && (r.most > r.count_value || !solid) && r.most <= 4096, "{shape}: {r:?}");
+            let at = shape.replacen(&format!("\"detail\":{}", r.count_value), &format!("\"detail\":{}", r.most), 1);
+            let text = format!(r#"{{ "name": "t", "parts": [{}] }}"#, part("p", &at, ""));
+            let again = build(&text, &BuildParams::new(&s)).unwrap_or_else(|e| panic!("{shape}: its most {} ({}) is refused: {e}", r.most, r.most_by));
+            assert!(again.extras.round.iter().any(|q| q.count_value == r.most && q.measured()), "{at}: {:?}", again.extras.round);
+        }
+    }
+}
+
+/// **A form's most detail builds, the build's work included** (`form_rounds` and
+/// `facet::Grows::Above`, held to the work bound of docs/design/FORM.md, "What was mended,
+/// fourth round"): forms with a texture, four far levels, copies and `ao` passes, where the
+/// work limit binds before a part's triangles do. Each record's most builds, and what the
+/// build spent there is within the bound the record gave for it; most of them say the work
+/// limit is what bound them.
+#[test]
+fn a_forms_most_detail_builds_within_the_work_limit() {
+    const WORK: &str = "the build's work limit (1,500 million units)";
+    let mut nodes = Vec::new();
+    for i in 0..8 {
+        nodes.push(format!(r#""n{i}": {{ "op": "noise", "kind": "fbm", "scale": {}, "octaves": 6 }}"#, 3 + i));
+    }
+    let mut last = "n0".to_string();
+    for i in 1..8 {
+        nodes.push(format!(r#""b{i}": {{ "op": "blend", "a": "{last}", "b": "n{i}", "mode": "multiply", "amount": 0.3 }}"#));
+        last = format!("b{i}");
+    }
+    nodes.push(format!(r#""albedo": {{ "op": "gradient_map", "in": "{last}", "stops": [[0, "pale"], [1, "pale"]] }}"#));
+    let tex = format!(r#"{{ "size": 256, "seed": 1, "nodes": {{ {} }}, "outputs": {{ "base_color": "albedo", "height": "{last}" }} }}"#, nodes.join(","));
+    let ao = std::iter::repeat_n(r#"{"op":"ao","amount":0.3}"#, 14).collect::<Vec<_>>().join(",");
+    let shapes: [(&str, u32); 5] = [
+        (r#"{"op":"form","form":"sphere","detail":{N}}"#, 40),
+        (r#"{"op":"form","form":"torus","detail":{N}}"#, 40),
+        (r#"{"op":"form","form":"capsule","detail":{N}}"#, 40),
+        (r#"{"op":"form","form":"circle","raise":{"as":"bevelled","thickness":0.2,"width":0.05,"round":true},"detail":{N}}"#, 20),
+        (r#"{"op":"form","form":"annulus","raise":{"as":"bevelled","thickness":0.2,"width":0.02,"round":true},"detail":{N}}"#, 20),
+    ];
+    let s = style();
+    let at = |shape: &str, copies: u32, n: u32| {
+        format!(
+            r#"{{ "name": "t", "lods": [0.5, 0.25, 0.12, 0.06], "smooth_angle": 0, "textures": {{ "skin": {tex} }}, "parts": [ {{ "name": "p", "material": "stone", "texture": "skin", "shape": {}, "ops": [{{"op":"array","count":{copies},"offset":[0,0,0]}},{ao}] }} ] }}"#,
+            shape.replace("{N}", &n.to_string())
+        )
+    };
+    let (mut by_work, mut records) = (0, 0);
+    for (shape, copies) in shapes {
+        let first = 8;
+        let m = build(&at(shape, copies, first), &BuildParams::new(&s)).unwrap_or_else(|e| panic!("{shape}: {e}"));
+        assert!(!m.extras.round.is_empty(), "{shape}: no record");
+        for r in &m.extras.round {
+            records += 1;
+            assert!(r.count == "detail" && r.most >= first, "{shape}: {r:?}");
+            by_work += usize::from(r.most_by == WORK);
+            let again = build(&at(shape, copies, r.most), &BuildParams::new(&s)).unwrap_or_else(|e| panic!("{shape}: told its most {} ({}) builds: {e}", r.most, r.most_by));
+            let bound = r.work_at(r.most).unwrap();
+            assert!(again.extras.work <= bound, "{shape}: at {} it spent {} over the bound {bound}", r.most, again.extras.work);
+        }
+    }
+    assert!(2 * by_work > records, "the work limit bound only {by_work} of {records} records");
+}

@@ -38,6 +38,9 @@ pub struct Check {
     pub ticks: u64,
     pub seed: Option<u64>,
     pub inputs: Vec<(u64, String)>,
+    /// Numbers the rules read with `Cx::param`, as `specula run --set` gives them: a check of
+    /// "board 3" is `"set": {"board": 3}`.
+    pub set: Vec<(String, f64)>,
     /// A settings folder by name: checks that name the same one share the player's settings,
     /// in the order they are written (`None`: this run's settings are kept nowhere, whatever
     /// the command itself was told).
@@ -58,7 +61,7 @@ fn field<'j>(j: &'j Json, at: &str, key: &str, known: &[&str]) -> Result<Option<
 }
 
 /// The checks of a file: `{"format": "specula.checks.v1", "checks": [{"name", "ticks",
-/// "inputs", "seed", "settings", "frame", "size", "expect"}]}`.
+/// "inputs", "seed", "set", "settings", "frame", "size", "expect"}]}`.
 pub fn parse(text: &str) -> Result<Vec<Check>, String> {
     let j = Json::parse(text.trim_start_matches('\u{feff}')).map_err(|e| format!("not JSON ({})", e.message))?;
     if j.get("format").and_then(Json::as_str) != Some(FORMAT) {
@@ -72,7 +75,7 @@ pub fn parse(text: &str) -> Result<Vec<Check>, String> {
     if list.is_empty() {
         return Err("\"checks\" is empty: a checks file has at least one run".to_owned());
     }
-    const KNOWN: [&str; 9] = ["name", "ticks", "inputs", "seed", "settings", "frame", "size", "expect", "notes"];
+    const KNOWN: [&str; 10] = ["name", "ticks", "inputs", "seed", "set", "settings", "frame", "size", "expect", "notes"];
     let mut out: Vec<Check> = Vec::new();
     for (i, c) in list.iter().enumerate() {
         let at = format!("checks[{i}]");
@@ -99,6 +102,11 @@ pub fn parse(text: &str) -> Result<Vec<Check>, String> {
             None | Some(Json::Null) => None,
             Some(s) => Some(s.as_u64().filter(|s| *s <= crate::script_run::MAX_SEED).ok_or_else(|| format!("{at}: \"seed\": a whole number up to {}", crate::script_run::MAX_SEED))?),
         };
+        let set: Vec<(String, f64)> = match c.get("set") {
+            None | Some(Json::Null) => Vec::new(),
+            Some(set) => set.as_object().and_then(|s| s.iter().map(|(name, value)| value.as_f64().map(|v| (name.clone(), v))).collect()).ok_or_else(|| format!("{at}: \"set\": an object of numbers the rules read with cx.param ({{\"board\": 3}})"))?,
+        };
+        crate::script_run::check_set(&set).map_err(|e| format!("{at}: \"set\": {e}"))?;
         let settings = match c.get("settings") {
             None | Some(Json::Null) => None,
             // (Small letters only: two names that differ by their capitals would be one
@@ -143,7 +151,7 @@ pub fn parse(text: &str) -> Result<Vec<Check>, String> {
         for (key, want) in &expect {
             matchers(want).map_err(|why| format!("{at}: \"expect\": '{key}': {why}"))?;
         }
-        out.push(Check { name: name.to_owned(), ticks, seed, inputs, settings, frame, size, expect });
+        out.push(Check { name: name.to_owned(), ticks, seed, inputs, set, settings, frame, size, expect });
     }
     Ok(out)
 }
@@ -315,6 +323,14 @@ mod tests {
         assert!(no(r#"{"name": "a"}"#).contains("\"ticks\""));
         assert!(no(r#"{"name": "a", "ticks": 4, "input": "0:up"}"#).contains("'input' is not a key of a check"));
         assert!(no(r#"{"name": "a", "ticks": 4, "inputs": "9:up"}"#).contains("after the run's last tick"));
+        // A run's numbers, as `specula run --set` takes them (2026-11-22: a builder's check of
+        // "board 3" was refused, and it wrote a script of its own instead).
+        let board = parse(&file(r#"{"name": "a", "ticks": 4, "set": {"board": 3, "grip": 0.25}}"#)).unwrap();
+        assert_eq!(board[0].set, vec![("board".to_owned(), 3.0), ("grip".to_owned(), 0.25)]);
+        assert!(all[0].set.is_empty());
+        assert!(no(r#"{"name": "a", "ticks": 4, "set": {"board": "three"}}"#).contains("an object of numbers"));
+        assert!(no(r#"{"name": "a", "ticks": 4, "set": [3]}"#).contains("an object of numbers"));
+        assert!(no(r#"{"name": "a", "ticks": 4, "set": {"9x": 1}}"#).contains("a letter then"));
         assert!(no(r#"{"name": "a", "ticks": 4, "settings": "../x"}"#).contains("\"settings\""));
         assert!(no(r#"{"name": "a", "ticks": 4, "settings": "Kept"}"#).contains("small letters"));
         assert!(parse(r#"{"format": "specula.checks.v1", "checks": []}"#).unwrap_err().contains("at least one run"));

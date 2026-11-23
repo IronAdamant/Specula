@@ -23,7 +23,7 @@ pub const MAX_STATE_BYTES: usize = 1 << 20;
 /// Longest log line kept (longer ones are cut).
 const MAX_LOG_CHARS: usize = 400;
 
-const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, rng_restart, move_character, emit, log, trace, sound";
+const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, rng_restart, move_character, touching, emit, log, trace, sound";
 /// Most sounds one module call may ask for (the SDK's number, so modules can budget for it).
 pub const MAX_SOUNDS_PER_CALL: usize = specula_sdk::MAX_SOUNDS_PER_CALL;
 /// Tagged entities one `query {tag, near}` looks at, at most (the tag index's entries, never the
@@ -50,6 +50,8 @@ pub(super) struct ModuleHandler<'a> {
     /// [`MAX_PENDING_EVENTS`]).
     pub pending_events: usize,
     pub log: &'a mut VecDeque<LogLine>,
+    /// The run's parameters (`LogicHost::set_params`).
+    pub params: &'a std::collections::BTreeMap<String, super::Param>,
     /// `(key, value before)` for every state write, to undo a failed call.
     pub state_undo: Vec<(String, Option<Value>)>,
     /// `(stream, state before)` for every stream touched, to undo a failed call.
@@ -266,6 +268,17 @@ impl ModuleHandler<'_> {
                 let m = self.mover.move_character(self.world, id, motion, self.agent).map_err(|e| error_value(&e))?;
                 Ok(Value::map().with("position", m.position).with("grounded", m.grounded).with("blocked", m.blocked))
             }
+            // What touches an entity now, tagged or not (docs/design/MODULES.md, "What physics
+            // tells a module"): its ids, at most MAX_TOUCHING, and how many more there are.
+            "touching" => {
+                let id = id_arg(req)?;
+                if self.world.get(id).is_none() {
+                    return Err(refuse("not_found", format!("no entity with id {id}")));
+                }
+                let all = self.mover.touching(id).ok_or_else(|| refuse("no_physics", "there is no physics here to ask what touches a thing"))?;
+                let most = crate::physics_told::MAX_TOUCHING;
+                Ok(Value::map().with("ids", all.iter().take(most).map(|k| Value::from(*k)).collect::<Vec<Value>>()).with("more", all.len().saturating_sub(most)))
+            }
             "emit" => {
                 let name = str_arg(req, "name")?;
                 if !specula_sdk::valid_name(name, 64) {
@@ -287,6 +300,12 @@ impl ModuleHandler<'_> {
                 }
                 self.events.push(EventRec { name: name.to_owned(), data, from: self.module.to_owned(), tick: self.tick });
                 Ok(Value::Null)
+            }
+            // A number of the run's, or the default the rules gave: read only, so nothing to undo.
+            "param" => {
+                let name = str_arg(req, "name")?;
+                let default = req.get("default").and_then(Value::as_f64).filter(|d| d.is_finite()).ok_or_else(|| refuse("invalid_field", "'default' must be a number"))?;
+                Ok(Value::from(self.params.get(name).map_or(default, super::Param::read)))
             }
             "log" => {
                 let msg = str_arg(req, "message")?;

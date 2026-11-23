@@ -1,7 +1,8 @@
 {
   "leverage": 1,
   "note": "Sizes are data: change them for your budget and your machine. Every report states the settings its runs used. These defaults are what Specula's own M5 runs used.",
-  "runs_per_cell": 2,
+  "runs_per_cell": 5,
+  "lead": false,
   "builder_model": "claude-sonnet-5-5",
   "judge_model": "claude-opus-5-5",
   "arms": ["engine", "plain"],
@@ -9,7 +10,9 @@
     "small":  {"token_cap": 600000,  "wall_s": 3600},
     "medium": {"token_cap": 2000000, "wall_s": 10800},
     "change": {"token_cap": 500000,  "wall_s": 3600},
-    "large":  {"token_cap": 4000000, "wall_s": 14400}
+    "large":  {"token_cap": 4000000, "wall_s": 14400},
+    "night":  {"token_cap": 4000000, "wall_s": 14400},
+    "day":    {"token_cap": 4000000, "wall_s": 14400}
   },
   "judge": {"token_cap": 150000, "wall_s": 1800},
   "token_weights": {"input": 1.0, "cache_write": 1.25, "cache_read": 0.1, "output": 5.0},

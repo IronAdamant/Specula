@@ -295,6 +295,8 @@ pub(crate) struct Prepared {
     /// The game's section, parsed on the worker ([`crate::game::Game::state_parser`]).
     game_parsed: Option<Box<dyn std::any::Any + Send>>,
     logic: Option<crate::logic::LogicSnapshot>,
+    /// The sounds the rules had asked for when the save was written (none: `None`).
+    sounds: Option<crate::module_sounds::SoundsSaved>,
     /// Navigation's state, decoded and shape-checked on the worker (restored once the loaded
     /// navmeshes are built: [`crate::nav::Nav::restore_state`]).
     nav: Option<Json>,
@@ -471,6 +473,10 @@ fn prepare_load(
         Some(b) => Some(crate::logic::LogicHost::parse_state(b).map_err(|e| SaveError::new(e.code, e.message.clone()).in_section("logic"))?),
         None => None,
     };
+    let sounds = match by_name.remove("sounds") {
+        Some(b) => Some(crate::module_sounds::ModuleSounds::parse_section(&b).map_err(|m| SaveError::new("corrupt_section", m).in_section("sounds"))?),
+        None => None,
+    };
     let nav = match by_name.remove("nav") {
         Some(b) => Some(crate::nav::parse_section(&b).map_err(|(code, m)| SaveError::new(code, m).in_section("nav"))?),
         None => None,
@@ -503,7 +509,7 @@ fn prepare_load(
     if game_parsed.is_some() {
         game_bytes = None;
     }
-    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, game_parsed, logic, nav, lex_live, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
+    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, game_parsed, logic, sounds, nav, lex_live, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
 }
 
 /// A save taken between ticks, ready to render and write on any thread.
@@ -823,7 +829,8 @@ impl Engine {
             meta.push(("label", Json::from(l.as_str())));
         }
         let mut sections = Vec::new();
-        for (n, d) in [("game", game), ("physics", physics), ("logic", logic), ("nav", nav), ("lex_live", lex_live)] {
+        let sounds = self.module_sounds.save_section();
+        for (n, d) in [("game", game), ("physics", physics), ("logic", logic), ("nav", nav), ("lex_live", lex_live), ("sounds", sounds)] {
             if let Some(data) = d {
                 sections.push(Section { name: n.into(), data });
             }
@@ -1015,6 +1022,8 @@ impl Engine {
         } else if !self.logic.is_empty() {
             notes.push(Json::from("the save has no module state; running modules keep theirs"));
         }
+        // What the rules had sounded is the save's, as the rest of the run is.
+        self.module_sounds.restore(p.sounds);
         // Navigation comes back once the loaded navmeshes are built (the clock is held until
         // then); its hash is checked then (nav_info last_restore).
         let mut nav_pending = false;
@@ -1028,6 +1037,10 @@ impl Engine {
         if let Some(state) = parsed {
             self.game_call(crate::sim_writes::GameCall::ApplyState(state));
         }
+        // A quit the game asked for before the load was asked in another run: the game the
+        // save brought back has asked for none (`specula find` loads a save after a way that
+        // quit, and the next way took that quit as its own).
+        self.script_quit = false;
         // The loaded world isn't a world folder: world_save names one.
         self.world_name = None;
         self.saved = None;

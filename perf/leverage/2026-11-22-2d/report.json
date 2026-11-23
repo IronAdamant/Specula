@@ -1,0 +1,1330 @@
+{
+  "leverage": 1,
+  "baseline": "plain",
+  "against_baseline": [
+    {
+      "job": "change",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 170723,
+      "baseline_weighted": 91320,
+      "times": 1.87,
+      "requests_times": 1.9,
+      "passed": "8.5 / 9",
+      "baseline_passed": "9.0 / 9"
+    },
+    {
+      "job": "medium",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 206722,
+      "baseline_weighted": 143556,
+      "times": 1.44,
+      "requests_times": 2.11,
+      "passed": "18.5 / 19",
+      "baseline_passed": "18.5 / 19"
+    },
+    {
+      "job": "small",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 109051,
+      "baseline_weighted": 64391,
+      "times": 1.69,
+      "requests_times": 1.75,
+      "passed": "14.0 / 14",
+      "baseline_passed": "14.0 / 14"
+    }
+  ],
+  "runs": [
+    {
+      "run": "change-engine-1",
+      "job": "change",
+      "arm": "engine",
+      "n": 1,
+      "from": "medium-engine-1",
+      "engine_build": "d663616f43+changes",
+      "builder": {
+        "tokens": 49115,
+        "tool_uses": 32,
+        "duration_s": 264.9,
+        "by_kind": {
+          "input": 58,
+          "cache_write": 43770,
+          "cache_read": 944976,
+          "output": 16742,
+          "requests": 29,
+          "context_at_end": 49115
+        },
+        "weighted": 232978,
+        "cost_usd": 0.4371136000000001,
+        "turns": 33,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 32,
+        "refused": 7,
+        "args_bytes": 5542,
+        "answer_bytes": 14861,
+        "by_tool": {
+          "(run)": 25,
+          "(check)": 4,
+          "(find)": 3
+        }
+      },
+      "left": {
+        "files": 28,
+        "bytes": 70026,
+        "text_lines": 1169,
+        "lines_by_kind": {
+          ".json": 419,
+          ".md": 412,
+          ".rs": 319,
+          ".toml": 19
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "The state's \"difficulty\" reads \"normal\" on the title and settings screens even when the saved or just-chosen difficulty is Hard or Easy; it becomes right only once a run starts.",
+        "The Language and Difficulty settings stop at the ends (Right on French stays French) rather than wrapping round. The order is right.",
+        "The settings frame shows a faint copy of the title text behind the 'Réglages' heading (the title screen showing through the settings screen)."
+      ],
+      "judge": {
+        "tokens": 66418,
+        "tool_uses": 41,
+        "duration_s": 510.2,
+        "by_kind": {
+          "input": 66,
+          "cache_write": 61073,
+          "cache_read": 1368376,
+          "output": 21497,
+          "requests": 33,
+          "context_at_end": 66418
+        },
+        "weighted": 320730,
+        "cost_usd": 1.1924631999999997,
+        "turns": 42,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 54,
+          "refused": 6,
+          "args_bytes": 75132,
+          "answer_bytes": 678203,
+          "by_tool": {
+            "(run)": 52,
+            "(check)": 2
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "change-engine-2",
+      "job": "change",
+      "arm": "engine",
+      "n": 2,
+      "from": "medium-engine-2",
+      "engine_build": "d663616f43+changes",
+      "builder": {
+        "tokens": 37451,
+        "tool_uses": 11,
+        "duration_s": 112,
+        "by_kind": {
+          "input": 22,
+          "cache_write": 32106,
+          "cache_read": 248135,
+          "output": 8700,
+          "requests": 11,
+          "context_at_end": 37451
+        },
+        "weighted": 108468,
+        "cost_usd": 0.2402815,
+        "turns": 12,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 10,
+        "refused": 1,
+        "args_bytes": 1335,
+        "answer_bytes": 5607,
+        "by_tool": {
+          "(run)": 9,
+          "(check)": 1
+        }
+      },
+      "left": {
+        "files": 26,
+        "bytes": 59130,
+        "text_lines": 1167,
+        "lines_by_kind": {
+          ".json": 425,
+          ".md": 393,
+          ".rs": 330,
+          ".toml": 19
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 7,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 8,
+          "of": 9
+        }
+      },
+      "defects": [
+        "Runner spawn gap is 0.75 s (45 ticks); the job list asks for 1.5 s (this is c01).",
+        "On the Settings screen Left/Right on Language stop at the ends (French then Right stays French), while Enter wraps around. Minor.",
+        "The state's 'screen' still reads 'hud' and 'pause' instead of 'play' and 'paused' (the m01 defect from before the change, not fixed).",
+        "The report has an extra key 'work_difficulty' beside 'difficulty'. Harmless.",
+        "The game ships no checks/ folder, so 'leverage check' on the game itself has nothing to play."
+      ],
+      "judge": {
+        "tokens": 68796,
+        "tool_uses": 37,
+        "duration_s": 453.3,
+        "by_kind": {
+          "input": 68,
+          "cache_write": 63451,
+          "cache_read": 1462633,
+          "output": 21532,
+          "requests": 34,
+          "context_at_end": 68796
+        },
+        "weighted": 333305,
+        "cost_usd": 1.2310466,
+        "turns": 38,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 42,
+          "refused": 2,
+          "args_bytes": 20585,
+          "answer_bytes": 146352,
+          "by_tool": {
+            "(run)": 42
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "c01",
+          "evidence": "Passive run seed 1, gate_health=100, sampled every 10-40 ticks: after wave 5, wave 6 sends 15 runners (kind runner, health 1 at Normal, x drops 0.75 per 15 ticks = 3 u/s), but they spawn at ticks 8506, 8551, 8596... every 45 ticks (0.75 s), not every 1.5 s (90 ticks). The rules use RUNNER_GAP = 45 (modules/work/src/lib.rs), and CHANGES.md says so."
+        }
+      ]
+    },
+    {
+      "run": "change-plain-1",
+      "job": "change",
+      "arm": "plain",
+      "n": 1,
+      "from": "medium-plain-1",
+      "engine_build": null,
+      "builder": {
+        "tokens": 32849,
+        "tool_uses": 12,
+        "duration_s": 67.8,
+        "by_kind": {
+          "input": 22,
+          "cache_write": 27504,
+          "cache_read": 228273,
+          "output": 8840,
+          "requests": 11,
+          "context_at_end": 32849
+        },
+        "weighted": 101429,
+        "cost_usd": 0.22128729999999996,
+        "turns": 13,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 5,
+        "bytes": 32466,
+        "text_lines": 786,
+        "lines_by_kind": {
+          ".json": 74,
+          ".md": 61,
+          ".py": 651
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "As before the change, the README frame command as written ('--settings out/settings.json ... --frame out/frame.png') crashes with FileNotFoundError in a fresh folder, because write_png does not create out/. This repeats the earlier m19 failure.",
+        "After a run ends (won/lost), the walkers and bolts stay in the state until the next Start (CHANGES.md says so too)."
+      ],
+      "judge": {
+        "tokens": 58903,
+        "tool_uses": 40,
+        "duration_s": 200.9,
+        "by_kind": {
+          "input": 54,
+          "cache_write": 53558,
+          "cache_read": 1060326,
+          "output": 17294,
+          "requests": 27,
+          "context_at_end": 58903
+        },
+        "weighted": 259504,
+        "cost_usd": 0.9866252000000001,
+        "turns": 41,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "change-plain-2",
+      "job": "change",
+      "arm": "plain",
+      "n": 2,
+      "from": "medium-plain-2",
+      "engine_build": null,
+      "builder": {
+        "tokens": 28601,
+        "tool_uses": 15,
+        "duration_s": 52.1,
+        "by_kind": {
+          "input": 20,
+          "cache_write": 23256,
+          "cache_read": 180245,
+          "output": 6819,
+          "requests": 10,
+          "context_at_end": 28601
+        },
+        "weighted": 81210,
+        "cost_usd": 0.1792785,
+        "turns": 16,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 6,
+        "bytes": 28545,
+        "text_lines": 694,
+        "lines_by_kind": {
+          ".json": 75,
+          ".md": 59,
+          ".py": 560
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "README.md is partly stale: lists only en/es files, says settings store volume and language, the state field list lacks difficulty, and 'What I checked' still says 5 waves / 450.",
+        "The bitmap font draws every diacritic as a bar above the letter, so the French cedilla in 'Français' appears above the c rather than below it.",
+        "When stdout is piped on Windows the headless JSON is printed in the locale code page (cp1252), not UTF-8, so accented strings must be decoded as cp1252 (present before the change too).",
+        "On the won/lost screens the overlay box does not hide the guard and HUD behind it (cosmetic)."
+      ],
+      "judge": {
+        "tokens": 56495,
+        "tool_uses": 29,
+        "duration_s": 207.1,
+        "by_kind": {
+          "input": 42,
+          "cache_write": 51150,
+          "cache_read": 731977,
+          "output": 15654,
+          "requests": 21,
+          "context_at_end": 56495
+        },
+        "weighted": 215447,
+        "cost_usd": 0.8688434,
+        "turns": 30,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "medium-engine-1",
+      "job": "medium",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "d663616f43+changes",
+      "builder": {
+        "tokens": 49678,
+        "tool_uses": 30,
+        "duration_s": 248.6,
+        "by_kind": {
+          "input": 46,
+          "cache_write": 44333,
+          "cache_read": 799694,
+          "output": 20061,
+          "requests": 23,
+          "context_at_end": 49678
+        },
+        "weighted": 235737,
+        "cost_usd": 0.45800340000000017,
+        "turns": 31,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 20,
+        "refused": 3,
+        "args_bytes": 2164,
+        "answer_bytes": 10453,
+        "by_tool": {
+          "(run)": 18,
+          "(find)": 2,
+          "engine.stop": 1
+        }
+      },
+      "left": {
+        "files": 25,
+        "bytes": 61830,
+        "text_lines": 1042,
+        "lines_by_kind": {
+          ".json": 362,
+          ".md": 384,
+          ".rs": 277,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 47283,
+        "text_lines": 832,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 335,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 17,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 19,
+          "of": 19
+        }
+      },
+      "defects": [
+        "The guard's centre is clamped to 0..12, so at the edges half the guard is drawn outside the field (at y=12 it is half off-screen under the HUD).",
+        "After the lost screen, or after Title from pause, the report still lists the frozen walkers of the abandoned run (title screen state shows walkers).",
+        "Start is drawn in a filled blue style on the title even when not selected, which competes with the focus outline as the 'chosen' marker.",
+        "A faint leftover panel is visible behind the settings box in the settings frame.",
+        "Any non-held input (enter, escape) releases held shoot/up/down, so holding shoot across a pause needs re-giving it (documented in README)."
+      ],
+      "judge": {
+        "tokens": 74438,
+        "tool_uses": 50,
+        "duration_s": 663.1,
+        "by_kind": {
+          "input": 86,
+          "cache_write": 69093,
+          "cache_read": 1913016,
+          "output": 22768,
+          "requests": 43,
+          "context_at_end": 74438
+        },
+        "weighted": 391594,
+        "cost_usd": 1.3910512,
+        "turns": 51,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 58,
+          "refused": 5,
+          "args_bytes": 69932,
+          "answer_bytes": 653329,
+          "by_tool": {
+            "(run)": 58
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "medium-engine-2",
+      "job": "medium",
+      "arm": "engine",
+      "n": 2,
+      "from": null,
+      "engine_build": "d663616f43+changes",
+      "builder": {
+        "tokens": 44378,
+        "tool_uses": 23,
+        "duration_s": 179.3,
+        "by_kind": {
+          "input": 30,
+          "cache_write": 39033,
+          "cache_read": 442659,
+          "output": 16924,
+          "requests": 15,
+          "context_at_end": 44378
+        },
+        "weighted": 177707,
+        "cost_usd": 0.3696979000000001,
+        "turns": 24,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 10,
+        "refused": 1,
+        "args_bytes": 3452,
+        "answer_bytes": 7841,
+        "by_tool": {
+          "(run)": 9,
+          "(find)": 1
+        }
+      },
+      "left": {
+        "files": 24,
+        "bytes": 52962,
+        "text_lines": 1031,
+        "lines_by_kind": {
+          ".json": 358,
+          ".md": 371,
+          ".rs": 283,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 47283,
+        "text_lines": 832,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 335,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 17,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 2
+        },
+        "all": {
+          "passed": 18,
+          "of": 19
+        }
+      },
+      "defects": [
+        "The state's screen value is 'hud' during play and 'pause' when paused, not the brief's 'play' and 'paused'.",
+        "On the title screen after leaving a run, the state still reports the last run's walkers, bolts, score and wave (stale values until Start).",
+        "texts on settings, pause and end screens also list the strings of the screen beneath (e.g. the title's strings on settings, the HUD's on pause); the README admits this.",
+        "The Start button is drawn in the primary blue style whether or not it has focus, so on the title screen two buttons look highlighted; focus is shown only by the outline.",
+        "Default volume is 8 (the brief names no default; noted only)."
+      ],
+      "judge": {
+        "tokens": 66474,
+        "tool_uses": 31,
+        "duration_s": 311.9,
+        "by_kind": {
+          "input": 48,
+          "cache_write": 61129,
+          "cache_read": 992659,
+          "output": 18212,
+          "requests": 24,
+          "context_at_end": 66474
+        },
+        "weighted": 266785,
+        "cost_usd": 1.0519958,
+        "turns": 32,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 27,
+          "refused": 1,
+          "args_bytes": 5856,
+          "answer_bytes": 41383,
+          "by_tool": {
+            "(run)": 27
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "m01",
+          "evidence": "README's play command (from work/, --ticks 400 --seed 1 --settings ... --inputs 0:enter,...) runs, starts at screen 'title' (tick 0 state printed) and prints one JSON object with all the brief's keys, but during play it prints \"screen\":\"hud\" and when paused \"screen\":\"pause\"; the brief's JSON allows only title, settings, play, paused, won, lost."
+        }
+      ]
+    },
+    {
+      "run": "medium-plain-1",
+      "job": "medium",
+      "arm": "plain",
+      "n": 1,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 32787,
+        "tool_uses": 11,
+        "duration_s": 125.1,
+        "by_kind": {
+          "input": 18,
+          "cache_write": 27442,
+          "cache_read": 179776,
+          "output": 17955,
+          "requests": 9,
+          "context_at_end": 32787
+        },
+        "weighted": 142073,
+        "cost_usd": 0.3073316,
+        "turns": 12,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 4,
+        "bytes": 26553,
+        "text_lines": 686,
+        "lines_by_kind": {
+          ".json": 42,
+          ".md": 32,
+          ".py": 612
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 16,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 18,
+          "of": 19
+        }
+      },
+      "defects": [
+        "The frame writer does not create its folder. When the frame path's folder is missing, the run crashes before it prints the state, so the JSON is lost too.",
+        "On the won, lost and paused screens the HUD (score, wave, gate) is drawn behind the panel. On won/lost those HUD strings are on screen but missing from 'texts' (paused does include them)."
+      ],
+      "judge": {
+        "tokens": 50109,
+        "tool_uses": 37,
+        "duration_s": 173.2,
+        "by_kind": {
+          "input": 52,
+          "cache_write": 44764,
+          "cache_read": 894324,
+          "output": 15152,
+          "requests": 26,
+          "context_at_end": 50109
+        },
+        "weighted": 221199,
+        "cost_usd": 0.8402248,
+        "turns": 38,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "m19",
+          "evidence": "README explains how to play and gives the commands. I ran its frame command exactly as written ('... --settings out/settings.json --script script.json --frame out/frame.png') in a fresh folder. It crashed with FileNotFoundError: 'out/frame.png', because the folder out/ does not exist and write_png does not create it. It wrote no PNG and printed no JSON. The headless command without --frame does work as written."
+        }
+      ]
+    },
+    {
+      "run": "medium-plain-2",
+      "job": "medium",
+      "arm": "plain",
+      "n": 2,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 30741,
+        "tool_uses": 12,
+        "duration_s": 131.7,
+        "by_kind": {
+          "input": 18,
+          "cache_write": 25396,
+          "cache_read": 177948,
+          "output": 19096,
+          "requests": 9,
+          "context_at_end": 30741
+        },
+        "weighted": 145038,
+        "cost_usd": 0.3103747999999999,
+        "turns": 13,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 4,
+        "bytes": 24110,
+        "text_lines": 620,
+        "lines_by_kind": {
+          ".json": 42,
+          ".md": 41,
+          ".py": 537
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 17,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 19,
+          "of": 19
+        }
+      },
+      "defects": [
+        "On won/lost screens the frame still shows the HUD (score, wave, gate), but 'texts' lists only the 3 result strings, so texts is not every string on screen there.",
+        "Headless JSON is printed with ensure_ascii=False in the console code page (cp1252 on this machine), not UTF-8. A reader that expects UTF-8 fails on Espanol/Titulo.",
+        "Bolt hit range uses float guard_y: a guard at a nominal 4.6 (|dy| = 0.6) misses the lane-4 walker due to rounding (6 - 14*0.1 = 4.6000000000000005).",
+        "The window mode (play, tkinter) was not run by the builder; its text uses Tk fonts rather than the bitmap font of the frame. No sound is produced although volume is stored."
+      ],
+      "judge": {
+        "tokens": 51166,
+        "tool_uses": 34,
+        "duration_s": 181.4,
+        "by_kind": {
+          "input": 36,
+          "cache_write": 45821,
+          "cache_read": 560819,
+          "output": 16054,
+          "requests": 18,
+          "context_at_end": 51166
+        },
+        "weighted": 193664,
+        "cost_usd": 0.7999558,
+        "turns": 35,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "small-engine-1",
+      "job": "small",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "d663616f43",
+      "builder": {
+        "tokens": 33864,
+        "tool_uses": 18,
+        "duration_s": 105.6,
+        "by_kind": {
+          "input": 24,
+          "cache_write": 28519,
+          "cache_read": 279220,
+          "output": 10099,
+          "requests": 12,
+          "context_at_end": 33864
+        },
+        "weighted": 114090,
+        "cost_usd": 0.243036,
+        "turns": 19,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 8,
+        "refused": 1,
+        "args_bytes": 588,
+        "answer_bytes": 2575,
+        "by_tool": {
+          "(run)": 8
+        }
+      },
+      "left": {
+        "files": 23,
+        "bytes": 47544,
+        "text_lines": 871,
+        "lines_by_kind": {
+          ".json": 322,
+          ".md": 370,
+          ".rs": 160,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 47283,
+        "text_lines": 832,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 335,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "A restart given during a run that is not over is ignored (README run with 500:restart in play: nothing reset). The brief does not require it, but the README's own example command implies it.",
+        "On the tick of the 5th catch, pieces handled later in that same tick already move at the new speed (the speed is re-read per piece in the loop). This is minor."
+      ],
+      "judge": {
+        "tokens": 41415,
+        "tool_uses": 19,
+        "duration_s": 201.8,
+        "by_kind": {
+          "input": 34,
+          "cache_write": 36070,
+          "cache_read": 449370,
+          "output": 9816,
+          "requests": 17,
+          "context_at_end": 41415
+        },
+        "weighted": 139138,
+        "cost_usd": 0.5748899999999999,
+        "turns": 20,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 21,
+          "refused": 0,
+          "args_bytes": 1867,
+          "answer_bytes": 14377,
+          "by_tool": {
+            "(run)": 21
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "small-engine-2",
+      "job": "small",
+      "arm": "engine",
+      "n": 2,
+      "from": null,
+      "engine_build": "d663616f43",
+      "builder": {
+        "tokens": 33426,
+        "tool_uses": 16,
+        "duration_s": 94.5,
+        "by_kind": {
+          "input": 18,
+          "cache_write": 28081,
+          "cache_read": 187070,
+          "output": 10037,
+          "requests": 9,
+          "context_at_end": 33426
+        },
+        "weighted": 104011,
+        "cost_usd": 0.231437,
+        "turns": 17,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 5,
+        "refused": 0,
+        "args_bytes": 288,
+        "answer_bytes": 2643,
+        "by_tool": {
+          "(run)": 5
+        }
+      },
+      "left": {
+        "files": 24,
+        "bytes": 67190,
+        "text_lines": 864,
+        "lines_by_kind": {
+          ".json": 321,
+          ".md": 366,
+          ".rs": 158,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 47283,
+        "text_lines": 832,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 335,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "A piece whose bottom lands exactly on y 0 is counted as missed one tick late (tick 227 instead of 226) because the float sum leaves bottom at 3.5e-14 above 0; harmless.",
+        "README frame command writes frame.png into whatever folder it is run from (in the work folder it overwrites the shipped frame.png); not stated."
+      ],
+      "judge": {
+        "tokens": 37754,
+        "tool_uses": 20,
+        "duration_s": 180.3,
+        "by_kind": {
+          "input": 36,
+          "cache_write": 32409,
+          "cache_read": 465603,
+          "output": 9005,
+          "requests": 18,
+          "context_at_end": 37754
+        },
+        "weighted": 132133,
+        "cost_usd": 0.5326366,
+        "turns": 21,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 14,
+          "refused": 0,
+          "args_bytes": 1295,
+          "answer_bytes": 10492,
+          "by_tool": {
+            "(run)": 14
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "small-plain-1",
+      "job": "small",
+      "arm": "plain",
+      "n": 1,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 18460,
+        "tool_uses": 8,
+        "duration_s": 62.8,
+        "by_kind": {
+          "input": 14,
+          "cache_write": 13115,
+          "cache_read": 86893,
+          "output": 8353,
+          "requests": 7,
+          "context_at_end": 18460
+        },
+        "weighted": 66862,
+        "cost_usd": 0.14470729999999998,
+        "turns": 9,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 5,
+        "bytes": 19622,
+        "text_lines": 278,
+        "lines_by_kind": {
+          ".md": 29,
+          ".py": 249
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "The game-over overlay box hides any piece behind it (the piece at (7.5,10.1) in the over frame is not visible).",
+        "On the tick that ends the run, pieces after the third missed piece in the list are not moved, while earlier ones are. This is a one-step inconsistency.",
+        "A piece whose bottom sits exactly on the bottom edge (y 0.5 at tick 225) is counted as missed one tick later, because of float rounding.",
+        "The interactive tkinter play mode was not tested by the builder. The judge did not open it either (no windows allowed)."
+      ],
+      "judge": {
+        "tokens": 32686,
+        "tool_uses": 21,
+        "duration_s": 118.9,
+        "by_kind": {
+          "input": 34,
+          "cache_write": 27341,
+          "cache_read": 375425,
+          "output": 8997,
+          "requests": 17,
+          "context_at_end": 32686
+        },
+        "weighted": 116738,
+        "cost_usd": 0.473889,
+        "turns": 22,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "small-plain-2",
+      "job": "small",
+      "arm": "plain",
+      "n": 2,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 17705,
+        "tool_uses": 5,
+        "duration_s": 56.4,
+        "by_kind": {
+          "input": 10,
+          "cache_write": 12360,
+          "cache_read": 54354,
+          "output": 8205,
+          "requests": 5,
+          "context_at_end": 17705
+        },
+        "weighted": 61920,
+        "cost_usd": 0.1369454,
+        "turns": 6,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 4,
+        "bytes": 18026,
+        "text_lines": 322,
+        "lines_by_kind": {
+          ".md": 30,
+          ".py": 292
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "The restart tick does not advance the game: the reset uses up that tick, so the new run's first piece appears one tick after the restart tick, not at it.",
+        "When the run ends, every piece on screen is removed at once, so the game-over frame shows no pieces where they were.",
+        "The play window (tkinter) was not opened by the builder or by the judge; keyboard play and the Enter restart in the window are untested."
+      ],
+      "judge": {
+        "tokens": 35532,
+        "tool_uses": 21,
+        "duration_s": 113.3,
+        "by_kind": {
+          "input": 30,
+          "cache_write": 30187,
+          "cache_read": 333559,
+          "output": 8659,
+          "requests": 15,
+          "context_at_end": 35532
+        },
+        "weighted": 114415,
+        "cost_usd": 0.4815078,
+        "turns": 22,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    }
+  ]
+}

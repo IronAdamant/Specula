@@ -1,0 +1,583 @@
+{
+  "leverage": 1,
+  "baseline": "none",
+  "against_baseline": [
+    {
+      "job": "kit",
+      "arm": "found",
+      "baseline": "none",
+      "weighted": 289637,
+      "baseline_weighted": null,
+      "times": null,
+      "requests_times": null,
+      "passed": "9.0 / 9",
+      "baseline_passed": null
+    },
+    {
+      "job": "kit",
+      "arm": "guided",
+      "baseline": "none",
+      "weighted": 166415,
+      "baseline_weighted": null,
+      "times": null,
+      "requests_times": null,
+      "passed": "9.0 / 9",
+      "baseline_passed": null
+    }
+  ],
+  "runs": [
+    {
+      "run": "kit-found-1",
+      "job": "kit",
+      "arm": "found",
+      "n": 1,
+      "from": null,
+      "engine_build": "76b6e777",
+      "builder": {
+        "tokens": 52514,
+        "tool_uses": 34,
+        "duration_s": 149,
+        "by_kind": {
+          "input": 58,
+          "cache_write": 47169,
+          "cache_read": 873046,
+          "output": 14543,
+          "requests": 29,
+          "context_at_end": 52514
+        },
+        "weighted": 219039,
+        "cost_usd": 0.4215266,
+        "turns": 35,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 45,
+        "refused": 3,
+        "args_bytes": 1770,
+        "answer_bytes": 94127,
+        "by_tool": {
+          "model_build": 14,
+          "model_schema": 6,
+          "(tools)": 5,
+          "engine.stop": 5,
+          "sight_frame": 4,
+          "world_delete": 4,
+          "world_spawn": 4,
+          "engine.start": 3,
+          "formae_get": 3,
+          "studio_sheet": 3,
+          "style_check": 1,
+          "world_list": 1
+        }
+      },
+      "left": {
+        "files": 33,
+        "bytes": 117019,
+        "text_lines": 1057,
+        "lines_by_kind": {
+          ".json": 541,
+          ".md": 304,
+          ".py": 76,
+          ".rs": 109,
+          ".toml": 27
+        }
+      },
+      "started_with": {
+        "files": 22,
+        "bytes": 39544,
+        "text_lines": 736,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 239,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 7,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "Because of the front-only camera, the coin's frame cannot show its raised rim (a 0.004 m step): it reads as a plain disc. The README admits this.",
+        "The heart's tip is a little blunt, and the heart has 8654 triangles where the other props have 36-576.",
+        "The frames command leaves a run-* folder of engine captures in work/captures every time it runs.",
+        "The README says the gear's tip radius is 0.15, but the recipe uses 0.15033. This is harmless, because the bounds still come out at 0.300."
+      ],
+      "judge": {
+        "tokens": 38667,
+        "tool_uses": 31,
+        "duration_s": 146,
+        "by_kind": {
+          "input": 44,
+          "cache_write": 33322,
+          "cache_read": 576243,
+          "output": 9961,
+          "requests": 22,
+          "context_at_end": 38667
+        },
+        "weighted": 149126,
+        "cost_usd": 0.5812206000000001,
+        "turns": 32,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 30,
+          "refused": 1,
+          "args_bytes": 1858,
+          "answer_bytes": 38044,
+          "by_tool": {
+            "sight_frame": 10,
+            "world_delete": 7,
+            "world_spawn": 7,
+            "model_build": 4,
+            "engine.start": 3,
+            "engine.stop": 3,
+            "(tools)": 2
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "kit-found-2",
+      "job": "kit",
+      "arm": "found",
+      "n": 2,
+      "from": null,
+      "engine_build": "76b6e777",
+      "builder": {
+        "tokens": 78604,
+        "tool_uses": 46,
+        "duration_s": 191.5,
+        "by_kind": {
+          "input": 68,
+          "cache_write": 73259,
+          "cache_read": 1810922,
+          "output": 17500,
+          "requests": 34,
+          "context_at_end": 78604
+        },
+        "weighted": 360234,
+        "cost_usd": 0.6492642000000001,
+        "turns": 47,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 66,
+        "refused": 13,
+        "args_bytes": 2401,
+        "answer_bytes": 160525,
+        "by_tool": {
+          "(tools)": 18,
+          "model_build": 18,
+          "sight_frame": 6,
+          "world_spawn": 6,
+          "model_schema": 5,
+          "studio_sheet": 4,
+          "world_delete": 4,
+          "engine.start": 3,
+          "engine.stop": 3,
+          "formae_get": 3,
+          "formae_list": 1,
+          "world_tree": 1
+        }
+      },
+      "left": {
+        "files": 33,
+        "bytes": 114710,
+        "text_lines": 995,
+        "lines_by_kind": {
+          ".json": 472,
+          ".md": 296,
+          ".py": 95,
+          ".rs": 109,
+          ".toml": 23
+        }
+      },
+      "started_with": {
+        "files": 22,
+        "bytes": 39544,
+        "text_lines": 736,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 239,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 7,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "Heart sides (seen from the side, judge-scratch/heart_side.png) have a ragged, jagged seam from the sculpt grid, and a faint centre crease shows in the front frame. It has 5588 triangles, which is heavy for a pickup.",
+        "style.json says every prop has 'a small soft edge so it catches light', but the gear, star and coin have hard, unbevelled edges. The heart alone is soft.",
+        "The gear renders dark grey in its front frame (steel metal in front light), so it reads duller than the other three.",
+        "The coin's rim is only 3 mm proud and cannot be seen in the README's front frame. Only a view at an angle shows it.",
+        "The frame and build commands hard-code the examen path and the run folder of this machine (EXAMEN/KIT_RUN can override them)."
+      ],
+      "judge": {
+        "tokens": 33608,
+        "tool_uses": 21,
+        "duration_s": 113.2,
+        "by_kind": {
+          "input": 28,
+          "cache_write": 28263,
+          "cache_read": 305323,
+          "output": 6471,
+          "requests": 14,
+          "context_at_end": 33608
+        },
+        "weighted": 98244,
+        "cost_usd": 0.41670060000000003,
+        "turns": 22,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 37,
+          "refused": 5,
+          "args_bytes": 2073,
+          "answer_bytes": 38506,
+          "by_tool": {
+            "sight_frame": 11,
+            "world_delete": 8,
+            "world_spawn": 8,
+            "(tools)": 6,
+            "model_build": 4,
+            "engine.start": 3,
+            "engine.stop": 3
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "kit-guided-1",
+      "job": "kit",
+      "arm": "guided",
+      "n": 1,
+      "from": null,
+      "engine_build": "76b6e777",
+      "builder": {
+        "tokens": 42169,
+        "tool_uses": 28,
+        "duration_s": 140.8,
+        "by_kind": {
+          "input": 44,
+          "cache_write": 36824,
+          "cache_read": 585071,
+          "output": 13869,
+          "requests": 22,
+          "context_at_end": 42169
+        },
+        "weighted": 173926,
+        "cost_usd": 0.3445810999999999,
+        "turns": 29,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 40,
+        "refused": 4,
+        "args_bytes": 1109,
+        "answer_bytes": 76927,
+        "by_tool": {
+          "model_build": 12,
+          "studio_sheet": 9,
+          "model_schema": 6,
+          "engine.start": 5,
+          "(tools)": 4,
+          "engine.stop": 3,
+          "formae_get": 3,
+          "studio_check": 3,
+          "formae_list": 1,
+          "sight_frame": 1,
+          "studio_stage": 1
+        }
+      },
+      "left": {
+        "files": 32,
+        "bytes": 435702,
+        "text_lines": 980,
+        "lines_by_kind": {
+          ".json": 473,
+          ".md": 281,
+          ".py": 98,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 22,
+        "bytes": 39544,
+        "text_lines": 736,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 239,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 7,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "The engine's own style check (studio_check / sheet caption) reports a neutral_saturation error for every prop. The builder knew about this and did not fix it.",
+        "The heart has a visible vertical crease down its middle where the two round cones were joined. Its height is 0.274 m.",
+        "The coin's raised rim stands only 0.005 m above each face, so it barely shows in the flat front frame (just a thin ring line).",
+        "The gear and star bottoms sit a little above y = 0 (by up to 2e-5 m) because the outline is sampled."
+      ],
+      "judge": {
+        "tokens": 30307,
+        "tool_uses": 20,
+        "duration_s": 107.4,
+        "by_kind": {
+          "input": 32,
+          "cache_write": 24962,
+          "cache_read": 346793,
+          "output": 6141,
+          "requests": 16,
+          "context_at_end": 30307
+        },
+        "weighted": 96619,
+        "cost_usd": 0.39200260000000003,
+        "turns": 21,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 13,
+          "refused": 2,
+          "args_bytes": 703,
+          "answer_bytes": 30825,
+          "by_tool": {
+            "studio_sheet": 8,
+            "engine.stop": 4,
+            "model_build": 4,
+            "engine.start": 3,
+            "(tools)": 1
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "kit-guided-2",
+      "job": "kit",
+      "arm": "guided",
+      "n": 2,
+      "from": null,
+      "engine_build": "76b6e777",
+      "builder": {
+        "tokens": 43080,
+        "tool_uses": 28,
+        "duration_s": 126.6,
+        "by_kind": {
+          "input": 40,
+          "cache_write": 37735,
+          "cache_read": 510601,
+          "output": 12127,
+          "requests": 20,
+          "context_at_end": 43080
+        },
+        "weighted": 158904,
+        "cost_usd": 0.3233501,
+        "turns": 29,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 39,
+        "refused": 3,
+        "args_bytes": 1264,
+        "answer_bytes": 72021,
+        "by_tool": {
+          "model_build": 19,
+          "model_schema": 5,
+          "studio_stage": 5,
+          "engine.stop": 4,
+          "formae_get": 4,
+          "(tools)": 3,
+          "engine.start": 3,
+          "studio_sheet": 2,
+          "formae_list": 1
+        }
+      },
+      "left": {
+        "files": 32,
+        "bytes": 682786,
+        "text_lines": 984,
+        "lines_by_kind": {
+          ".json": 492,
+          ".md": 287,
+          ".py": 77,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 22,
+        "bytes": 39544,
+        "text_lines": 736,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 239,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 7,
+          "of": 7
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "The engine's own style check fails heart, star and coin (neutral_saturation: 100% of each surface is a saturated colour). Only the gear passes. The README says this is deliberate.",
+        "In the colour front frame the coin's rim is only a faint line. It is clearly visible only in clay passes or at an angle.",
+        "The heart has a visible vertical crease down its middle where the two sculpted lobes are smoothly unioned.",
+        "The star is 0.285 tall against 0.3 wide. The builder read '0.3 across' as its width."
+      ],
+      "judge": {
+        "tokens": 32272,
+        "tool_uses": 20,
+        "duration_s": 94.3,
+        "by_kind": {
+          "input": 28,
+          "cache_write": 26927,
+          "cache_read": 270240,
+          "output": 5677,
+          "requests": 14,
+          "context_at_end": 32272
+        },
+        "weighted": 89096,
+        "cost_usd": 0.38311599999999996,
+        "turns": 21,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 10,
+          "refused": 0,
+          "args_bytes": 608,
+          "answer_bytes": 26480,
+          "by_tool": {
+            "model_build": 4,
+            "studio_stage": 4,
+            "engine.start": 3,
+            "engine.stop": 3,
+            "studio_sheet": 2
+          }
+        }
+      },
+      "failed": []
+    }
+  ]
+}

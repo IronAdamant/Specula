@@ -24,8 +24,12 @@ use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
 /// Bumped when the layout changes. Version 2 adds the joint settings and joints' hidden state
 /// (warm starts, last state, the step that solved them); version 1 snapshots (no joints) still
-/// load. Others are refused with `unsupported_version`.
-pub const SNAPSHOT_VERSION: u32 = 2;
+/// load. Version 3 adds, to each contact, the fastest its two bodies closed while it formed
+/// (what its begin event says: the rules of a game hear it, so a restored run must say the
+/// same); in an older snapshot it is 0. Version 4 adds, to each body, how much of a
+/// carrying kinematic body's speed it has been given (`ColliderDesc::carries`); in an older snapshot
+/// it is zero. Others are refused with `unsupported_version`.
+pub const SNAPSHOT_VERSION: u32 = 4;
 
 /// Why a joint wasn't solved, as saved (index + 1; 0: it was).
 const INACTIVE: [&str; 4] = ["missing_body", "asleep", "no_dynamic_body", "cosmetic_link"];
@@ -116,6 +120,19 @@ fn r_settings(r: &mut ByteReader<'_>, version: u32) -> Result<Settings, DecodeEr
     }
     // Threads: at least one, and no more than a machine has (the results never depend on it).
     counts[3] = counts[3].clamp(1, 64);
+    // A save is bytes from a disk: a setting out of its range is refused here, as a game file's
+    // is where it is read. Nothing after this checks them (they are not in the hash), and a
+    // substep count with one byte wrong would have the next step run for hours.
+    let bad = |what: String| DecodeError::new("invalid", r.offset(), f, what);
+    if !(1..=crate::space::MAX_SUBSTEPS).contains(&substeps) {
+        return Err(bad(format!("substeps is 1 to {}, not {substeps}", crate::space::MAX_SUBSTEPS)));
+    }
+    if !crate::math::is_finite(gravity) {
+        return Err(bad("gravity is not a finite number".to_owned()));
+    }
+    if let Some(i) = v.iter().chain(&[joint_hertz, joint_damping_ratio]).position(|x| !(x.is_finite() && *x >= 0.0)) {
+        return Err(bad(format!("setting {i} of the twelve numbers is not a finite number of zero or more")));
+    }
     Ok(Settings {
         joint_hertz,
         joint_damping_ratio,
@@ -255,6 +272,7 @@ struct BodyState {
     island: u32,
     target: Option<Pose>,
     declared_velocity: (Vec3, Vec3),
+    carried: Vec3,
     inner_radius: f32,
     outer_radius: f32,
     c0: Vec3,
@@ -299,6 +317,7 @@ impl Space {
             }
             w.vec3(b.declared_velocity.0);
             w.vec3(b.declared_velocity.1);
+            w.vec3(b.carried);
             w.f32(b.inner_radius);
             w.f32(b.outer_radius);
             w.vec3(b.c0);
@@ -321,6 +340,7 @@ impl Space {
             w.u64(kb);
             w.bool(c.touching);
             w.bool(c.trigger);
+            w.f32(c.approach);
             w.f32(c.friction);
             w.f32(c.restitution);
             c.sat.save(w);
@@ -389,6 +409,9 @@ impl Space {
         let settings = r_settings(r, version).map_err(decode)?;
         let steps = r.u64("steps").map_err(decode)?;
         let dt = r.f32("dt").map_err(decode)?;
+        if !(dt.is_finite() && dt >= 0.0) {
+            return Err(decode(DecodeError::new("invalid", r.offset(), "dt", "the last step's length is not a finite number of zero or more".to_owned())));
+        }
         let next_island = r.u32("next_island").map_err(decode)?;
         let refused = r.u64("refused").map_err(decode)?.min(u64::from(u32::MAX)) as usize;
         // Bodies: at least ~200 bytes each.
@@ -426,6 +449,7 @@ impl Space {
             let island = r.u32(f).map_err(d)?;
             let target = if r.bool(f).map_err(d)? { Some(r_pose(r, f).map_err(d)?) } else { None };
             let declared_velocity = (r.vec3(f).map_err(d)?, r.vec3(f).map_err(d)?);
+            let carried = if version >= 4 { r.vec3(f).map_err(d)? } else { Vec3::ZERO };
             let inner_radius = r.f32(f).map_err(d)?;
             let outer_radius = r.f32(f).map_err(d)?;
             let c0 = r.vec3(f).map_err(d)?;
@@ -451,7 +475,7 @@ impl Space {
             let q_ok = |q: Quat| q.x.is_finite() && q.y.is_finite() && q.z.is_finite() && q.w.is_finite();
             let fat_ok = fat.is_none_or(|(_, f)| finite3(f.min) && finite3(f.max) && f.min.x <= f.max.x && f.min.y <= f.max.y && f.min.z <= f.max.z);
             let target_ok = target.is_none_or(|t| finite3(t.p) && q_ok(t.q));
-            let all = [pose.p, velocity, angular_velocity, com, center, declared_velocity.0, declared_velocity.1, c0];
+            let all = [pose.p, velocity, angular_velocity, com, center, declared_velocity.0, declared_velocity.1, carried, c0];
             if !(all.iter().all(|v| finite3(*v)) && q_ok(pose.q) && q_ok(q0) && fat_ok && target_ok && sleep_time.is_finite() && inv_mass.is_finite() && inner_radius.is_finite() && outer_radius.is_finite()) {
                 return Err(decode(r.error("invalid", f, format!("body {key} has a number that isn't finite (or an inside-out box)"))));
             }
@@ -471,6 +495,7 @@ impl Space {
                 island,
                 target,
                 declared_velocity,
+                carried,
                 inner_radius,
                 outer_radius,
                 c0,
@@ -500,6 +525,7 @@ impl Space {
             }
             let touching = r.bool(f).map_err(d)?;
             let trigger = r.bool(f).map_err(d)?;
+            let approach = if version >= 3 { r.f32(f).map_err(d)? } else { 0.0 };
             let friction = r.f32(f).map_err(d)?;
             let restitution = r.f32(f).map_err(d)?;
             let sat = SatCache::load(r).map_err(d)?;
@@ -517,7 +543,7 @@ impl Space {
                 };
             }
             let cosmetic = ba.desc.cosmetic || bb.desc.cosmetic;
-            contacts.push(Contact { key: (ka, kb), a: sa, b: sb, points, len, touching, trigger, friction, restitution, sat, cosmetic });
+            contacts.push(Contact { key: (ka, kb), a: sa, b: sb, points, len, touching, trigger, friction, restitution, sat, cosmetic, approach });
         }
         let keys = |r: &mut ByteReader<'_>, f: &str, max: usize| -> Result<Vec<u64>, PhysicsError> {
             let n = r.count(f, max, 8).map_err(decode)?;
@@ -638,6 +664,7 @@ impl Space {
             b.island = st.island;
             b.target = st.target;
             b.declared_velocity = st.declared_velocity;
+            b.carried = st.carried;
             b.inner_radius = st.inner_radius;
             b.outer_radius = st.outer_radius;
             b.c0 = st.c0;
@@ -736,6 +763,85 @@ mod tests {
         assert_eq!(wa.bytes(), wb.bytes());
     }
 
+    /// The saved bytes of the nine-body scene after fifty steps.
+    fn saved() -> (Vec<u64>, Vec<u8>) {
+        let keys: Vec<u64> = (1..=9).collect();
+        let mut a = scene(&keys);
+        for _ in 0..50 {
+            a.step(1.0 / 60.0);
+        }
+        let mut w = ByteWriter::new();
+        a.save_state(&mut w);
+        (keys, w.into_bytes())
+    }
+
+    /// A save is bytes from a disk. Its settings were taken as read (found by a second reader,
+    /// 2026-11-22: with the high byte of the substep count changed, the restore answered in
+    /// microseconds and the next step did not come back within a minute).
+    #[test]
+    fn a_snapshot_whose_settings_are_out_of_range_is_refused() {
+        let (keys, bytes) = saved();
+        // The layout this test leans on: the version, gravity, then the substep count.
+        assert_eq!(bytes[16..20], Settings::default().substeps.to_le_bytes());
+        let refused = |at: usize, with: &[u8]| {
+            let mut bad = bytes.clone();
+            bad[at..at + with.len()].copy_from_slice(with);
+            let e = scene(&keys).restore_state(&mut ByteReader::new(&bad)).unwrap_err();
+            (e.code, e.message)
+        };
+        for substeps in [0u32, MAX_SUBSTEPS + 1, 4 | 1 << 24, u32::MAX] {
+            let (code, message) = refused(16, &substeps.to_le_bytes());
+            assert!(code == "bad_snapshot" && message.contains("substeps"), "{substeps}: {code}: {message}");
+        }
+        assert_eq!(scene(&keys).restore_state(&mut ByteReader::new(&{
+            let mut most = bytes.clone();
+            most[16..20].copy_from_slice(&MAX_SUBSTEPS.to_le_bytes());
+            most
+        })), Ok(()), "the most a step takes is still a save");
+        // Gravity, and each of the ten numbers after the sleep flag (at 21).
+        assert!(refused(4, &f32::NAN.to_le_bytes()).1.contains("gravity"));
+        for i in 0..10 {
+            for bad in [f32::NAN, f32::INFINITY, -1.0] {
+                let (code, message) = refused(21 + 4 * i, &bad.to_le_bytes());
+                assert!(code == "bad_snapshot" && message.contains("setting"), "number {i} as {bad}: {code}: {message}");
+            }
+        }
+    }
+
+    /// Whatever a few bytes of a save are changed to, a restore answers, and a space it accepted
+    /// steps on. The changes are drawn from a fixed sequence: the same ones in every run.
+    #[test]
+    fn a_damaged_snapshot_is_refused_or_restored_and_never_hangs() {
+        let (keys, bytes) = saved();
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (mut refused, mut restored) = (0, 0);
+        for round in 0..4000 {
+            let mut bad = bytes.clone();
+            // Half the rounds in the first hundred bytes, where the settings and the counts are.
+            let span = if round % 2 == 0 { bad.len().min(100) } else { bad.len() };
+            for _ in 0..1 + next() % 4 {
+                let at = (next() % span as u64) as usize;
+                bad[at] = (next() >> 32) as u8;
+            }
+            let mut s = scene(&keys);
+            match s.restore_state(&mut ByteReader::new(&bad)) {
+                Err(_) => refused += 1,
+                Ok(()) => {
+                    restored += 1;
+                    s.step(1.0 / 60.0);
+                    s.step(1.0 / 60.0);
+                }
+            }
+        }
+        assert!(refused > 100 && restored > 100, "both ways were met: {refused} refused, {restored} restored");
+    }
+
     /// A chain of ball joints hanging from the world, a box knocking into it, and (optionally)
     /// a cosmetic body falling beside it.
     fn jointed(order: &[u64], cosmetic: bool) -> Space {
@@ -795,6 +901,57 @@ mod tests {
         let mut c = jointed(&keys, false);
         c.remove_joint(102);
         assert_eq!(c.restore_state(&mut ByteReader::new(&bytes)).unwrap_err().code, "snapshot_mismatch");
+    }
+
+    /// A ball on a slab that carries, the slab sliding.
+    fn carrier() -> Space {
+        let mut s = Space::default();
+        let mut slab = ColliderDesc::new(Shape::cuboid(Vec3::new(2.0, 0.1, 1.0)));
+        slab.carries = true;
+        s.insert(1, BodyDesc::new(BodyKind::Kinematic, Pose::at(Vec3::new(0.0, -0.1, 0.0)), Some(slab))).unwrap();
+        s.insert(2, BodyDesc::new(BodyKind::Dynamic, Pose::at(Vec3::new(0.0, 0.25, 0.0)), Some(ColliderDesc::new(Shape::sphere(0.25))))).unwrap();
+        s
+    }
+
+    #[test]
+    fn a_carriers_last_speed_is_saved_so_what_it_carries_stops_with_it() {
+        let slide = |s: &mut Space, steps: std::ops::Range<u32>| {
+            for i in steps {
+                s.move_kinematic(1, Pose::at(Vec3::new(0.01 * (i + 1) as f32, -0.1, 0.0)));
+                s.step(1.0 / 60.0);
+            }
+        };
+        let mut a = carrier();
+        slide(&mut a, 0..60);
+        let mut w = ByteWriter::new();
+        a.save_state(&mut w);
+        let bytes = w.into_bytes();
+        // Rebuilt as a load rebuilds it: the bodies where the world has them, nothing hidden.
+        let rebuilt = |restore: bool| {
+            let mut b = carrier();
+            let (slab, ball) = (a.body(1).unwrap(), a.body(2).unwrap());
+            b.set_pose(1, slab.pose);
+            b.set_pose(2, ball.pose);
+            b.set_velocity(2, ball.velocity, ball.angular_velocity);
+            if restore {
+                let mut r = ByteReader::new(&bytes);
+                b.restore_state(&mut r).unwrap();
+                r.finish().unwrap();
+            }
+            b
+        };
+        let (mut b, mut plain) = (rebuilt(true), rebuilt(false));
+        assert_eq!(a.hash(), b.hash());
+        // The slab stops: nobody moves it any more. What it carried stops with it.
+        for t in 0..60 {
+            a.step(1.0 / 60.0);
+            b.step(1.0 / 60.0);
+            plain.step(1.0 / 60.0);
+            assert_eq!(a.hash(), b.hash(), "diverged {t} steps after the restore");
+        }
+        let x = |s: &Space| s.body(2).unwrap().pose.p.x;
+        assert!((x(&a) - 0.6).abs() < 0.02, "the ball stopped with the slab: {}", x(&a));
+        assert!(x(&plain) - x(&a) > 0.3, "without the saved speed the ball rolls on: {} against {}", x(&plain), x(&a));
     }
 
     #[test]

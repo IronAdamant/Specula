@@ -250,12 +250,19 @@ pub trait Game {
     }
 
     /// The player asked to quit (a title screen's Quit, pressed with the window's own input):
-    /// the engine stops as when the window's close button is pressed. Never honoured headless;
-    /// a game must not ask for an agent (agents don't close the human's window). Taken after
-    /// every frame. Default: `false`.
+    /// the engine stops as when the window's close button is pressed. A game must not ask for
+    /// an agent (agents don't close the human's window). Taken after every frame. Headless it
+    /// is honoured only in a run by a script (`specula run`, [`Game::played_by_script`]): the
+    /// run ends there, before any later input or tick. Default: `false`.
     fn take_quit(&mut self) -> bool {
         false
     }
+
+    /// The engine was started for a headless run by a script (`--script`, `specula run`): the
+    /// script stands in for the player, so what only the player may do (Quit) is the script's
+    /// too, and the game may ask to quit from its own rules. Never told to a windowed or a
+    /// served engine, where an agent is no player. Default: nothing.
+    fn played_by_script(&mut self) {}
 
     /// After every tick's modules ran (the game's own tick came first): what the modules keep
     /// now, to read. A game whose rules are modules decides here how the run stands; it may
@@ -287,6 +294,13 @@ pub trait Game {
     /// How the run stands, for `game_state`: its outcome, score, the screen that is up, the
     /// player's settings. One bounded object. `None` (the default): the game does not say.
     fn game_state(&self) -> Option<Json> {
+        None
+    }
+
+    /// The player's volume as the game applies it to everything heard, 0 to 1 (a headless run
+    /// plays nothing, and says by this how loud each sound would have been). Default: none
+    /// (a game with no such setting: every sound at its own gain).
+    fn volume(&self) -> Option<f32> {
         None
     }
 
@@ -374,9 +388,13 @@ pub struct SettingsStore {
 }
 
 impl SettingsStore {
-    /// Whether settings are saved at all.
+    /// Whether settings are saved at all. Never over a file that was there and was not read
+    /// (too large, damaged, not a settings file): what could not be read may still be put
+    /// right by hand, and since 2026-11-22 it holds what the game keeps for the player (a
+    /// best score, a run to go on with) beside the settings. A second reader, 2026-11-23:
+    /// the first change after such a start wrote defaults over it.
     pub fn saving(&self) -> bool {
-        self.kind != "off" && !self.kind.is_empty()
+        self.kind != "off" && !self.kind.is_empty() && self.problem.is_none()
     }
 
     pub fn to_json(&self) -> Json {

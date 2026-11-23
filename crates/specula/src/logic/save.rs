@@ -11,8 +11,8 @@ use super::*;
 use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 use specula_core::hash::StableHasher;
 
-/// Bumped when the layout changes.
-pub const LOGIC_VERSION: u32 = 1;
+/// Bumped when the layout changes (2: a module's input keeps the presses no tick has read yet).
+pub const LOGIC_VERSION: u32 = 2;
 
 fn bad(e: DecodeError) -> WorldError {
     WorldError::new("bad_save", format!("the save's logic section is damaged: {e}"))
@@ -37,6 +37,8 @@ fn event(w: &mut ByteWriter, e: &EventRec) {
 
 /// A parsed logic section (see [`LogicHost::parse_state`]).
 pub struct LogicSnapshot {
+    /// The layout it was written in.
+    version: u32,
     shared: BTreeMap<String, Shared>,
     events: Vec<EventRec>,
     /// `(module, build hash, generation, disabled json or "", input bytes)`.
@@ -96,8 +98,8 @@ impl LogicHost {
     pub fn parse_state(data: &[u8]) -> Result<LogicSnapshot, WorldError> {
         let mut r = ByteReader::new(data);
         let version = r.u32("version").map_err(bad)?;
-        if version != LOGIC_VERSION {
-            return Err(WorldError::new("unsupported_version", format!("logic save version {version}; this build reads {LOGIC_VERSION}")).with("section", "logic"));
+        if !(1..=LOGIC_VERSION).contains(&version) {
+            return Err(WorldError::new("unsupported_version", format!("logic save version {version}; this build reads 1 to {LOGIC_VERSION}")).with("section", "logic"));
         }
         let n = r.count("modules", 4096, 24).map_err(bad)?;
         let mut shared = BTreeMap::new();
@@ -144,10 +146,10 @@ impl LogicHost {
         for (_, _, _, _, input) in &slots {
             let mut probe = ModuleInput::new("").map_err(|e| WorldError::new("internal", e.to_string()))?;
             let mut check = ByteReader::new(input);
-            probe.restore(&mut check).map_err(bad)?;
+            probe.restore(&mut check, version).map_err(bad)?;
             check.finish().map_err(bad)?;
         }
-        Ok(LogicSnapshot { shared, events, slots: slots.into_iter().map(|(n, h, g, d, i)| (n, h, g, d, i.to_vec())).collect() })
+        Ok(LogicSnapshot { version, shared, events, slots: slots.into_iter().map(|(n, h, g, d, i)| (n, h, g, d, i.to_vec())).collect() })
     }
 
     /// Applies a parsed snapshot. Stores and RNG positions replace the host's (for loaded
@@ -176,7 +178,7 @@ impl LogicHost {
                     slot.generation = generation;
                     slot.disabled = if disabled.is_empty() { None } else { Some(Json::parse(&disabled).unwrap_or(Json::from(disabled))) };
                     // (Checked by parse_state on a scratch input: the bytes read cleanly.)
-                    let _ = slot.input.restore(&mut ByteReader::new(&input));
+                    let _ = slot.input.restore(&mut ByteReader::new(&input), snap.version);
                 }
             }
         }

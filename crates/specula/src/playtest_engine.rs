@@ -1113,7 +1113,9 @@ mod tests {
         ask(&mut p, &mut h, run_call(r#"{"name": "c", "ticks": 1000000}"#, None, false), &a);
         let (_, ans) = ask(&mut p, &mut h, report_call(true, false, Duration::ZERO), &b);
         assert_eq!(code(&ans.unwrap()), Some("not_yours"));
-        p.pump(&mut h, Duration::from_millis(1));
+        // No time budget: the pump takes one step and stops, whatever the machine's speed. With a
+        // millisecond a fast runner played the whole million ticks, and nothing was left running.
+        p.pump(&mut h, Duration::ZERO);
         assert!(p.running(), "still running");
         // Owner, 2026-10-29: force on another agent's playtest needs lead authority.
         let (_, ans) = ask(&mut p, &mut h, report_call(true, true, Duration::ZERO), &b);

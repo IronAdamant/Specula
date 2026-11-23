@@ -39,12 +39,17 @@ mod snapshot;
 pub use snapshot::{read_joint_desc, write_joint_desc};
 pub use snapshot::SNAPSHOT_VERSION;
 
+/// The most solver substeps a step takes (the engine asks for up to this many at a low tick
+/// rate). A step holds [`Settings::substeps`] to it and a snapshot outside it is refused: the
+/// count is a loop's length, and a damaged one must not become hours of work.
+pub const MAX_SUBSTEPS: u32 = 64;
+
 /// Simulation settings. Defaults follow Box2D v3 where it has an equivalent.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     /// m/s².
     pub gravity: Vec3,
-    /// Solver substeps per step (1..=16).
+    /// Solver substeps per step (1 to [`MAX_SUBSTEPS`]; a step takes it as within that).
     pub substeps: u32,
     /// Bodies at rest may fall asleep.
     pub sleep: bool,
@@ -158,11 +163,16 @@ pub struct ColliderDesc {
     pub mask: u64,
     pub friction: f32,
     pub restitution: f32,
+    /// On a kinematic body: what rests on it moves with it (a platform, a lift, a bridge that
+    /// slides): a thing that comes to rest on it is given its speed, and its changes of speed
+    /// after, so a thing at rest on it stays at rest on it. Without it only
+    /// friction moves what rests there: a box is dragged along, a ball rolls behind.
+    pub carries: bool,
 }
 
 impl ColliderDesc {
     pub fn new(shape: Shape) -> ColliderDesc {
-        ColliderDesc { shape, offset: Pose::IDENTITY, is_trigger: false, layer: 1, mask: u64::MAX, friction: 0.6, restitution: 0.0 }
+        ColliderDesc { shape, offset: Pose::IDENTITY, is_trigger: false, layer: 1, mask: u64::MAX, friction: 0.6, restitution: 0.0, carries: false }
     }
 }
 
@@ -243,6 +253,9 @@ struct Body {
     /// Kinematic: where to be at the end of the next step, and the velocity to return to.
     target: Option<Pose>,
     declared_velocity: (Vec3, Vec3),
+    /// A dynamic body: how much of a carrying body's speed it has been given (`Space::carry`).
+    /// Zero for a body that rests on no carrier and came off none.
+    carried: Vec3,
     inner_radius: f32,
     outer_radius: f32,
     /// Solver index this step.
@@ -303,6 +316,10 @@ struct Contact {
     sat: SatCache,
     /// A cosmetic body is in it (its own cap; not hashed).
     cosmetic: bool,
+    /// The fastest the two closed while this contact formed and did not touch yet, m/s (what
+    /// its begin event says; not hashed: it follows from the bodies' own motion, and nothing
+    /// in a step reads it).
+    approach: f32,
 }
 
 /// What happened during a step.
@@ -755,6 +772,7 @@ impl Space {
             in_static_tree: false,
             target: None,
             declared_velocity: (Vec3::ZERO, Vec3::ZERO),
+            carried: Vec3::ZERO,
             inner_radius: 0.0,
             outer_radius: 0.0,
             solver: NONE,
@@ -980,6 +998,11 @@ impl Space {
         b.desc.velocity = v;
         b.desc.angular_velocity = w;
         b.declared_velocity = (v, w);
+        // A body told to be at rest has nothing of a carrier's speed left: put back on a
+        // bridge that moves, it is given the bridge's speed as one that lands there.
+        if v == Vec3::ZERO {
+            b.carried = Vec3::ZERO;
+        }
     }
 
     /// A kinematic body arrives at `target` at the end of the next step, moving there at the
@@ -1280,6 +1303,7 @@ impl Space {
                 restitution,
                 sat: SatCache::default(),
                 cosmetic,
+                approach: 0.0,
             };
             if cosmetic {
                 self.cosmetic_pairs += 1;
@@ -1479,19 +1503,26 @@ impl Space {
             if c.len > 0 && deepest.is_none_or(|(d, _, _)| min_sep < d) {
                 deepest = Some((min_sep, ka, kb));
             }
-            if c.touching && !was {
-                let p = c.points[..c.len].iter().fold(c.points[0], |d, p| if p.separation < d.separation { *p } else { d });
-                let rel = (b.desc.velocity + b.desc.angular_velocity.cross(p.point - b.center))
-                    - (a.desc.velocity + a.desc.angular_velocity.cross(p.point - a.center));
+            // How fast the two close at their nearest point, as this step begins. While a
+            // contact forms (its points are there, inside the margin, and it does not touch
+            // yet) the solver already takes the approach out of the bodies, so at the step
+            // they touch little of it is left: a ball that landed at 3 m/s began its contact
+            // at 0.4. The fastest they closed while it formed is what a begin says.
+            let nearest = (c.len > 0).then(|| c.points[..c.len].iter().fold(c.points[0], |d, p| if p.separation < d.separation { *p } else { d }));
+            if !was {
+                c.approach = match nearest {
+                    Some(p) => {
+                        let rel = (b.desc.velocity + b.desc.angular_velocity.cross(p.point - b.center))
+                            - (a.desc.velocity + a.desc.angular_velocity.cross(p.point - a.center));
+                        c.approach.max(-rel.dot(p.normal))
+                    }
+                    None => 0.0,
+                };
+            }
+            if let (true, false, Some(p)) = (c.touching, was, nearest) {
                 let normal = oriented(p.normal, a.key, ka);
-                events.push(Event {
-                    kind: EventKind::ContactBegin,
-                    a: ka,
-                    b: kb,
-                    point: p.point,
-                    normal,
-                    speed: (-rel.dot(p.normal)).max(0.0),
-                });
+                events.push(Event { kind: EventKind::ContactBegin, a: ka, b: kb, point: p.point, normal, speed: c.approach.max(0.0) });
+                c.approach = 0.0;
             } else if !c.touching && was {
                 events.push(end_event(c, ka, kb));
             }
@@ -1586,6 +1617,7 @@ impl Space {
         self.find_pairs();
         lap(&mut times.pairs_us);
         self.narrowphase();
+        self.carry(dt);
         lap(&mut times.narrowphase_us);
         // What this step moves: kinematic bodies and awake dynamic ones, in key order.
         let mut active = std::mem::take(&mut self.active);
@@ -1641,6 +1673,90 @@ impl Space {
         times.total_us = (Instant::now() - t_start).as_secs_f64() * 1e6;
         self.report.times = times;
         &self.report
+    }
+
+    /// What rests on a carrying kinematic body moves with it ([`ColliderDesc::carries`]): it is
+    /// given the carrier's speed when it comes to rest there, and every change of that speed
+    /// after (`Body::carried` is how much of a carrier's speed a body has been given). A thing
+    /// that lands on a bridge already moving is carried as one that was there from the start; a
+    /// thing that bounces on it is given the speed once, since it keeps it in the air; one that
+    /// rolls off keeps the speed it left with, and owes the carrier nothing once it rests on
+    /// something else. "Rests on" is a touching contact whose normal, from
+    /// the carrier to the other body, points against gravity (within 45 degrees): a thing
+    /// beside the carrier, or under it, is pushed by contact as ever and never dragged. Only
+    /// the straight motion is passed on, not a turn, and only to what touches the carrier
+    /// itself: a thing stacked on a carried thing is held by friction alone. Pairs are walked
+    /// in key order, and only while a carrier moves or a body still has a carrier's speed.
+    fn carry(&mut self, dt: f32) {
+        let carrier = |b: &Body| b.desc.kind == BodyKind::Kinematic && b.desc.collider.as_ref().is_some_and(|c| c.carries);
+        // Anything to do: a carrier that moves, or a body that still has a carrier's speed.
+        let mut riders: Vec<u32> = Vec::new();
+        let mut moving = false;
+        for k in &self.awake {
+            let s = self.by_key[k];
+            let b = self.slot(s);
+            if b.carried != Vec3::ZERO {
+                riders.push(s);
+            }
+            moving |= carrier(b) && b.desc.velocity != Vec3::ZERO;
+        }
+        let g = self.settings.gravity;
+        let weight = g.length();
+        if (riders.is_empty() && !moving) || weight == 0.0 {
+            return;
+        }
+        let up = g * (-1.0 / weight);
+        // What each dynamic body rests on: a carrier (the first in key order, and its speed),
+        // or something else.
+        let mut on: BTreeMap<u32, Vec3> = BTreeMap::new();
+        let mut grounded: BTreeSet<u32> = BTreeSet::new();
+        for &slot in self.pairs.values() {
+            let c = self.contact(slot);
+            if c.trigger || c.cosmetic || c.len == 0 {
+                continue;
+            }
+            let gap = c.points[..c.len].iter().map(|p| p.separation).fold(f32::INFINITY, f32::min);
+            // The points' normal runs from `a` to `b`.
+            for (under, over, n) in [(c.a, c.b, c.points[0].normal), (c.b, c.a, -c.points[0].normal)] {
+                if !self.slot(over).is_dynamic() || n.dot(up) <= std::f32::consts::FRAC_1_SQRT_2 {
+                    continue;
+                }
+                let u = self.slot(under);
+                // It rests there, or lands there in this step (its gap closes to within the
+                // slop, with this step's fall): the solver's friction acts on a contact from
+                // that step, one before it is `touching`, and a ball given the carrier's speed
+                // a step late had been dragged first. A step early does no harm.
+                if !c.touching && gap + ((self.slot(over).desc.velocity - u.desc.velocity).dot(n) - weight * dt) * dt >= self.settings.linear_slop {
+                    continue;
+                }
+                if carrier(u) {
+                    on.entry(over).or_insert(u.desc.velocity);
+                } else {
+                    grounded.insert(over);
+                }
+            }
+        }
+        // Off the carrier and at rest on something else: its speed is its own again. (In the
+        // air it is still the carrier's until it lands.) A body that is no longer dynamic has
+        // none.
+        for s in riders {
+            if !on.contains_key(&s) && (grounded.contains(&s) || !self.slot(s).is_dynamic()) {
+                self.slot_mut(s).carried = Vec3::ZERO;
+            }
+        }
+        let plane = self.settings.plane_2d;
+        for (s, now) in on {
+            let mut dv = now - self.slot(s).carried;
+            if dv == Vec3::ZERO {
+                continue;
+            }
+            self.wake_slot(s);
+            let b = self.slot_mut(s);
+            b.carried = now;
+            let (ll, _) = locks(b, plane);
+            mask(&mut dv, ll);
+            b.desc.velocity = b.desc.velocity + dv;
+        }
     }
 
     /// Kinetic and potential energy of the dynamic bodies this step moves (sleeping bodies
@@ -1714,9 +1830,9 @@ impl Space {
                 lock_angular: la,
             });
         }
-        let substep_rate = settings.substeps.max(1) as f32 / dt;
+        let substep_rate = settings.substeps.clamp(1, MAX_SUBSTEPS) as f32 / dt;
         let hertz = settings.contact_hertz.min(0.25 * substep_rate);
-        let h = dt / settings.substeps.max(1) as f32;
+        let h = dt / settings.substeps.clamp(1, MAX_SUBSTEPS) as f32;
         let soft = Softness::new(hertz, settings.contact_damping_ratio, h);
         let static_soft = Softness::new(2.0 * hertz, settings.contact_damping_ratio, h);
         for &slot in &self.sim {
@@ -1767,7 +1883,7 @@ impl Space {
         self.prepare_joints(joint_soft, h);
         let mut joints = std::mem::take(&mut self.joint_cons);
         let tuning = Tuning {
-            substeps: settings.substeps.max(1),
+            substeps: settings.substeps.clamp(1, MAX_SUBSTEPS),
             contact_hertz: hertz,
             damping_ratio: settings.contact_damping_ratio,
             push_speed: settings.push_speed,
@@ -2561,6 +2677,12 @@ impl Space {
         h.write_bool(b.desc.sleeping);
         h.write_f32(b.sleep_time);
         h.write_bool(b.target.is_some());
+        // Written only when there is one, so that a world with no carrier hashes as it did.
+        if b.carried != Vec3::ZERO {
+            for c in [b.carried.x, b.carried.y, b.carried.z] {
+                h.write_f32(c);
+            }
+        }
     }
 
     fn hash_contact(h: &mut StableHasher, (a, b): (u64, u64), c: &Contact) {

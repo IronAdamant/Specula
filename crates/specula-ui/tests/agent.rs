@@ -105,6 +105,32 @@ fn inspect_lays_out_elsewhere_and_puts_everything_back() {
     assert_eq!(e.actions().collect::<Vec<_>>(), ["c"]);
 }
 
+/// A tree asked for whole texts carries a label of many lines whole; its entries are cut at
+/// `MAX_ENTRY_TEXT` otherwise, and a page's long texts together stay within `MAX_PAGE_TEXT`.
+#[test]
+fn a_tree_carries_long_texts_whole_when_asked_within_its_page_bound() {
+    use specula_ui::agent::{MAX_ENTRY_TEXT, MAX_PAGE_TEXT};
+    use specula_ui::state::MAX_TEXT;
+    let labels: Vec<String> = (0..40).map(|i| format!(r#"{{"type": "label", "id": "l{i}", "text": "{{long}}"}}"#)).collect();
+    let mut ui = ui();
+    ui.load_screen(&screen("t", "hud", &format!(r#"{{"type": "box", "layout": "column", "children": [{}]}}"#, labels.join(",")))).unwrap_or_else(|e| panic!("{e}"));
+    ui.show("t").unwrap();
+    let long: String = (1..=250).map(|i| format!("Line {i:03} of the day\n")).collect::<String>();
+    let long = &long[..MAX_TEXT - 4];
+    let mut s = StateMap::new();
+    s.set_str("long", long);
+    Harness::new().frame(&mut ui, &[], &s, &view(800, 600));
+    let texts = |opts: &TreeOpts| -> Vec<String> { ui.tree_page(opts).get("widgets").and_then(|w| w.as_array()).unwrap().iter().filter_map(|w| w.get("text").and_then(|t| t.as_str()).map(str::to_owned)).collect() };
+    let short = texts(&TreeOpts { limit: 100, ..TreeOpts::default() });
+    assert_eq!(short.len(), 40);
+    assert!(short.iter().all(|t| t.chars().count() == MAX_ENTRY_TEXT + 1 && t.ends_with('…')));
+    let whole = texts(&TreeOpts { limit: 100, text_chars: MAX_TEXT, ..TreeOpts::default() });
+    let carried = whole.iter().filter(|t| *t == long).count();
+    assert_eq!(carried, MAX_PAGE_TEXT / long.len(), "as many whole as the page's bound holds");
+    assert!(whole.iter().filter(|t| *t != long).all(|t| t.chars().count() == MAX_ENTRY_TEXT + 1), "the rest cut as before");
+    assert!(whole.iter().map(String::len).sum::<usize>() <= MAX_PAGE_TEXT + 40 * (MAX_ENTRY_TEXT * 4 + 3));
+}
+
 #[test]
 fn the_tree_pages_and_flags() {
     let mut ui = menu_ui();

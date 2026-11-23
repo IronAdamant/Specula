@@ -1790,6 +1790,13 @@ and **checked only when a style asks** for one.
     together. **A straight-sided cylinder is a third round and two thirds square** by it, as
     it is in silhouette from the side: a can is not a ball. (Since the mends below this holds
     at any proportions: a coin of a hundred to one and a pole of fifty to one too.)
+    **A solid by name from the shape library** (`{"op": "form"}`, 2026-11-20) **records its
+    convex hull** seen along each of its three axes, with its own triangles as its surface:
+    exact for a convex solid, and only a hull for any other. **A torus reads as its disc**
+    from above (the hole is not in its record) and a stellated solid as its hull; a raised
+    plane figure records the figure's own outer ring and the boxes it is raised to, as an
+    extruded outline does (its holes are not in its record either). Not reworked: said here so
+    that nobody reads a ring's record as a ring.
   - **The two readings differ, and both are true.** Sepulcra's 56 recipes: by silhouette 29
     lead pointed, 14 round and 13 square; **by the recipe 42 lead square, 11 round and 1
     pointed** (two are generated and unread), and the two agree on 20. The props are built
