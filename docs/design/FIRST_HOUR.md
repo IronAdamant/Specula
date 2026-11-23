@@ -821,6 +821,31 @@ are frozen** until the second large job's runs are judged: the job is written by
 reader, who did not write the guide, and the lead does not see what in it the guide does not
 answer. Typos excepted, and recorded before the runs.
 
+### A word given again is pressed again (2026-11-23, after the second large job)
+
+The second large job ([LEVERAGE.md](LEVERAGE.md), the results of 2026-11-23, Night Market)
+asks that every input word act once at its tick, "even when the same word was given at the
+tick before". A script let go of what was held and held the new word between two ticks, and
+a module read an action as pressed only when it had not been held the tick before: so the
+same word twice running was one press. Three of five games failed the items that turn on it;
+two got past it with a hidden button and a chord for every word. The second reader named
+three faults of input. Looked at in the runs, they are one:
+
+- **Mended:** an action let go and held again between two ticks is pressed again
+  (`logic/input.rs`: a hold placed where none stood is a press, whatever the tick before
+  held). A hold made longer while it stands is no press, as before. `5:tap,6:tap` is two
+  presses.
+- **A side of it the live check found:** asking whether a word is one the game takes let go
+  of what the word named and held it again, which was then a press. A word that is only
+  looked at, or refused, must change nothing: what is held at that value is not asked again
+  (`script_run::check_word`). `new_project_check` holds both: a refused step adds no press,
+  and the same word given again adds one.
+- **"A key reaches the rules only through a button" was this fault**, by the two builders'
+  own READMEs: the hidden buttons were there to get a second press and for nothing else.
+- **"The rules cannot change a setting": no fault found.** The builder who spent thirteen
+  requests on a settings screen of its own got it working with the engine's stepping
+  buttons; the cost was finding that out.
+
 ## As built
 
 **Built, with its own tests, the structural guards and clippy passing; the full gate passed on its last commit** (2026-11-16, branch

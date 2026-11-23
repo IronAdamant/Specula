@@ -745,7 +745,7 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     let (said, beside) = (String::from_utf8_lossy(&held.stdout).into_owned(), String::from_utf8_lossy(&held.stderr).into_owned());
     let lines: Vec<Json> = said.lines().filter_map(|l| Json::parse(l).ok()).collect();
     expect(held.status.success() && said.lines().count() == 8 && lines.len() == 8, "a followed run did not answer each line with one line of JSON and nothing else (a module's own print is not the run's)", &Json::from(said.as_str()))?;
-    expect(text(&lines[3], "error") == Some("unknown_input") && text(&lines[6], "error") == Some("bad_step") && is(&lines[2], "taps", 1.0) && is(&lines[5], "taps", 1.0) && is(&lines[7], "taps", 1.0) && is(&lines[7], "tick", 6.0), "a step that was refused changed the run (a held tap was let go, or ticks passed)", &Json::from(said.as_str()))?;
+    expect(text(&lines[3], "error") == Some("unknown_input") && text(&lines[6], "error") == Some("bad_step") && is(&lines[2], "taps", 1.0) && is(&lines[4], "taps", 1.0) && is(&lines[5], "taps", 2.0) && is(&lines[7], "taps", 2.0) && is(&lines[7], "tick", 6.0), "a step that was refused changed the run (a held tap was let go or pressed again, or ticks passed), or the same word given again was not a press again", &Json::from(said.as_str()))?;
     expect(beside.lines().any(|l| l == "specula run: runfive logged at tick 1: tapped"), "a followed run did not say what its module logged when it ended", &Json::from(beside.as_str()))?;
     // A refusal is one line too, where the state would have been.
     let refused = raw(&["run", &runfive, "--ticks", "10", "--inputs", "0:enter,50:tap"], b"")?;

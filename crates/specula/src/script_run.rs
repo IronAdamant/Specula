@@ -630,8 +630,12 @@ impl Run<'_> {
                 e.set("also", Json::from("words joined by + are held together (up+shoot); an action that is not a button takes a value (throttle=0.5, move=1/0); a source such as Key.Enter presses the interface only, never a module's action: name the action"));
                 return Err(e);
             }
-            // (Asked of the engine with no ticks: nothing is held by it.)
-            if let Some(module) = module {
+            // (Asked of the engine with no ticks: nothing is held by it. What is held now, at
+            // this value, was asked when it was first held, and is not asked again: asking
+            // lets go, and an action let go and held again is a press, which a word that is
+            // only being looked at must not be.)
+            let held_so = self.held.iter().any(|(_, action, at)| action == name && *at == value);
+            if let Some(module) = module.filter(|_| !held_so) {
                 if let Err(mut e) = self.call("logic_input", Json::obj([("module", Json::from(module.as_str())), ("actions", Json::obj([(name, value)])), ("ticks", Json::from(0u64))])) {
                     e.set("error", Json::from("bad_input"));
                     e.set("input", Json::from(word.as_str()));

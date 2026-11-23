@@ -21,6 +21,12 @@ pub const MAX_HOLD_TICKS: u64 = 18_000;
 struct Hold {
     value: [f32; 2],
     ticks_left: u64,
+    /// Placed since the last tick where none stood: a press, whatever the tick before held. An
+    /// action let go and held again between two ticks is pressed again (a script's `5:right,
+    /// 6:right` is two presses: 2026-11-23, three of five games of a job whose brief says
+    /// every word acts once failed on the second press). A hold made longer while it
+    /// stands is no press.
+    fresh: bool,
     /// Who placed it (`None`: restored from a save): a freeze of that identity releases it, and
     /// the human taking the action back is reported under it (docs/design/SECURITY.md).
     by: Option<crate::inputguard::Actor>,
@@ -151,7 +157,7 @@ impl ModuleInput {
             let value = [r.f32("holds.value")?, r.f32("holds.value")?];
             let ticks_left = r.u64("holds.ticks")?;
             if self.map.index_of(&name).is_some() {
-                holds.insert(name, Hold { value, ticks_left, by: None });
+                holds.insert(name, Hold { value, ticks_left, fresh: false, by: None });
             }
         }
         // (An action's record is its name and two states: 4 + the name + 22 bytes. The least is
@@ -228,7 +234,8 @@ impl ModuleInput {
             if ticks == 0 || value == [0.0, 0.0] {
                 self.holds.remove(&name);
             } else {
-                self.holds.insert(name, Hold { value, ticks_left: ticks, by: by.clone() });
+                let fresh = !self.holds.contains_key(&name);
+                self.holds.insert(name, Hold { value, ticks_left: ticks, fresh, by: by.clone() });
             }
         }
         Ok(self.holds_json())
@@ -282,8 +289,9 @@ impl ModuleInput {
             let state = match hold {
                 Some(h) => {
                     h.ticks_left -= 1;
+                    let fresh = std::mem::take(&mut h.fresh);
                     let value = if a.kind == ActionKind::Button { [1.0, 0.0] } else { h.value };
-                    ActionState { held: true, pressed: !self.last[i].held, released: false, value }
+                    ActionState { held: true, pressed: fresh || !self.last[i].held, released: false, value }
                 }
                 None => {
                     let held = w.held;
@@ -375,6 +383,25 @@ mod tests {
         assert!(e.contains("[x, y]"), "{e}");
         assert!(ModuleInput::new("{\"format\": \"nope\"}").is_err());
         assert!(ModuleInput::new("").unwrap().is_empty());
+    }
+
+    /// An action let go and held again between two ticks is pressed again; one made longer
+    /// while it stands is not.
+    #[test]
+    fn an_action_let_go_and_held_again_is_pressed_again() {
+        let jump = |m: &mut ModuleInput, ticks: u64| m.hold(&Json::parse(r#"{"jump": true}"#).unwrap(), ticks, None).map(drop);
+        let mut m = ModuleInput::new(MAP).unwrap();
+        jump(&mut m, 10).unwrap();
+        assert_eq!(state(&m.take_tick(), "jump"), Some((true, true, false, 1.0, 0.0)));
+        assert_eq!(state(&m.take_tick(), "jump"), Some((true, false, false, 1.0, 0.0)), "held on: no press");
+        // The same word again, as a script gives it: let go (no ticks), then held.
+        jump(&mut m, 0).unwrap();
+        jump(&mut m, 10).unwrap();
+        assert_eq!(state(&m.take_tick(), "jump"), Some((true, true, false, 1.0, 0.0)), "a second press, with no tick between");
+        assert_eq!(state(&m.take_tick(), "jump"), Some((true, false, false, 1.0, 0.0)));
+        // A hold made longer while it stands (an agent keeping a key down) is no press.
+        jump(&mut m, 30).unwrap();
+        assert_eq!(state(&m.take_tick(), "jump"), Some((true, false, false, 1.0, 0.0)));
     }
 
     #[test]

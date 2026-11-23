@@ -358,7 +358,8 @@ builds the modules, plays the game with no window and prints how it stands as JS
   the state, on standard error, when the run ends. A run ends after 30 minutes at most.
 - **Inputs** are words at ticks. `up down left right enter escape` press the interface, as
   keys do. A module's action (`tap` here: `modules/{{module}}/actions.json`) is held until the
-  next input, as a held key is; `none` holds nothing. A word that is both does both. Words
+  next input, as a held key is; the same word again is a press again; `none` holds
+  nothing. A word that is both does both. Words
   joined by `+` are held together (`up+shoot`). An action that is not a button takes its
   value (`throttle=0.5`, `move=1/0`). In the rules read `cx.action("tap").pressed` for
   "once" and `.held` for "while held".
@@ -400,12 +401,12 @@ builds the modules, plays the game with no window and prints how it stands as JS
   run, and the rules never see a seed. `--settings FOLDER` is where the player's settings are
   read and kept (a file the engine writes in it: the same folder again finds them); without
   it they are kept nowhere.
-- `--frame` writes what a player would see (the game file's `"view"`, with the interface).
+- `--frame` writes what a player would see (the `"view"`, with the interface).
 - `--follow` goes on after the script: each line of standard input is a step (`TICKS` or
   `TICKS WORD`, as `10 up+shoot`), and the state is printed after each.
 
 **Models** (props, pickups, scenery) are recipes under `assets/models/`: `notes/models.md`.
-Shapes by name (a gear, a heart, a torus): `specula call formae_list '{}'`.
+Shapes by name: `specula call formae_list '{}'`.
 
 **3D, physics, light and sound** from a module (a sphere, a model, a collider, a body that
 falls, a lamp, a sound's recipe): `notes/world.md`.
