@@ -34,6 +34,18 @@ pub struct StripData {
     pub duration_s: f32,
     pub distance_m: f32,
     pub events: Vec<(String, u32)>,
+    /// The clip's feet (as `anim_check` finds them) and, per frame, which are down.
+    pub feet: Vec<String>,
+    pub feet_down: Vec<Vec<u8>>,
+}
+
+/// The shadow blob's cell (`shadow: "blob"`): alpha only, centred on its own pivot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShadowData {
+    pub frame: u32,
+    pub rect: [u32; 4],
+    pub pivot: [u32; 2],
+    pub radii_px: [f32; 2],
 }
 
 /// One cell.
@@ -63,8 +75,12 @@ pub struct SheetData {
     pub light: String,
     /// What it was baked from (recipe, params, seed, the model's name and content hash).
     pub source: Json,
+    /// Pixel art drawn with an outline of one palette colour; frames taken in place.
+    pub outline: bool,
+    pub in_place: bool,
     pub strips: Vec<StripData>,
     pub cells: Vec<CellData>,
+    pub shadow: Option<ShadowData>,
 }
 
 /// A problem with a file: where and why.
@@ -117,6 +133,24 @@ impl SheetData {
         spec.to_json()
     }
 
+    /// The 2D path's sprite object that draws the shadow blob (one frame, on its own pivot,
+    /// which is to stand where the model's pivot stands, drawn under it).
+    pub fn shadow_sprite(&self, sh: &ShadowData) -> Json {
+        let mut spec = SpriteSpec {
+            texture: Some(self.texture.clone()),
+            size: [self.cell[0] as f32 * self.metres_per_pixel, self.cell[1] as f32 * self.metres_per_pixel],
+            pivot: [sh.pivot[0] as f32 / self.cell[0] as f32, 1.0 - sh.pivot[1] as f32 / self.cell[1] as f32],
+            sheet: Some(two_d::Sheet { frame_px: self.cell, margin: 0, spacing: 0 }),
+            frame: sh.frame,
+            ..SpriteSpec::default()
+        };
+        if self.pixel_art {
+            spec.filter = specula_gpu::TextureFilter::Nearest;
+            spec.pixel_snap = true;
+        }
+        spec.to_json()
+    }
+
     pub fn to_json(&self) -> Json {
         let pair = |a: [u32; 2]| Json::arr(a.map(Json::from));
         let strips = self.strips.iter().enumerate().map(|(i, s)| {
@@ -135,6 +169,10 @@ impl SheetData {
             if !s.events.is_empty() {
                 j.set("events", Json::arr(s.events.iter().map(|(n, f)| Json::obj([("name", Json::from(n.as_str())), ("frame", Json::from(*f))]))));
             }
+            if !s.feet.is_empty() {
+                j.set("feet", Json::arr(s.feet.iter().map(|n| Json::from(n.as_str()))));
+                j.set("feet_down", Json::arr(s.feet_down.iter().map(|down| Json::arr(down.iter().map(|&k| Json::from(s.feet.get(k as usize).map_or("", String::as_str)))))));
+            }
             j.set("sprite", self.sprite(i));
             j
         });
@@ -151,7 +189,7 @@ impl SheetData {
                 ("pivot", pair([c.rect[0] + self.pivot[0], c.rect[1] + self.pivot[1]])),
             ])
         });
-        Json::obj([
+        let mut out = Json::obj([
             ("format", Json::from(FORMAT)),
             ("version", Json::from(VERSION)),
             ("texture", Json::from(self.texture.as_str())),
@@ -169,9 +207,25 @@ impl SheetData {
             ("pixel_art", Json::from(self.pixel_art)),
             ("light", Json::from(self.light.as_str())),
             ("source", self.source.clone()),
+            ("outline", Json::from(self.outline)),
+            ("in_place", Json::from(self.in_place)),
             ("strips", Json::arr(strips)),
             ("cells", Json::arr(cells)),
-        ])
+        ]);
+        if let Some(sh) = &self.shadow {
+            out.set(
+                "shadow",
+                Json::obj([
+                    ("frame", Json::from(sh.frame)),
+                    ("rect", Json::arr(sh.rect.map(Json::from))),
+                    ("pivot", pair(sh.pivot)),
+                    ("radii_px", Json::arr(sh.radii_px.map(Json::from))),
+                    ("is", Json::from("a soft shadow blob, alpha only (black): draw its sprite under the model's, its pivot where the model's pivot stands")),
+                    ("sprite", self.shadow_sprite(sh)),
+                ]),
+            );
+        }
+        out
     }
 
     /// Reads and checks a file's text (see the module docs).
@@ -234,7 +288,27 @@ impl SheetData {
                 let frame = u(e.get("frame"), &format!("strips[{i}].events[{k}].frame"), 0, u64::from(count - 1))?;
                 events.push((name(e.get("name"), &format!("strips[{i}].events[{k}].name"))?, frame));
             }
+            // The feet, and per frame the ones down (names among the feet).
+            let mut feet = Vec::new();
+            for (k, n) in v.get("feet").and_then(Json::as_array).unwrap_or(&[]).iter().enumerate().take(16) {
+                feet.push(name(Some(n), &format!("strips[{i}].feet[{k}]"))?);
+            }
+            let mut feet_down = Vec::new();
+            if let Some(per) = v.get("feet_down") {
+                let per = per.as_array().filter(|a| a.len() == count as usize).ok_or_else(|| bad(at("feet_down"), format!("'feet_down' must list each of the strip's {count} frames")))?;
+                for (k, down) in per.iter().enumerate() {
+                    let down = down.as_array().ok_or_else(|| bad(format!("strips[{i}].feet_down[{k}]"), "a frame's feet down are a list of the strip's feet"))?;
+                    let mut ks = Vec::new();
+                    for d in down {
+                        let f = d.as_str().and_then(|d| feet.iter().position(|n| n == d)).ok_or_else(|| bad(format!("strips[{i}].feet_down[{k}]"), "a foot down must be one of the strip's 'feet'"))?;
+                        ks.push(f as u8);
+                    }
+                    feet_down.push(ks);
+                }
+            }
             let strip = StripData {
+                feet,
+                feet_down,
                 clip,
                 direction: name(v.get("direction"), &at("direction"))?,
                 facing_deg: f(v.get("facing_deg"), &at("facing_deg"), 0.0, 360.0)?,
@@ -278,7 +352,32 @@ impl SheetData {
             }
             cells.push(CellData { rect, strip, frame, time_s: f(v.get("time_s"), &at("time_s"), 0.0, 1e5)? });
         }
+        let shadow = match j.get("shadow") {
+            None | Some(Json::Null) => None,
+            Some(v) => {
+                let frame = u(v.get("frame"), "shadow.frame", 0, u64::from(frames_in_atlas.saturating_sub(1)))?;
+                let r = v.get("rect").and_then(Json::as_array).filter(|a| a.len() == 4).ok_or_else(|| bad("shadow.rect", "'rect' must be [x, y, w, h]"))?;
+                let rect = [u(r.first(), "shadow.rect", 0, 8192)?, u(r.get(1), "shadow.rect", 0, 8192)?, u(r.get(2), "shadow.rect", 1, 8192)?, u(r.get(3), "shadow.rect", 1, 8192)?];
+                let want = [(frame % columns) * cell[0], (frame / columns) * cell[1], cell[0], cell[1]];
+                if rect != want {
+                    return Err(bad("shadow.rect", format!("the blob is sheet frame {frame}, at {want:?} in the grid the 2D path reads, not {rect:?}")));
+                }
+                let p = v.get("pivot").and_then(Json::as_array).filter(|a| a.len() == 2).ok_or_else(|| bad("shadow.pivot", "'pivot' must be two integers"))?;
+                let pivot = [u(p.first(), "shadow.pivot", 0, u64::from(cell[0]))?, u(p.get(1), "shadow.pivot", 0, u64::from(cell[1]))?];
+                let rr = v.get("radii_px").and_then(Json::as_array).filter(|a| a.len() == 2).ok_or_else(|| bad("shadow.radii_px", "'radii_px' must be two numbers"))?;
+                let radii_px = [f(rr.first(), "shadow.radii_px", 0.0, 4096.0)?, f(rr.get(1), "shadow.radii_px", 0.0, 4096.0)?];
+                let spec = SpriteSpec::parse(v.get("sprite").ok_or_else(|| bad("shadow.sprite", "'sprite' is missing"))?).map_err(|m| bad("shadow.sprite", m))?;
+                if !(spec.sheet.is_some_and(|sh| sh.frame_px == cell) && spec.anim.is_none() && spec.frame == frame) {
+                    return Err(bad("shadow.sprite", format!("the sprite object does not draw the blob (sheet frame {frame})")));
+                }
+                Some(ShadowData { frame, rect, pivot, radii_px })
+            }
+        };
+        let flag = |k: &str| j.get(k).map_or(Ok(false), |v| v.as_bool().ok_or_else(|| bad(k, format!("'{k}' must be true or false"))));
         Ok(SheetData {
+            outline: flag("outline")?,
+            in_place: flag("in_place")?,
+            shadow,
             texture,
             size,
             cell,

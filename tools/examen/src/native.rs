@@ -25,6 +25,7 @@ mod form;
 mod launch;
 mod light;
 mod search;
+mod sprite;
 
 /// One native check.
 pub struct Check {
@@ -61,6 +62,11 @@ pub const CHECKS: &[Check] = &[
         name: "search_check",
         about: "what the engine looks for itself: a run read on its way, a run for each value of a number, a number tuned to a condition, and a script found that a run of its own plays to the same state (docs/design/FIRST_HOUR.md)",
         run: search::search,
+    },
+    Check {
+        name: "sprite_check",
+        about: "sprite_bake end to end: two files in one journal entry and one undo, the project's light, a bake cancelled by its owner only, the most cells a call takes (docs/design/SPRITE_BAKE.md)",
+        run: sprite::sprite,
     },
 ];
 

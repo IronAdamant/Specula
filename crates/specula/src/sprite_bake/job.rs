@@ -31,7 +31,12 @@ pub struct Bake {
     pub rig: Rig,
     /// Pixel art: the palette every visible pixel is snapped to.
     pub palette: Option<Vec<[u8; 3]>>,
+    /// Pixel art's outline colour (one of the palette's), drawn round each cell's silhouette.
+    pub outline: Option<[u8; 3]>,
     pub cancel: Arc<AtomicBool>,
+    /// The owner's name as the engine knows it, set when the job starts (another agent's
+    /// refused cancel names it).
+    pub owner_name: Arc<std::sync::OnceLock<String>>,
     /// Where the atlas goes back to the caller's thread.
     pub out: Arc<Mutex<Option<Baked>>>,
 }
@@ -106,6 +111,10 @@ impl BakeJob {
         }
         if let Some(p) = &self.bake.palette {
             plan::snap_to_palette(&mut px, p);
+        }
+        if let Some(c) = self.bake.outline {
+            // One pixel round the silhouette, inside the cell's clear margin.
+            plan::outline(&mut px, plan.cell, c, plan::MARGIN_PX - 1);
         }
         if plan::touches_edge(&px, plan.cell) {
             self.touching.push(self.at);
@@ -200,6 +209,11 @@ impl StepJob for BakeJob {
             return Step::More;
         }
         e.studio_done(self.pin);
+        if let Some(sh) = &self.bake.plan.shadow {
+            // The blob is drawn, not rendered: an ellipse on its own pivot.
+            let blob = plan::shadow_blob(self.bake.plan.cell, sh.pivot, sh.radii_px, self.bake.palette.is_some());
+            plan::blit(&mut self.atlas, self.bake.plan.atlas[0], sh.rect, &blob);
+        }
         let baked = Baked { rgba: std::mem::take(&mut self.atlas), touching: std::mem::take(&mut self.touching), renders: self.at, engine_ms: self.engine_ms, max_step_ms: self.max_step_ms };
         *self.bake.out.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(baked);
         Step::Done(ToolOutput::text("{}"))
@@ -211,6 +225,7 @@ impl Engine {
     pub(crate) fn start_sprite_bake(&mut self, request: Request) {
         let Request { command: Command::SpriteBake(bake), session, reply, deadline, call, .. } = request else { unreachable!("only sprite bakes come here") };
         let owner = jobs::JobOwner { name: self.swarm.agent_name(&session), key: self.swarm.key(&session) };
+        let _ = bake.owner_name.set(owner.name.clone());
         let job = BakeJob::new(self, *bake, &session.id);
         self.step_job(StepStart { owner, session: session.id.clone(), call, reply, deadline, class: crate::schedule::Class::Render }, Box::new(job));
     }

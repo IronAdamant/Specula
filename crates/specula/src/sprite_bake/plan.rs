@@ -125,6 +125,12 @@ pub enum Clips {
     Named(Vec<String>),
 }
 
+/// A foot is down in a frame when it is within this of its ground (its clip's 15th-percentile
+/// height, as `specula_anim::measure::foot_contact` finds it).
+pub const FOOT_DOWN_M: f32 = 0.02;
+/// Samples over a clip that find a foot's ground.
+const FOOT_SAMPLES: usize = 64;
+
 /// One strip: a clip (or the still) from one direction, its frames consecutive in the atlas.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Strip {
@@ -141,6 +147,10 @@ pub struct Strip {
     pub distance_m: f32,
     /// Events of the clip: (name, the frame showing it).
     pub events: Vec<(String, u32)>,
+    /// The clip's feet (as `anim_check` finds them: a graph's `feet`, the clip's footstep bones,
+    /// or bones named foot*; empty: none) and, per frame, which are down (indices into `feet`).
+    pub feet: Vec<String>,
+    pub feet_down: Vec<Vec<u8>>,
     /// Index of its first pose in [`Plan::poses`] (its frames' poses follow in order).
     pub pose0: usize,
 }
@@ -185,8 +195,112 @@ pub struct Plan {
     /// The fitted extent over every pose and direction (screen metres, from the pivot):
     /// left, right, bottom, top.
     pub extent_m: [f32; 4],
-    /// How far each clip's root wanders sideways over its frames (metres; 0 = in place).
+    /// How far each clip's root wanders sideways over its frames (metres; 0 = in place), as
+    /// the clip has it (with `in_place` it was then taken out).
     pub root_drift_m: Vec<(String, f32)>,
+    /// The shadow blob's cell, when asked for.
+    pub shadow: Option<Shadow>,
+}
+
+/// The soft shadow blob: one cell of its own after the strips, alpha only, an ellipse centred
+/// on the pivot (the model's footprint seen at the sheet's elevation).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shadow {
+    /// Its sheet frame index and its rectangle in the atlas.
+    pub frame: u32,
+    pub rect: [u32; 4],
+    /// Its own pivot (its middle), in pixels from its cell's top left: drawn there, it is under
+    /// the model's pivot.
+    pub pivot: [u32; 2],
+    /// The ellipse's half-width and half-height in pixels.
+    pub radii_px: [f32; 2],
+}
+
+/// How dark the blob is at its middle (its alpha there is this times 255).
+pub const SHADOW_ALPHA: f32 = 0.6;
+
+/// The blob's pixels for a cell: black, alpha falling smoothly from [`SHADOW_ALPHA`] at the
+/// pivot to 0 at the ellipse's edge; pixel art: one alpha, half of it, inside 85% of the ellipse.
+pub fn shadow_blob(cell: [u32; 2], pivot: [u32; 2], radii: [f32; 2], pixel_art: bool) -> Vec<u8> {
+    let (w, h) = (cell[0] as usize, cell[1] as usize);
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let dx = (x as f32 + 0.5 - pivot[0] as f32) / radii[0].max(0.5);
+            let dy = (y as f32 + 0.5 - pivot[1] as f32) / radii[1].max(0.5);
+            let d2 = dx * dx + dy * dy;
+            let a = if pixel_art {
+                if d2 < 0.85 * 0.85 {
+                    128
+                } else {
+                    0
+                }
+            } else if d2 < 1.0 {
+                (SHADOW_ALPHA * (1.0 - d2) * (1.0 - d2) * 255.0).round() as u8
+            } else {
+                0
+            };
+            out[(y * w + x) * 4 + 3] = a;
+        }
+    }
+    out
+}
+
+/// One palette colour drawn round the silhouette (pixel art's outline): every transparent pixel
+/// with a visible pixel beside it (left, right, above, below) takes `colour`, fully opaque.
+/// Pixels within `margin` of the cell's edge are never drawn on (the fit keeps them clear).
+pub fn outline(rgba: &mut [u8], cell: [u32; 2], colour: [u8; 3], margin: u32) {
+    let (w, h, m) = (cell[0] as i64, cell[1] as i64, i64::from(margin));
+    let seen: Vec<bool> = rgba.chunks_exact(4).map(|p| p[3] > 0).collect();
+    for y in m..h - m {
+        for x in m..w - m {
+            let i = (y * w + x) as usize;
+            if seen[i] {
+                continue;
+            }
+            let beside = [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)].iter().any(|(dx, dy)| {
+                let (nx, ny) = (x + dx, y + dy);
+                nx >= 0 && ny >= 0 && nx < w && ny < h && seen[(ny * w + nx) as usize]
+            });
+            if beside {
+                rgba[i * 4..i * 4 + 4].copy_from_slice(&[colour[0], colour[1], colour[2], 255]);
+            }
+        }
+    }
+}
+
+/// The darkest colour of a palette (Oklab lightness): pixel art's outline colour.
+pub fn darkest(palette: &[[u8; 3]]) -> Option<[u8; 3]> {
+    palette.iter().copied().min_by(|a, b| {
+        let l = |c: [u8; 3]| specula_studio::colour::oklab(specula_studio::colour::from8(c))[0];
+        l(*a).total_cmp(&l(*b))
+    })
+}
+
+/// Which of a clip's `feet` are down at each of `times` (indices into `feet`): a foot within
+/// [`FOOT_DOWN_M`] of its ground, its 15th-percentile height over the clip.
+fn feet_down(set: &AnimSet, id: specula_anim::ClipId, feet: &[usize], times: &[f32], in_place_root: Option<[f32; 3]>) -> Vec<Vec<u8>> {
+    let c = set.clip(id);
+    let height = |t: f32| -> Vec<f32> {
+        let mut p = set.skeleton.rest_pose();
+        blend::sample(&set.skeleton, c, set.track_bones(id), t, blend::Base::Rest, &mut p);
+        if let (Some(r), Some(root)) = (in_place_root, p.local.first_mut()) {
+            root.t[0] = r[0];
+            root.t[2] = r[2];
+        }
+        let mut model = Vec::new();
+        set.skeleton.model_space(&p, &mut model);
+        feet.iter().map(|&f| model.get(f).map_or(0.0, |m| m.t[1])).collect()
+    };
+    let track: Vec<Vec<f32>> = (0..=FOOT_SAMPLES).map(|k| height(c.duration * k as f32 / FOOT_SAMPLES as f32)).collect();
+    let ground: Vec<f32> = (0..feet.len())
+        .map(|f| {
+            let mut ys: Vec<f32> = track.iter().map(|h| h[f]).collect();
+            ys.sort_by(f32::total_cmp);
+            ys[ys.len() * 15 / 100]
+        })
+        .collect();
+    times.iter().map(|&t| height(t).iter().enumerate().filter(|(f, y)| (**y - ground[*f]).abs() <= FOOT_DOWN_M).map(|(f, _)| f as u8).collect()).collect()
 }
 
 /// What was asked, as far as the plan needs it.
@@ -198,6 +312,11 @@ pub struct Ask {
     pub rate: Rate,
     pub cell: [u32; 2],
     pub supersample: u32,
+    /// Each frame's root put back over the origin (its sideways wander taken out): a 2D game
+    /// moves the sprite itself.
+    pub in_place: bool,
+    /// A soft shadow blob in a cell of its own (alpha only, centred on the pivot).
+    pub shadow_blob: bool,
 }
 
 /// Why a plan was refused, before anything was rendered: a code, words, and the numbers.
@@ -352,6 +471,8 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
         duration: f32,
         distance: f32,
         events: Vec<(String, f32)>,
+        feet: Vec<String>,
+        feet_down: Vec<Vec<u8>>,
     }
     let names: Vec<String> = match (&ask.clips, set) {
         (Clips::Still, _) => Vec::new(),
@@ -367,8 +488,10 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
     }
     let mut wants: Vec<Want> = Vec::new();
     if names.is_empty() {
-        wants.push(Want { clip: None, times: vec![0.0], fps: 1.0, looping: false, duration: 0.0, distance: 0.0, events: Vec::new() });
+        wants.push(Want { clip: None, times: vec![0.0], fps: 1.0, looping: false, duration: 0.0, distance: 0.0, events: Vec::new(), feet: Vec::new(), feet_down: Vec::new() });
     }
+    let rest_root: Option<[f32; 3]> = set.and_then(|s| s.skeleton.rest_pose().local.first().map(|t| t.t));
+    let in_place_root = if ask.in_place { rest_root } else { None };
     for name in &names {
         let set = set.expect("clips come from a set");
         let Some(id) = set.id(name) else {
@@ -382,7 +505,13 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
         let span = if looping { n as f32 } else { (n.max(2) - 1) as f32 };
         let fps = if c.duration > 0.0 && n > 1 { span / c.duration } else { 1.0 };
         let events = c.events.iter().map(|e| (e.name.clone(), e.time)).collect();
-        wants.push(Want { clip: Some(name.clone()), times, fps, looping, duration: c.duration, distance: c.distance, events });
+        // The feet as anim_check finds them (a graph's `feet`, else the clip's footstep bones,
+        // else bones named foot*), and which are down in each frame.
+        let graph = set.graphs().map(|(_, g)| g).find(|g| !g.feet.is_empty());
+        let feet = specula_anim::checks::feet_of(set, graph, Some(id));
+        let feet_down = if feet.is_empty() { Vec::new() } else { feet_down(set, id, &feet, &times, in_place_root) };
+        let feet = feet.iter().map(|&b| set.skeleton.names.get(b).cloned().unwrap_or_else(|| format!("bone{b}"))).collect();
+        wants.push(Want { clip: Some(name.clone()), times, fps, looping, duration: c.duration, distance: c.distance, events, feet, feet_down });
     }
     let cells_total: usize = wants.iter().map(|w| w.times.len()).sum::<usize>() * ask.directions.len();
     if cells_total > MAX_CELLS {
@@ -392,7 +521,11 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
             would_be: None,
         });
     }
-    let counts: Vec<u32> = ask.directions.iter().flat_map(|_| wants.iter().map(|w| w.times.len() as u32)).collect();
+    let mut counts: Vec<u32> = ask.directions.iter().flat_map(|_| wants.iter().map(|w| w.times.len() as u32)).collect();
+    if ask.shadow_blob {
+        // The blob: one cell of its own, beginning the last row.
+        counts.push(1);
+    }
     let (columns, firsts, atlas) = layout(&counts, ask.cell)?;
 
     // Poses: per clip frame (directions share them).
@@ -424,6 +557,11 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
                 let f = *first_root.get_or_insert(r);
                 drift = drift.max(((r[0] - f[0]).powi(2) + (r[2] - f[2]).powi(2)).sqrt());
             }
+            // In place: the root over its rest place sideways (its height kept).
+            if let (Some(r), Some(root)) = (in_place_root, p.local.first_mut()) {
+                root.t[0] = r[0];
+                root.t[2] = r[2];
+            }
             poses.push(skin_of(set, &p));
         }
         root_drift_m.push((name.clone(), drift));
@@ -437,8 +575,16 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
     let mut ext = [f32::MAX, f32::MIN, f32::MAX, f32::MIN];
     let mut radius = 0.0f32;
     let mut pts = Vec::new();
-    for skin in &poses {
+    // The footprint (for the shadow blob): the first pose's vertices in its lowest fifth of
+    // height, their farthest from the vertical axis.
+    let mut footprint = 0.0f32;
+    for (k, skin) in poses.iter().enumerate() {
         posed_points(built, skin, &mut pts);
+        if k == 0 && ask.shadow_blob {
+            let (lo, hi) = pts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
+            let band = lo + (hi - lo) * 0.2;
+            footprint = pts.iter().filter(|p| p[1] <= band).map(|p| (p[0] * p[0] + p[2] * p[2]).sqrt()).fold(0.0, f32::max);
+        }
         for p in &pts {
             let v = Vec3::new(p[0], p[1], p[2]);
             radius = radius.max(v.length());
@@ -474,6 +620,8 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
                 duration_s: w.duration,
                 distance_m: w.distance,
                 events: w.events.iter().map(|(n, t)| (n.clone(), frame_of(*t))).collect(),
+                feet: w.feet.clone(),
+                feet_down: w.feet_down.clone(),
                 pose0: pose0[wi],
             });
             for (f, &t) in w.times.iter().enumerate() {
@@ -483,7 +631,19 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
             }
         }
     }
+    let shadow = ask.shadow_blob.then(|| {
+        let frame = firsts[k];
+        let (col, row) = (frame % columns, frame / columns);
+        // Its own pivot, the cell's middle (the model's pivot is near its cell's foot, with no
+        // room below it). Seen from the sheet's elevation: as wide as the footprint, as tall as
+        // it is foreshortened; inside the cell's clear margin.
+        let centre = [ask.cell[0] / 2, ask.cell[1] / 2];
+        let rx = (footprint.max(0.05) / s).min(centre[0].saturating_sub(MARGIN_PX).max(1) as f32);
+        let ry = (rx * ask.elevation_deg.to_radians().sin()).max(1.0).min(centre[1].saturating_sub(MARGIN_PX).max(1) as f32);
+        Shadow { frame, rect: [col * ask.cell[0], row * ask.cell[1], ask.cell[0], ask.cell[1]], pivot: centre, radii_px: [rx, ry] }
+    });
     Ok(Plan {
+        shadow,
         cell: ask.cell,
         supersample: ask.supersample,
         columns,

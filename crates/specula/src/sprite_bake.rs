@@ -18,7 +18,7 @@ use specula_core::Json;
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 pub(crate) mod job;
@@ -55,6 +55,8 @@ pub struct Request {
     pub ask: Ask,
     pub view: View,
     pub pixel_art: bool,
+    /// Pixel art's outline: the palette's darkest colour round the silhouette.
+    pub outline: bool,
     pub light: Light,
     /// The atlas's project path; the frame data is beside it (`.json`).
     pub path: String,
@@ -75,7 +77,7 @@ pub fn frames_path(png: &str) -> String {
 
 /// Reads the arguments (every one bounded: AGENTS rule 15).
 pub fn parse(args: &Json) -> Result<Call, String> {
-    check_keys(args, "sprite_bake", &[&["recipe", "params", "seed", "clips", "directions", "view", "elevation_deg", "frames", "fps", "cell", "supersample", "pixel_art", "light", "path", "dry_run", "cancel"]])?;
+    check_keys(args, "sprite_bake", &[&["recipe", "params", "seed", "clips", "directions", "view", "elevation_deg", "frames", "fps", "cell", "supersample", "pixel_art", "outline", "in_place", "shadow", "light", "path", "dry_run", "cancel"]])?;
     if bool_arg(args, "cancel")? == Some(true) {
         if args.as_object().is_some_and(|o| o.len() > 1) {
             return Err("'cancel' stands alone: {\"cancel\": true} stops your own bakes".into());
@@ -181,46 +183,69 @@ pub fn parse(args: &Json) -> Result<Call, String> {
     }
     crate::project::check_path(&path).map_err(|e| e.message)?;
     let dry_run = bool_arg(args, "dry_run")?.unwrap_or(false);
-    let ask = Ask { clips, directions, elevation_deg, rate, cell, supersample };
-    Ok(Call::Bake(Box::new(Request { spec, ask, view, pixel_art, light, path, dry_run })))
+    let outline = bool_arg(args, "outline")?.unwrap_or(false);
+    if outline && !pixel_art {
+        return Err("'outline' draws one palette colour round a pixel-art silhouette: give it with pixel_art: true".into());
+    }
+    let in_place = bool_arg(args, "in_place")?.unwrap_or(false);
+    let shadow_blob = match string_arg(args, "shadow")? {
+        None | Some("none") => false,
+        Some("blob") => true,
+        Some(other) => return Err(format!("'shadow' is \"none\" (default: the 2D game draws its own) or \"blob\" (a soft alpha-only blob in a cell of its own), not '{other}'")),
+    };
+    let ask = Ask { clips, directions, elevation_deg, rate, cell, supersample, in_place, shadow_blob };
+    Ok(Call::Bake(Box::new(Request { spec, ask, view, pixel_art, outline, light, path, dry_run })))
 }
 
 // ---------------------------------------------------------------------------------------------
 // Bakes running, for their owners' cancels
 
+/// One running bake: its owner's identity key, its cancel flag, and its owner's name as the
+/// engine knows it (set when its job starts; refusals name it).
+type Entry = (String, Arc<AtomicBool>, Arc<OnceLock<String>>);
+
 /// The bakes running, by owner (identity key): `sprite_bake {cancel: true}` stops the caller's.
 #[derive(Default)]
 pub struct Running {
     next: AtomicU64,
-    by: Mutex<BTreeMap<u64, (String, Arc<AtomicBool>)>>,
+    by: Mutex<BTreeMap<u64, Entry>>,
 }
 
 impl Running {
-    fn locked(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, (String, Arc<AtomicBool>)>> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Entry>> {
         self.by.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A new bake of `owner`'s, or the refusal when it already runs [`MAX_RUNNING_PER_OWNER`].
-    pub fn start(&self, owner: &str) -> Result<(u64, Arc<AtomicBool>), String> {
+    /// A new bake of `owner`'s, or the refusal when it already runs [`MAX_RUNNING_PER_OWNER`]:
+    /// its id, its cancel flag, and the cell its owner's name goes in.
+    pub fn start(&self, owner: &str) -> Result<(u64, Arc<AtomicBool>, Arc<OnceLock<String>>), String> {
         let mut by = self.locked();
-        let mine = by.values().filter(|(o, _)| o == owner).count();
+        let mine = by.values().filter(|(o, _, _)| o == owner).count();
         if mine >= MAX_RUNNING_PER_OWNER {
             return Err(format!("you already run {mine} bakes (at most {MAX_RUNNING_PER_OWNER}): wait for one to answer, or sprite_bake {{cancel: true}}"));
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        let flag = Arc::new(AtomicBool::new(false));
-        by.insert(id, (owner.to_owned(), Arc::clone(&flag)));
-        Ok((id, flag))
+        let (flag, name) = (Arc::new(AtomicBool::new(false)), Arc::new(OnceLock::new()));
+        by.insert(id, (owner.to_owned(), Arc::clone(&flag), Arc::clone(&name)));
+        Ok((id, flag, name))
     }
 
     pub fn end(&self, id: u64) {
         self.locked().remove(&id);
     }
 
-    /// Cancels every bake `owner` runs; how many. Nobody else's: a bake is its owner's.
-    pub fn cancel(&self, owner: &str) -> usize {
+    /// Cancels every bake `owner` runs: `Ok(how many)`. A bake is its owner's: when the caller
+    /// runs none and others do, `Err` names their owners (nothing is cancelled).
+    pub fn cancel(&self, owner: &str) -> Result<usize, Vec<String>> {
         let by = self.locked();
-        by.values().filter(|(o, _)| o == owner).map(|(_, f)| f.store(true, Ordering::Relaxed)).count()
+        let mine = by.values().filter(|(o, _, _)| o == owner).map(|(_, f, _)| f.store(true, Ordering::Relaxed)).count();
+        if mine == 0 && !by.is_empty() {
+            let mut owners: Vec<String> = by.values().map(|(_, _, n)| n.get().cloned().unwrap_or_else(|| "an agent whose bake is starting".to_owned())).collect();
+            owners.sort();
+            owners.dedup();
+            return Err(owners);
+        }
+        Ok(mine)
     }
 }
 
@@ -300,7 +325,20 @@ pub fn sheet_of(p: &plan::Plan, req: &Request, built: &crate::models::Built, lig
         .iter()
         .map(|s| {
             let d = &p.directions[s.direction];
-            sheet::StripData { clip: s.clip.clone(), direction: d.name.clone(), facing_deg: d.facing_deg, first: s.first, count: s.count, fps: s.fps, looping: s.looping, duration_s: s.duration_s, distance_m: s.distance_m, events: s.events.clone() }
+            sheet::StripData {
+                clip: s.clip.clone(),
+                direction: d.name.clone(),
+                facing_deg: d.facing_deg,
+                first: s.first,
+                count: s.count,
+                fps: s.fps,
+                looping: s.looping,
+                duration_s: s.duration_s,
+                distance_m: s.distance_m,
+                events: s.events.clone(),
+                feet: s.feet.clone(),
+                feet_down: s.feet_down.clone(),
+            }
         })
         .collect();
     let cells = p.cells.iter().map(|c| sheet::CellData { rect: c.rect, strip: c.strip as u32, frame: c.frame, time_s: c.time_s }).collect();
@@ -324,8 +362,11 @@ pub fn sheet_of(p: &plan::Plan, req: &Request, built: &crate::models::Built, lig
         pixel_art: req.pixel_art,
         light: light.to_owned(),
         source,
+        outline: req.outline,
+        in_place: req.ask.in_place,
         strips,
         cells,
+        shadow: p.shadow.as_ref().map(|s| sheet::ShadowData { frame: s.frame, rect: s.rect, pivot: s.pivot, radii_px: s.radii_px }),
     }
 }
 
@@ -334,8 +375,17 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
     let Some(owner) = owner_key(tools, session) else { return err("no_answer", "the engine didn't say who you are") };
     let req = match call {
         Call::Cancel => {
-            let n = tools.bakes.cancel(&owner);
-            return ToolOutput::text(Json::obj([("cancelled", Json::from(n)), ("note", Json::from(if n == 0 { "you run no bake: nothing was cancelled (only a bake's owner cancels it)" } else { "each stops at its next cell and answers its own call \"cancelled\"; nothing of it is written" }))]).to_string());
+            return match tools.bakes.cancel(&owner) {
+                Ok(n) => ToolOutput::text(Json::obj([("cancelled", Json::from(n)), ("note", Json::from(if n == 0 { "no bake is running: nothing was cancelled" } else { "each stops at its next cell and answers its own call \"cancelled\"; nothing of it is written" }))]).to_string()),
+                Err(owners) => ToolOutput::error(
+                    Json::obj([
+                        ("error", Json::from("not_job_owner")),
+                        ("message", Json::from(format!("you run no bake; the bakes running are {}'s, and only a bake's owner cancels it: nothing was cancelled", owners.join(", ")))),
+                        ("owners", Json::arr(owners.into_iter().map(Json::from))),
+                    ])
+                    .to_string(),
+                ),
+            };
         }
         Call::Bake(r) => *r,
     };
@@ -381,13 +431,14 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
     }
     let Some(store) = tools.content.as_ref().map(Arc::clone) else { return err("no_content_store", "this engine has no content store (binary project files need one)") };
     // The renders: a step job on the engine thread, cancellable by its owner.
-    let (id, cancel) = match tools.bakes.start(&owner) {
+    let (id, cancel, owner_name) = match tools.bakes.start(&owner) {
         Ok(x) => x,
         Err(m) => return err("job_busy", m),
     };
     let _registered = Registered(&tools.bakes, id);
     let out = Arc::new(Mutex::new(None));
-    let bake = job::Bake { plan: plan.clone(), built: Arc::clone(&built), rig, palette, cancel, out: Arc::clone(&out) };
+    let outline = if req.outline { palette.as_deref().and_then(plan::darkest) } else { None };
+    let bake = job::Bake { plan: plan.clone(), built: Arc::clone(&built), rig, palette, outline, cancel, owner_name, out: Arc::clone(&out) };
     let rendered = tools.send(session, Command::SpriteBake(Box::new(bake)));
     if rendered.is_error {
         return rendered;
@@ -462,6 +513,17 @@ fn answer(p: &plan::Plan, data: &sheet::SheetData, req: &Request, baked: Option<
     let drift: Vec<Json> = p.root_drift_m.iter().filter(|(_, d)| *d > p.metres_per_pixel).map(|(c, d)| Json::obj([("clip", Json::from(c.as_str())), ("metres", r3(f64::from(*d)))])).collect();
     if !drift.is_empty() {
         a.set("root_drift", Json::arr(drift.into_iter().take(MAX_LISTED)));
+        a.set(
+            "root_drift_is",
+            Json::from(if req.ask.in_place { "how far each clip's root wanders sideways as the clip has it; in_place took it out of every frame" } else { "how far each clip's root wanders sideways over its frames (baked as it is): in_place: true takes it out, for a 2D game that moves the sprite itself" }),
+        );
+    }
+    if let Some(sh) = &p.shadow {
+        a.set("shadow", Json::obj([("frame", Json::from(sh.frame)), ("rect", Json::arr(sh.rect.map(Json::from))), ("pivot", Json::arr(sh.pivot.map(Json::from)))]));
+    }
+    let footed = data.strips.iter().filter(|s| !s.feet.is_empty()).count();
+    if data.strips.iter().any(|s| s.clip.is_some()) {
+        a.set("feet", Json::from(if footed > 0 { format!("{footed} strip(s) say which feet are down in each frame (strips[].feet_down in the frame data)") } else { "the model has no feet anim_check knows (no graph feet, footstep events or bones named foot*), so which feet are down is not said".to_owned() }));
     }
     let mut cost = vec![("wall_ms", r3(started.elapsed().as_secs_f64() * 1000.0))];
     if let Some((b, png_bytes)) = baked {
@@ -539,6 +601,9 @@ pub fn definitions() -> Vec<ToolDef> {
                     ),
                     ("supersample", Json::obj([("type", Json::from("integer")), ("enum", Json::arr([1, 2, 4].map(Json::from))), ("description", Json::from("Samples a side of each pixel: an edge pixel's alpha is the share the model covers (default 2; 1 for pixel_art)"))])),
                     ("pixel_art", t("boolean", "No smoothing: all-or-nothing alpha, colours snapped to the project's palette (style.json), played with nearest filtering")),
+                    ("outline", t("boolean", "Pixel art only: one palette colour (its darkest) drawn round the silhouette, inside the cell's clear margin")),
+                    ("in_place", t("boolean", "Take each clip's sideways root wander out of every frame (a 2D game moves the sprite itself); the wander is said either way")),
+                    ("shadow", Json::obj([("type", Json::from("string")), ("enum", Json::arr([Json::from("none"), Json::from("blob")])), ("description", Json::from("none (default: no shadow baked in; a 2D game draws its own) or blob: a soft alpha-only ellipse in a cell of its own, drawn under the model at its pivot"))])),
                     ("light", Json::obj([("type", Json::from("string")), ("enum", Json::arr([Json::from("neutral"), Json::from("project")])), ("description", Json::from("neutral (default) or the project's: its style.toml [stage] game rig; the light turns with the camera, so every direction is lit alike on screen"))])),
                     ("path", text(MAX_PATH_CHARS, "Where the atlas goes: a .png in a folder named sprites under assets/ (the .json goes beside it)")),
                     ("dry_run", t("boolean", "Plan only: the atlas's size, cells and scale, nothing rendered or written")),

@@ -35,7 +35,7 @@ fn built(name: &str) -> Built {
 }
 
 fn ask(clips: Clips, dirs: u32, rate: Rate, cell: u32, ss: u32) -> Ask {
-    Ask { clips, directions: directions_around(dirs), elevation_deg: 30.0, rate, cell: [cell, cell], supersample: ss }
+    Ask { clips, directions: directions_around(dirs), elevation_deg: 30.0, rate, cell: [cell, cell], supersample: ss, in_place: false, shadow_blob: false }
 }
 
 #[test]
@@ -272,6 +272,102 @@ fn too_many_cells_and_too_large_an_atlas_are_refused_before_anything_renders() {
     assert_eq!((w, h, bytes), (4096, 32 * 2 * 512, 4096 * 32 * 2 * 512 * 4));
 }
 
+/// Which feet are down: the shambler's walk has feet anim_check knows, and over a cycle each
+/// foot is down in some frames and up in others. In place: every frame's root stands over its
+/// rest place sideways (the skinned root head's x and z are the rest's).
+#[test]
+fn feet_down_follow_the_walk_and_in_place_holds_the_root_over_its_rest() {
+    let shambler = built("shambler");
+    let set = shambler.anims.as_deref().unwrap();
+    let a = ask(Clips::Named(vec!["walk".into()]), 1, Rate::Frames(16), 64, 1);
+    let p = plan(&shambler, Some(set), &a).unwrap();
+    let s = &p.strips[0];
+    assert!(!s.feet.is_empty(), "the shambler's walk has feet");
+    assert_eq!(s.feet_down.len(), 16);
+    for f in 0..s.feet.len() as u8 {
+        let down = s.feet_down.iter().filter(|d| d.contains(&f)).count();
+        assert!(down > 0 && down < 16, "{} is down in {down} of 16 frames", s.feet[f as usize]);
+    }
+    // The still has no feet to speak of.
+    assert!(plan(&shambler, Some(set), &ask(Clips::Still, 1, Rate::Frames(1), 64, 1)).unwrap().strips[0].feet.is_empty());
+    // In place.
+    let mut rest_model = Vec::new();
+    set.skeleton.model_space(&set.skeleton.rest_pose(), &mut rest_model);
+    let head = rest_model[0].t;
+    let placed = plan(&shambler, Some(set), &Ask { in_place: true, ..a.clone() }).unwrap();
+    for skin in &placed.poses {
+        let q = skin[0].apply_point(head);
+        assert!((q[0] - head[0]).abs() < 1e-4 && (q[2] - head[2]).abs() < 1e-4, "{q:?} vs {head:?}");
+    }
+    assert_eq!(placed.root_drift_m, p.root_drift_m, "the drift is said as the clip has it either way");
+}
+
+/// Pixel art's outline: one colour on every transparent pixel beside the silhouette, never on
+/// the silhouette and never within the margin of the cell's edge. The blob: alpha only, darkest
+/// at its pivot, nothing outside its ellipse.
+#[test]
+fn the_outline_rings_the_silhouette_and_the_blob_is_alpha_only() {
+    let cell = [8u32, 8];
+    let mut px = vec![0u8; 8 * 8 * 4];
+    for (x, y) in [(3usize, 3usize), (4, 3), (3, 4), (4, 4), (4, 6)] {
+        px[(y * 8 + x) * 4..(y * 8 + x) * 4 + 4].copy_from_slice(&[200, 100, 50, 255]);
+    }
+    let before = px.clone();
+    outline(&mut px, cell, [1, 2, 3], 1);
+    for y in 0..8usize {
+        for x in 0..8usize {
+            let i = (y * 8 + x) * 4;
+            let was = before[i + 3] > 0;
+            let near = [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)].iter().any(|(dx, dy)| {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                (0..8).contains(&nx) && (0..8).contains(&ny) && before[((ny * 8 + nx) * 4 + 3) as usize] > 0
+            });
+            let edge = x == 0 || y == 0 || x == 7 || y == 7;
+            if was {
+                assert_eq!(px[i..i + 4], before[i..i + 4], "the silhouette is kept at {x},{y}");
+            } else if near && !edge {
+                assert_eq!(px[i..i + 4], [1, 2, 3, 255], "outlined at {x},{y}");
+            } else {
+                assert_eq!(px[i + 3], 0, "clear at {x},{y}");
+            }
+        }
+    }
+    assert_eq!(px[(7 * 8 + 4) * 4 + 3], 0, "the pixel below (4,6) is on the cell's edge: never drawn on");
+    assert_eq!(darkest(&[[200, 200, 200], [10, 12, 30], [90, 90, 90]]), Some([10, 12, 30]));
+    let blob = shadow_blob([32, 32], [16, 16], [10.0, 4.0], false);
+    let a = |x: usize, y: usize| blob[(y * 32 + x) * 4 + 3];
+    assert!(blob.chunks_exact(4).all(|p| p[..3] == [0, 0, 0]), "alpha only");
+    assert!(a(16, 16) > a(20, 16) && a(20, 16) > a(24, 16) && a(24, 16) > 0, "soft from the middle out");
+    assert_eq!((a(27, 16), a(16, 21), a(0, 0)), (0, 0, 0), "nothing outside the ellipse");
+    let hard = shadow_blob([32, 32], [16, 16], [10.0, 4.0], true);
+    assert!(hard.chunks_exact(4).all(|p| p[3] == 0 || p[3] == 128), "pixel art's blob: one alpha");
+}
+
+/// The blob's cell and the feet go into the frame data and read back; a blob that is not where
+/// the grid puts it is refused.
+#[test]
+fn the_blob_and_the_feet_round_trip_in_the_frame_data() {
+    let shambler = built("shambler");
+    let req = bake_of(r#"{"recipe": "recipes/shambler.json", "clips": ["walk"], "directions": 4, "frames": 6, "cell": 48, "shadow": "blob", "in_place": true}"#);
+    let p = plan(&shambler, shambler.anims.as_deref(), &req.ask).unwrap();
+    let sh = p.shadow.clone().expect("a blob");
+    assert_eq!(sh.frame, p.strips.last().map(|s| s.first + s.count.div_ceil(p.columns) * p.columns).unwrap(), "the blob begins the row after the strips");
+    assert!(sh.radii_px[0] >= 1.0 && sh.radii_px[0] <= 22.0 && sh.radii_px[1] < sh.radii_px[0], "{:?}", sh.radii_px);
+    let data = sheet_of(&p, &req, &shambler, "neutral");
+    let text = data.to_json().to_pretty();
+    let back = SheetData::parse(&text).unwrap_or_else(|e| panic!("{}: {}", e.at, e.message));
+    assert_eq!(back, data);
+    assert!(back.in_place && back.shadow.is_some() && !back.strips[0].feet.is_empty());
+    let j = Json::parse(&text).unwrap();
+    let mut bad = j.clone();
+    let mut shadow = bad.get("shadow").unwrap().clone();
+    shadow.set("frame", Json::from(sh.frame + 1));
+    bad.set("shadow", shadow);
+    assert!(SheetData::parse(&bad.to_string()).unwrap_err().at.starts_with("shadow"));
+    assert!(parse(&args(r#"{"recipe": "recipes/a.json", "outline": true}"#)).unwrap_err().contains("pixel_art"));
+    assert!(parse(&args(r#"{"recipe": "recipes/a.json", "shadow": "cast"}"#)).unwrap_err().contains("blob"));
+}
+
 /// The frame data reads back exactly as written, and each strip's sprite object is one the 2D
 /// path takes: played at any time inside a frame, it shows exactly that frame's cell, and its
 /// pivot is the model's ground.
@@ -341,15 +437,23 @@ fn the_same_plan_twice_and_its_bounds_on_the_answer() {
 #[test]
 fn a_bake_is_cancelled_by_its_owner_only() {
     let r = Running::default();
-    let (a, fa) = r.start("ann").unwrap();
-    let (_b, fb) = r.start("bob").unwrap();
-    let (_a2, _) = r.start("ann").unwrap();
+    assert_eq!(r.cancel("cy"), Ok(0), "nothing running: nothing to cancel, nobody to name");
+    let (a, fa, na) = r.start("ann").unwrap();
+    let (b, fb, nb) = r.start("bob").unwrap();
+    let (a2, _, _) = r.start("ann").unwrap();
+    na.set("Ann".into()).unwrap();
+    nb.set("Bob".into()).unwrap();
     assert!(r.start("ann").unwrap_err().contains("at most"));
-    assert_eq!(r.cancel("bob"), 1);
+    assert_eq!(r.cancel("bob"), Ok(1));
     assert!(fb.load(Ordering::Relaxed) && !fa.load(Ordering::Relaxed), "bob's cancel stops bob's bake only");
     r.end(a);
-    assert_eq!(r.cancel("ann"), 1);
-    assert_eq!(r.cancel("cy"), 0);
+    assert_eq!(r.cancel("ann"), Ok(1));
+    // Another agent's cancel is refused and names the owners; nothing of theirs is cancelled.
+    r.end(a2);
+    let (_c, fc, _) = r.start("ann").unwrap();
+    assert_eq!(r.cancel("cy"), Err(vec!["Bob".to_owned(), "an agent whose bake is starting".to_owned()]));
+    assert!(!fc.load(Ordering::Relaxed));
+    r.end(b);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -377,7 +481,7 @@ fn bake_on(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option
     let p = plan(built, built.anims.as_deref(), ask).unwrap();
     let out = Arc::new(Mutex::new(None));
     let cancel = Arc::new(AtomicBool::new(false));
-    let bake = job::Bake { plan: p.clone(), built: Arc::clone(built), rig: specula_studio::rules::neutral_rig(), palette, cancel: Arc::clone(&cancel), out: Arc::clone(&out) };
+    let bake = job::Bake { plan: p.clone(), built: Arc::clone(built), rig: specula_studio::rules::neutral_rig(), palette, outline: None, cancel: Arc::clone(&cancel), owner_name: Arc::default(), out: Arc::clone(&out) };
     let mut j = job::BakeJob::new(e, bake, "sprite-test");
     let (reply, _answer) = crate::jobs::channel();
     let give_up = Instant::now() + std::time::Duration::from_secs(120);
@@ -418,7 +522,7 @@ fn the_alpha_is_the_silhouette_in_the_picture() {
         let built = engine_built(&mut e, recipe);
         let a = ask(clips, 8, Rate::Frames(2), 64, 2);
         let p = plan(&built, built.anims.as_deref(), &a).unwrap();
-        let bake = job::Bake { plan: p.clone(), built: Arc::clone(&built), rig: specula_studio::rules::neutral_rig(), palette: None, cancel: Arc::default(), out: Arc::default() };
+        let bake = job::Bake { plan: p.clone(), built: Arc::clone(&built), rig: specula_studio::rules::neutral_rig(), palette: None, outline: None, cancel: Arc::default(), owner_name: Arc::default(), out: Arc::default() };
         e.pin_for_job(1 << 60, "sprite-test", built.id);
         for at in 0..p.cells.len() {
             let give_up = Instant::now() + std::time::Duration::from_secs(60);
