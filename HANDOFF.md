@@ -176,6 +176,29 @@ rounds.
   runs are doubled before anything is said. The builders' cost and the builders' with the
   judges' are both reported, with the count of builders that opened the engine's source.
   For Night Market the figure to hold against is 7.39.
+- **Day Market again, after the three mends (2026-11-24; about 160 USD, the lead had said
+  85): 2.64 times a plain build (2.26 to 3.08), from 3.01.** Between the rule's bars, where
+  it says to double; not doubled (twenty and twenty is the owner's to ask for). The interval
+  lies above 2.2 and over the one before it: **the mends changed what is delivered, not what
+  it costs.** No game shows a placeholder or fails Quit; all ten builders used the `press`
+  event and the `quit` key. **Judged twice:** each judge finding its own inputs, 55.9 against
+  60.3 of 61; every game of both arms judged again from the shared pack, **59.0 against
+  60.5**, so most of the old gap was the judging. What the engine games still fail is mostly
+  the drawn frame (no mark on the chosen row). Seven of ten builders opened the repository
+  (ten of ten before), for a screen with a list of rows of changing number, a text with
+  numbers in two languages, a run's seed. With the judges counted: 1.75
+  ([LEVERAGE.md](docs/design/LEVERAGE.md), the last results). **The two single builders**
+  (read as one cold engine builder on each market, by the harness, in a root of their own):
+  Night Market 304,256 weighted tokens, 18 requests, 34 of 34, about 2.3 times the plain arm
+  of the day before and the cheapest engine build of it so far; Day Market 1,156,305, 55 of
+  61. **Found on the way:** the judges' 60 minutes were never given (the limit is read from
+  the data folder's settings, not from a run's file: a copy of the data folder with the
+  limit raised gives them); a judge that stops process trees by id takes the harness with
+  it; `examen leverage` cannot hand a judge a pack. **The lead's reading:** faults are no
+  longer what the cost is; it is 39 requests against 14 at twice the context, and the next
+  step that can move it is the shape of a build (stage 2) or a job a plain builder cannot do
+  in a sitting. Not started: which, is the owner's. **Owed to the owner: the reminder on
+  hooks that no harness owns.**
 - **The three faults mended (2026-11-24; by two subagents on Opus 5.5, reviewed in three
   rounds by a third that wrote none of it: "merge" at `b52ddcc0`)** (FIRST_HOUR.md, section
   17, the last three parts). *A long text:* a kept text of up to 4,096 bytes reaches its

@@ -1,0 +1,3128 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "day",
+    "arm": "plain",
+    "kind": "plain",
+    "led": false,
+    "data": "evals/leverage",
+    "n": 6,
+    "phase": "judge",
+    "prepared": "2026-11-23T15:02:45Z",
+    "settings": {
+      "runs_per_cell": 5,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 4000000,
+        "wall_s": 14400
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 3600
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      },
+      "baseline": "plain"
+    }
+  },
+  "costs": {
+    "left": {
+      "files": 12,
+      "bytes": 62408,
+      "text_lines": 1475,
+      "lines_by_kind": {
+        ".json": 149,
+        ".md": 42,
+        ".py": 1284
+      }
+    },
+    "finished": "2026-11-23T15:08:03Z",
+    "judged_before": [
+      {
+        "why": "the first judge ran out of its 30 minutes and left no verdict; 60 minutes this time",
+        "verdict": null,
+        "judge": {
+          "tokens": 95821,
+          "tool_uses": 33,
+          "duration_s": 1800.6,
+          "by_kind": {
+            "input": 54,
+            "cache_write": 90476,
+            "cache_read": 1630927,
+            "output": 246,
+            "requests": 27,
+            "context_at_end": 95821
+          },
+          "weighted": 277472,
+          "cost_usd": null,
+          "turns": null,
+          "exit": 1,
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "models": null,
+          "tokens_complete": false,
+          "engine_stopped": true,
+          "ended": "wall"
+        }
+      },
+      {
+        "why": "judged again with the shared input pack, the same for both arms, and 60 minutes",
+        "verdict": {
+          "items": [
+            {
+              "id": "d01",
+              "kind": "checkable",
+              "pass": true,
+              "evidence": "game.py --headless --seed 1 --ticks 5 --kept <fresh> printed one JSON object: screen title, tick 5, all 39 keys the brief names present, idle defaults (day 0, slot null, stock {}, cursor 0,0, selected apples, crate_limit 8)."
+            },
+            {
+              "id": "d02",
+              "kind": "checkable",
+              "pass": true,
+              "evidence": "--frame f.png after a run wrote a PNG whose IHDR reads 800 x 480; frames of all screens opened and viewed."
+            },
+            {
+              "id": "d03",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Fresh texts [Day Market, New season, Records, Stamps, Settings, Quit], menu_index 0; up at top stays 0, down x9 stops at 4; enter on Quit at tick 0 with --ticks 10 printed tick 0, screen title."
+            },
+            {
+              "id": "d04",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Settings texts Language: English / Difficulty: Normal / Season: 7 days; right->es, right x2 stays es, left stays en; difficulty left->easy (stops), right->hard (stops); season right->3 (stops), left->7; escape and enter on Back -> title."
+            },
+            {
+              "id": "d05",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Run 1 set es/hard/3 in kept dir; run 2 on same dir started es, hard, 3. Fresh dir: en, normal, 7, slots [null,null,null], stamps [], records []."
+            },
+            {
+              "id": "d06",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Same scripts with language en vs es on title, slots, settings, records, stamps, morning (order taken), stall, day, paused, evening (order failed, stamps, bankrupt, season over), upgrades (owned, not enough), season over: same line count, no es line equal to its en line except Day Market/Normal/no; right on Language immediately gives [Ajustes, Idioma: Espanol, Dificultad: Normal, Temporada: 7 dias, Volver]."
+            },
+            {
+              "id": "d07",
+              "kind": "behaviour",
+              "pass": false,
+              "evidence": "lang/en.json and lang/es.json hold the texts and README says how to add a language, but the frame words AISLE, QUEUE and TILLS are English literals in render.py (lines 147, 158, 164), drawn the same in Spanish; the brief asks every shown word to come from the tables."
+            },
+            {
+              "id": "d08",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "enter on fresh title: texts [New season, Slot 1: Empty, Slot 2: Empty, Slot 3: Empty]; escape -> title."
+            },
+            {
+              "id": "d09",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "New season, down, enter: screen morning, day 1, slot 2, coins 50, rep 50, all stock [], prices 4/6/11/14/7/9, upgrades [], crate_limit 8, order null, texts include Morning, Day 1 of 7, Coins: 50."
+            },
+            {
+              "id": "d10",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Easy start 60 coins, Hard 40; 3-day season shows Day 1 of 3 with 3-entry forecast; after changing settings to Hard/7, Continue showed season_difficulty normal, season_length 3, Day 1 of 3, and its evening charged rent 20."
+            },
+            {
+              "id": "d11",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Seeds 1-20: forecast of 7 entries in sun/cloud/rain/heat, weather = forecast[0], one Weather: text matching it; seed 7 run twice gives the same forecast."
+            },
+            {
+              "id": "d12",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Seeds 1-20: every wholesale price within base-1..base+2 and Morning rows read exactly 'Apples: N a unit, stock 0' etc. with those prices."
+            },
+            {
+              "id": "d13",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Enter on each good row: coins 50-6*price, stock [{units 6, days_left life}] (honey null), row 'stock 6'; two apples lots -> one batch of 12, row stock 12; a later-day lot forms a second batch, listed fewest days_left first."
+            },
+            {
+              "id": "d14",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Fish x5 with 50 coins: only affordable lots bought, then coins/stock unchanged and 'Not enough coins' shown, kept through 30 ticks, gone after the word none; with 1000 coins 18 apples lots stopped at 96 units (16 lots paid)."
+            },
+            {
+              "id": "d15",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Day 1 order null, no Order line; day 2 on seeds 1-8: units in 4/6/8, pay = units*ref*3//2, line 'Order: 6 Apples for 36' style; accept -> taken true and 'Order taken: ...'; second accept identical state."
+            },
+            {
+              "id": "d16",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "After a new season in slot 1, a later run shows title New season, Continue, Records...; Continue slots row 'Slot 1: Day 1 of 7, 50 coins'; ended seasons empty their slot."
+            },
+            {
+              "id": "d17",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Saved day-2 season (stall, prices, order) continued with --seed 99: day, coins, reputation, stock, stall, prices, upgrades, forecast, wholesale, order all equal to the saved Morning; enter on empty Slot 2 stays on slots."
+            },
+            {
+              "id": "d18",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Escape on morning/stall/day: texts [Paused, Resume, Title], clock stood at 2 while 60 more ticks ran; Resume and escape gave a state identical to the unpaused one; Title -> title, slot 1 still day 1 50 coins, and Continue shows no apples bought that Morning."
+            },
+            {
+              "id": "d19",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Stall after buying apples: cursor 0,0, selected apples, texts include Stall, Good: Apples, Price: 4, Stock: 6, Crates: 0 of 8."
+            },
+            {
+              "id": "d20",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "up -> (0,1), up up -> (0,1), up down -> (0,0), down/left at 0 stay, right x7 -> (5,0), then left -> (4,0)."
+            },
+            {
+              "id": "d21",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "next_good 0..6 times: apples, bread, cheese, fish, flowers, honey, apples with Good/Price/Stock texts following; prev_good x1 honey, x2 flowers, x6 apples."
+            },
+            {
+              "id": "d22",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "put -> stall [{0,0,apples}], Crates: 1 of 8; put on occupied unchanged; 9th crate refused at 8 (Crates: 8 of 8); take removes, take on empty unchanged; back-row puts land at y 1."
+            },
+            {
+              "id": "d23",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "price_up x20 -> apples 12 (Price: 12), price_down x20 -> 1, honey max 27, up/down/down -> 3 with text."
+            },
+            {
+              "id": "d24",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Stall of 3 crates and bread price 8 set on day 1 are the same on day 2 in the same run and after save + Continue in a later run."
+            },
+            {
+              "id": "d25",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Enter on Stall: screen day, clock 0, speed slow, texts 08:00 and Speed: Slow, taken/served/walked_out/passed 0, visitors list filled."
+            },
+            {
+              "id": "d26",
+              "kind": "behaviour",
+              "pass": false,
+              "evidence": "Ids, increasing minutes, types and distinct wants (2/1/2/3) correct on 5 traced days, and the same season seed gives the same list, but another seed does not give another list: season seeds 1 and 2 give identical day-1 visitor lists (72 visitors), as do 5, 6 and 7."
+            },
+            {
+              "id": "d27",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Clock = ticks//20 at slow, //5 at fast, //1 at rush (checked at several tick counts); hold for 300 ticks: clock 0, tick 300, screen day, Speed: Hold; 10 slow ticks then fast: clock 0 at tick 12, 1 at tick 13 (08:01, Speed: Fast)."
+            },
+            {
+              "id": "d28",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "finish at tick 0, at tick 400 at slow and at tick 200 at rush all give screen evening, clock 480 at that same tick, and the same coins, taken, served, walked_out, passed, sales, stock and texts as rush to 480."
+            },
+            {
+              "id": "d29",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Slow 9600 ticks, fast 2400, a mix of fast/hold/rush/slow, and one with a pause all equal the rush result in coins, taken, served, walked_out, passed, sales, stock, texts."
+            },
+            {
+              "id": "d30",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Minute-by-minute traces (481 runs each) of 5 days: every visitor on the aisle at x = clock - m for clock m..m+5 and off it from m+6, never earlier or later."
+            },
+            {
+              "id": "d31",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Same traces: every new basket item came from the front crate of the visitor's column, or the back crate only when the basket already held something (or Sign), was on its wants and not already held."
+            },
+            {
+              "id": "d32",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Apples at front column 2, price 4: cooks 22, 28, 32 hold [apples 2 @4] with budget_left 32 at clock m+2 and nothing at m+1; at price 5 cooks take none; tourists 2, 35, 40 take 1 at price 6 and none at 7."
+            },
+            {
+              "id": "d33",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Traces: no take with units*price above budget_left (budget_left tracked exactly); units held in aisle+queue+till baskets never exceeded stock, incl. a scarce-stock day (3 apples on 6 crates)."
+            },
+            {
+              "id": "d34",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Traces: each visitor leaving with an empty basket raised passed by exactly 1 and was gone; those with goods were in the queue with joined m+6 or at a till."
+            },
+            {
+              "id": "d35",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Traces: every service had ends = start + 2 + goods; at ends a sale with that minute, paid = total (bargain: total - total//10), coins/taken up by paid, served +1, rep +1, stock down by units; batches [3 @3d, 30 @5d] lost the 3-day batch first."
+            },
+            {
+              "id": "d36",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Traces: never a free till with a non-empty queue at the end of a minute; visitors leaving the aisle at m with an empty queue were at a till at m."
+            },
+            {
+              "id": "d37",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Traces: no queued wait at or above patience; the walk-out (1 on a busy cheap day) left exactly at its patience, walked_out +1, reputation -2."
+            },
+            {
+              "id": "d38",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "At tick 480 at rush: screen evening, clock 480, aisle/queue/tills empty, passed and walked_out equal to minute 479 although visitors were still present."
+            },
+            {
+              "id": "d39",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Slot with second_till: tills has 2 entries throughout the day, both busy in many minutes, till 2 never taken while till 1 free."
+            },
+            {
+              "id": "d40",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Stall with crates only in the back row and Sign: empty-basket visitors took goods (65 served); without Sign no first take came from the back row in any trace."
+            },
+            {
+              "id": "d41",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Taken order with stock: coins +pay -rent, units gone, 'Order delivered: N'; with no stock: rep 50->45, 'Order failed'; not taken: coins only -rent, rep 50, no Order line."
+            },
+            {
+              "id": "d42",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Sun day: bread bought that Morning spoiled that evening (spoiled 6, 'Bread: sold 0, spoiled 6, left 0'), fish at days_left 1 then spoiled on day 2 evening, apples 5->4->3, honey stays null."
+            },
+            {
+              "id": "d43",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Heat day: apples 5->3 and fish gone without Cool box; with cool_box apples 5->4, fish days_left 1."
+            },
+            {
+              "id": "d44",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Rent with 0 and 3 crates: easy 15/21, normal 20/26, hard 30/36, shown 'Rent: N' and taken from coins."
+            },
+            {
+              "id": "d45",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Evening texts: Evening, Day 1 of 7, Taken 298, Served 23, Walked out 0, Passed 48 (= state), per-good lines matching sales and stock, Rent: 36, Coins, Reputation, Tomorrow: Sun (= forecast[1])."
+            },
+            {
+              "id": "d46",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Upgrades texts [Upgrades, Coins: 280, Next day, Second till: 80, Cool box: 40, Sign: 30, Extra crates: 50, Awning: 35]; Next day -> morning day 2, Day 2 of 7."
+            },
+            {
+              "id": "d47",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Sign: coins 280->250, upgrades [sign], 'Sign: owned'; again unchanged; with 30 coins Second till unchanged + 'Not enough coins'; Extra crates -> crate_limit 12 and 'Crates: 1 of 12' next Stall."
+            },
+            {
+              "id": "d48",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Coins 5 + rent: Evening shows Bankrupt, slots[0] null, records [{0, 2 days, normal, bankrupt true}]; Enter -> season_over [Bankrupt, Score: 0, ...]; Records 'Score 0, 2 days, Normal, bankrupt'."
+            },
+            {
+              "id": "d49",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Last day of 3-day season, coins 100: Enter -> [Season over, Score: 130, Days: 3, Best: 130, Enter: title], slots all null, next run title has no Continue."
+            },
+            {
+              "id": "d50",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "5 records + score 110 -> [300,200,130,110,100]; tie 130 keeps earlier (Easy) first: [Score 130, 7 days, Easy; Score 130, 3 days, Normal] in a later run; empty -> 'No records yet'."
+            },
+            {
+              "id": "d51",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Evening lines 'Stamp: First coin', 'Stamp: Sold out', 'Stamp: Full stall' in stamp order; same day again with those stamps kept shows no Stamp line; later run Stamps screen 'First coin: yes', 'Rain trade: no' (7 lines)."
+            },
+            {
+              "id": "d52",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Paying day -> first_coin; 8 crates -> full_stall, 7 -> none; no-stall day -> neither; 3-day last day non-bankrupt -> whole_season, bankrupt last day or day 2 of 3 -> none."
+            },
+            {
+              "id": "d53",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Apples with crates and 3 units sold to 0 -> sold_out; a bread crate with no stock and leftover apples -> no sold_out."
+            },
+            {
+              "id": "d54",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Day 2 played (buy, price change, fast/hold/rush, finish) unbroken vs Continue in a later run with --seed 77: visitors, sales, texts, coins, stock identical (5 served) for seeds 4 and 1."
+            },
+            {
+              "id": "d55",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Same seed/ticks/script from two identical kept copies printed identical states; seeds 1 vs 2 give other wholesale prices."
+            },
+            {
+              "id": "d56",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Escape on evening, left/right on title, put on morning, take/next_good/price_up/finish/rush on morning, accept/finish/rush/hold on stall, words on upgrades and paused: state unchanged."
+            },
+            {
+              "id": "d57",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "data/goods.json, visitors.json, balance.json (hourly rates, weather weights and W), upgrades.json, stamps.json; README 'Changing data' covers good, visitor type, upgrade, stamp."
+            },
+            {
+              "id": "d58",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Stall frame: 6x2 grid with back row on top, 8 crates at the state's cells with letters and distinct colours (two F crates told apart by colour), white cursor at (2,1), GOOD: FISH, PRICE: 15, CRATES: 8 OF 8."
+            },
+            {
+              "id": "d59",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Day frame at 11:20: stall crates, aisle with regular/bargain/cook at cells 1/3/5 as in state (letters+colours), queue of one cook, till with visitor, time, speed, coins, taken, served, reputation."
+            },
+            {
+              "id": "d60",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "Frames of title, slots, settings, morning, upgrades, paused, evening, season over show their texts; chosen entry marked with > and yellow (Records, Slot 2, Difficulty, Bread row, Sign row, Title)."
+            },
+            {
+              "id": "d61",
+              "kind": "behaviour",
+              "pass": true,
+              "evidence": "README gives keys and flow, kept files in --kept dir (default ./kept), and the headless and frame commands, which worked as written."
+            }
+          ],
+          "totals": {
+            "behaviour": {
+              "passed": 57,
+              "of": 59
+            },
+            "checkable": {
+              "passed": 2,
+              "of": 2
+            },
+            "all": {
+              "passed": 59,
+              "of": 61
+            }
+          },
+          "defects": [
+            "Seeds are correlated: Rng multiplies the seed by the same constant the splitmix stream steps by, so seed n+1 is seed n's stream shifted by one draw; seeds 1/2 and 5/6/7 give identical day-1 visitor lists.",
+            "Frame labels AISLE, QUEUE, TILLS are hard-coded English in render.py and stay English in Spanish.",
+            "Crate and visitor letters in the frame are the English initials of the ids (A, B, C... / C, T, B, R), also in Spanish; apples (A) and bargain (B) letters do not match the Spanish names."
+          ],
+          "could_not_check": []
+        },
+        "judge": {
+          "tokens": 113921,
+          "tool_uses": 49,
+          "duration_s": 642.2,
+          "by_kind": {
+            "input": 84,
+            "cache_write": 108576,
+            "cache_read": 3014294,
+            "output": 54383,
+            "requests": 42,
+            "context_at_end": 113921
+          },
+          "weighted": 709148,
+          "cost_usd": 2.559462800000001,
+          "turns": 50,
+          "exit": 0,
+          "runner": "claude",
+          "model": "claude-opus-5-5",
+          "models": [
+            "claude-opus-5-5"
+          ],
+          "tokens_complete": true,
+          "engine_stopped": true,
+          "ended": "done"
+        }
+      }
+    ],
+    "verdict": {
+      "items": [
+        {
+          "id": "d01",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "python game.py --headless --seed 1 --ticks 3 --kept <fresh> printed one JSON object, screen title, with all keys the brief names (tick, screen, menu_index ... stamps, records) and the idle defaults. Own run [[0,down],[0,down],[0,down]] --ticks 1 gave menu_index 3, so several words at one tick act in order and a word at tick 0 acts."
+        },
+        {
+          "id": "d02",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "--frame t.png after a headless run wrote a PNG whose IHDR reads 800 x 480; 14 frames written this way for title through season over (judge-scratch/j3/*.png)."
+        },
+        {
+          "id": "d03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S01 seed 1 fresh: texts [Day Market, New season, Records, Stamps, Settings, Quit], menu_index 0; Up keeps 0; Down x6 stops at 4; Left changes nothing; Enter on Quit at tick 10 ended the run with tick 10 printed (later words never acted)."
+        },
+        {
+          "id": "d04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S02-a: starts 'Language: English', 'Difficulty: Normal', 'Season: 7 days'; Left/Right stop at English/Spanish, Easy/Hard, 7/3 days; Enter on Back (t29) and Escape (t39) go to the title."
+        },
+        {
+          "id": "d05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S02-b on run a's kept folder starts es/hard/3; S02-c on a fresh folder starts en/normal/7 with slots [null,null,null], stamps [], records []."
+        },
+        {
+          "id": "d06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Ran S03es, S06es, S07es, S13es a/b, S14es, S21es, S23es a/b and collected every text on all 12 screens: all Spanish (e.g. 'Ranura 1: Vacía', 'Cajas: N de N', 'Velocidad: Lenta', 'Puntos 0, 1 días, Difícil, bancarrota'); only 'Day Market' is unchanged. es.json has the same 101 keys as en.json. S02 g2: Right turns the settings screen's own texts to Ajustes/Idioma: Español at once."
+        },
+        {
+          "id": "d07",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Strings are in work/lang/en.json and lang/es.json, looked up by Game.t(); README 'Add a language' says to copy en.json, translate it, add lang_xx and add the code to balance.json languages."
+        },
+        {
+          "id": "d08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S03 a0: screen slots, texts [New season, Slot 1: Empty, Slot 2: Empty, Slot 3: Empty]; Escape (a2) goes to the title."
+        },
+        {
+          "id": "d09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S04-a seed 1 at t4: morning, day 1, slot 1, coins 50, reputation 50, every stock [], prices 4/6/11/14/7/9, upgrades [], crate_limit 8, order null, texts Morning, 'Day 1 of 7', 'Coins: 50'."
+        },
+        {
+          "id": "d10",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S05: Easy 3-day start has coins 60, 'Day 1 of 3', forecast of 3; after the settings changed to hard/7, Continue still shows season_difficulty easy, season_length 3; a Hard start has 40 coins."
+        },
+        {
+          "id": "d11",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 1 forecast [sun,sun,sun,sun,rain,heat,cloud], one entry per day; S10 day 5 weather rain, S11 day 6 heat; Weather text follows (e.g. 'Weather: Cloud' at S24 m3). Seed 1 twice gave identical states; seed 2 forecast differs."
+        },
+        {
+          "id": "d12",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Wholesale seen in range on every Morning (e.g. seed 1 d1: 4,3,6,8,4,7; seed 7 d3: apples 1, bread 2, cheese 5, fish 7); rows read 'Apples: 4 a unit, stock 0' matching price and stock."
+        },
+        {
+          "id": "d13",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S06: one lot of apples at 4 took coins 60->36, stock.apples [{6,5}], row 'stock 6'; second lot gave one batch [{12,5}], coins 12; honey lot gave [{6,null}]."
+        },
+        {
+          "id": "d14",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S06 c3: refused Cheese lot left coins/stock unchanged and added 'Not enough coins'; cleared by left (c4) and by none (c6). S08 seed 1: apples went 6..96 in 16 lots, the 17th Enter (would be 102) changed nothing (coins 365, stock 96)."
+        },
+        {
+          "id": "d15",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S09 seed 1: day 1 order null; day 2 order apples 6 pay 36 (=6*4*3/2), 'Order: 6 Apples for 36'; accept -> taken true, 'Order taken: 6 Apples for 36'; second accept changed nothing."
+        },
+        {
+          "id": "d16",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S04-b on run a's folder: title [Day Market, New season, Continue, Records, ...]; slots 'Slot 1: Day 1 of 7, 50 coins'; heading 'Continue' from Continue."
+        },
+        {
+          "id": "d17",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S24: continued with seed 99 from the seed-7 prefix folder: day, coins, reputation, stock, stall, prices, upgrades, forecast, wholesale, order all equal to the unbroken run at m3; Enter on empty slot 2 left the Continue slots unchanged."
+        },
+        {
+          "id": "d18",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S23-a: Paused [Paused, Resume, Title] from Morning, Stall (cursor (1,1) kept) and Day; clock stayed 1 over 200 paused ticks; Resume/Escape returned to the same state; Title left slot {day 1, coins 50} without the apples lot, and Continue showed coins 50, no apples (also in later run S23-b)."
+        },
+        {
+          "id": "d19",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S04 st and S07 s0: cursor (0,0), selected apples, texts Stall, 'Good: Apples', 'Price: 4', 'Stock: 6' (6 apples held), 'Crates: 0 of 8'."
+        },
+        {
+          "id": "d20",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S07: Down/Left at (0,0) stay; Up -> (0,1); Up at y1 stays; Right x6 stops at (5,1); Down -> (5,0); Left x5 -> (0,0)."
+        },
+        {
+          "id": "d21",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S07 n0..n5: next_good cycles bread, cheese, fish, flowers, honey, apples with Good/Price/Stock texts following; prev_good from apples gives honey."
+        },
+        {
+          "id": "d22",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S07: put -> stall [{0,0,apples}], 'Crates: 1 of 8'; put of bread on (0,0) unchanged; take empties it; take on empty unchanged; with 8 crates a put at (3,1) refused."
+        },
+        {
+          "id": "d23",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S07 q1..q5: apples price up to 12 and stops ('Price: 12'), down to 1 and stops, back to 4; text follows."
+        },
+        {
+          "id": "d24",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Own run seed 1: apples priced 6 and a crate at (0,0) on day 1; day 2 Stall still shows price 6 and the crate; a later run with seed 5 on a copy of that folder, Continue slot 1 -> same price 6 and stall. Bank scripts also keep the stall day to day."
+        },
+        {
+          "id": "d25",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S04 dy: screen day, clock 0, speed slow, texts '08:00', 'Speed: Slow', taken/served/walked_out/passed 0, visitors holds the day's 72-entry list."
+        },
+        {
+          "id": "d26",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Every day's list in the traced runs (S04, S17d5-7, S19, S26 x30 seeds) had ids 1.., strictly rising minutes in 0..479, valid types and 2/1/2/3 distinct wants; seed 1 twice identical; seed 2 gave 40 visitors vs 72."
+        },
+        {
+          "id": "d27",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S25-mixed: 10 slow ticks clock 0, 2 fast clock 0, 1 more fast clock 1 (progress kept); hold for 300 ticks clock 1, tick 380, screen day, 'Speed: Hold'; then 101 rush ticks -> clock 102 ('09:42'). S23: slow = 20 ticks a minute."
+        },
+        {
+          "id": "d28",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S25-finish: finish at tick 67 -> tick 68 evening, clock 480, with day, coins, taken, served, walked_out, passed, sales, reputation, stock and texts equal to S25-rush's evening."
+        },
+        {
+          "id": "d29",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S25 finish, rush, fast, slow and mixed (with hold) evenings all identical in coins, taken (48), served (10), walked_out, passed (61), sales, reputation, stock."
+        },
+        {
+          "id": "d30",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Tick-by-tick trace over S17d5/d6/d7, S18, S19, S26: every aisle visitor had x = clock - minute, the aisle held exactly the visitors with minute in clock-5..clock, and none in queue/till before m+6: 0 violations."
+        },
+        {
+          "id": "d31",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S19n (back row only, no Sign): served 0, passed 93; traced baskets never held a good outside wants or a duplicate; S26 p4: cook takes apples from the front crate."
+        },
+        {
+          "id": "d32",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S26 seed 1: cook 22 (minute 145) wanting apples holds [{apples,2,4}] at clock 147 with budget_left 32 at price 4, nothing at 5; tourist 2 (minute 18) takes 1 at 6 (budget 14), none at 7."
+        },
+        {
+          "id": "d33",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Trace checked every tick: budget_left never below 0, and game.in_baskets(g) (aisle, queue and tills) never above stock for any good: 0 violations."
+        },
+        {
+          "id": "d34",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Minute-by-minute analysis of S17d7 seed 1 (rush): passed rose by exactly the empty-basket visitors leaving cell 5; those with goods joined the queue with joined = clock = minute+6 (trace: joined == minute+6 always)."
+        },
+        {
+          "id": "d35",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S17d7 analysis: each sale at its till's ends minute, ends = start+2+goods, paid = total (bargain total - total//10), taken/coins/served/reputation steps match, stock fell by the units sold. S27: sales took the 4-day apples batch first, then the 5-day."
+        },
+        {
+          "id": "d36",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S17d7 analysis: 28 services started in the same minute the till's previous one ended, 33 visitors went from the aisle straight to a free till in the minute they left it; no case of a queued visitor left with a till free."
+        },
+        {
+          "id": "d37",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S17d7 seed 1: tourist 26 left at wait 6, regular 25 at wait 10 (walked_out 0->2, reputation -2 each after that minute's +1); no queued wait ever reached patience in any trace."
+        },
+        {
+          "id": "d38",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S17d7 seed 1: at clock 479 one visitor on the aisle; at 480 screen evening, walked_out 2 and passed 25 unchanged, taken and served unchanged."
+        },
+        {
+          "id": "d39",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S18d5/S18d6 seed 1 (second_till bought): tills has 2 entries; both busy in 3 / 12 minutes (e.g. clock 43: visitors 4 and 5); from both free, the next service always started on till 1 (13 of 13)."
+        },
+        {
+          "id": "d40",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S19 seed 1 with Sign, back row only: served 18, taken 291; S19n without Sign: served 0."
+        },
+        {
+          "id": "d41",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S09 seed 1: taken with no stock -> 'Order failed', reputation 45, coins 30; not taken -> no line, reputation 50; deliver-apples-1 -> coins 27+36-15=48, apples gone."
+        },
+        {
+          "id": "d42",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S10 seed 1: day 4 evening 'Bread: sold 0, spoiled 6, left 0', fish/flowers at 1 day left; day 5 evening fish and flowers 'spoiled 6'; honey 6 units, days_left null, never spoiled."
+        },
+        {
+          "id": "d43",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S11-heat-d6 seed 1 (day 6 heat): without Cool box batches 5->3, 6->4, fish 2 gone (spoiled 6); with Cool box 5->4, 6->5, fish 2->1."
+        },
+        {
+          "id": "d44",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S12 with 3 crates: 'Rent: 21' coins 39 (Easy), 'Rent: 26' coins 24 (Normal), 'Rent: 36' coins 4 (Hard); S13 Hard 8 crates 'Rent: 46'."
+        },
+        {
+          "id": "d45",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S17d5 seed 1 evenings 1/5/7: Taken, Served, Walked out, Passed match state; every 'X: sold N, spoiled N, left N' line matches sales and stock; Rent, Coins, Reputation, 'Tomorrow: Heat' = forecast[5]; none on the last day."
+        },
+        {
+          "id": "d46",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S21: Upgrades texts [Upgrades, Coins: 30, Next day, Second till: 80, Cool box: 40, Sign: 30, Extra crates: 50, Awning: 35]; Enter on Next day -> Morning 'Day 2 of 7'."
+        },
+        {
+          "id": "d47",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S21: Sign bought coins 30->0, 'Sign: owned', again unchanged; Second till and Cool box refused with 'Not enough coins'. S20: all five bought (419->184), crate_limit 12, 'Crates: 12 of 12', two tills."
+        },
+        {
+          "id": "d48",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S13 Hard 8 crates: Evening 'Coins: -6', 'Bankrupt', slots all null; Enter -> season_over [Bankrupt, Score: 0, Days: 1, Best: 0]; records [{0,1,hard,true}]."
+        },
+        {
+          "id": "d49",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S14 Easy 3 days: Evening 'Coins: 15', 'Season over'; Season over 'Score: 65', 'Days: 3', 'Best: 65'; slot emptied; title without Continue. S14b: Continue kept while slot 2 holds a season."
+        },
+        {
+          "id": "d50",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S15: six ended seasons kept as [65,59,53,0 hard 1 day,0 normal 3 days] (tie at 0 kept by ending order, the last 0 dropped); S15-b later run shows 'Score 65, 3 days, Easy' ... 'Score 0, 1 days, Hard, bankrupt'; S03 'No records yet'."
+        },
+        {
+          "id": "d51",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S16 full-once: 'Stamp: Full stall' day 1, none day 2; S13-b later run Stamps screen 'Full stall: yes', others 'no'; stamps listed in stamp order (e.g. [first_coin, sold_out, rain_trade, good_name, whole_season])."
+        },
+        {
+          "id": "d52",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "First coin earned the day of the first payment (S16 sold-out, S17 e1); Full stall with 8 crates (S13); Whole season on S14's 3-day finish; none of these earned without the condition (S16 no-sold-out stamps [])."
+        },
+        {
+          "id": "d53",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S16 sold-out seed 1: apples crate with 6 units all sold -> 'Stamp: Sold out'; S16 no-sold-out: apples without a crate -> no stamp."
+        },
+        {
+          "id": "d54",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S24: day 3 played after Continue (seed 99) gave visitors, sales, taken, served, walked_out, passed, coins, reputation, stock, spoiled, stamps and texts identical to the unbroken seed-7 run."
+        },
+        {
+          "id": "d55",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S04-a seed 1 run twice from two fresh folders: all checkpoint states identical; seed 2 gave another forecast, other wholesale prices and another visitor list."
+        },
+        {
+          "id": "d56",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "S01 Left on title, S06 accept/put/finish/rush/take/left on Morning, S07 accept/finish/rush on Stall changed nothing; own run: escape, rush, finish, left on the Evening left it unchanged (coins 28, clock 480)."
+        },
+        {
+          "id": "d57",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "data/goods.json, visitors.json, balance.json (hourly_rates, weather weights and W), upgrades.json, stamps.json; README 'Changing data' says how to change a good, visitor type, upgrade and stamp."
+        },
+        {
+          "id": "d58",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "stall.png (S07 t116): 6x2 grid, front row by the aisle, crates lettered and coloured per good (fish blue, flowers pink) at the state's cells incl. (4,1) apples and (5,1) honey, white cursor at (3,1), 'Good: Apples', 'Price: 4', 'Crates: 8 of 8'."
+        },
+        {
+          "id": "d59",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "day.png (S17d7 seed 1 tick 800): stall crates, aisle R at cell 0 and T at cell 3 as in state, queue T R R, till 1 with T, and 10:38, Speed: Rush, Coins 583, Taken 410, Served 21, Reputation 100; types drawn by letter and data colour."
+        },
+        {
+          "id": "d60",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Frames of title, slots, settings, records, stamps, morning (row marker on Cheese), upgrades (marker on Sign: owned), paused over Stall and Day (marker on Resume), evening and season over all show their texts as the state lists them."
+        },
+        {
+          "id": "d61",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "README gives keys and flow for play, says everything is kept in --kept (settings.json, slots.json, stamps.json, records.json), and gives the headless and --frame commands, both of which worked as written."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 59,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 61,
+          "of": 61
+        }
+      },
+      "defects": [
+        "On the Season over screen (no season being played, slot null) the state still carries the ended season's day and coins (e.g. coins -6 after S13) instead of the brief's idle values (day 0, coins 0); the README admits this.",
+        "The random source is seeded linearly (seed*G + day*C + salt*K, G being splitmix's own increment), so seed s+1's stream is seed s's stream shifted by one draw: adjacent seeds give correlated wholesale prices and visitor lists (seed 1 and 2 share the first two visitors of day 1).",
+        "The tkinter window was not checked by the builder and was not opened here."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 65564,
+      "tool_uses": 23,
+      "duration_s": 316.6,
+      "by_kind": {
+        "input": 34,
+        "cache_write": 60219,
+        "cache_read": 775200,
+        "output": 47028,
+        "requests": 17,
+        "context_at_end": 65564
+      },
+      "weighted": 387968,
+      "cost_usd": 0.788744,
+      "turns": 24,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 136656,
+      "tool_uses": 76,
+      "duration_s": 412.3,
+      "by_kind": {
+        "input": 132,
+        "cache_write": 131311,
+        "cache_read": 5538121,
+        "output": 40554,
+        "requests": 66,
+        "context_at_end": 136656
+      },
+      "weighted": 920853,
+      "cost_usd": 2.969720200000001,
+      "turns": 77,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done"
+    },
+    "where": {
+      "run": "day-plain-6",
+      "requests": 17,
+      "steps": 23,
+      "steps_before_the_first_code": 2,
+      "weighted": 387968,
+      "weighted_by_kind": {
+        "read_again": 77520,
+        "written_out": 235140,
+        "new_in_context": 75308
+      },
+      "builds": {
+        "steps": 1,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "write code": {
+          "steps": 17,
+          "answered_tokens": 755,
+          "written_tokens": 17661
+        },
+        "read its own files": {
+          "steps": 2,
+          "answered_tokens": 5484,
+          "written_tokens": 23
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 555
+        },
+        "run its own checks": {
+          "steps": 2,
+          "answered_tokens": 296,
+          "written_tokens": 104
+        },
+        "build the module": {
+          "steps": 1,
+          "answered_tokens": 15,
+          "written_tokens": 36
+        },
+        "look at a frame": {
+          "steps": 1,
+          "answered_tokens": 0,
+          "written_tokens": 12
+        }
+      }
+    },
+    "trace": {
+      "run": "day-plain-6",
+      "who": "builder",
+      "complete": true,
+      "requests": 17,
+      "weighted": 387968,
+      "in_the_ledger": 387968,
+      "reading": 152828,
+      "writing": 235140,
+      "written_out": 47028,
+      "of_which_unseen": 28684,
+      "start": {
+        "context": 7930,
+        "carried": 16458
+      },
+      "context_at_end": 65564,
+      "by_kind": {
+        "write code": {
+          "requests": 11,
+          "steps": 18,
+          "answered": 768,
+          "written_out": 29403,
+          "writing": 147017,
+          "carried": 72095
+        },
+        "build the module": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 15,
+          "written_out": 13266,
+          "writing": 66329,
+          "carried": 38626
+        },
+        "read its own files": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 5471,
+          "written_out": 2374,
+          "writing": 11872,
+          "carried": 22214
+        },
+        "run its own checks": {
+          "requests": 2,
+          "steps": 2,
+          "answered": 296,
+          "written_out": 733,
+          "writing": 3663,
+          "carried": 1961
+        },
+        "look at a frame": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 0,
+          "written_out": 767,
+          "writing": 3836,
+          "carried": 1475
+        },
+        "words only": {
+          "requests": 1,
+          "steps": 0,
+          "answered": 0,
+          "written_out": 485,
+          "writing": 2424,
+          "carried": 0
+        }
+      },
+      "files": [
+        {
+          "file": "<run>/work/game.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 9555
+        },
+        {
+          "file": "<run>\\BRIEF.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 5471,
+          "written": 0
+        },
+        {
+          "file": "<run>/work/render.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 2221
+        },
+        {
+          "file": "<run>/work/tests.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 995
+        },
+        {
+          "file": "<run>/work/README.md",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 953
+        },
+        {
+          "file": "<run>/work/lang/es.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 924
+        },
+        {
+          "file": "<run>/work/lang/en.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 861
+        },
+        {
+          "file": "<run>/work/tkui.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 530
+        },
+        {
+          "file": "<run>/work/data/balance.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 266
+        },
+        {
+          "file": "<run>/work/data/visitors.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 186
+        },
+        {
+          "file": "<run>/work/data/goods.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 154
+        },
+        {
+          "file": "<run>/work/data/upgrades.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 85
+        },
+        {
+          "file": "<run>/work/data/stamps.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 85
+        },
+        {
+          "file": "<run>/work/_t/f2.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        }
+      ],
+      "rows": [
+        {
+          "n": 1,
+          "context": 7930,
+          "new": 2587,
+          "read_again": 5343,
+          "written_out": 2374,
+          "of_which_unseen": 2362,
+          "cost": 15639,
+          "cost_so_far": 15639,
+          "carried": 22214,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\BRIEF.md",
+              "written": 12,
+              "answered": 5471
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "context": 16007,
+          "new": 8079,
+          "read_again": 7928,
+          "written_out": 13266,
+          "of_which_unseen": 13230,
+          "cost": 77220,
+          "cost_so_far": 92859,
+          "carried": 38626,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "build the module",
+              "what": "mkdir -p <run>/work/data <run>/work/lang; ls <run>/work; python --version; cargo --version",
+              "written": 36,
+              "answered": 15
+            }
+          ]
+        },
+        {
+          "n": 3,
+          "context": 30582,
+          "new": 14577,
+          "read_again": 16005,
+          "written_out": 1738,
+          "of_which_unseen": 958,
+          "cost": 28513,
+          "cost_so_far": 121373,
+          "carried": 5301,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/data/goods.json",
+              "written": 154,
+              "answered": 34
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/data/visitors.json",
+              "written": 186,
+              "answered": 34
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/data/upgrades.json",
+              "written": 85,
+              "answered": 34
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/data/stamps.json",
+              "written": 85,
+              "answered": 34
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/data/balance.json",
+              "written": 266,
+              "answered": 34
+            }
+          ]
+        },
+        {
+          "n": 4,
+          "context": 32660,
+          "new": 2080,
+          "read_again": 30580,
+          "written_out": 3043,
+          "of_which_unseen": 1258,
+          "cost": 20873,
+          "cost_so_far": 142246,
+          "carried": 8347,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/lang/en.json",
+              "written": 861,
+              "answered": 33
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/lang/es.json",
+              "written": 924,
+              "answered": 33
+            }
+          ]
+        },
+        {
+          "n": 5,
+          "context": 36066,
+          "new": 3408,
+          "read_again": 32658,
+          "written_out": 12791,
+          "of_which_unseen": 3236,
+          "cost": 71481,
+          "cost_so_far": 213727,
+          "carried": 33069,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/game.py",
+              "written": 9555,
+              "answered": 32
+            }
+          ]
+        },
+        {
+          "n": 6,
+          "context": 50137,
+          "new": 14073,
+          "read_again": 36064,
+          "written_out": 1086,
+          "of_which_unseen": 905,
+          "cost": 26627,
+          "cost_so_far": 240354,
+          "carried": 2700,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "cd <run>/work && python - <<'EOF' s=open('game.py',encoding='utf-8').read() s=s.replace('''elif sc == \"day\"...",
+              "written": 181,
+              "answered": 7
+            }
+          ]
+        },
+        {
+          "n": 7,
+          "context": 51336,
+          "new": 1201,
+          "read_again": 50135,
+          "written_out": 4939,
+          "of_which_unseen": 2188,
+          "cost": 31210,
+          "cost_so_far": 271564,
+          "carried": 11795,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/render.py",
+              "written": 2221,
+              "answered": 32
+            },
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/tkui.py",
+              "written": 530,
+              "answered": 32
+            }
+          ]
+        },
+        {
+          "n": 8,
+          "context": 56821,
+          "new": 5487,
+          "read_again": 51334,
+          "written_out": 853,
+          "of_which_unseen": 592,
+          "cost": 16256,
+          "cost_so_far": 287820,
+          "carried": 2154,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "python - <<'EOF' s=open('render.py',encoding='utf-8').read() s=s.replace(''' for s, menu in texts: chosen =...",
+              "written": 261,
+              "answered": 114
+            }
+          ]
+        },
+        {
+          "n": 9,
+          "context": 57871,
+          "new": 1052,
+          "read_again": 56819,
+          "written_out": 718,
+          "of_which_unseen": 512,
+          "cost": 10586,
+          "cost_so_far": 298406,
+          "carried": 1751,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "rm -rf /tmp/k1 && cat > /tmp/s2.json <<'EOF' [[0,\"enter\"],[1,\"enter\"],[2,\"down\"],[3,\"enter\"],[4,\"enter\"],[5...",
+              "written": 187,
+              "answered": 109
+            }
+          ]
+        },
+        {
+          "n": 10,
+          "context": 58768,
+          "new": 899,
+          "read_again": 57869,
+          "written_out": 576,
+          "of_which_unseen": 483,
+          "cost": 9789,
+          "cost_so_far": 308195,
+          "carried": 1558,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "mkdir -p _t && cp /tmp/s2.json _t/ && rm -rf _t/k1 && python game.py --headless --seed 1 --ticks 300 --kept...",
+              "written": 93,
+              "answered": 209
+            }
+          ]
+        },
+        {
+          "n": 11,
+          "context": 59609,
+          "new": 843,
+          "read_again": 58766,
+          "written_out": 767,
+          "of_which_unseen": 755,
+          "cost": 10766,
+          "cost_so_far": 318961,
+          "carried": 1475,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>/work/_t/f2.png",
+              "written": 12,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 12,
+          "context": 60451,
+          "new": 844,
+          "read_again": 59607,
+          "written_out": 1615,
+          "of_which_unseen": 620,
+          "cost": 15092,
+          "cost_so_far": 334053,
+          "carried": 2980,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/tests.py",
+              "written": 995,
+              "answered": 32
+            }
+          ]
+        },
+        {
+          "n": 13,
+          "context": 62256,
+          "new": 1807,
+          "read_again": 60449,
+          "written_out": 157,
+          "of_which_unseen": 146,
+          "cost": 9087,
+          "cost_so_far": 343140,
+          "carried": 403,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python tests.py 2>&1 | tail -20",
+              "written": 11,
+              "answered": 87
+            }
+          ]
+        },
+        {
+          "n": 14,
+          "context": 62515,
+          "new": 261,
+          "read_again": 62254,
+          "written_out": 541,
+          "of_which_unseen": 450,
+          "cost": 9257,
+          "cost_so_far": 352397,
+          "carried": 978,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "rm -rf _t && cat > _t_s.json <<'EOF' [[0,\"right\"],[1,\"enter\"],[2,\"right\"],[3,\"enter\"],[4,\"down\"],[5,\"down\"]...",
+              "written": 91,
+              "answered": 79
+            }
+          ]
+        },
+        {
+          "n": 15,
+          "context": 63188,
+          "new": 675,
+          "read_again": 62513,
+          "written_out": 414,
+          "of_which_unseen": 288,
+          "cost": 9163,
+          "cost_so_far": 361560,
+          "carried": 682,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "rm -f _t_f.png && python - <<'EOF' import game as G, shutil shutil.rmtree('_t',ignore_errors=True) g=G.Game...",
+              "written": 126,
+              "answered": 50
+            }
+          ]
+        },
+        {
+          "n": 16,
+          "context": 63692,
+          "new": 506,
+          "read_again": 63186,
+          "written_out": 1665,
+          "of_which_unseen": 701,
+          "cost": 15274,
+          "cost_so_far": 376833,
+          "carried": 2340,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/README.md",
+              "written": 953,
+              "answered": 32
+            },
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "rm -rf _t __pycache__ kept && ls",
+              "written": 11,
+              "answered": 13
+            }
+          ]
+        },
+        {
+          "n": 17,
+          "context": 65564,
+          "new": 1874,
+          "read_again": 63690,
+          "written_out": 485,
+          "of_which_unseen": 0,
+          "cost": 11135,
+          "cost_so_far": 387968,
+          "carried": 0,
+          "steps": []
+        }
+      ],
+      "how": "context, new, read_again and how far the context grew are the run's own records. written_out a request is its growth less its answers (characters / 4), scaled to the run's exact total; of_which_unseen is that less the visible text (thinking). cost is what the request read and wrote, weighted; carried is what reading again what it added cost at every later request (start.carried: the same for what every request starts from). reading + writing is in_the_ledger"
+    },
+    "judge_trace": {
+      "run": "day-plain-6",
+      "who": "judge",
+      "complete": true,
+      "requests": 66,
+      "weighted": 920853,
+      "in_the_ledger": 920853,
+      "reading": 718083,
+      "writing": 202770,
+      "written_out": 40554,
+      "of_which_unseen": 26981,
+      "start": {
+        "context": 8307,
+        "carried": 58237
+      },
+      "context_at_end": 136656,
+      "by_kind": {
+        "read its own files": {
+          "requests": 19,
+          "steps": 22,
+          "answered": 24255,
+          "written_out": 11171,
+          "writing": 55856,
+          "carried": 304134
+        },
+        "run its own checks": {
+          "requests": 29,
+          "steps": 29,
+          "answered": 17787,
+          "written_out": 14278,
+          "writing": 71390,
+          "carried": 243643
+        },
+        "write code": {
+          "requests": 7,
+          "steps": 11,
+          "answered": 1470,
+          "written_out": 9301,
+          "writing": 46503,
+          "carried": 80975
+        },
+        "other commands": {
+          "requests": 6,
+          "steps": 6,
+          "answered": 1214,
+          "written_out": 2831,
+          "writing": 14156,
+          "carried": 19065
+        },
+        "look at a frame": {
+          "requests": 4,
+          "steps": 8,
+          "answered": 0,
+          "written_out": 2731,
+          "writing": 13657,
+          "carried": 12029
+        },
+        "words only": {
+          "requests": 1,
+          "steps": 0,
+          "answered": 0,
+          "written_out": 242,
+          "writing": 1208,
+          "carried": 0
+        }
+      },
+      "files": [
+        {
+          "file": "<run>\\BRIEF.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 5471,
+          "written": 0
+        },
+        {
+          "file": "<run>\\JUDGE.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 3989,
+          "written": 0
+        },
+        {
+          "file": "<run>\\verdict.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 3933
+        },
+        {
+          "file": "<run>\\PACK\\PACK.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 3894,
+          "written": 0
+        },
+        {
+          "file": "<run>\\work\\game.py",
+          "reads": 3,
+          "writes": 0,
+          "answered": 3331,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\h.py",
+          "reads": 0,
+          "writes": 2,
+          "answered": 0,
+          "written": 1542
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\a.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 1249
+        },
+        {
+          "file": "<run>\\PACK\\JUDGE-ADDENDUM.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 814,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\fr.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 554
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\s26.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 500
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\r.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 292
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\stall.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\day.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\morning.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\evening.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\paused_day.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\upgrades.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\season_over.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\j3\\settings.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        }
+      ],
+      "rows": [
+        {
+          "n": 1,
+          "context": 8307,
+          "new": 2964,
+          "read_again": 5343,
+          "written_out": 2274,
+          "of_which_unseen": 2234,
+          "cost": 15611,
+          "cost_so_far": 15611,
+          "carried": 102627,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\JUDGE.md",
+              "written": 12,
+              "answered": 3989
+            },
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\PACK\\JUDGE-ADDENDUM.md",
+              "written": 15,
+              "answered": 814
+            },
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\PACK\\PACK.md",
+              "written": 13,
+              "answered": 3894
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "context": 21722,
+          "new": 13417,
+          "read_again": 8305,
+          "written_out": 973,
+          "of_which_unseen": 946,
+          "cost": 22468,
+          "cost_so_far": 38079,
+          "carried": 30051,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>; ls; ls work; ls PACK; ls PACK/scripts | head -200; cat work/README.md",
+              "written": 27,
+              "answered": 1961
+            }
+          ]
+        },
+        {
+          "n": 3,
+          "context": 25702,
+          "new": 3982,
+          "read_again": 21720,
+          "written_out": 484,
+          "of_which_unseen": 440,
+          "cost": 9571,
+          "cost_so_far": 47650,
+          "carried": 11676,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>; ls -la judge-scratch | head; ls -la; head -c 600 run.json; echo; head -c 400 verdict.2.json; ls w...",
+              "written": 44,
+              "answered": 562
+            }
+          ]
+        },
+        {
+          "n": 4,
+          "context": 27269,
+          "new": 1569,
+          "read_again": 25700,
+          "written_out": 1412,
+          "of_which_unseen": 1400,
+          "cost": 11591,
+          "cost_so_far": 59241,
+          "carried": 61742,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\BRIEF.md",
+              "written": 12,
+              "answered": 5471
+            }
+          ]
+        },
+        {
+          "n": 5,
+          "context": 35669,
+          "new": 8402,
+          "read_again": 27267,
+          "written_out": 583,
+          "of_which_unseen": 544,
+          "cost": 16145,
+          "cost_so_far": 75386,
+          "carried": 16358,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/PACK/scripts; cat S06-morning-buys.txt | cut -c1-400; echo ----; cat S17d5-bank-rush-day5.txt | cu...",
+              "written": 39,
+              "answered": 1046
+            }
+          ]
+        },
+        {
+          "n": 6,
+          "context": 37925,
+          "new": 2258,
+          "read_again": 35667,
+          "written_out": 387,
+          "of_which_unseen": 310,
+          "cost": 8322,
+          "cost_so_far": 83708,
+          "carried": 10048,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; wc -l *.py; grep -n \"^def \\|^class \\|^ def \" game.py | head -80; grep -n \"argparse\\|add_argu...",
+              "written": 42,
+              "answered": 603
+            }
+          ]
+        },
+        {
+          "n": 7,
+          "context": 39330,
+          "new": 1407,
+          "read_again": 37923,
+          "written_out": 274,
+          "of_which_unseen": 254,
+          "cost": 6920,
+          "cost_so_far": 90628,
+          "carried": 9103,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\work\\game.py",
+              "written": 20,
+              "answered": 723
+            }
+          ]
+        },
+        {
+          "n": 8,
+          "context": 40621,
+          "new": 1293,
+          "read_again": 39328,
+          "written_out": 518,
+          "of_which_unseen": 484,
+          "cost": 8140,
+          "cost_so_far": 98767,
+          "carried": 12185,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/PACK/scripts; grep -h \"^# Kept folder\\|^# Seed\" *.txt | sort | uniq -c | sort -rn | cut -c1-250",
+              "written": 34,
+              "answered": 678
+            }
+          ]
+        },
+        {
+          "n": 9,
+          "context": 42374,
+          "new": 1755,
+          "read_again": 40619,
+          "written_out": 1593,
+          "of_which_unseen": 114,
+          "cost": 14219,
+          "cost_so_far": 112986,
+          "carried": 22867,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\j3\\h.py",
+              "written": 1440,
+              "answered": 34
+            }
+          ]
+        },
+        {
+          "n": 10,
+          "context": 45712,
+          "new": 3340,
+          "read_again": 42372,
+          "written_out": 335,
+          "of_which_unseen": 228,
+          "cost": 10087,
+          "cost_so_far": 123073,
+          "carried": 7663,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1; G=<run>/work/game.py; S=<run>/PACK/scripts; gr...",
+              "written": 107,
+              "answered": 440
+            }
+          ]
+        },
+        {
+          "n": 11,
+          "context": 46847,
+          "new": 1137,
+          "read_again": 45710,
+          "written_out": 374,
+          "of_which_unseen": 82,
+          "cost": 7860,
+          "cost_so_far": 130933,
+          "carried": 5382,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\j3\\r.py",
+              "written": 292,
+              "answered": 34
+            }
+          ]
+        },
+        {
+          "n": 12,
+          "context": 47656,
+          "new": 811,
+          "read_again": 46845,
+          "written_out": 746,
+          "of_which_unseen": 633,
+          "cost": 9427,
+          "cost_so_far": 140360,
+          "carried": 19409,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1; python r.py S01-title 1 - s01 texts; for x in ...",
+              "written": 113,
+              "answered": 1416
+            }
+          ]
+        },
+        {
+          "n": 13,
+          "context": 50619,
+          "new": 2965,
+          "read_again": 47654,
+          "written_out": 511,
+          "of_which_unseen": 456,
+          "cost": 11024,
+          "cost_so_far": 151383,
+          "carried": 11431,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S03-fresh-p...",
+              "written": 55,
+              "answered": 713
+            }
+          ]
+        },
+        {
+          "n": 14,
+          "context": 52391,
+          "new": 1774,
+          "read_again": 50617,
+          "written_out": 562,
+          "of_which_unseen": 476,
+          "cost": 10089,
+          "cost_so_far": 161472,
+          "carried": 12568,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; F=texts,day,slot,coins,...",
+              "written": 86,
+              "answered": 813
+            }
+          ]
+        },
+        {
+          "n": 15,
+          "context": 54370,
+          "new": 1981,
+          "read_again": 52389,
+          "written_out": 577,
+          "of_which_unseen": 366,
+          "cost": 10600,
+          "cost_so_far": 172072,
+          "carried": 10721,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S04-new-sea...",
+              "written": 172,
+              "answered": 518
+            }
+          ]
+        },
+        {
+          "n": 16,
+          "context": 56085,
+          "new": 1717,
+          "read_again": 54368,
+          "written_out": 935,
+          "of_which_unseen": 895,
+          "cost": 12259,
+          "cost_so_far": 184331,
+          "carried": 27972,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\work\\game.py",
+              "written": 20,
+              "answered": 161
+            },
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\work\\game.py",
+              "written": 20,
+              "answered": 2447
+            }
+          ]
+        },
+        {
+          "n": 17,
+          "context": 60633,
+          "new": 4550,
+          "read_again": 56083,
+          "written_out": 1039,
+          "of_which_unseen": 870,
+          "cost": 16490,
+          "cost_so_far": 200821,
+          "carried": 18848,
+          "steps": [
+            {
+              "tool": "Edit",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\j3\\h.py",
+              "written": 102,
+              "answered": 36
+            },
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S05-difficu...",
+              "written": 67,
+              "answered": 924
+            }
+          ]
+        },
+        {
+          "n": 18,
+          "context": 63748,
+          "new": 3117,
+          "read_again": 60631,
+          "written_out": 896,
+          "of_which_unseen": 832,
+          "cost": 14440,
+          "cost_so_far": 215260,
+          "carried": 19797,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S06-morning...",
+              "written": 64,
+              "answered": 1468
+            }
+          ]
+        },
+        {
+          "n": 19,
+          "context": 67075,
+          "new": 3329,
+          "read_again": 63746,
+          "written_out": 1747,
+          "of_which_unseen": 1682,
+          "cost": 19271,
+          "cost_so_far": 234531,
+          "carried": 37114,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S07-stall 1...",
+              "written": 65,
+              "answered": 2720
+            }
+          ]
+        },
+        {
+          "n": 20,
+          "context": 73419,
+          "new": 6346,
+          "read_again": 67073,
+          "written_out": 844,
+          "of_which_unseen": 710,
+          "cost": 18857,
+          "cost_so_far": 253388,
+          "carried": 16240,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; T(){ python r.py \"$@\" |...",
+              "written": 104,
+              "answered": 1074
+            }
+          ]
+        },
+        {
+          "n": 21,
+          "context": 76243,
+          "new": 2826,
+          "read_again": 73417,
+          "written_out": 558,
+          "of_which_unseen": 383,
+          "cost": 13662,
+          "cost_so_far": 267051,
+          "carried": 10008,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; grep \"Seed\" ../../PACK/...",
+              "written": 175,
+              "answered": 614
+            }
+          ]
+        },
+        {
+          "n": 22,
+          "context": 78014,
+          "new": 1773,
+          "read_again": 76241,
+          "written_out": 271,
+          "of_which_unseen": 195,
+          "cost": 11194,
+          "cost_so_far": 278245,
+          "carried": 3953,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch/j3; python -c \" import json;a=json.load(open('st_s10_1.json')) print([t for t in a['...",
+              "written": 76,
+              "answered": 150
+            }
+          ]
+        },
+        {
+          "n": 23,
+          "context": 78726,
+          "new": 714,
+          "read_again": 78012,
+          "written_out": 174,
+          "of_which_unseen": 93,
+          "cost": 9561,
+          "cost_so_far": 287806,
+          "carried": 2002,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; for v in cool nocool; d...",
+              "written": 81,
+              "answered": 7
+            }
+          ]
+        },
+        {
+          "n": 24,
+          "context": 79093,
+          "new": 369,
+          "read_again": 78724,
+          "written_out": 431,
+          "of_which_unseen": 371,
+          "cost": 10490,
+          "cost_so_far": 298297,
+          "carried": 8867,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; for v in cool nocool; d...",
+              "written": 60,
+              "answered": 762
+            }
+          ]
+        },
+        {
+          "n": 25,
+          "context": 80750,
+          "new": 1659,
+          "read_again": 79091,
+          "written_out": 414,
+          "of_which_unseen": 317,
+          "cost": 12053,
+          "cost_so_far": 310350,
+          "carried": 7158,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; T(){ python r.py \"$@\" |...",
+              "written": 71,
+              "answered": 504
+            }
+          ]
+        },
+        {
+          "n": 26,
+          "context": 82113,
+          "new": 1365,
+          "read_again": 80748,
+          "written_out": 330,
+          "of_which_unseen": 260,
+          "cost": 11432,
+          "cost_so_far": 321781,
+          "carried": 5291,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; T(){ python r.py \"$@\" |...",
+              "written": 70,
+              "answered": 342
+            }
+          ]
+        },
+        {
+          "n": 27,
+          "context": 83140,
+          "new": 1029,
+          "read_again": 82111,
+          "written_out": 396,
+          "of_which_unseen": 312,
+          "cost": 11478,
+          "cost_so_far": 333259,
+          "carried": 7036,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; grep -c \"\" ../../PACK/s...",
+              "written": 84,
+              "answered": 571
+            }
+          ]
+        },
+        {
+          "n": 28,
+          "context": 84533,
+          "new": 1395,
+          "read_again": 83138,
+          "written_out": 409,
+          "of_which_unseen": 261,
+          "cost": 12101,
+          "cost_so_far": 345360,
+          "carried": 6298,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; for s in full-once no-s...",
+              "written": 148,
+              "answered": 424
+            }
+          ]
+        },
+        {
+          "n": 29,
+          "context": 85805,
+          "new": 1274,
+          "read_again": 84531,
+          "written_out": 160,
+          "of_which_unseen": 83,
+          "cost": 10845,
+          "cost_so_far": 356206,
+          "carried": 1646,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; for d in 5 6 7; do pyth...",
+              "written": 77,
+              "answered": 7
+            }
+          ]
+        },
+        {
+          "n": 30,
+          "context": 86144,
+          "new": 341,
+          "read_again": 85803,
+          "written_out": 386,
+          "of_which_unseen": 323,
+          "cost": 10937,
+          "cost_so_far": 367143,
+          "carried": 6704,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S17d5-bank-...",
+              "written": 63,
+              "answered": 610
+            }
+          ]
+        },
+        {
+          "n": 31,
+          "context": 87555,
+          "new": 1413,
+          "read_again": 86142,
+          "written_out": 1374,
+          "of_which_unseen": 28,
+          "cost": 17252,
+          "cost_so_far": 384394,
+          "carried": 13747,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\j3\\a.py",
+              "written": 1249,
+              "answered": 34
+            },
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; grep \"r7\\]\" ../../PACK/...",
+              "written": 56,
+              "answered": 71
+            }
+          ]
+        },
+        {
+          "n": 32,
+          "context": 90511,
+          "new": 2958,
+          "read_again": 87553,
+          "written_out": 206,
+          "of_which_unseen": 169,
+          "cost": 13482,
+          "cost_so_far": 397876,
+          "carried": 2573,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python a.py S17d7-bank-...",
+              "written": 37,
+              "answered": 138
+            }
+          ]
+        },
+        {
+          "n": 33,
+          "context": 91076,
+          "new": 567,
+          "read_again": 90509,
+          "written_out": 282,
+          "of_which_unseen": 203,
+          "cost": 11167,
+          "cost_so_far": 409043,
+          "carried": 3006,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; for f in S18d5-second-t...",
+              "written": 79,
+              "answered": 91
+            }
+          ]
+        },
+        {
+          "n": 34,
+          "context": 91751,
+          "new": 677,
+          "read_again": 91074,
+          "written_out": 278,
+          "of_which_unseen": 89,
+          "cost": 11344,
+          "cost_so_far": 420387,
+          "carried": 2664,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python -c \" from h impo...",
+              "written": 189,
+              "answered": 35
+            }
+          ]
+        },
+        {
+          "n": 35,
+          "context": 92363,
+          "new": 614,
+          "read_again": 91749,
+          "written_out": 448,
+          "of_which_unseen": 365,
+          "cost": 12184,
+          "cost_so_far": 432570,
+          "carried": 6164,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; grep \"Seed\\|^# T\" ../.....",
+              "written": 83,
+              "answered": 520
+            }
+          ]
+        },
+        {
+          "n": 36,
+          "context": 93813,
+          "new": 1452,
+          "read_again": 92361,
+          "written_out": 406,
+          "of_which_unseen": 235,
+          "cost": 13083,
+          "cost_so_far": 445653,
+          "carried": 4455,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S20-all-upg...",
+              "written": 171,
+              "answered": 230
+            }
+          ]
+        },
+        {
+          "n": 37,
+          "context": 94886,
+          "new": 1075,
+          "read_again": 93811,
+          "written_out": 140,
+          "of_which_unseen": 59,
+          "cost": 11423,
+          "cost_so_far": 457076,
+          "carried": 1205,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S21-upgrade...",
+              "written": 56,
+              "answered": 7
+            }
+          ]
+        },
+        {
+          "n": 38,
+          "context": 95183,
+          "new": 299,
+          "read_again": 94884,
+          "written_out": 434,
+          "of_which_unseen": 384,
+          "cost": 12031,
+          "cost_so_far": 469107,
+          "carried": 6176,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S21-upgrade...",
+              "written": 50,
+              "answered": 663
+            }
+          ]
+        },
+        {
+          "n": 39,
+          "context": 96746,
+          "new": 1565,
+          "read_again": 95181,
+          "written_out": 718,
+          "of_which_unseen": 572,
+          "cost": 15065,
+          "cost_so_far": 484172,
+          "carried": 9234,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S23-pause-a...",
+              "written": 146,
+              "answered": 908
+            }
+          ]
+        },
+        {
+          "n": 40,
+          "context": 99144,
+          "new": 2400,
+          "read_again": 96744,
+          "written_out": 339,
+          "of_which_unseen": 275,
+          "cost": 14368,
+          "cost_so_far": 498541,
+          "carried": 3778,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; cd ../../PACK/scripts; ...",
+              "written": 64,
+              "answered": 304
+            }
+          ]
+        },
+        {
+          "n": 41,
+          "context": 100151,
+          "new": 1009,
+          "read_again": 99142,
+          "written_out": 420,
+          "of_which_unseen": 216,
+          "cost": 13277,
+          "cost_so_far": 511818,
+          "carried": 4338,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python r.py S24-continu...",
+              "written": 204,
+              "answered": 316
+            }
+          ]
+        },
+        {
+          "n": 42,
+          "context": 101339,
+          "new": 1190,
+          "read_again": 100149,
+          "written_out": 495,
+          "of_which_unseen": 258,
+          "cost": 13977,
+          "cost_so_far": 525795,
+          "carried": 5068,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; grep \"Seed\\|^# T\" ../.....",
+              "written": 212,
+              "answered": 400
+            }
+          ]
+        },
+        {
+          "n": 43,
+          "context": 102766,
+          "new": 1429,
+          "read_again": 101337,
+          "written_out": 192,
+          "of_which_unseen": 78,
+          "cost": 12881,
+          "cost_so_far": 538676,
+          "carried": 1661,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/judge-scratch/j3; python -c \" import json d=json.load(open('st_s25mixed_1.json')) for k in sorted(...",
+              "written": 114,
+              "answered": 82
+            }
+          ]
+        },
+        {
+          "n": 44,
+          "context": 103247,
+          "new": 483,
+          "read_again": 102764,
+          "written_out": 303,
+          "of_which_unseen": 255,
+          "cost": 12393,
+          "cost_so_far": 551070,
+          "carried": 3013,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/judge-scratch/j3; grep \"^#\" ../../PACK/scripts/S26p4-apples-at-4.txt | cut -c1-330; grep \"^# T\" .....",
+              "written": 48,
+              "answered": 271
+            }
+          ]
+        },
+        {
+          "n": 45,
+          "context": 104146,
+          "new": 901,
+          "read_again": 103245,
+          "written_out": 656,
+          "of_which_unseen": 125,
+          "cost": 14728,
+          "cost_so_far": 565798,
+          "carried": 5273,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\j3\\s26.py",
+              "written": 500,
+              "answered": 34
+            },
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python s26.py",
+              "written": 31,
+              "answered": 228
+            }
+          ]
+        },
+        {
+          "n": 46,
+          "context": 105768,
+          "new": 1624,
+          "read_again": 104144,
+          "written_out": 391,
+          "of_which_unseen": 320,
+          "cost": 14399,
+          "cost_so_far": 580197,
+          "carried": 4094,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; grep \"Seed\\|^# T\" ../.....",
+              "written": 71,
+              "answered": 488
+            }
+          ]
+        },
+        {
+          "n": 47,
+          "context": 107067,
+          "new": 1301,
+          "read_again": 105766,
+          "written_out": 226,
+          "of_which_unseen": 137,
+          "cost": 13330,
+          "cost_so_far": 593527,
+          "carried": 1756,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python -c \" from h impo...",
+              "written": 89,
+              "answered": 107
+            }
+          ]
+        },
+        {
+          "n": 48,
+          "context": 107642,
+          "new": 577,
+          "read_again": 107065,
+          "written_out": 410,
+          "of_which_unseen": 276,
+          "cost": 13476,
+          "cost_so_far": 607003,
+          "carried": 3784,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; grep \"^# T\" ../../PACK/...",
+              "written": 113,
+              "answered": 432
+            }
+          ]
+        },
+        {
+          "n": 49,
+          "context": 108924,
+          "new": 1284,
+          "read_again": 107640,
+          "written_out": 346,
+          "of_which_unseen": 134,
+          "cost": 14097,
+          "cost_so_far": 621100,
+          "carried": 2131,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; grep \"^# T\" ../../PACK/...",
+              "written": 212,
+              "answered": 30
+            }
+          ]
+        },
+        {
+          "n": 50,
+          "context": 109671,
+          "new": 749,
+          "read_again": 108922,
+          "written_out": 702,
+          "of_which_unseen": 495,
+          "cost": 15340,
+          "cost_so_far": 636440,
+          "carried": 6118,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python -c \" from h impo...",
+              "written": 207,
+              "answered": 767
+            }
+          ]
+        },
+        {
+          "n": 51,
+          "context": 111895,
+          "new": 2226,
+          "read_again": 109669,
+          "written_out": 313,
+          "of_which_unseen": 180,
+          "cost": 15316,
+          "cost_so_far": 651755,
+          "carried": 2464,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; python -c \" import json e=json.load(open('lang/en.json',encoding='utf-8'));s=json.load(open(...",
+              "written": 133,
+              "answered": 279
+            }
+          ]
+        },
+        {
+          "n": 52,
+          "context": 112824,
+          "new": 931,
+          "read_again": 111893,
+          "written_out": 338,
+          "of_which_unseen": 274,
+          "cost": 14042,
+          "cost_so_far": 665798,
+          "carried": 2865,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd <run>/work; sed -n 684,806p game.py | grep -n '\"[A-Z][a-z]' | head; grep -n \"\\\"[A-Z][a-z]\\+ \" render.py ...",
+              "written": 64,
+              "answered": 422
+            }
+          ]
+        },
+        {
+          "n": 53,
+          "context": 113947,
+          "new": 1125,
+          "read_again": 112822,
+          "written_out": 903,
+          "of_which_unseen": 194,
+          "cost": 17203,
+          "cost_so_far": 683000,
+          "carried": 4696,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\j3\\fr.py",
+              "written": 554,
+              "answered": 34
+            },
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python -c \" from h impo...",
+              "written": 127,
+              "answered": 9
+            }
+          ]
+        },
+        {
+          "n": 54,
+          "context": 115863,
+          "new": 1918,
+          "read_again": 113945,
+          "written_out": 452,
+          "of_which_unseen": 420,
+          "cost": 16052,
+          "cost_so_far": 699053,
+          "carried": 3595,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; python fr.py 800",
+              "written": 32,
+              "answered": 591
+            }
+          ]
+        },
+        {
+          "n": 55,
+          "context": 117392,
+          "new": 1531,
+          "read_again": 115861,
+          "written_out": 631,
+          "of_which_unseen": 598,
+          "cost": 16652,
+          "cost_so_far": 715705,
+          "carried": 2945,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\j3\\stall.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\j3\\day.png",
+              "written": 16,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 56,
+          "context": 118700,
+          "new": 1310,
+          "read_again": 117390,
+          "written_out": 1081,
+          "of_which_unseen": 1029,
+          "cost": 18782,
+          "cost_so_far": 734487,
+          "carried": 4824,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\j3\\morning.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\j3\\evening.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\j3\\paused_day.png",
+              "written": 18,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 57,
+          "context": 120943,
+          "new": 2245,
+          "read_again": 118698,
+          "written_out": 637,
+          "of_which_unseen": 602,
+          "cost": 17862,
+          "cost_so_far": 752349,
+          "carried": 2712,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\j3\\upgrades.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\j3\\season_over.png",
+              "written": 18,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 58,
+          "context": 122265,
+          "new": 1324,
+          "read_again": 120941,
+          "written_out": 382,
+          "of_which_unseen": 365,
+          "cost": 15660,
+          "cost_so_far": 768009,
+          "carried": 1548,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\j3\\settings.png",
+              "written": 17,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 59,
+          "context": 123058,
+          "new": 795,
+          "read_again": 122263,
+          "written_out": 1033,
+          "of_which_unseen": 664,
+          "cost": 18383,
+          "cost_so_far": 786392,
+          "carried": 4196,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch/j3; export PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8; G=<run>/work/game.py; r...",
+              "written": 369,
+              "answered": 125
+            }
+          ]
+        },
+        {
+          "n": 60,
+          "context": 125325,
+          "new": 2269,
+          "read_again": 123056,
+          "written_out": 457,
+          "of_which_unseen": 221,
+          "cost": 17429,
+          "cost_so_far": 803821,
+          "carried": 1901,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>/judge-scratch/j3; python -c \" import json d=json.load(open('st_s17d5_1.json')) NM={'apples':'Apple...",
+              "written": 236,
+              "answered": 136
+            }
+          ]
+        },
+        {
+          "n": 61,
+          "context": 126410,
+          "new": 1087,
+          "read_again": 125323,
+          "written_out": 810,
+          "of_which_unseen": 783,
+          "cost": 17940,
+          "cost_so_far": 821761,
+          "carried": 2780,
+          "steps": [
+            {
+              "tool": "Grep",
+              "kind": "read its own files",
+              "what": "cook|bargain|TYPE",
+              "written": 27,
+              "answered": 4
+            }
+          ]
+        },
+        {
+          "n": 62,
+          "context": 128094,
+          "new": 1686,
+          "read_again": 126408,
+          "written_out": 125,
+          "of_which_unseen": 100,
+          "cost": 15372,
+          "cost_so_far": 837133,
+          "carried": 578,
+          "steps": [
+            {
+              "tool": "Grep",
+              "kind": "read its own files",
+              "what": "aisle|type",
+              "written": 25,
+              "answered": 113
+            }
+          ]
+        },
+        {
+          "n": 63,
+          "context": 128466,
+          "new": 374,
+          "read_again": 128092,
+          "written_out": 3362,
+          "of_which_unseen": 0,
+          "cost": 30089,
+          "cost_so_far": 867221,
+          "carried": 10162,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\verdict.json",
+              "written": 3933,
+              "answered": 32
+            }
+          ]
+        },
+        {
+          "n": 64,
+          "context": 135473,
+          "new": 7009,
+          "read_again": 128464,
+          "written_out": 338,
+          "of_which_unseen": 276,
+          "cost": 23299,
+          "cost_so_far": 890520,
+          "carried": 1346,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "ls -la <run>/work/__pycache__ <run>/work | head -20; python -c \"import json;d=json.load(open('<run>/verdict...",
+              "written": 62,
+              "answered": 294
+            }
+          ]
+        },
+        {
+          "n": 65,
+          "context": 136469,
+          "new": 998,
+          "read_again": 135471,
+          "written_out": 90,
+          "of_which_unseen": 47,
+          "cost": 15242,
+          "cost_so_far": 905763,
+          "carried": 233,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "other commands",
+              "what": "cd <run>; python -c \"import json;d=json.load(open('verdict.json',encoding='utf-8'));print(len(d['items']),a...",
+              "written": 43,
+              "answered": 1
+            }
+          ]
+        },
+        {
+          "n": 66,
+          "context": 136656,
+          "new": 189,
+          "read_again": 136467,
+          "written_out": 242,
+          "of_which_unseen": 0,
+          "cost": 15090,
+          "cost_so_far": 920853,
+          "carried": 0,
+          "steps": []
+        }
+      ],
+      "how": "context, new, read_again and how far the context grew are the run's own records. written_out a request is its growth less its answers (characters / 4), scaled to the run's exact total; of_which_unseen is that less the visible text (thinking). cost is what the request read and wrote, weighted; carried is what reading again what it added cost at every later request (start.carried: the same for what every request starts from). reading + writing is in_the_ledger"
+    }
+  }
+}
