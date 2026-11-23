@@ -38,9 +38,15 @@ fn a_project_overrides_and_adds_materials_and_maps_tags() {
     assert_eq!(c.tag("bog"), c.material("peat"));
     assert_eq!(c.limits, Limits { nodes: 20000, burning: 1000, work: 65536 });
     let w = c.worst_case();
-    assert_eq!(w.ops_per_step, 2 * 20000 + 65536);
+    // Every node updated; at most 20,000 ready nodes sorted (15 comparisons each) and 40,000
+    // events (16 each), counted as sorts; the work budget.
+    assert_eq!(w.ops_per_step, 20000 + 20000 * (1 + 15) + 40000 * (1 + 16) + 65536);
     assert_eq!(w.grid_entries, 20000 * 64);
-    assert_eq!(w.rebuild_ops, 20000 * 64 * (1 + 21), "1,280,000 entries: written once, at most 21 comparisons each to sort");
+    // The worst grid update: every id walked twice, 20,000 changed ids sorted, 1,280,000 entries
+    // made and sorted (21 comparisons each), read and written.
+    assert_eq!(w.grid_ops, 2 * 20000 + 20000 * (1 + 15) + 1_280_000 * (1 + 21) + 2 * 1_280_000);
+    assert_eq!(w.act_ops, 3 * 20000 + 1);
+    assert_eq!(w.tick_ops(64, 10), w.ops_per_step + w.grid_ops + 64 * w.act_ops + 10 * w.call_ops);
     assert_eq!(w.steps_per_second, 5);
     assert!(w.bytes > 0);
     let shown = c.to_json().to_string();

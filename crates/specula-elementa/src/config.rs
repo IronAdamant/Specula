@@ -24,7 +24,7 @@ pub const MAX_NODES: u32 = 32_768;
 pub const MAX_WORK: u32 = 1 << 20;
 /// Work per spread step, at least: a floor so that a step does useful work. A neighbour query
 /// larger than the budget (a crowded cell has no limit of its own) is not lost: it resumes where
-/// it stopped at the next step.
+/// it stopped at the next step, and each neighbour of it is given one step's heat.
 pub const MIN_WORK: u32 = 1024;
 /// The grid's cell, in metres.
 pub const MIN_CELL_M: f32 = 0.25;
@@ -69,7 +69,9 @@ pub struct Limits {
     /// catching first.
     pub burning: u32,
     /// Work per spread step (cell lookups plus neighbour checks); a step that would pass it is
-    /// cut and resumed at the next step where it stopped; the heat delayed is given then.
+    /// cut and resumed at the next step where it stopped. A burning node the budget does not
+    /// reach in a step gives no heat that step: the heat is not given later, so this limit can
+    /// only slow a fire (docs/design/EFFECTUS.md, "What a limit may change").
     pub work: u32,
 }
 
@@ -519,14 +521,17 @@ impl Config {
         h.finish()
     }
 
-    /// What the limits allow at worst, said before a run: the most operations a spread step can
-    /// take (every node updated, plus the work budget), the most grid entries, and the memory.
+    /// What the limits allow at worst, said before a run: the most operations a spread step, a
+    /// grid update, an act and a change can take, so a tick's (below), the most grid entries,
+    /// and the memory.
     pub fn worst_case(&self) -> WorstCase {
         let n = u64::from(self.limits.nodes);
         let entries = n * u64::from(crate::grid::MAX_NODE_CELLS);
         WorstCase {
-            ops_per_step: 2 * n + u64::from(self.limits.work),
-            rebuild_ops: crate::grid::rebuild_ops(entries),
+            ops_per_step: step_ops(n, self.limits.work),
+            grid_ops: crate::grid::update_ops(n, n, n.max(1024), entries, entries, entries),
+            act_ops: act_ops(n),
+            call_ops: crate::sim::Elementa::call_ops(n),
             steps_per_second: self.spread_hz,
             grid_entries: entries,
             bytes: n * (std::mem::size_of::<crate::sim::Node>() as u64 + 4)
@@ -555,7 +560,9 @@ impl Config {
                 "worst_case",
                 Json::obj([
                     ("ops_per_step", Json::from(w.ops_per_step)),
-                    ("rebuild_ops", Json::from(w.rebuild_ops)),
+                    ("grid_ops", Json::from(w.grid_ops)),
+                    ("act_ops", Json::from(w.act_ops)),
+                    ("call_ops", Json::from(w.call_ops)),
                     ("steps_per_second", Json::from(w.steps_per_second)),
                     ("grid_entries", Json::from(w.grid_entries)),
                     ("bytes", Json::from(w.bytes)),
@@ -565,17 +572,45 @@ impl Config {
     }
 }
 
+/// The most one spread step costs at `n` nodes and a work limit: every node updated, the ready
+/// nodes sorted (at most `n`), the step's events sorted (at most two a node: one ending, one
+/// catching), and the work budget.
+pub fn step_ops(n: u64, work: u32) -> u64 {
+    n + crate::grid::sort_ops(n) + crate::grid::sort_ops(2 * n) + u64::from(work)
+}
+
+/// The most one act costs at `n` nodes: its work (at most `2n + 1`) and one update a node.
+pub fn act_ops(n: u64) -> u64 {
+    3 * n + 1
+}
+
 /// The most a config's limits allow (see [`Config::worst_case`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorstCase {
-    /// Node updates, ready nodes put in order, and the work budget, in one spread step.
+    /// Node updates, the sorts and the work budget, in one spread step ([`step_ops`]).
     pub ops_per_step: u64,
-    /// A grid rebuild at the node limit with every node covering 64 cells (entries written and
-    /// the sort's comparisons at most): added to the step or act after any add, remove or move.
-    pub rebuild_ops: u64,
+    /// Bringing the grid up to date, at worst (every node at the limit changed, each covering
+    /// 64 cells): at most once a tick, by the spread step that follows any add, remove or move
+    /// into other cells ([`crate::grid::update_ops`]). Far less after a few changes.
+    pub grid_ops: u64,
+    /// One act ([`act_ops`]); at most [`crate::sim::MAX_ACTS_PER_TICK`] a tick.
+    pub act_ops: u64,
+    /// One add, remove or move ([`crate::sim::Elementa::call_ops`]).
+    pub call_ops: u64,
     pub steps_per_second: u32,
     /// Grid entries when every node covers the most cells it may.
     pub grid_entries: u64,
     /// Bytes of nodes and grid at the node limit, at worst.
     pub bytes: u64,
+}
+
+impl WorstCase {
+    /// The most one tick costs, with `acts` acts and `calls` adds, removes and moves made in it
+    /// (in any order, interleaved as they come): a spread step, one grid update, and each call.
+    /// An act never updates the grid (it looks at every node instead when the grid is out of
+    /// date), so acts between changes add no grid work. `add_many` is counted apart
+    /// ([`crate::sim::Elementa::add_many_ops`]).
+    pub fn tick_ops(&self, acts: u64, calls: u64) -> u64 {
+        self.ops_per_step + self.grid_ops + acts * self.act_ops + calls * self.call_ops
+    }
 }

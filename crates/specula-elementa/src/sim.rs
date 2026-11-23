@@ -2,7 +2,7 @@
 
 use crate::config::{Config, Material, MAX_FUEL_S};
 use crate::error::ElementaError;
-use crate::grid::{box_gap, cell_box, cell_of, cells_in, Grid, MAX_COORD, MAX_NODE_CELLS};
+use crate::grid::{box_gap, cell_box, cell_of, cells_in, log2_ceil, node_cells, sort_ops, Changes, Grid, MAX_COORD, MAX_NODE_CELLS};
 use specula_core::hash::avalanche;
 use specula_core::json::Json;
 use specula_core::math::Vec3;
@@ -97,23 +97,52 @@ pub struct Node {
     pub phase: Phase,
     /// The tick its phase began.
     pub since: u64,
-    /// For a burning node: spread steps of heat it has not yet given (the work budget passed it
-    /// over, or it is part-way through a query the budget cut); given all at once as its
-    /// neighbours are next reached. 0 for any other node.
-    pub owed: u32,
     /// For a node ready to catch but held by the burning limit: the tick it became ready
     /// ([`NOT_READY`] otherwise). The longest waiting catch first.
     pub ready_at: u64,
 }
 
-/// Where the next spread step resumes giving heat after a step the work budget cut: the
-/// burning node, and within its neighbour query the cell (counted in x, y, z order over the
-/// query's cells) and the entry within that cell.
+/// Where the next spread step starts giving heat: at the first burning node whose id is at
+/// least `id`; and, when the work budget cut that node's neighbour query part-way (`cell` and
+/// `next` not both 0), within its query at cell `cell` (counted in x, y, z order over the
+/// query's cells), from the first neighbour in that cell whose id is at least `next`. Ids, not
+/// places in a list, so a node added or removed in between moves nothing; a move that could
+/// heat a neighbour twice ends the cut query instead ([`Elementa::move_node`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cursor {
     pub id: u64,
     pub cell: u32,
-    pub entry: u32,
+    pub next: u64,
+}
+
+impl Cursor {
+    /// A query is cut part-way and resumes inside it.
+    pub fn is_mid(&self) -> bool {
+        self.cell != 0 || self.next != 0
+    }
+
+    /// The pass moves on past node `id`: the rest of its cut query is not given.
+    fn past(id: u64) -> Cursor {
+        Cursor { id: id.wrapping_add(1), cell: 0, next: 0 }
+    }
+}
+
+/// The cells a burning node's neighbour query covers: its box grown by the reach.
+pub fn query_box(n: &Node, config: &Config) -> ([i32; 3], [i32; 3]) {
+    let r = Vec3::new(config.reach_m, config.reach_m, config.reach_m);
+    cell_box(n.center - n.half - r, n.center + n.half + r, config.cell_m)
+}
+
+/// Where a box would be met in a query over `lo..=hi`: the query's cell it is counted in (in x,
+/// y, z order) and its id; `None` if it lies in none of the query's cells.
+fn query_key(lo: [i32; 3], hi: [i32; 3], center: Vec3, half: Vec3, id: u64, cell: f32) -> Option<(u64, u64)> {
+    let (blo, bhi) = cell_box(center - half, center + half, cell);
+    if (0..3).any(|a| bhi[a] < lo[a] || blo[a] > hi[a]) {
+        return None;
+    }
+    let f = [0usize, 1, 2].map(|a| i64::from(blo[a].max(lo[a])) - i64::from(lo[a]));
+    let (ny, nz) = (i64::from(hi[1]) - i64::from(lo[1]) + 1, i64::from(hi[2]) - i64::from(lo[2]) + 1);
+    Some((((f[0] * ny + f[1]) * nz + f[2]) as u64, id))
 }
 
 /// A node as the caller gives it. Unset state starts from the material.
@@ -202,9 +231,16 @@ pub struct ActReport {
     pub nodes: u32,
     /// Cell lookups and entries or nodes looked at: at most twice the node count, plus one.
     pub work: u32,
-    /// The grid's rebuild ([`crate::grid::rebuild_ops`]) when nodes were added, removed or
-    /// moved since the last one; else 0.
-    pub grid_ops: u64,
+    /// The grid was out of date (nodes added, removed or moved into other cells since the last
+    /// spread step), so every node was looked at once instead: an act never updates the grid.
+    pub scanned: bool,
+}
+
+impl ActReport {
+    /// The work and one update a node reached: at most three times the node count, plus one.
+    pub fn ops(&self) -> u64 {
+        u64::from(self.work) + u64::from(self.nodes)
+    }
 }
 
 /// What happened to a node, told to the rules.
@@ -281,12 +317,15 @@ pub struct Events {
     pub list: Vec<Event>,
     /// Per [`EventKind`] (by its number): events past the cap.
     pub unnamed: [u32; 5],
+    /// Per kind: how many of `list` (kept with it, so a push costs one step, not a count).
+    pub(crate) named: [u32; 5],
 }
 
 impl Events {
-    fn push(&mut self, e: Event) {
+    pub(crate) fn push(&mut self, e: Event) {
         let k = e.kind as usize;
-        if self.list.iter().filter(|x| x.kind == e.kind).count() < MAX_EVENTS_PER_KIND {
+        if (self.named[k] as usize) < MAX_EVENTS_PER_KIND {
+            self.named[k] += 1;
             self.list.push(e);
         } else {
             self.unnamed[k] = self.unnamed[k].saturating_add(1);
@@ -295,11 +334,18 @@ impl Events {
 
     /// Named and counted, per kind.
     pub fn count(&self, kind: EventKind) -> u64 {
-        self.list.iter().filter(|e| e.kind == kind).count() as u64 + u64::from(self.unnamed[kind as usize])
+        u64::from(self.named[kind as usize]) + u64::from(self.unnamed[kind as usize])
     }
 
     pub fn is_empty(&self) -> bool {
         self.list.is_empty() && self.unnamed.iter().all(|&u| u == 0)
+    }
+
+    /// Empties it, keeping its memory.
+    pub fn clear(&mut self) {
+        self.list.clear();
+        self.unnamed = [0; 5];
+        self.named = [0; 5];
     }
 }
 
@@ -314,34 +360,45 @@ pub struct StepReport {
     pub burning: u32,
     /// Burning nodes whose neighbours were heated this step.
     pub processed: u32,
-    /// Burning nodes carried to the next step because the work budget was spent.
+    /// Burning nodes that gave no heat this step because the work budget was spent (their turn
+    /// comes first at the next step).
     pub deferred: u32,
-    /// Burning nodes whose query the budget cut short.
+    /// Burning nodes whose query the budget cut short (it resumes at the next step).
     pub truncated: u32,
     /// Nodes ready to catch that waited for the burning limit.
     pub waiting: u32,
     /// Nodes ready to catch, put in order (longest waiting first) to choose which catch.
     pub ordered: u32,
+    /// Embers thrown and landed whole.
     pub embers: u32,
+    /// Embers thrown that the rest of the work budget could not land whole (not given).
+    pub embers_dropped: u32,
     pub lookups: u32,
     pub checks: u32,
     /// `lookups + checks`: never above the work limit.
     pub work: u32,
     /// One per node (heat, phase, relaxation).
     pub node_updates: u32,
-    pub grid_rebuilt: bool,
+    /// The sorts of the step, counted as sorts ([`crate::grid::sort_ops`]): the ready nodes, and
+    /// the step's events.
+    pub sort_ops: u64,
+    pub grid_updated: bool,
     pub grid_entries: u32,
-    /// The grid's rebuild ([`crate::grid::rebuild_ops`]); 0 when nothing was added, removed or moved.
+    /// The grid brought up to date ([`crate::grid::update_ops`]); 0 when nothing was added,
+    /// removed or moved into other cells.
     pub grid_ops: u64,
     pub events: u32,
+    /// Operations of the calls made since the last tick (adds, removes, moves and acts), so that
+    /// `ops() + calls_ops` is everything the tick cost.
+    pub calls_ops: u64,
 }
 
 impl StepReport {
-    /// Node updates, the ordering of ready nodes, the work and the grid's rebuild: never above
-    /// [`crate::config::WorstCase::ops_per_step`], plus [`crate::config::WorstCase::rebuild_ops`]
-    /// in a step after nodes were added, removed or moved.
+    /// Node updates, the sorts, the work and the grid's update: never above
+    /// [`crate::config::WorstCase::ops_per_step`] plus [`crate::config::WorstCase::grid_ops`]
+    /// (and the grid's part is what [`Elementa::pending_grid_ops`] said before the step).
     pub fn ops(&self) -> u64 {
-        u64::from(self.node_updates) + u64::from(self.ordered) + u64::from(self.work) + self.grid_ops
+        u64::from(self.node_updates) + self.sort_ops + u64::from(self.work) + self.grid_ops
     }
 }
 
@@ -352,20 +409,30 @@ pub struct Elementa {
     pub(crate) tick_hz: u32,
     pub(crate) every: u32,
     pub(crate) tick: u64,
-    pub(crate) rng: Rng,
+    /// The run's key for embers, drawn once from the seed: an ember's chance and range are a
+    /// hash of this key, the node's id and the tick, so they never depend on which other nodes
+    /// the work budget reached first.
+    pub(crate) ember_key: u64,
     /// Sorted by id.
     pub(crate) nodes: Vec<Node>,
     pub(crate) wind: Vec3,
     pub(crate) ambient: f32,
-    /// Where the next spread step starts giving heat (after a step cut by the work budget).
+    /// Where the next spread step starts giving heat.
     pub(crate) cursor: Cursor,
     /// Nodes refused or left out for the node limit, all told.
     pub(crate) refused: u64,
     pub(crate) acts: u32,
     pub(crate) events: Events,
     grid: Grid,
-    grid_dirty: bool,
+    changes: Changes,
+    /// Operations of calls since the last tick.
+    calls_ops: u64,
+    // Buffers kept between steps and acts, so that neither allocates once warm.
     gain: Vec<f32>,
+    queue: Vec<(u64, f32, u64, u32)>,
+    step_events: Vec<Event>,
+    hit: Vec<u32>,
+    ranges: Vec<([i32; 3], usize, usize)>,
     pub(crate) report: StepReport,
 }
 
@@ -467,19 +534,46 @@ impl Elementa {
             tick_hz,
             every,
             tick: 0,
-            rng: Rng::named(seed, "elementa"),
+            ember_key: Rng::named(seed, "elementa").next_u64(),
             nodes: Vec::new(),
             wind: Vec3::ZERO,
             ambient: 0.0,
             cursor: Cursor::default(),
             refused: 0,
             acts: 0,
-            events: Events::default(),
+            events: Events { list: Vec::with_capacity(MAX_EVENTS_PER_KIND * EVENT_KINDS.len()), ..Events::default() },
             grid: Grid::default(),
-            grid_dirty: true,
+            changes: Changes::default(),
+            calls_ops: 0,
             gain: Vec::new(),
+            queue: Vec::new(),
+            step_events: Vec::new(),
+            hit: Vec::new(),
+            ranges: Vec::new(),
             report: StepReport::default(),
         })
+    }
+
+    /// Room in the step's and the acts' buffers for every node, so that a step or an act never
+    /// allocates for the number of nodes (only adding does).
+    fn reserve(&mut self) {
+        let n = self.nodes.len();
+        let grow = |v: usize, want: usize| want.saturating_sub(v);
+        self.gain.reserve(grow(self.gain.len(), n));
+        self.queue.reserve(grow(self.queue.len(), n));
+        self.step_events.reserve(grow(self.step_events.len(), 2 * n));
+        self.hit.reserve(grow(self.hit.len(), n));
+        self.ranges.reserve(grow(self.ranges.len(), n));
+    }
+
+    /// The capacities of every buffer a step or an act uses (a test holds that a warm state's
+    /// do not grow).
+    pub fn capacities(&self) -> Vec<usize> {
+        let mut c = vec![self.gain.capacity(), self.queue.capacity(), self.step_events.capacity(), self.hit.capacity(), self.ranges.capacity()];
+        c.extend(self.grid.capacities());
+        c.push(self.changes.ids.capacity());
+        c.push(self.events.list.capacity());
+        c
     }
 
     pub fn config(&self) -> &Config {
@@ -524,6 +618,11 @@ impl Elementa {
         self.nodes.iter().filter(|n| n.phase == Phase::Burning).count() as u32
     }
 
+    /// Where the next spread step starts giving heat.
+    pub fn cursor(&self) -> Cursor {
+        self.cursor
+    }
+
     pub fn last_report(&self) -> &StepReport {
         &self.report
     }
@@ -531,6 +630,17 @@ impl Elementa {
     /// Events since they were last taken (the engine takes them each tick, for the next).
     pub fn take_events(&mut self) -> Events {
         std::mem::take(&mut self.events)
+    }
+
+    /// Events since they were last taken, copied into `into` (emptied first; at most 320 named),
+    /// this state keeping its own memory: taking events every tick this way allocates nothing
+    /// once both are warm.
+    pub fn swap_events(&mut self, into: &mut Events) {
+        into.clear();
+        into.list.extend_from_slice(&self.events.list);
+        into.unnamed = self.events.unnamed;
+        into.named = self.events.named;
+        self.events.clear();
     }
 
     pub fn events(&self) -> &Events {
@@ -560,12 +670,21 @@ impl Elementa {
             Some(f) if heat <= f => Phase::Frozen,
             _ => Phase::Intact,
         };
-        Ok(Node { id: d.id, material: d.material, center: d.center, half: d.half, heat, fuel, wet, phase, since: self.tick, owed: 0, ready_at: NOT_READY })
+        Ok(Node { id: d.id, material: d.material, center: d.center, half: d.half, heat, fuel, wet, phase, since: self.tick, ready_at: NOT_READY })
     }
 
-    /// Tracks one node. Refused, with the number, when the node limit is reached.
+    /// The most a single add, remove or move costs, in ops, at `n` nodes: a binary search, the
+    /// node list shifted by one place, and (a move) the cut query's two keys.
+    pub fn call_ops(n: u64) -> u64 {
+        n + 2 * log2_ceil(n + 1) + 2
+    }
+
+    /// Tracks one node. Refused, with the number, when the node limit is reached. Costs at most
+    /// [`Elementa::call_ops`]; the grid takes it in at the next spread step.
     pub fn add(&mut self, d: NodeDesc) -> Result<(), ElementaError> {
         let node = self.make(&d)?;
+        let n = self.nodes.len() as u64;
+        self.calls_ops += log2_ceil(n + 1) + 1;
         let at = match self.nodes.binary_search_by_key(&d.id, |n| n.id) {
             Ok(_) => return Err(ElementaError::new("duplicate", format!("node {} is already tracked", d.id)).with("id", d.id)),
             Err(at) => at,
@@ -581,14 +700,25 @@ impl Elementa {
             )
             .with("id", d.id));
         }
+        self.calls_ops += n - at as u64;
         self.nodes.insert(at, node);
-        self.grid_dirty = true;
+        self.changes.push(d.id, self.nodes.len());
+        self.reserve();
         Ok(())
     }
 
-    /// Tracks many nodes at once (one sort, not one insertion each). Every node is checked before
-    /// any is added; past the node limit the highest ids are left out and counted.
+    /// What [`Elementa::add_many`] of `m` nodes costs at most, in ops, at `n` nodes tracked:
+    /// each made, sorted, looked up, and merged into the list.
+    pub fn add_many_ops(n: u64, m: u64) -> u64 {
+        m + sort_ops(m) + m * (log2_ceil(n + 1) + 1) + n + m
+    }
+
+    /// Tracks many nodes at once (one sort of the batch and one merge, not one insertion each).
+    /// Every node is checked before any is added; past the node limit the highest ids are left
+    /// out and counted. Costs at most [`Elementa::add_many_ops`].
     pub fn add_many(&mut self, descs: &[NodeDesc]) -> Result<AddReport, ElementaError> {
+        let (n, m) = (self.nodes.len() as u64, descs.len() as u64);
+        self.calls_ops += Elementa::add_many_ops(n, m);
         let mut made = descs.iter().map(|d| self.make(d)).collect::<Result<Vec<Node>, ElementaError>>()?;
         made.sort_by_key(|n| n.id);
         for (i, n) in made.iter().enumerate() {
@@ -602,33 +732,86 @@ impl Elementa {
         made.truncate(room);
         self.refused = self.refused.saturating_add(left_out as u64);
         let added = made.len() as u32;
-        self.nodes.extend(made);
-        self.nodes.sort_by_key(|n| n.id);
-        self.grid_dirty = true;
+        let cap = self.nodes.len() + made.len();
+        for d in &made {
+            self.changes.push(d.id, cap);
+        }
+        // Both lists are sorted by id, and no id is in both: one merge.
+        let old = std::mem::take(&mut self.nodes);
+        let mut merged = Vec::with_capacity(cap);
+        let (mut a, mut b) = (old.into_iter().peekable(), made.into_iter().peekable());
+        loop {
+            let take_a = match (a.peek(), b.peek()) {
+                (Some(x), Some(y)) => x.id < y.id,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            merged.extend(if take_a { a.next() } else { b.next() });
+        }
+        self.nodes = merged;
+        self.reserve();
         Ok(AddReport { added, left_out: left_out as u32, limit: max as u32 })
     }
 
-    /// Stops tracking a node; `false` if it was not tracked.
+    /// Stops tracking a node; `false` if it was not tracked. Costs at most
+    /// [`Elementa::call_ops`]; the grid lets it go at the next spread step. If the work budget had
+    /// cut this node's own query, the rest of that query is not given.
     pub fn remove(&mut self, id: u64) -> bool {
+        let n = self.nodes.len() as u64;
+        self.calls_ops += log2_ceil(n + 1) + 1;
         match self.nodes.binary_search_by_key(&id, |n| n.id) {
             Ok(i) => {
+                self.calls_ops += n - i as u64;
                 if self.nodes.remove(i).phase == Phase::Burning {
                     self.report.burning = self.report.burning.saturating_sub(1);
                 }
-                self.grid_dirty = true;
+                if self.cursor.is_mid() && self.cursor.id == id {
+                    self.cursor = Cursor::past(id);
+                }
+                self.changes.push(id, self.nodes.len());
                 true
             }
             Err(_) => false,
         }
     }
 
-    /// A node's entity moved or changed size.
+    /// A node's entity moved or changed size. Costs at most [`Elementa::call_ops`]. A node that
+    /// stays in the cells it covered changes nothing in the grid; one that moves into others is
+    /// taken in at the next spread step.
+    ///
+    /// While the work budget has a query cut part-way, a move that could make that query heat a
+    /// neighbour twice ends it instead (the rest of its heat is not given, and the pass moves
+    /// on): the cut node itself moving (its query's cells change), or a neighbour the query has
+    /// already passed moving to where it has not yet been.
     pub fn move_node(&mut self, id: u64, center: Vec3, half: Vec3) -> Result<(), ElementaError> {
         check_box(&self.config, id, center, half)?;
+        let n = self.nodes.len() as u64;
+        self.calls_ops += log2_ceil(n + 1) + 1;
         let i = self.index(id)?;
+        let (old_c, old_h) = (self.nodes[i].center, self.nodes[i].half);
+        if self.cursor.is_mid() {
+            let cut = self.cursor;
+            if cut.id == id {
+                self.cursor = Cursor::past(id);
+            } else if let Ok(s) = self.nodes.binary_search_by_key(&cut.id, |n| n.id) {
+                self.calls_ops += log2_ceil(n + 1) + 1;
+                let (lo, hi) = query_box(&self.nodes[s], &self.config);
+                let at = (u64::from(cut.cell), cut.next);
+                let c = self.config.cell_m;
+                let passed = query_key(lo, hi, old_c, old_h, id, c).is_some_and(|k| k < at);
+                let ahead = query_key(lo, hi, center, half, id, c).is_some_and(|k| k >= at);
+                if passed && ahead {
+                    self.cursor = Cursor::past(cut.id);
+                }
+            }
+        }
+        let before = node_cells(&self.nodes[i], self.config.cell_m);
         self.nodes[i].center = center;
         self.nodes[i].half = half;
-        self.grid_dirty = true;
+        if node_cells(&self.nodes[i], self.config.cell_m) != before {
+            self.changes.push(id, self.nodes.len());
+        }
         Ok(())
     }
 
@@ -656,22 +839,22 @@ impl Elementa {
         Ok(())
     }
 
-    /// Rebuilds the grid if nodes were added, removed or moved; its cost in ops (0 if not).
-    fn rebuild(&mut self) -> u64 {
-        if self.grid_dirty {
-            self.grid_dirty = false;
-            return self.grid.rebuild(&self.nodes, self.config.cell_m);
-        }
-        0
+    /// After a load: the grid is made whole at the next spread step, and the buffers sized.
+    pub(crate) fn mark_all_changed(&mut self) {
+        self.changes.everything();
+        self.reserve();
     }
 
-    /// What rebuilding the grid would cost now (0 when it is up to date): said before a run.
-    pub fn pending_rebuild_ops(&self) -> u64 {
-        if self.grid_dirty {
-            crate::grid::rebuild_ops(crate::grid::entries_for(&self.nodes, self.config.cell_m))
-        } else {
-            0
-        }
+    /// What bringing the grid up to date at the next spread step will cost (0 when it is up to
+    /// date): said before it runs ([`crate::grid::update_ops`]).
+    pub fn pending_grid_ops(&self) -> u64 {
+        self.grid.pending_ops(&self.nodes, &self.changes, self.config.cell_m)
+    }
+
+    /// The grid holds every node where it is now (no add, remove or move into other cells since
+    /// the last spread step).
+    pub fn grid_is_current(&self) -> bool {
+        self.changes.is_empty()
     }
 
     /// Forgets the tick's acts (a copy made for a prediction starts with none).
@@ -682,8 +865,9 @@ impl Elementa {
     /// Applies an act at once. At most [`MAX_ACTS_PER_TICK`] between two ticks; its sphere at
     /// most [`MAX_ACT_RADIUS`]. Its work is at most twice the node count plus one: the sphere's
     /// cells are looked up first (only when there are no more of them than nodes), and when
-    /// they hold more entries than there are nodes every node is looked at once instead. A
-    /// grid rebuild due is counted apart (`grid_ops`).
+    /// they hold more entries than there are nodes, or the grid is out of date, every node is
+    /// looked at once instead. An act never updates the grid (only a spread step does), so acts
+    /// between adds and moves cost no grid work at all ([`ActReport::ops`]).
     pub fn act(&mut self, a: Act) -> Result<ActReport, ElementaError> {
         if self.acts >= MAX_ACTS_PER_TICK {
             return Err(ElementaError::limit(
@@ -702,64 +886,15 @@ impl Elementa {
             return Err(ElementaError::range(&format!("{}.amount", a.kind.name()), f64::from(a.amount), f64::from(lo), f64::from(hi)));
         }
         let mut report = ActReport::default();
-        let mut hit: Vec<usize> = Vec::new();
-        match a.target {
-            Target::Node(id) => {
-                hit.push(self.index(id)?);
-                report.work = 1;
-            }
-            Target::Sphere { at, radius } => {
-                if !finite3(at) || at.x.abs() > MAX_COORD || at.y.abs() > MAX_COORD || at.z.abs() > MAX_COORD {
-                    return Err(ElementaError::range(&format!("{}.at", a.kind.name()), f64::from(at.length()), 0.0, f64::from(MAX_COORD)));
-                }
-                if !radius.is_finite() || !(0.0..=MAX_ACT_RADIUS).contains(&radius) {
-                    return Err(ElementaError::range(&format!("{}.radius", a.kind.name()), f64::from(radius), 0.0, f64::from(MAX_ACT_RADIUS)));
-                }
-                report.grid_ops = self.rebuild();
-                let r = Vec3::new(radius, radius, radius);
-                let (clo, chi) = cell_box(at - r, at + r, self.config.cell_m);
-                let within = |n: &Node| box_gap(at, Vec3::ZERO, n.center, n.half) <= radius;
-                let n = self.nodes.len() as u64;
-                let cells = cells_in(clo, chi);
-                let mut ranges: Vec<([i32; 3], usize, usize)> = Vec::new();
-                let mut entries = 0u64;
-                if cells <= n {
-                    for x in clo[0]..=chi[0] {
-                        for y in clo[1]..=chi[1] {
-                            for z in clo[2]..=chi[2] {
-                                report.work += 1;
-                                let (a, b) = self.grid.range([x, y, z]);
-                                entries += (b - a) as u64;
-                                ranges.push(([x, y, z], a, b));
-                            }
-                        }
-                    }
-                }
-                if cells > n || cells + entries > n {
-                    // More cells, or more entries in them, than there are nodes: every node once.
-                    for (i, node) in self.nodes.iter().enumerate() {
-                        report.work += 1;
-                        if within(node) {
-                            hit.push(i);
-                        }
-                    }
-                } else {
-                    let all = self.grid.entries();
-                    for (c, a, b) in ranges {
-                        for e in &all[a..b] {
-                            report.work += 1;
-                            let node = &self.nodes[e.node as usize];
-                            if first_shared_cell(node, clo, self.config.cell_m) == c && within(node) {
-                                hit.push(e.node as usize);
-                            }
-                        }
-                    }
-                    hit.sort_unstable();
-                }
-            }
+        let mut hit = std::mem::take(&mut self.hit);
+        hit.clear();
+        let reached = self.reach(a, &mut hit, &mut report);
+        if let Err(e) = reached {
+            self.hit = hit;
+            return Err(e);
         }
         for &i in &hit {
-            let n = &mut self.nodes[i];
+            let n = &mut self.nodes[i as usize];
             match a.kind {
                 ActKind::Ignite => {
                     if matches!(n.phase, Phase::Intact | Phase::Frozen) && a.amount > n.heat {
@@ -772,38 +907,108 @@ impl Elementa {
         }
         self.acts += 1;
         report.nodes = hit.len() as u32;
+        self.hit = hit;
+        self.calls_ops += report.ops();
         Ok(report)
     }
 
-    /// Advances one tick. Every `ticks_per_step` ticks a spread step runs: burning things heat
-    /// their neighbours, phases change, everything relaxes, and events are queued.
+    /// The nodes an act reaches, into `hit` (each once; the order does not matter, as an act
+    /// changes each node by itself).
+    fn reach(&mut self, a: Act, hit: &mut Vec<u32>, report: &mut ActReport) -> Result<(), ElementaError> {
+        match a.target {
+            Target::Node(id) => {
+                hit.push(self.index(id)? as u32);
+                report.work = 1;
+            }
+            Target::Sphere { at, radius } => {
+                if !finite3(at) || at.x.abs() > MAX_COORD || at.y.abs() > MAX_COORD || at.z.abs() > MAX_COORD {
+                    return Err(ElementaError::range(&format!("{}.at", a.kind.name()), f64::from(at.length()), 0.0, f64::from(MAX_COORD)));
+                }
+                if !radius.is_finite() || !(0.0..=MAX_ACT_RADIUS).contains(&radius) {
+                    return Err(ElementaError::range(&format!("{}.radius", a.kind.name()), f64::from(radius), 0.0, f64::from(MAX_ACT_RADIUS)));
+                }
+                let r = Vec3::new(radius, radius, radius);
+                let (clo, chi) = cell_box(at - r, at + r, self.config.cell_m);
+                let within = |n: &Node| box_gap(at, Vec3::ZERO, n.center, n.half) <= radius;
+                let n = self.nodes.len() as u64;
+                let cells = cells_in(clo, chi);
+                let current = self.changes.is_empty();
+                self.ranges.clear();
+                let mut entries = 0u64;
+                if current && cells <= n {
+                    for x in clo[0]..=chi[0] {
+                        for y in clo[1]..=chi[1] {
+                            for z in clo[2]..=chi[2] {
+                                report.work += 1;
+                                let (a, b) = self.grid.range([x, y, z]);
+                                entries += (b - a) as u64;
+                                self.ranges.push(([x, y, z], a, b));
+                            }
+                        }
+                    }
+                }
+                if !current || cells > n || cells + entries > n {
+                    // The grid out of date, or more cells or more entries in them than there
+                    // are nodes: every node once.
+                    report.scanned = !current;
+                    for (i, node) in self.nodes.iter().enumerate() {
+                        report.work += 1;
+                        if within(node) {
+                            hit.push(i as u32);
+                        }
+                    }
+                } else {
+                    let all = self.grid.entries();
+                    for &(c, a, b) in &self.ranges {
+                        for e in &all[a..b] {
+                            report.work += 1;
+                            let node = &self.nodes[e.node as usize];
+                            if first_shared_cell(node, clo, self.config.cell_m) == c && within(node) {
+                                hit.push(e.node);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+
+    /// Advances one tick. Every `ticks_per_step` ticks a spread step runs: the grid is brought
+    /// up to date, burning things heat their neighbours, phases change, everything relaxes, and
+    /// events are queued.
     pub fn step(&mut self) -> &StepReport {
         self.tick = self.tick.saturating_add(1).min(MAX_TICK);
         self.acts = 0;
+        let calls_ops = std::mem::take(&mut self.calls_ops);
         if !self.tick.is_multiple_of(u64::from(self.every)) {
             // Nothing moves between spread steps: the burning count is the last step's.
-            self.report = StepReport { tick: self.tick, nodes: self.nodes.len() as u32, burning: self.report.burning, ..StepReport::default() };
+            self.report = StepReport { tick: self.tick, nodes: self.nodes.len() as u32, burning: self.report.burning, calls_ops, ..StepReport::default() };
             return &self.report;
         }
         self.spread();
+        self.report.calls_ops = calls_ops;
         &self.report
     }
 
     fn spread(&mut self) {
         let dt = 1.0 / self.config.spread_hz as f32;
         let mut rep = StepReport { tick: self.tick, spread: true, nodes: self.nodes.len() as u32, ..StepReport::default() };
-        rep.grid_ops = self.rebuild();
-        rep.grid_rebuilt = rep.grid_ops > 0;
+        rep.grid_ops = self.grid.update(&self.nodes, &mut self.changes, self.config.cell_m);
+        rep.grid_updated = rep.grid_ops > 0;
         rep.grid_entries = self.grid.len() as u32;
         let n = self.nodes.len();
         self.gain.clear();
         self.gain.resize(n, 0.0);
 
         // Heat given: burning nodes in id order from the cursor, round to the start, within the
-        // work budget. Each burning node is owed one step of heat now; it gives all it is owed
-        // when its query is done, so a node the budget passes over gives its heat late, not
-        // never. A query the budget cuts resumes where it stopped. Gains are summed first and
-        // applied after, so no node's place in the order changes another's result.
+        // work budget, each at most once a step. A burning node's query gives each neighbour it
+        // reaches one step of heat; a query the budget cuts resumes at the next step where it
+        // stopped, so every neighbour of one pass is given the same, once. What a node the
+        // budget did not reach this step would have given is not given: a limit can only slow a
+        // fire. Gains are summed first and applied after, so no node's place in the order
+        // changes another's result.
         let mut spend = Spend { used: 0, budget: u64::from(self.config.limits.work) };
         let resume = self.cursor;
         let start = self.nodes.partition_point(|x| x.id < resume.id);
@@ -813,27 +1018,30 @@ impl Elementa {
             if self.nodes[i].phase != Phase::Burning {
                 continue;
             }
-            self.nodes[i].owed = self.nodes[i].owed.saturating_add(1);
+            let id = self.nodes[i].id;
             if spend.used >= spend.budget {
-                next_cursor.get_or_insert(Cursor { id: self.nodes[i].id, cell: 0, entry: 0 });
+                next_cursor.get_or_insert(Cursor { id, cell: 0, next: 0 });
                 rep.deferred += 1;
                 continue;
             }
             rep.processed += 1;
-            let from = if self.nodes[i].id == resume.id { (resume.cell, resume.entry) } else { (0, 0) };
-            let factor = self.nodes[i].owed as f32;
-            let ember = if from == (0, 0) { self.ember(i, dt * factor) } else { None };
+            let from = if id == resume.id { (resume.cell, resume.next) } else { (0, 0) };
             let q = Query { nodes: &self.nodes, grid: &self.grid, config: &self.config, wind: self.wind };
-            if let Some(at) = ember {
-                rep.embers += 1;
-                q.ember(at, &mut self.gain, &mut spend, &mut rep);
-            }
-            match q.heat(i, dt * factor, from, &mut self.gain, &mut spend, &mut rep) {
-                Some((cell, entry)) => {
+            match q.heat(i, dt, from, &mut self.gain, &mut spend, &mut rep) {
+                Some((cell, next)) => {
                     rep.truncated += 1;
-                    next_cursor.get_or_insert(Cursor { id: self.nodes[i].id, cell, entry });
+                    next_cursor.get_or_insert(Cursor { id, cell, next });
                 }
-                None => self.nodes[i].owed = 0,
+                None => {
+                    // The query is done: its ember, if it throws one, lands whole or not at all.
+                    if let Some(at) = self.ember_at(i, dt) {
+                        if q.ember(at, &mut self.gain, &mut spend, &mut rep) {
+                            rep.embers += 1;
+                        } else {
+                            rep.embers_dropped += 1;
+                        }
+                    }
+                }
             }
         }
         self.cursor = next_cursor.unwrap_or_default();
@@ -841,7 +1049,8 @@ impl Elementa {
 
         // Phases: first what ends (out, burnt, frozen, thawed), in id order; then what catches.
         let tick = self.tick;
-        let mut events: Vec<Event> = Vec::new();
+        let mut events = std::mem::take(&mut self.step_events);
+        events.clear();
         let ev = |kind, n: &Node, by| Event { tick, kind, id: n.id, at: n.center, by };
         for (j, node) in self.nodes.iter_mut().enumerate() {
             let m = &self.config.materials[usize::from(node.material)];
@@ -862,12 +1071,10 @@ impl Elementa {
                     if let Some(by) = out {
                         node.phase = Phase::Intact;
                         node.since = tick;
-                        node.owed = 0;
                         events.push(ev(EventKind::Extinguished, node, Some(by)));
                     } else if node.fuel <= 0.0 {
                         node.phase = Phase::Burnt;
                         node.since = tick;
-                        node.owed = 0;
                         events.push(ev(EventKind::Burnt, node, None));
                     }
                 }
@@ -891,60 +1098,72 @@ impl Elementa {
                 Phase::Burnt => {}
             }
         }
+        // A cut query whose node no longer burns gives up the rest of it.
+        if self.cursor.is_mid() {
+            let burns = self.node(self.cursor.id).is_some_and(|x| x.phase == Phase::Burning);
+            if !burns {
+                self.cursor = Cursor::past(self.cursor.id);
+            }
+        }
         // What catches: every ready node, longest waiting first, then hottest, then in an order
         // drawn afresh each step from the ids (a hash of id and tick), never by id itself: under
         // the burning limit the fire then grows where it was ready first, whichever way the
         // entities' ids run.
         let burning = self.burning();
         let limit = self.config.limits.burning;
-        let mut queue: Vec<(u64, f32, u64, usize)> = Vec::new();
+        let mut queue = std::mem::take(&mut self.queue);
+        queue.clear();
         for (j, node) in self.nodes.iter_mut().enumerate() {
             let m = &self.config.materials[usize::from(node.material)];
             if ready(node, m) {
                 if node.ready_at == NOT_READY {
                     node.ready_at = tick;
                 }
-                queue.push((node.ready_at, node.heat, avalanche(node.id ^ tick.wrapping_mul(0x9e37_79b9_7f4a_7c15)), j));
+                queue.push((node.ready_at, node.heat, avalanche(node.id ^ tick.wrapping_mul(0x9e37_79b9_7f4a_7c15)), j as u32));
             } else {
                 node.ready_at = NOT_READY;
             }
         }
         rep.ordered = queue.len() as u32;
+        rep.sort_ops = sort_ops(queue.len() as u64);
         queue.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
         let room = limit.saturating_sub(burning) as usize;
         for &(_, _, _, j) in queue.iter().take(room) {
-            let node = &mut self.nodes[j];
+            let node = &mut self.nodes[j as usize];
             node.phase = Phase::Burning;
             node.since = tick;
             node.ready_at = NOT_READY;
-            node.owed = 0;
             events.push(ev(EventKind::Ignited, node, None));
         }
         rep.waiting = queue.len().saturating_sub(room) as u32;
         let burning = burning + queue.len().min(room) as u32;
+        self.queue = queue;
         for node in self.nodes.iter_mut() {
             let m = &self.config.materials[usize::from(node.material)];
             relax(node, m, self.ambient, dt);
         }
-        events.sort_by_key(|e| (e.id, e.kind));
+        rep.sort_ops += sort_ops(events.len() as u64);
+        events.sort_unstable_by_key(|e| (e.id, e.kind));
         rep.events = events.len() as u32;
-        for e in events {
-            self.events.push(e);
+        for e in &events {
+            self.events.push(*e);
         }
+        self.step_events = events;
         rep.burning = burning;
         self.report = rep;
     }
 
-    /// One draw of the stream for a burning node that can throw embers in this wind: where its
-    /// ember lands, if it throws one.
-    fn ember(&mut self, i: usize, dt: f32) -> Option<Vec3> {
+    /// Whether burning node `i`, its query done this step, throws an ember in this wind, and
+    /// where it lands: a draw keyed by the run's ember key, the node's id and the tick (never by
+    /// which nodes the budget reached before it), with chance `embers × dt`.
+    fn ember_at(&self, i: usize, dt: f32) -> Option<Vec3> {
         let n = &self.nodes[i];
         let m = &self.config.materials[usize::from(n.material)];
         let speed = self.wind.length();
         if m.embers <= 0.0 || speed < EMBER_WIND {
             return None;
         }
-        let draw = self.rng.next_u64();
+        let draw = avalanche(self.ember_key ^ avalanche(n.id.wrapping_add(avalanche(self.tick))));
         let chance = (m.embers * dt * 16_777_216.0) as u32;
         if ((draw as u32) >> 8) >= chance {
             return None;
@@ -955,6 +1174,7 @@ impl Elementa {
         let out = n.half.x.max(n.half.y).max(n.half.z);
         Some(n.center + dir * (out + dist))
     }
+
 
     /// A summary for tools (`elementa_info`), within a few hundred bytes.
     pub fn info(&self) -> Json {
@@ -992,6 +1212,7 @@ fn first_shared_cell(n: &Node, query_lo: [i32; 3], cell: f32) -> [i32; 3] {
     [cell_of(lo.x, cell).max(query_lo[0]), cell_of(lo.y, cell).max(query_lo[1]), cell_of(lo.z, cell).max(query_lo[2])]
 }
 
+
 struct Query<'a> {
     nodes: &'a [Node],
     grid: &'a Grid,
@@ -1014,21 +1235,25 @@ impl Spend {
         self.used += 1;
         true
     }
+
+    fn left(&self) -> u64 {
+        self.budget.saturating_sub(self.used)
+    }
 }
 
 impl Query<'_> {
-    /// Heats the neighbours of burning node `i`, starting at `from` (a cell, counted in x, y, z
-    /// order over the query's cells, and an entry in it). `Some(where to resume)` when the budget
-    /// cut it short; `None` when every cell was looked at.
-    fn heat(&self, i: usize, dt: f32, from: (u32, u32), gain: &mut [f32], spend: &mut Spend, rep: &mut StepReport) -> Option<(u32, u32)> {
+    /// Heats the neighbours of burning node `i` with one step's heat each, starting at `from`
+    /// (a cell, counted in x, y, z order over the query's cells, and the least id to begin at in
+    /// it). `Some(where to resume)` when the budget cut it short; `None` when every cell was
+    /// looked at.
+    fn heat(&self, i: usize, dt: f32, from: (u32, u64), gain: &mut [f32], spend: &mut Spend, rep: &mut StepReport) -> Option<(u32, u64)> {
         let a = &self.nodes[i];
         let m = &self.config.materials[usize::from(a.material)];
         if m.heat_out <= 0.0 {
             return None;
         }
         let reach = self.config.reach_m;
-        let r = Vec3::new(reach, reach, reach);
-        let (lo, hi) = cell_box(a.center - a.half - r, a.center + a.half + r, self.config.cell_m);
+        let (lo, hi) = query_box(a, self.config);
         let mut k = 0u32;
         for x in lo[0]..=hi[0] {
             for y in lo[1]..=hi[1] {
@@ -1038,18 +1263,29 @@ impl Query<'_> {
                     if this < from.0 {
                         continue;
                     }
+                    let at = if this == from.0 { from.1 } else { 0 };
                     if !spend.take() {
-                        return Some((this, if this == from.0 { from.1 } else { 0 }));
+                        return Some((this, at));
                     }
                     rep.lookups += 1;
                     let entries = self.grid.cell([x, y, z]);
-                    let first = if this == from.0 { (from.1 as usize).min(entries.len()) } else { 0 };
-                    for (idx, e) in entries.iter().enumerate().skip(first) {
+                    let mut first = 0;
+                    if at > 0 {
+                        // Resuming inside this cell: a binary search by id, counted.
+                        for _ in 0..log2_ceil(entries.len() as u64 + 1) {
+                            if !spend.take() {
+                                return Some((this, at));
+                            }
+                            rep.lookups += 1;
+                        }
+                        first = entries.partition_point(|e| self.nodes[e.node as usize].id < at);
+                    }
+                    for e in &entries[first..] {
+                        let j = e.node as usize;
                         if !spend.take() {
-                            return Some((this, idx as u32));
+                            return Some((this, self.nodes[j].id));
                         }
                         rep.checks += 1;
-                        let j = e.node as usize;
                         if j == i {
                             continue;
                         }
@@ -1069,23 +1305,27 @@ impl Query<'_> {
         None
     }
 
-    /// An ember lands at `at`: the things whose boxes hold that point are given its heat.
-    fn ember(&self, at: Vec3, gain: &mut [f32], spend: &mut Spend, rep: &mut StepReport) {
+    /// An ember lands at `at`: the things whose boxes hold that point are given its heat, if the
+    /// budget left holds the lookup and every entry of its cell; otherwise none is (`false`).
+    fn ember(&self, at: Vec3, gain: &mut [f32], spend: &mut Spend, rep: &mut StepReport) -> bool {
         let c = self.config.cell_m;
         let lim = MAX_COORD + MAX_HALF * 2.0;
         if at.x.abs() > lim || at.y.abs() > lim || at.z.abs() > lim || !spend.take() {
-            return;
+            return false;
         }
         rep.lookups += 1;
-        for e in self.grid.cell([cell_of(at.x, c), cell_of(at.y, c), cell_of(at.z, c)]) {
-            if !spend.take() {
-                return;
-            }
+        let entries = self.grid.cell([cell_of(at.x, c), cell_of(at.y, c), cell_of(at.z, c)]);
+        if (entries.len() as u64) > spend.left() {
+            return false;
+        }
+        for e in entries {
+            spend.take();
             rep.checks += 1;
             let b = &self.nodes[e.node as usize];
             if !matches!(b.phase, Phase::Burning | Phase::Burnt) && box_gap(at, Vec3::ZERO, b.center, b.half) <= 0.0 {
                 gain[e.node as usize] += EMBER_HEAT;
             }
         }
+        true
     }
 }

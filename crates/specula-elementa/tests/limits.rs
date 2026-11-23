@@ -7,7 +7,7 @@ use common::{forest, forest_centre, mat, sim};
 use specula_core::math::Vec3;
 use specula_elementa::grid::MAX_NODE_CELLS;
 use specula_elementa::sim::{MAX_ACTS_PER_TICK, MAX_ACT_RADIUS};
-use specula_elementa::{Act, ActKind, NodeDesc, Phase, Target};
+use specula_elementa::{Act, ActKind, Elementa, NodeDesc, Phase, Target};
 
 fn num(e: &specula_elementa::ElementaError, key: &str) -> u64 {
     e.detail(key).and_then(|v| v.as_u64()).unwrap_or_else(|| panic!("{key} in {e:?}"))
@@ -193,84 +193,78 @@ fn an_acts_work_is_at_most_twice_the_node_count() {
     let wet = |at: Vec3, radius: f32| Act { kind: ActKind::Wet, target: Target::Sphere { at, radius }, amount: 0.1 };
     let r = e.act(wet(Vec3::new(0.5, 0.5, 0.5), 1.0)).unwrap();
     assert_eq!(r.nodes, 1000);
-    assert!(r.work <= 2 * 1000 + 1, "work {} for 1,000 nodes", r.work);
-    assert!(r.grid_ops > 0, "the first act after adding pays the grid's rebuild, said apart");
+    assert!(r.scanned && r.work == 1000, "before a spread step the grid is out of date: every node once, {r:?}");
+    settle(&mut e);
+    let r = e.act(wet(Vec3::new(0.5, 0.5, 0.5), 1.0)).unwrap();
+    assert_eq!(r.nodes, 1000);
+    assert!(!r.scanned && r.work <= 2 * 1000 + 1, "work {} for 1,000 nodes", r.work);
+    assert!(r.ops() <= specula_elementa::config::act_ops(1000));
     // Spread out, a small sphere looks only at its own cells.
     let mut f = sim(r#"{"elements":1}"#, 1);
     let d: Vec<NodeDesc> = (0..1000u64).map(|i| NodeDesc::new(i, wood, Vec3::new((i % 40) as f32 * 3.0, 0.0, (i / 40) as f32 * 3.0), Vec3::ONE)).collect();
     f.add_many(&d).unwrap();
+    settle(&mut f);
     let r = f.act(wet(Vec3::new(30.0, 0.0, 30.0), 2.0)).unwrap();
-    assert!(r.nodes >= 1 && r.work < 100, "{r:?}");
-    let r = f.act(wet(Vec3::new(30.0, 0.0, 30.0), 2.0)).unwrap();
-    assert_eq!(r.grid_ops, 0, "no rebuild when nothing changed");
+    assert!(r.nodes >= 1 && r.work < 100 && !r.scanned, "{r:?}");
+}
+
+/// Steps until a spread step has run (it brings the grid up to date).
+fn settle(e: &mut specula_elementa::Elementa) {
+    while !e.step().spread {}
+    assert!(e.grid_is_current());
 }
 
 #[test]
-fn a_grid_rebuild_is_counted_and_said_before_it_runs() {
+fn a_grid_update_is_said_before_it_runs_and_a_few_changes_cost_little() {
     let mut e = sim(r#"{"elements": 1}"#, 1);
     let trees = forest(&e, 3000, 1);
     e.add_many(&trees).unwrap();
-    let due = e.pending_rebuild_ops();
+    let due = e.pending_grid_ops();
     let entries = specula_elementa::grid::entries_for(e.nodes(), e.config().cell_m);
-    assert_eq!(due, specula_elementa::grid::rebuild_ops(entries));
-    assert!(due <= e.config().worst_case().rebuild_ops);
+    assert!(due >= specula_elementa::grid::rebuild_ops(entries), "the first update makes every entry: {due}");
+    assert!(due <= e.config().worst_case().grid_ops);
     let bound = e.check_bound(60, 0);
-    assert!(bound >= due + 10 * (2 * 3000 + 32_768), "the prediction's ceiling counts the rebuild: {bound}");
+    assert!(bound >= due + 10 * specula_elementa::config::step_ops(3000, 32_768), "the prediction's ceiling counts the update: {bound}");
     let mut seen = 0;
     for _ in 0..12 {
         let r = *e.step();
         if r.spread {
             if seen == 0 {
-                assert_eq!(r.grid_ops, due);
-                assert!(r.grid_rebuilt && r.ops() >= due);
+                assert_eq!(r.grid_ops, due, "what was said is what it cost");
+                assert!(r.grid_updated && r.ops() >= due);
             } else {
                 assert_eq!(r.grid_ops, 0);
             }
             seen += 1;
         }
     }
-    assert_eq!(e.pending_rebuild_ops(), 0);
-    e.move_node(1, Vec3::new(5.0, 1.5, 5.0), Vec3::new(0.35, 1.5, 0.35)).unwrap();
-    let after = specula_elementa::grid::rebuild_ops(specula_elementa::grid::entries_for(e.nodes(), e.config().cell_m));
-    assert!(after > 0 && e.pending_rebuild_ops() == after, "one moved node rebuilds the whole grid: batch the moves");
-}
-
-#[test]
-fn heat_passed_over_by_the_budget_is_given_late_not_lost() {
-    const BRUSH: &str = r#""brush": {"ignite": 0.2, "burn_s": 600, "heat_out": 0.4, "flame": 0.6, "cool": 0.05, "embers": 0}"#;
-    // A source and its target, and far away a crowd of burning brush that eats the budget.
-    let run = |work: u32| {
-        let json = format!(r#"{{"elements": 1, "materials": {{{BRUSH}}}, "reach_m": 1.0, "limits": {{"nodes": 4096, "burning": 4096, "work": {work}}}}}"#);
-        let mut e = sim(&json, 1);
-        let brush = mat(&e, "brush");
-        let h = Vec3::new(0.1, 0.1, 0.1);
-        e.add(NodeDesc::new(1, brush, Vec3::ZERO, h)).unwrap();
-        e.add(NodeDesc::new(2, brush, Vec3::new(1.0, 0.0, 0.0), h)).unwrap();
-        let crowd: Vec<NodeDesc> =
-            (0..40u64).map(|i| NodeDesc::new(100 + i, brush, Vec3::new(100.0 + (i % 8) as f32 * 0.2, 0.0, (i / 8) as f32 * 0.2), h)).collect();
-        e.add_many(&crowd).unwrap();
-        e.act(Act { kind: ActKind::Ignite, target: Target::Sphere { at: Vec3::new(100.7, 0.0, 0.4), radius: 2.0 }, amount: 1.0 }).unwrap();
-        e.act(Act { kind: ActKind::Ignite, target: Target::Node(1), amount: 1.0 }).unwrap();
-        let (mut lit, mut cut, mut target) = (None, 0, None);
-        for _ in 0..60 * 60 {
-            let r = *e.step();
-            cut += u32::from(r.deferred > 0 || r.truncated > 0);
-            for ev in e.take_events().list {
-                match ev.id {
-                    1 => lit = lit.or(Some(ev.tick)),
-                    2 => target = target.or(Some(ev.tick)),
-                    _ => {}
-                }
-            }
+    assert_eq!(e.pending_grid_ops(), 0);
+    // A move within the cells a node covers changes nothing in the grid.
+    let n1 = e.node(1).unwrap().clone();
+    e.move_node(1, n1.center + Vec3::new(0.01, 0.0, 0.0), n1.half).unwrap();
+    assert!(e.grid_is_current() && e.pending_grid_ops() == 0);
+    // Moving 30 nodes (1%) into other cells: no sort of the whole grid, far less than a rebuild.
+    for id in 1..=30u64 {
+        let n = e.node(id).unwrap().clone();
+        e.move_node(id, n.center + Vec3::new(5.0, 0.0, 0.0), n.half).unwrap();
+    }
+    let due = e.pending_grid_ops();
+    let full = specula_elementa::grid::rebuild_ops(specula_elementa::grid::entries_for(e.nodes(), e.config().cell_m));
+    assert!(due > 0 && due * 4 < full, "30 moved: {due} ops, against a full rebuild's {full}");
+    let r = loop {
+        let r = *e.step();
+        if r.spread {
+            break r;
         }
-        ((target.unwrap() - lit.unwrap()) / 6, cut)
     };
-    let (free, none) = run(1 << 20);
-    let (tight, cut) = run(1024);
-    assert_eq!(none, 0);
-    assert!(cut > 10, "the budget cut {cut} steps");
-    println!("target caught {free} steps after its source with room to spare, {tight} with the budget cut");
-    assert!(tight.abs_diff(free) <= 4, "{tight} steps against {free}: the heat owed is given, not dropped");
+    assert_eq!(r.grid_ops, due);
+    // A grid kept up to date by merges walks as one made from nothing (a load makes one so).
+    let mut b = Elementa::load(&e.save()).unwrap();
+    for _ in 0..600 {
+        e.step();
+        b.step();
+    }
+    assert_eq!(e.hash(), b.hash());
 }
 
 #[test]
@@ -281,7 +275,7 @@ fn a_forest_of_20000_steps_within_the_stated_work_bound() {
     assert_eq!(e.add_many(&trees).unwrap().added, 20_000);
     e.set_wind(Vec3::new(4.0, 0.0, 1.0)).unwrap();
     let worst = e.config().worst_case();
-    assert_eq!(worst.ops_per_step, 2 * 20_000 + 32_768);
+    assert_eq!(worst.ops_per_step, specula_elementa::config::step_ops(20_000, 32_768));
     e.act(Act { kind: ActKind::Ignite, target: Target::Sphere { at: forest_centre(20_000), radius: 4.0 }, amount: 1.0 }).unwrap();
     let (mut steps, mut cut, mut waited, mut ignited, mut peak_work, mut entries, mut total_ops) = (0, 0, 0, 0u64, 0, 0, 0u64);
     let (mut processed, mut work) = (0u64, 0u64);
@@ -296,7 +290,7 @@ fn a_forest_of_20000_steps_within_the_stated_work_bound() {
         assert_eq!(r.work, r.lookups + r.checks);
         assert!(r.burning <= 512, "{} burning", r.burning);
         assert_eq!(r.node_updates, 20_000);
-        assert!(r.grid_ops <= worst.rebuild_ops);
+        assert!(r.grid_ops <= worst.grid_ops);
         assert!(r.ops() <= worst.ops_per_step + r.grid_ops, "ops {} at tick {}", r.ops(), r.tick);
         cut += u32::from(r.deferred > 0 || r.truncated > 0);
         waited += u32::from(r.waiting > 0);

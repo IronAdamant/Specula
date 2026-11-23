@@ -90,14 +90,14 @@ impl Prediction {
 }
 
 impl Elementa {
-    /// The most ops a scenario of `ticks` ticks with `acts` acts can take: the grid's rebuild if
-    /// one is due (nothing moves in a prediction, so at most one), every act's worst case (twice
-    /// the node count, plus one) and every spread step's (every node updated and put in order,
-    /// and the whole work budget).
+    /// The most ops a scenario of `ticks` ticks with `acts` acts can take: the grid's update if
+    /// one is due (nothing moves in a prediction, so at most one), every act's worst case
+    /// ([`crate::config::act_ops`]) and every spread step's ([`crate::config::step_ops`] at this
+    /// node count and work limit).
     pub fn check_bound(&self, ticks: u32, acts: usize) -> u64 {
         let steps = u64::from(ticks) / u64::from(self.every);
         let n = self.nodes.len() as u64;
-        self.pending_rebuild_ops() + acts as u64 * (2 * n + 1) + steps * (2 * n + u64::from(self.config.limits.work))
+        self.pending_grid_ops() + acts as u64 * crate::config::act_ops(n) + steps * crate::config::step_ops(n, self.config.limits.work)
     }
 
     /// Runs the scenario on a copy of this state (this one is not changed) and says what came of
@@ -124,7 +124,7 @@ impl Elementa {
         let mut p = Prediction { bound_ops: self.check_bound(s.ticks, s.acts.len()), ..Prediction::default() };
         for a in &s.acts {
             let r = sim.act(*a)?;
-            p.ops += u64::from(r.work) + r.grid_ops;
+            p.ops += r.ops();
         }
         let mut was_burning = sim.burning() > 0;
         for t in 1..=s.ticks {

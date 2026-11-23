@@ -9,18 +9,21 @@
 
 use crate::config::{Config, Limits, Material, MAX_FUEL_S, MAX_MATERIALS, MAX_NAME, MAX_TAGS};
 use crate::error::ElementaError;
-use crate::sim::{check_box, Cause, Cursor, Elementa, Event, EventKind, Events, Node, Phase, EVENT_KINDS, MAX_EVENTS_PER_KIND, MAX_TICK, NOT_READY};
+use crate::grid::cells_in;
+use crate::sim::{check_box, query_box, Cause, Cursor, Elementa, Event, EventKind, Events, Node, Phase, EVENT_KINDS, MAX_EVENTS_PER_KIND, MAX_TICK, NOT_READY};
 use specula_core::bytes::{ByteReader, ByteWriter};
 use specula_core::hash::StableHasher;
-use specula_core::rng::Rng;
 
-/// The section's version. Others are refused with `unsupported_version`.
+/// The section's version. Others are refused with `unsupported_version`. (Its layout changed
+/// on 2026-11-24 while still version 1: the per-node `owed` went, the cursor resumes by id, and
+/// the stream's two words became the ember key. Nothing had shipped, so no save of the earlier
+/// layout exists to read.)
 pub const SECTION_VERSION: u32 = 1;
 
 /// Bytes a material takes at least (an empty name's length, flags and floats).
 const MATERIAL_BYTES: usize = 4 + 1 + 4 * 5 + 1 + 1 + 4 * 3 + 4;
 const TAG_BYTES: usize = 4 + 2;
-const NODE_BYTES: usize = 8 + 2 + 12 + 12 + 4 * 3 + 1 + 8 + 4 + 8;
+const NODE_BYTES: usize = 8 + 2 + 12 + 12 + 4 * 3 + 1 + 8 + 8;
 const EVENT_BYTES: usize = 1 + 8 + 8 + 12 + 1;
 
 fn invalid(message: impl Into<String>) -> ElementaError {
@@ -60,12 +63,10 @@ impl Elementa {
 
         w.u32(self.tick_hz);
         w.u64(self.tick);
-        let (state, inc) = self.rng.to_parts();
-        w.u64(state);
-        w.u64(inc);
+        w.u64(self.ember_key);
         w.u64(self.cursor.id);
         w.u32(self.cursor.cell);
-        w.u32(self.cursor.entry);
+        w.u64(self.cursor.next);
         w.u64(self.refused);
         w.vec3(self.wind);
         w.f32(self.ambient);
@@ -81,7 +82,6 @@ impl Elementa {
             w.f32(n.wet);
             w.u8(n.phase as u8);
             w.u64(n.since);
-            w.u32(n.owed);
             w.u64(n.ready_at);
         }
         w.len_u32(self.events.list.len());
@@ -165,8 +165,8 @@ impl Elementa {
 
         let tick_hz = r.u32("tick_hz")?;
         let tick = r.u64("tick")?;
-        let rng = Rng::from_parts(r.u64("rng")?, r.u64("rng")?);
-        let cursor = Cursor { id: r.u64("cursor")?, cell: r.u32("cursor")?, entry: r.u32("cursor")? };
+        let ember_key = r.u64("ember_key")?;
+        let cursor = Cursor { id: r.u64("cursor")?, cell: r.u32("cursor")?, next: r.u64("cursor")? };
         let refused = r.u64("refused")?;
         let wind = r.vec3("wind")?;
         let ambient = r.f32("ambient")?;
@@ -178,7 +178,7 @@ impl Elementa {
         e.set_wind(wind)?;
         e.set_ambient(ambient)?;
         e.tick = tick;
-        e.rng = rng;
+        e.ember_key = ember_key;
         e.cursor = cursor;
         e.refused = refused;
 
@@ -195,7 +195,6 @@ impl Elementa {
             let wet = r.f32(f)?;
             let phase = r.u8(f)?;
             let since = r.u64(f)?;
-            let owed = r.u32(f)?;
             let ready_at = r.u64(f)?;
             if i > 0 && nodes[i - 1].id >= id {
                 return Err(invalid(format!("node ids must rise: {} then {id}", nodes[i - 1].id)).with("id", id));
@@ -220,19 +219,32 @@ impl Elementa {
             if since > tick {
                 return Err(invalid(format!("node {id}'s phase began at tick {since}, after the save's tick {tick}")).with("id", id));
             }
-            if owed > 0 && phase != Phase::Burning {
-                return Err(invalid(format!("node {id} is owed heat but is {}", phase.name())).with("id", id));
-            }
             if ready_at != NOT_READY && (phase != Phase::Intact || ready_at > tick) {
                 return Err(invalid(format!("node {id} waits to catch since tick {ready_at} but is {} (save at {tick})", phase.name())).with("id", id));
             }
-            nodes.push(Node { id, material, center, half, heat, fuel, wet, phase, since, owed, ready_at });
+            nodes.push(Node { id, material, center, half, heat, fuel, wet, phase, since, ready_at });
         }
         let burning = nodes.iter().filter(|n| n.phase == Phase::Burning).count();
         if burning > e.config.limits.burning as usize {
             return Err(invalid(format!("{burning} nodes burn; the limit is {}", e.config.limits.burning)));
         }
+        // A query cut part-way names a burning node, and a cell of that node's query.
+        if cursor.is_mid() {
+            let cut = nodes.binary_search_by_key(&cursor.id, |n| n.id).ok().map(|i| &nodes[i]).filter(|n| n.phase == Phase::Burning);
+            let Some(cut) = cut else {
+                return Err(invalid(format!("the cursor is part-way through node {}'s query, but no such node burns", cursor.id)).with("id", cursor.id));
+            };
+            let (lo, hi) = query_box(cut, &e.config);
+            let cells = cells_in(lo, hi);
+            if u64::from(cursor.cell) >= cells {
+                return Err(invalid(format!("the cursor is at cell {} of node {}'s query, which has {cells}", cursor.cell, cursor.id))
+                    .with("id", cursor.id)
+                    .with("cell", cursor.cell)
+                    .with("cells", cells));
+            }
+        }
         e.nodes = nodes;
+        e.mark_all_changed();
         e.report.burning = burning as u32;
 
         let count = r.count("events", MAX_EVENTS_PER_KIND * EVENT_KINDS.len(), EVENT_BYTES)?;
@@ -258,7 +270,7 @@ impl Elementa {
             if events.list.iter().filter(|x| x.kind == kind).count() >= MAX_EVENTS_PER_KIND {
                 return Err(invalid(format!("more than {MAX_EVENTS_PER_KIND} named {} events", kind.name())));
             }
-            events.list.push(Event { tick: at_tick, kind, id, at, by });
+            events.push(Event { tick: at_tick, kind, id, at, by });
         }
         for u in &mut events.unnamed {
             *u = r.u32("events.unnamed")?;
@@ -274,12 +286,10 @@ impl Elementa {
         h.write_u64(self.config.hash());
         h.write_u32(self.tick_hz);
         h.write_u64(self.tick);
-        let (s, i) = self.rng.to_parts();
-        h.write_u64(s);
-        h.write_u64(i);
+        h.write_u64(self.ember_key);
         h.write_u64(self.cursor.id);
         h.write_u32(self.cursor.cell);
-        h.write_u32(self.cursor.entry);
+        h.write_u64(self.cursor.next);
         h.write_u64(self.refused);
         for v in [self.wind.x, self.wind.y, self.wind.z, self.ambient] {
             h.write_f32(v);
@@ -293,7 +303,6 @@ impl Elementa {
             }
             h.write_u8(n.phase as u8);
             h.write_u64(n.since);
-            h.write_u32(n.owed);
             h.write_u64(n.ready_at);
         }
         h.write_u64(self.events.list.len() as u64);
