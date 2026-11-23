@@ -15,15 +15,17 @@
 //! - **Near** is a sorted grid ([`grid`]): no hashing, every walk in a fixed order.
 //! - **Bounded**: nodes tracked, nodes burning and work per step are limits ([`Limits`]),
 //!   checked when given and said before a run ([`Config::worst_case`]); a step never passes its
-//!   work limit (it resumes where it stopped at the next step, and the heat delayed is given
-//!   then); under the burning limit the longest waiting catch first.
+//!   work limit (it resumes where it stopped at the next step; heat it could not give is not
+//!   given, so a limit only slows a fire); under the burning limit the longest waiting catch
+//!   first. Only a spread step updates the grid, by a merge of what changed.
 //! - **Predicted** ([`Elementa::check`]): a scenario run on a copy, bounded, for a worker thread.
 //! - **Saved and hashed** ([`Elementa::save_state`], [`Elementa::restore_state`],
 //!   [`Elementa::hash`]): a load continues bit for bit; a damaged section is an error.
 //!
 //! **Determinism (F2):** only IEEE `+ − × ÷`, `sqrt`, `min`/`max`/`abs` and
-//! `specula_core::dmath`; ordered containers; one seeded stream (embers), one draw per burning
-//! node as its heating starts, in a fixed order. Nothing reads a clock or spawns a thread.
+//! `specula_core::dmath`; ordered containers; embers drawn from a hash of the run's
+//! seeded key, the node's id and the tick (never in the order the budget reached
+//! nodes). Nothing reads a clock or spawns a thread.
 //!
 //! **What it does not do:** it writes nothing in the world (it tells the rules); blasts, strikes,
 //! wind zones and pushes are later stages (9 and 10).

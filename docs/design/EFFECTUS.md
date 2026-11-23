@@ -320,7 +320,8 @@ at once (512 by default; a node that would ignite past it waits: as built, the l
 waiting catch first, below), work per step
 (32,768 neighbour checks by default; a step that would pass it is cut at a node boundary in id
 order and the rest carried to the next step: still deterministic, and reported as `deferred`;
-as built, a cut query resumes where it stopped and the heat delayed is given late, below).
+as built, a cut query resumes where it stopped and heat the budget could not give is not
+given, so the limit only slows a fire: below, "What a limit may change").
 Each limit is checked when the file is written, with the worst case it allows (nodes ×
 neighbours), and `elementa_check` answers the cost of a scenario before it is run (below).
 
@@ -381,21 +382,30 @@ phase (intact, burning, burnt, frozen) and `since` (the tick it began). The worl
 freezing line of a material it freezes). `step()` is called every tick; every
 `tick_hz / spread_hz` ticks (6 at 60 Hz) a spread step of `dt = 1 / spread_hz` s runs:
 
-1. **Heat given.** Every burning node is owed one step of heat (`owed += 1`). Then each, in id
-   order from a cursor, gives each neighbour within the reach
-   `heat_out × (1 − gap / reach) × lean × dt × owed`, where
+1. **Heat given.** The burning nodes, in id order from a cursor and round to the start, each at
+   most once a step and within the work budget, give each neighbour within the reach
+   `heat_out × (1 − gap / reach) × lean × dt`, where
    `lean = max(W_MIN, 1 + K_WIND × (wind · u) + K_UP × u.y)` and `u` is the unit vector from
-   the burning centre to the neighbour's, and owes nothing once its query is done. With room
-   in the work budget `owed` is 1 and this is the plain rate; a node the budget passed over
-   gives the steps it missed when it is next reached, so heat is given late, never lost
-   (`heat_passed_over_by_the_budget_is_given_late_not_lost`: a target caught 27 steps after
-   its source with room and with the budget cutting 10 or more steps; on `b4e2012f`, 154). A
-   query the budget cuts resumes at the next step from the cell and entry where it stopped
-   (the cursor holds them). Gains are summed first and applied after, so no node's place in the
-   order changes another's result. A burning node of a material with `embers` throws, with
-   chance `embers × dt × owed` (one draw of the run's stream per node as its query starts,
-   only in a wind of at least 1 m/s), an ember downwind past its box by
-   `reach + U(0,1) × 3 m × min(wind / 4 m/s, 4)`; it gives 0.25 heat to what it lands in.
+   the burning centre to the neighbour's. One walk of a node's neighbour query is a **pass**:
+   every neighbour reached in it is given exactly that, once, whichever step of the pass
+   reaches it. A query the budget cuts resumes at the next step where it stopped (the cursor
+   holds the node, the query's cell, and the id of the next neighbour in that cell), and the
+   next step starts there, so the rotation is fair. **Heat a burning node could not give
+   because the budget ran out is not given**, then or later: a node the budget does not reach
+   in a step gives nothing that step, and a pass that spans k steps gives its neighbours one
+   step's heat in those k. With room in the budget every pass is one step and this is the
+   plain rate. (Built twice before: on `b4e2012f` the heat was dropped and a cut query
+   restarted, so the same neighbours were always left out; on `52be4bf7` each node was "owed"
+   the steps it missed and gave them in one lump, which gave the first part of a cut query
+   half the heat of the rest and let a lump cross a gap the plain rate never crosses: see
+   "What a limit may change".) Gains are summed first and applied after, so no node's place in
+   the order changes another's result. A burning node of a material with `embers` throws, as
+   its query's pass ends, with chance `embers × dt` (only in a wind of at least 1 m/s), an
+   ember downwind past its box by `reach + U(0,1) × 3 m × min(wind / 4 m/s, 4)`; it gives 0.25
+   heat to what it lands in. The draw is a hash of the run's ember key (from the seed), the
+   node's id and the tick, never a stream read in the order the budget reached nodes, and an
+   ember lands whole or, when the budget left cannot look at every node of its cell, not at all
+   (`embers_dropped`).
 2. **Taken in.** Wetness takes heat first (`LATENT`: 0.5 heat dries wet 1 to 0); the rest
    raises heat, to at most 1. Ice's water is held: a frozen node warms without drying.
 3. **What ends**, in id order: a burning node at wetness 0.5 or more goes out (`by: wet`),
@@ -419,7 +429,56 @@ freezing line of a material it freezes). `step()` is called every tick; every
 
 So the time for heat to cross one gap is a recurrence, not a guess: `steps_to_ignite(from, to)`
 runs the same arithmetic in the same order and a run equals it exactly (the line test holds
-every one of 40 gaps to it, both ways).
+every one of 40 gaps to it, both ways), when the work budget has room.
+
+**What a limit may change.** A limit may make a fire slower or smaller. It may never make heat
+cross a gap that it could not cross with room in the budget.
+
+- *What is promised, and why it holds.* With the same nodes burning, the work limit gives every
+  node, at every step, at most the heat it is given with room. Each burning node gives each
+  neighbour at most one step's heat a step (exactly that with room), and embers are a subset of
+  room's (the same draws, keyed by node and tick, taken only on the steps whose pass ends). A
+  node's heat is a monotone function of what it is given: wetness takes heat first, the rest
+  raises heat, relaxing keeps the order, and drying is faster when hotter. So under a tight
+  budget a node is no hotter and no drier, catches no sooner, and catches only if it catches
+  with room. The tests `a_tight_budget_never_crosses_a_gap_that_room_cannot` (the second
+  reviewer's case: a target the model says never catches caught at tick 174 on `52be4bf7` under
+  a tight budget) and `in_random_worlds_a_tight_budget_catches_no_more_and_none_sooner` (60
+  random worlds of sources that burn for an hour, targets that catch and give no heat, wind
+  and embers, and 80 to 200 burning decoys that eat the budget; 47 of them differ, every one by
+  catching fewer or later, 68 fewer and 93 later) hold it. Within one step, heat from several
+  burning nodes is summed in the order they are reached, so a tight budget may add the same
+  terms in another order (a difference of a rounding, which the tests have not met).
+- *What is not promised, and why.* The promise is for the same nodes burning. When what
+  catches burns in turn, a tight budget changes when each catches, and so when each burns out;
+  two fronts that pass one another with room could, under a tight budget, meet and together
+  light a node neither lights alone. No monotone argument covers that, so it is not promised.
+  Measured (probe `chains`, 400 random worlds of chains whose catches give heat and throw
+  embers, 30 s each): 276 differ, 603 nodes caught only with room, and none caught only under
+  the tight budget or sooner under it.
+- *The burning limit* chooses which ready nodes catch; holding a node back can let it cool
+  below catching, and changes which fronts meet. It too may only slow or shrink a fire in the
+  case above (the same nodes burning), and does not steer it (below).
+- *Fairness.* No neighbour is left out for ever: a cut query resumes where it stopped, at the
+  next step, first (`a_crowded_cell_is_heated_whole_across_steps`: 2,000 tufts in one cell at
+  the smallest budget all catch). Nothing leans by id or place: every sink at one gap from one
+  torch, 2,000 of them in one cell, is given the same heat under a budget that cuts the query
+  every pass (`every_neighbour_of_a_cut_query_is_given_the_same_heat`; on `52be4bf7` the first
+  half of the query had half the heat of the second), and a forest with its ids mirrored burns
+  the same (below).
+- *A cut query when the world changes before it resumes.* It resumes by ids, not by places in
+  a list, so a node added or removed in between moves nothing: a node added before the resume
+  point is not reached in that pass, one removed is simply not there. A move could make a
+  neighbour met twice (one the query has passed moving to a cell it has not reached yet), so
+  that move ends the cut query: the rest of its heat is not given, and the pass moves on to the
+  next burning node. So does any move or removal of the cut node itself (its query's cells
+  change). Nothing is heated twice in a pass, and the result is a function of the saved state
+  (the cursor is saved and changed only by these calls). Tested:
+  `a_cut_query_heats_no_neighbour_twice_when_nodes_come_and_go` and
+  `..._when_nodes_move` (on `52be4bf7`, a removed sink made the resumed query skip one, and an
+  added one made it heat one twice). A node that kept moving past the cut point at every step
+  would end that query every time and its later neighbours would get nothing from it: that
+  needs a neighbour crossing a cut query's resume point every step, and is not measured.
 
 **Elementa's numbers.** None is measured from real materials; each is the engine's own, chosen
 so that a fire reads at game speed and an agent can predict it. The shape of the wind's effect
@@ -478,67 +537,151 @@ JSON parser stops at 128 levels of nesting.
 **Near, without hashing.** Space is cut into cubes of `cell_m`. Each node is entered in every
 cell its box overlaps, at most 64 (refused at `add` as `too_large`, with the count, otherwise:
 a tree 1 × 10 × 1 m covers at most 2 × 6 × 2 cells of 2 m); the entries are one `Vec` of
-(cell, node) sorted by cell. A cell's nodes are a binary search away; a query walks its cells
-in x, y, z order and counts a node met in several cells once, in the first cell the two boxes
-share, so no set is needed. Since the reach is at most a cell, a burning node's query covers at
-most `(a+2)(b+2)(c+2)` cells where `abc ≤ 64`, so at most 594 lookups. A crowded cell has no
-cap of its own, so one query can be longer than the work budget: it is resumed where it
-stopped, at the next step (on `b4e2012f` it was cut at the same place every step, and of 2,000
-tufts in one cell at the smallest budget 979 never caught; now all do,
-`a_crowded_cell_is_heated_whole_across_steps`). The grid is derived: rebuilt in the memory it
-already has (one pass and one sort) at the first step or act after a node is added, removed or
-moved, never saved or hashed. A rebuild is counted where it happens (`grid_ops` in the step's
-or act's report, and in `ops()`): `entries × (1 + ⌈log2 entries⌉)`, the entries written and the
-sort's comparisons at most. One moved node rebuilds the whole grid, so the engine batches
-moves.
+(cell, node) sorted by cell, and within a cell by node, which is id order. A cell's nodes are a
+binary search away; a query walks its cells in x, y, z order and counts a node met in several
+cells once, in the first cell the two boxes share, so no set is needed. Since the reach is at
+most a cell, a burning node's query covers at most `(a+2)(b+2)(c+2)` cells where `abc ≤ 64`,
+so at most 594 lookups. A crowded cell has no cap of its own, so one query can be longer than
+the work budget: it is resumed where it stopped, at the next step (above).
+
+**The grid kept up to date, not rebuilt.** The grid is derived: never saved or hashed. A node
+that moves within the cells it already covers changes nothing in it (the common case: a thing
+walking at 2 m/s crosses a 2 m cell boundary about once a second). An add, a remove, or a move
+into other cells records the node's id; **only a spread step** brings the grid up to date, once,
+and without sorting it again: the changed nodes' entries are made and sorted on their own, and
+merged in one pass with the entries kept (renumbered in the same pass, as an add or a remove
+shifts the nodes after it). Its cost is
+`old nodes + nodes + sort(changed ids) + sort(new entries) + old entries + entries`, where
+`sort(k) = k × (1 + ⌈log2 k⌉)` (`grid::update_ops`), said before it runs by
+`pending_grid_ops()` and counted in the step's `grid_ops` (a test holds the two equal). Past
+`max(nodes, 1,024)` changes waiting, the update makes every entry afresh (one sort, the old
+rebuild's cost), so the list of changes never grows past that. An act never updates the grid:
+when the grid is out of date it looks at every node once instead (`ActReport::scanned`),
+within its bound. So acts interleaved with adds and moves cost no grid work at all (on
+`52be4bf7` each act after a change rebuilt the whole grid: a tick of 64 acts and adds cost
+9.4 million grid operations where its largest single rebuild cost 147,000), and the grid is updated at most
+once a tick.
+
+**What moving things cost** (the probe `grid` and `moving` in a release build on the
+development laptop, an i7 with other lanes building, one run each; a spread step's time, the
+grid's part, with no fire unless said; "moved" is into other cells every tick, so with a spread
+step every 6 ticks about six times the share has changed by the step):
+
+| World | Moved a tick | `52be4bf7` | now | grid ops now |
+|---|---|---|---|---|
+| forest of 20,000 (cell 2 m, 64,416 entries) | none | 1.1 ms | 0.5 ms | 0 |
+| | 1% | 21.6 ms | 3.4 ms | 240,170 |
+| | 10% | 19.2 ms | 15.8 ms | 878,023 |
+| | 100% | 25.6 ms | 27.4 ms | 1,283,904 |
+| 32,768 nodes, cell 2 m (73,734 entries) | 1% | 50.0 ms | 3.1 ms | 306,946 |
+| | 10% | 46.3 ms | 11.5 ms | 925,952 |
+| | 100% | 24.2 ms | 27.8 ms | 1,572,984 |
+| 32,768 nodes, cell 0.25 m (1,166,544 entries) | 1% | 325 ms | 30 ms | 3,358,245 |
+| | 10% | 335 ms | 164 ms | 12,133,812 |
+| | 100% | 297 ms | 317 ms | 28,095,360 |
+
+With a fire as well (`moving`: the 32,768 nodes at cell 2 m with the default work 32,768 and
+512 burning): a spread step 4.6 ms with nothing moving, 6.3 ms with 1% moving a little (within
+their cells), 10.4 ms with 1% moving into other cells, 18.4 ms with 10%, 35.6 ms with all; the
+moves themselves, about 1.2 µs a call (40 ms a tick for 32,768 calls). At cell 0.25 m with the
+largest work budget (1,048,576) and every node allowed to burn, a spread step is about 150 ms
+with nothing moving: that is the work budget, not the grid, and such limits are for a
+prediction on a worker, not a live world.
+
+**For the engine's stage, therefore:** feed `move_node` only for nodes that moved (the change
+feed), and expect what crosses cells to cost: at the default limits a world of 20,000 to
+32,000 nodes affords about 1% of its nodes crossing cells a tick (3 to 10 ms a spread step,
+once every 6 ticks), not 10% (12 to 18 ms, a whole frame on the reference device); a cell of
+2 m, not 0.25 m (sixteen times the entries); the default work limit. A world that needs more
+movers should track only those that matter to fire as nodes, or give them a larger cell. Every
+figure here is a time on one machine; what the tests hold is the counts.
 
 **What it costs for 20,000 nodes** (counted by the test `a_forest_of_20000_steps_within_the_
 stated_work_bound`, never timed: a 141 × 142 m forest at 1 m spacing, wood 0.7 × 3 × 0.7 m and
 grass 0.6 × 0.4 × 0.6 m, `reach_m` 1, a 4 m/s wind): 64,416 grid entries (3.2 a node; about
-1 MB, and 1.1 MB of nodes); every spread step 20,000 node updates, the ready nodes put in
-order, and at most the work limit (32,768); about 52,500 ops a step on average. A burning
-node's heating costs about 98 lookups and checks in this forest, so the default work limit
-heats about 330 burning nodes a step and the rest give their heat a step or two late. **Work**
-is cell lookups plus neighbour checks; `StepReport` says each, and `work ≤ limits.work` every
-step is what the test asserts. Measured again after the mends of 1 and 6 (`b4e2012f`'s review).
+1 MB, and 1.1 MB of nodes); every spread step 20,000 node updates, the ready nodes and the
+events sorted (counted as sorts), and at most the work limit (32,768); about 54,800 ops a step
+on average over 120 s. A burning node's heating costs about 98 lookups and checks in this
+forest, so the default work limit heats about 330 burning nodes a step. **Work** is cell
+lookups plus neighbour checks (and, resuming a cut query, the binary search into its cell);
+`StepReport` says each, and `work ≤ limits.work` every step is what the test asserts.
 
-**What the limits do to a large fire** (the same forest, 120 s, lit in its middle, the
-reviewer's probe in a release build; caught counts every node that burned or burns):
+**What the limits do to a large fire** (the same forest, 120 s, lit in its middle; the probe
+`forest` in a release build; caught counts every node that burned or burns; measured again
+after `owed` was taken out):
 
-| Limits | Caught | Steps the burning limit held nodes | Steps the work limit cut |
-|---|---|---|---|
-| none that bite (burning 20,000, work 1,048,576) | 20,000 (all) | 0 | 0 |
-| work 32,768 alone | 18,796 | 0 | 1,168 |
-| burning 512 alone | 3,333 | 1,162 | 0 |
-| both, the defaults (burning 512, work 32,768) | 3,337 | 1,161 | 1,168 |
+| Limits | Caught | With the ids mirrored | Steps the burning limit held nodes | Steps the work limit cut |
+|---|---|---|---|---|
+| none that bite (burning 20,000, work 1,048,576) | 20,000 (all) | 20,000 | 0 | 0 |
+| work 32,768 alone | 9,761 | 9,787 | 0 | 1,168 |
+| burning 512 alone | 3,338 | 3,339 | 1,162 | 0 |
+| both, the defaults (burning 512, work 32,768) | 3,343 | 3,347 | 1,161 | 1,168 |
 
-So **the burning limit is what slows a large fire**: at most 512 things burn at once, and
-grass and wood burn for 6 and 40 s, so the front advances only as fast as old fires burn out.
-That is its purpose (the look of 512 burning things is stage 7's budget on the reference
-device), and it is said before a run. The work limit costs a large fire a little (18,796 of
-20,000 in two minutes), now that the heat it delays is given late and not dropped. Neither
-steers the fire: with the ids mirrored the counts are within 1% and the front leans with the
-wind. A game that wants a whole forest to burn at full speed raises `limits.burning` and pays
-for it in stage 7's drawing.
+So **the burning limit is what slows a large fire at the defaults**: at most 512 things burn at
+once, and grass and wood burn for 6 and 40 s, so the front advances only as fast as old fires
+burn out; with it, the work limit changes almost nothing (3,343 against 3,338). That is its
+purpose (the look of 512 burning things is stage 7's budget on the reference device), and it
+is said before a run. **The work limit alone** now halves a large fire in two minutes (9,761 of
+20,000, where `52be4bf7`'s owed heat gave 18,796 and `b4e2012f`, which dropped heat and
+restarted cut queries, about 9,800): with 1,200 to 1,900 burning at about 98 work each, a
+burning node is reached one step in four to six and gives that share of its heat. Followed
+over time (caught and burning every 10 s), the fire does not stall or die; it advances steadily where room lets it accelerate:
 
-**Bounded, and said before a run.** `Config::worst_case()`: ops per spread step at most
-`2 × limits.nodes + limits.work` (every node updated, the ready ones put in order, and the
-work budget: 40,960 at the default 4,096 and 32,768; 98,304 at 32,768 nodes), and
-`rebuild_ops` for a step or act after any add, remove or move (at the node limit with every
-node covering 64 cells, `entries × (1 + ⌈log2 entries⌉)`: 262,144 × 19 ≈ 5 million at
-4,096 nodes, 2,097,152 × 22 ≈ 46 million at 32,768; a real forest's rebuild is far less: the
-20,000-node forest's 64,416 entries × 17 ≈ 1.1 million); grid entries at most 64 a node; memory at
-most about 60 bytes a node plus 16 bytes an entry (at 32,768 nodes, the worst 35 MB; the
-20,000-node forest above about 2 MB). `pending_rebuild_ops()` says what the next rebuild will
-cost before it runs. A step that would pass the work limit stops at it, in the middle of a
-node's query if it must, and the next step resumes where it stopped (a cursor of node, cell
-and entry, saved): deterministic, reported as `deferred` and `truncated`, and the heat delayed
-is given late. Between spread steps a tick does nothing (0 ops). An act's work is at most
-twice the node count plus one: the sphere's cells are looked up only when there are no more
-of them than nodes, and if they hold more entries than there are nodes each node is looked at
-once instead (on `b4e2012f` an act among nodes of 64 cells each cost 65 times the node count;
-now 1,729 for 1,000 nodes, `an_acts_work_is_at_most_twice_the_node_count`). A rebuild an act
-needs is said apart in its report (`grid_ops`). The clock stops at tick 2^62 (146 million
+| Work limit | 10 s | 30 s | 60 s | 90 s | 120 s |
+|---|---|---|---|---|---|
+| 1,048,576 (room) | 2,289 / 1,990 burning | 11,207 / 5,846 | 15,913 / 4,067 | 19,419 / 2,445 | 20,000 / 738 |
+| 32,768 (default) | 1,220 / 931 | 3,186 / 1,673 | 5,816 / 1,866 | 8,117 / 1,649 | 9,761 / 1,196 |
+| 8,192 | 546 / 388 | 1,274 / 660 | 2,263 / 704 | 3,416 / 787 | 4,645 / 835 |
+
+A player would see a large fire, with the burning limit raised and the work limit not, spread
+at about a constant pace rather than faster and faster: slower, not otherwise wrong, and not
+steered (with the ids mirrored the counts are within 1%, and the front leans with the wind:
+4,132 below the lit row and 5,547 above it, downwind, with the ids rising; 4,188 and 5,517
+mirrored). A game that wants a whole forest to burn at full speed raises both limits and pays
+for it in time (above) and in stage 7's drawing.
+
+**Bounded, and said before a run.** `Config::worst_case()` says, before any run:
+
+- `ops_per_step`: a spread step, `step_ops(n, work) = n + sort(n) + sort(2n) + work` at
+  `n = limits.nodes` (every node updated; at most every node ready, sorted; at most two events
+  a node, sorted; the work budget): 1,085,536 at 20,000 nodes and work 65,536 (a config test
+  holds the arithmetic). Sorting is counted as a sort, `k × (1 + ⌈log2 k⌉)`; on `52be4bf7` the
+  ready nodes' sort was counted as one operation each.
+- `grid_ops`: the worst grid update, every node at the limit changed and covering 64 cells
+  (`update_ops(n, n, max(n, 1,024), 64n, 64n, 64n)`: about 31 million at 20,000 nodes and 51
+  million at 32,768). A real update after a few changes is far less (the table above).
+- `act_ops`: one act, `3n + 1` (its work at most `2n + 1`, and one update a node it reaches).
+- `call_ops`: one add, remove or move, `n + 2⌈log2(n + 1)⌉ + 2` (a binary search, the node list
+  shifted by one place, and for a move while a query is cut, the cut node's search). A move
+  within its cells is a binary search and a few comparisons; `add_many` of `m` costs at most
+  `m + sort(m) + m(⌈log2(n + 1)⌉ + 1) + n + m` (`Elementa::add_many_ops`), a merge, not a
+  sort of the whole list.
+- **A tick**, with `a` acts (at most 64) and `c` adds, removes and moves made in it in any
+  order: at most `ops_per_step + grid_ops + a × act_ops + c × call_ops` (`WorstCase::tick_ops`),
+  since only the spread step updates the grid. `StepReport::calls_ops` says what the calls since
+  the last tick cost, so `ops() + calls_ops` is the whole tick; the test
+  `a_tick_of_acts_between_adds_removes_and_moves_stays_within_its_bound` runs 600 ticks of 64
+  acts, each after an add, a move into another cell or a remove, and holds every tick to this
+  bound with the grid's part as `pending_grid_ops()` said, and to the worst case.
+- Memory: about 60 bytes a node plus 16 bytes an entry, twice for the entries (the grid keeps a
+  second buffer to merge into); at 32,768 nodes the worst about 70 MB.
+
+**Nothing allocated once warm.** A step and an act reuse their buffers (the gains, the ready
+queue, the step's events, the act's hits and cells, the grid's entries and its merge buffers),
+sized for every node when nodes are added; the grid's grow only when it holds more entries than
+it ever has. Events can be taken by `swap_events(&mut buf)` (copied into the caller's buffer,
+this state keeping its own) instead of `take_events()`, which hands over the list. The test
+`a_warm_state_allocates_nothing_in_its_steps_and_acts` runs 1,200 ticks of a fire with moves,
+acts and events, then 4,800 more, and holds every buffer's capacity unchanged. (On `52be4bf7`
+the ready queue, the step's events, an act's hits and cells, and each grid rebuild's sort were
+new each time.) A step that would pass the work limit stops at it, in the middle of a node's
+query if it must, and the next step resumes there: deterministic, reported as `deferred` and
+`truncated`. Between spread steps a tick does nothing but count (0 ops). An act's work is at
+most twice the node count plus one: the sphere's cells are looked up only when the grid is up
+to date and there are no more of them than nodes, and if they hold more entries than there are
+nodes, or the grid is out of date, each node is looked at once instead (on `b4e2012f` an act
+among nodes of 64 cells each cost 65 times the node count; now 1,729 for 1,000 nodes,
+`an_acts_work_is_at_most_twice_the_node_count`). The clock stops at tick 2^62 (146 million
 years at 1,000 Hz) and the refusal count saturates, so neither wraps.
 
 **The prediction.** `Elementa::check(&Scenario {acts, wind, ambient, ticks, max_ops})` runs the
@@ -548,55 +691,66 @@ scenario on a copy (the state is untouched, and the copy starts with none of the
 answers `Prediction`: how many caught, burnt out, were put out, froze and thawed; up to 64 burnt
 ids; the peak burning; the first and last ignition and when the fire went out; the ops spent,
 the worst step, the steps cut, the most that waited; `bound_ops` (`check_bound`: a pending
-rebuild, every act's worst case and every step's, said before it runs); `cut` when the ceiling
-stopped it; and the end state's hash. A test holds that a run of the same scenario gives the
-same counts and the same hash, and that the state's hash and bytes are the same before and
-after a prediction.
+grid update, every act's worst case and every step's, said before it runs); `cut` when the
+ceiling stopped it; and the end state's hash. A test holds that a run of the same scenario
+gives the same counts and the same hash, and that the state's hash and bytes are the same
+before and after a prediction.
 
 **The save section `elementa`, version 1.** Self-contained: the config it ran under (every
-material, tag, the grid, the limits), the tick rate, tick, the stream's two words, the cursor
-(node, cell, entry), `refused`, wind, ambient, every node (id, material, centre, half, heat,
-fuel, wet, phase, since, owed, ready_at) in id order, and the events still waiting. Floats are
-their bits. On load: a tick past 2^62 is refused; every count
-against its cap and the bytes left before anything is allocated (`r.count`), the config by the
-same `validate` a file passes, ids strictly rising, materials in the table, every number in its
-range, a phase its material allows (only what can burn burns, only what can freeze is frozen),
-no `since` or event after the save's tick, heat owed only by a burning node, a wait to catch
-only by an intact node and not after the save's tick, at most the burning limit burning, at
-most 64 named events a kind, nothing left over. A load saves to the same bytes, gives the same
-step report on the next tick (on `b4e2012f` it said `burning 0` until the next spread step) and
-continues to the same hash (tested 600 ticks past a save taken mid-fire). The fuzzing test
-cuts the section at every length, flips every bit (and runs 60 ticks after every seventh flip
-that loads), and makes 3,000 random edits with extreme values (stepping every edit that
-loads); and, aimed, writes the tick at `u64::MAX` and past 2^62 (refused), at 2^62 (loads and
-steps without wrapping), and the refusal count at `u64::MAX` (loads; a refused node leaves it
-there): nothing panics or hangs, and a count of `u32::MAX` is refused before allocation.
+material, tag, the grid, the limits), the tick rate, tick, the ember key, the cursor (node,
+cell, next neighbour's id), `refused`, wind, ambient, every node (id, material, centre, half,
+heat, fuel, wet, phase, since, ready_at) in id order, and the events still waiting. Floats are
+their bits. **Its layout changed on 2026-11-24 while staying version 1** (the per-node `owed`
+went, the cursor's entry index became a neighbour id, and the stream's two words became the
+ember key): nothing has shipped, so no save of the earlier layout exists to read. On load: a
+tick past 2^62 is refused; every count against its cap and the bytes left before anything is
+allocated (`r.count`), the config by the same `validate` a file passes, ids strictly rising,
+materials in the table, every number in its range, a phase its material allows (only what can
+burn burns, only what can freeze is frozen), no `since` or event after the save's tick, a wait
+to catch only by an intact node and not after the save's tick, at most the burning limit
+burning, a cursor part-way through a query only on a burning node and at a cell of that node's
+query (`a_cursor_part_way_through_a_query_is_checked_on_load`; the neighbour id it resumes at
+may be any id), at most 64 named events a kind, nothing left over. On `52be4bf7` a hand-made
+save with `owed` at `u32::MAX` loaded and lit four soaked neighbours in two steps; the field is
+gone. A load saves to the same bytes, gives the same step report on the next tick (on
+`b4e2012f` it said `burning 0` until the next spread step) and continues to the same hash
+(tested 600 ticks past a save taken mid-fire; its first spread step makes the grid whole, and
+reports that in `grid_ops` where the live run does not). The fuzzing test cuts the section at
+every length, flips every bit (and runs 60 ticks after every seventh flip that loads), and
+makes 3,000 random edits with extreme values (stepping every edit that loads); and, aimed,
+writes the tick at `u64::MAX` and past 2^62 (refused), at 2^62 (loads and steps without
+wrapping), and the refusal count at `u64::MAX` (loads; a refused node leaves it there):
+nothing panics or hangs, and a count of `u32::MAX` is refused before allocation.
 
-**The hash** (`Elementa::hash`) covers the config's hash, tick rate, tick, stream, the
+**The hash** (`Elementa::hash`) covers the config's hash, tick rate, tick, ember key, the
 cursor's three parts, `refused`, wind, ambient, every node's every field, and the waiting
-events. Tested: the same
-seed and inputs give the same hash at each of 10,000 ticks, twice, and with the nodes added in
-a batch, one at a time in reverse, and in interleaved batches; another seed differs.
+events. Tested: the same seed and inputs give the same hash at each of 10,000 ticks, twice, and
+with the nodes added in a batch, one at a time in reverse, and in interleaved batches; another
+seed differs; a grid kept up to date by merges gives the same hashes over 600 ticks as one made
+whole after a load.
 
 **For the engine's lane (stage 6).** What it calls, all in `specula_elementa`:
 
 - *Setting up.* `Config::parse(&text)` for `elements.json` (or `Config::default()`), then
   `Elementa::new(config, tick_hz, seed)`. `config.tag(tag)` and `config.material(name)` map an
-  entity to a material index. `config.worst_case()` and `elementa.info()` (JSON, a few hundred
-  bytes) for `elementa_info`.
+  entity to a material index. `config.worst_case()` (with `tick_ops(acts, calls)`) and
+  `elementa.info()` (JSON, a few hundred bytes) for `elementa_info`.
 - *The change feed.* `add(NodeDesc::new(entity_id, material, centre, half))` (with
   `.fuel(s)`, `.heat(h)`, `.wet(w)` from an `element` component), `add_many(&[...])` at a load
   or a project start, `move_node(id, centre, half)` for an entity that moved, `remove(id)` for
   one deleted. Errors are `ElementaError` (`code`, `message`, `details`; `to_json()`).
+  `pending_grid_ops()` says what the next spread step's grid update will cost;
+  `grid_is_current()` whether there is one.
 - *The world.* `set_wind(Vec3)` in m/s (strength × 4) and `set_ambient(h)` whenever
   `world_env` changes.
 - *Module ops.* `act(Act { kind: ActKind::Ignite | Chill | Wet, target: Target::Node(id) |
   Target::Sphere { at, radius }, amount })` inside the tick that asks, as `Cx::push` is; the
-  answer's `ActReport` says how many it reached, its work and any grid rebuild it paid for.
-  `node(id)` answers `Cx::element(id)`.
+  answer's `ActReport` says how many it reached, its work, and whether it looked at every node
+  (`scanned`). `node(id)` answers `Cx::element(id)`.
 - *The tick.* `step()` once per tick, after physics and before the tick hash; it answers a
-  `StepReport` (for traces and `perf_frame`). Then `take_events()`: `Events { list, unnamed }`,
-  each `Event { tick, kind, id, at, by }`, `kind.name()` is the module event's name
+  `StepReport` (for traces and `perf_frame`; `ops() + calls_ops` is the tick's cost). Then
+  `swap_events(&mut buf)` (or `take_events()`): `Events { list, unnamed }`, each
+  `Event { tick, kind, id, at, by }`, `kind.name()` is the module event's name
   (`element.ignited`, ...) and `Event::to_json()` its data; tell the modules at the next tick.
 - *The hash.* `hash()` into the tick hash and the save header's subsystem hashes.
 - *The save.* `save_state(&mut ByteWriter)` and `Elementa::restore_state(&mut ByteReader)`
@@ -606,23 +760,25 @@ a batch, one at a time in reverse, and in interleaved batches; another seed diff
 - *The prediction.* `check(&Scenario)` on a clone, on a worker (`Engine::offload`); it never
   reads the world. `check_bound(ticks, acts)` is the ceiling to say before it runs;
   `MAX_CHECK_OPS` caps it whatever a caller asks.
-- *What the engine must decide:* whether a moved entity's node is moved every tick (each move
-  rebuilds the grid at the next step: one pass and one sort of all entries, counted in that
-  step's ops and said by `pending_rebuild_ops()`; batch the moves), and the order
-  the change feed adds nodes in (any order gives the same hash, below the node limit; past it
-  `add_many` keeps the lowest ids, `add` the first given).
+- *What the engine must decide:* how many moving things it tracks and at what cell (the costs
+  above), and the order the change feed adds nodes in (any order gives the same hash, below the
+  node limit; past it `add_many` keeps the lowest ids, `add` the first given). A spread step's
+  cost falls on every sixth tick at 60 Hz; whether the engine spreads it over ticks is its
+  decision.
 
 **Not done in stage 5, or unsure.** Insertion order changes nothing below the node limit; past
 it, single `add`s keep what came first, so an engine that adds in id order should use
 `add_many`. A burning node's heat to a node above it uses only the centres' direction, so a
 wide flat thing below a tall one leans less than it might. Burnt nodes stay tracked (counting
-against the node limit) until the engine removes them. Heat given late is the same total but
-not the same path: a neighbour given three steps of heat at once has cooled less between them
-than one given a step at a time (the test sees the same ignition step in a pair; in a large fire
-the difference is unmeasured), and a query that spans steps gives its later neighbours the
-owed count of the later step. Among nodes ready at the same tick and equally hot, which catch
-first under the burning limit is a fixed hash of id and tick: no spatial lean, but not chosen
-by anything physical either. Nothing here was run inside the engine.
+against the node limit) until the engine removes them. The work limit's promise is for the
+same nodes burning; for chains it is measured (400 worlds, none crossed), not proved. A query
+whose resume point a neighbour crosses at every step would never finish (not measured). The
+grid update is linear in the grid's entries whenever anything crossed cells, not in what
+changed: a single node crossing a cell boundary costs a pass over every entry (the 1% rows of
+the table above are mostly that pass). Among nodes ready at the same tick and
+equally hot, which catch first under the burning limit is a fixed hash of id and tick: no
+spatial lean, but not chosen by anything physical either. Nothing here was run inside the
+engine.
 
 ## The look is the project's
 

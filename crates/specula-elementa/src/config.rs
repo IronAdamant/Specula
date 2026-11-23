@@ -534,8 +534,10 @@ impl Config {
             call_ops: crate::sim::Elementa::call_ops(n),
             steps_per_second: self.spread_hz,
             grid_entries: entries,
+            // Nodes and their per-node buffers; the entries twice (the grid merges into a second
+            // buffer).
             bytes: n * (std::mem::size_of::<crate::sim::Node>() as u64 + 4)
-                + n * u64::from(crate::grid::MAX_NODE_CELLS) * std::mem::size_of::<crate::grid::Entry>() as u64,
+                + 2 * n * u64::from(crate::grid::MAX_NODE_CELLS) * std::mem::size_of::<crate::grid::Entry>() as u64,
         }
     }
 
