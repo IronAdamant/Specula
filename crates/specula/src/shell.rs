@@ -2415,6 +2415,32 @@ mod tests {
         assert_eq!(e.game.as_mut().map(|g| g.take_quit()), Some(true), "left for the window loop, which a headless engine has not");
     }
 
+    /// Whether the window's presses act in the game is the game's own clock wish (its title, its
+    /// pause, an ended run hold it), never the engine clock: an agent's pause, a step or a
+    /// playtest stepping the clock leaves a person's presses latched as ever.
+    #[test]
+    fn the_game_holds_the_clock_by_its_own_wish_and_an_agents_pause_is_not_it() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        let who = specula_protocol::SessionInfo { id: "held-test".into(), client_name: "t".into(), client_version: "1".into(), protocol_version: "x".into() };
+        e.game_name = "gate".into();
+        e.game = Some(Box::new(shell()));
+        e.start_game();
+        e.serve_game_clock();
+        assert!(e.game_holds_clock, "the title holds it");
+        e.game_act(&who, "start");
+        assert!(!e.game_holds_clock && !e.clock.paused());
+        // An agent pauses the engine's clock, or steps it: the game's own run is under way.
+        e.clock.set_paused(true);
+        e.serve_game_clock();
+        assert!(!e.game_holds_clock, "an agent's pause is not the game's");
+        e.playtest_pumping = true;
+        e.game_act(&who, "pause");
+        assert!(e.game_holds_clock, "the game's own pause, even while a playtest has the clock");
+        e.playtest_pumping = false;
+        e.game_act(&who, "resume");
+        assert!(!e.game_holds_clock);
+    }
+
     /// The engine does what a press asks of the clock, except while a playtest has the clock:
     /// then the playtest's own steps tick the run, and the clock stays as the playtest holds it
     /// (found by the first live run of a new project's own check: the game's start un-paused

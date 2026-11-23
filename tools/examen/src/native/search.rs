@@ -231,5 +231,18 @@ pub fn search(cx: &mut Cx) -> Result<String, String> {
     // 5. What a search cannot read is said before anything is played.
     let (code, no_line) = run(cx, &["find", &folder, "--ticks", "600", "--until", "lives==0", "--words", "right"])?;
     expect(code == 1 && text(&no_line[0], "error") == Some("unknown_line"), "a search told to reach a line the report has not is not refused by name", &Json::Arr(no_line.clone()))?;
+
+    // 6. A quit on the tick the game wins (the game file's `quit` and `won` on one key): the
+    // run ends on that tick, with no input after it, not at the schedule's end (a reviewer,
+    // 2026-11-24: a run won and quit at tick 5 said 100).
+    write("game.json", &GAME.replace("\"keep\":", "\"quit\": \"nummi.won\", \"outcome\": { \"won\": \"nummi.won\" }, \"keep\":"))?;
+    let won_at = number(&found, "ticks") as u64;
+    let (late, all) = (format!("{inputs},{}:left", won_at + 60), format!("{}", won_at + 200));
+    let (code, quit) = run(cx, &["run", &folder, "--ticks", &all, "--inputs", &late, "--keys", "tick,run.quit,game.phase"])?;
+    let quit = quit.last().cloned().unwrap_or(Json::Null);
+    // (The search reads the board at the end of each of its stretches: the coin may have been
+    // taken a few ticks before the tick it answered.)
+    let ended = number(&quit, "tick");
+    expect(code == 0 && ended > 0.0 && ended <= won_at as f64 && quit.get("run.quit").and_then(Json::as_f64) == Some(ended) && quit.get("game.phase").and_then(Json::as_str) == Some("won"), "a run won and quit on one tick did not end on that tick, with run.ticks and run.quit the same", &Json::obj([("found", found.clone()), ("run", quit.clone())]))?;
     Ok(format!("a run read at two ticks; a run for each of three pushes; the push tuned to between {fails} and {holds}; a script of {} inputs that takes three coins by tick {ticks}, the same in a run of its own and found again", inputs.split(',').count()))
 }

@@ -1306,6 +1306,10 @@ struct Engine {
     /// Under a script: the game asked to quit (its Quit, or its rules' `quit`) and no tick has
     /// run since. Told to the script with its next ticks, which do not run ([`Engine::play_ticks`]).
     script_quit: bool,
+    /// The hosted game's own last wish for the clock, whoever has it: true while its title,
+    /// its pause or an ended run hold it ([`Engine::serve_game_clock`]). Window input fed then
+    /// presses nothing in the game ([`logic::LogicHost::feed_window`]).
+    game_holds_clock: bool,
     /// What the start-up build (`--run`) could not load, for the hosted game to show.
     run_reports: run_modules::Reports,
     /// World folders saved in this run, and the identity key that first saved each (its creator
@@ -1551,6 +1555,7 @@ impl Engine {
             game_clock_held: None,
             script_clock: None,
             script_quit: false,
+            game_holds_clock: false,
             run_reports: run_modules::Reports::default(),
             world_folders: std::collections::BTreeMap::new(),
             commits: authority::CallCommits::default(),
@@ -1984,6 +1989,9 @@ impl Engine {
     /// starts it as its own doing, and `time_control` says the game did. Returns what was done.
     pub(crate) fn serve_game_clock(&mut self) -> Option<bool> {
         let paused = self.game.as_mut()?.take_clock()?;
+        // (What the game itself wants, whoever has the clock: its own pause, its title, an
+        // ended run hold it; an agent's pause or a stepping playtest do not.)
+        self.game_holds_clock = paused;
         // A playtest owns the clock while it runs: it holds it paused and steps it tick by
         // tick, so the same spec makes the same calls at the same ticks. The game's wish
         // changes nothing then (a run begun by a step is ticked by the playtest's steps, and
@@ -2131,8 +2139,10 @@ impl Engine {
         if modal {
             self.logic.feed_window_idle(dt.as_secs_f32());
         } else {
-            // (Under a script the game's clock is its own wish; else the clock is the game's.)
-            let held = self.script_clock.map_or(self.clock.paused(), |running| !running);
+            // Held by the game itself (its title, its pause, a run that ended): nothing pressed
+            // now acts when it runs again. A clock an agent paused or steps is not the game's:
+            // a person's presses between its steps are latched as ever.
+            let held = self.game_holds_clock;
             self.logic.feed_window(&self.input, dt.as_secs_f32(), held);
         }
         if self.lex_live.has_input() {

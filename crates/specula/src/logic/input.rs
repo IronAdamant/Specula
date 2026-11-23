@@ -63,7 +63,15 @@ pub struct ModuleInput {
     presses: Vec<String>,
     /// Per action: went down at the window while the game's clock was held, and is still down
     /// ([`ModuleInput::feed_held`]): held when the clock runs again, and no press then.
+    ///
+    /// Neither it nor [`ModuleInput::touched`] is saved: they are of the device at the window
+    /// (keys physically down, the person's hands), which is the person's and not the save's, as
+    /// the device state behind the latch is not; a load meets whatever is down then.
     quiet: Vec<bool>,
+    /// Per action: the person used it at the window while the game held its clock (pressed,
+    /// released, held or moved it). It ends an agent's hold on it at the next tick, as the
+    /// window always wins, and is never a press nor a `press` event.
+    touched: Vec<bool>,
 }
 
 /// Most presses one tick tells a module (the rest of a tick's are not told; `pressed` still is).
@@ -89,6 +97,7 @@ impl ModuleInput {
             tapped: vec![false; n],
             presses: Vec::new(),
             quiet: vec![false; n],
+            touched: vec![false; n],
         })
     }
 
@@ -131,6 +140,8 @@ impl ModuleInput {
                     self.last[j] = old.last[i];
                     self.latch[j] = old.latch[i];
                     self.tapped[j] = old.tapped[i];
+                    self.quiet[j] = old.quiet[i];
+                    self.touched[j] = old.touched[i];
                 }
             }
         }
@@ -252,14 +263,18 @@ impl ModuleInput {
     /// clock runs again. A press made in a pause menu (Enter on Resume, keys in the settings)
     /// is no press of the game's: no edge is latched, no `press` is told, a key still down
     /// when the clock starts is not pressed then, and motion summed is dropped. A release of
-    /// what was held before is still told (the rules saw it held). An agent's holds are its
-    /// own and are kept as they are.
+    /// what was held before is still told (the rules saw it held). An agent's holds are kept,
+    /// except that the person using one of their actions ends its hold at the next tick,
+    /// as the window always wins ([`ModuleInput::touched`]).
     pub fn feed_held(&mut self, events: &[Event], pads: &[GamepadState], dt_s: f32) {
         let before = self.presses.len();
         self.feed(events, pads, dt_s);
         self.presses.truncate(before);
         for (i, a) in self.map.actions().iter().enumerate() {
             let l = &mut self.latch[i];
+            // What the person did is kept for the take-over alone (the window wins over an
+            // agent's hold, paused or not), and is no press of the game's.
+            self.touched[i] |= l.pressed || l.released || l.held || l.value != [0.0, 0.0];
             l.pressed = false;
             l.released = false;
             if a.kind != ActionKind::Button && a.output == AxisOutput::Delta {
@@ -362,6 +377,8 @@ impl ModuleInput {
             let tapped = std::mem::take(&mut self.tapped[i]);
             // (Down since a frame of a held clock: held now, and no press of the game's.)
             let quiet = std::mem::take(&mut self.quiet[i]);
+            // (Used by the person while the game held its clock: their take-over, never a press.)
+            let touched = std::mem::take(&mut self.touched[i]);
             let w = std::mem::take(&mut self.latch[i]);
             // The window's held state carries over; only edges and deltas start again.
             self.latch[i].held = w.held;
@@ -370,7 +387,7 @@ impl ModuleInput {
             }
             // The window wins: the human's own input on a held action ends the hold (the action
             // reports the window's state), and the engine reports who held it.
-            let human = w.held || w.pressed || w.released || w.value != [0.0, 0.0];
+            let human = touched || w.held || w.pressed || w.released || w.value != [0.0, 0.0];
             if human {
                 if let Some(h) = self.holds.remove(&a.name) {
                     if self.ended.len() < MAX_ENDED {
@@ -589,6 +606,36 @@ mod tests {
         m.hold(&Json::parse(r#"{"jump": true}"#).unwrap(), 5, None).unwrap();
         let (t, presses) = m.take_tick_and_presses();
         assert_eq!((state(&t, "jump").map(|s| s.1), presses), (Some(true), vec!["jump".to_owned()]));
+    }
+
+    /// The window wins over an agent's hold while the game's clock is held too: a tap of the
+    /// held action in the pause menu, or mouse motion on a held delta axis, ends the hold at
+    /// the next tick and names its holder; neither is a press of the game's.
+    #[test]
+    fn the_person_takes_a_held_action_back_while_the_clock_is_held() {
+        use crate::authority::Authority;
+        use crate::inputguard::Actor;
+        use specula_platform::keys;
+        const LOOK: &str = r#"{"format": "specula.input.v1", "actions": [
+            {"name": "jump", "kind": "button", "bindings": ["Key.Space"]},
+            {"name": "look", "kind": "axis2", "output": "delta", "bindings": ["Mouse.Motion"]}
+        ]}"#;
+        let mallory = Actor::identity("mal-key", "mallory", Authority::Agent);
+        let mut m = ModuleInput::new(LOOK).unwrap();
+        m.hold(&Json::parse(r#"{"jump": true, "look": [1, 0]}"#).unwrap(), 100, Some(mallory.clone())).unwrap();
+        assert_eq!(state(&m.take_tick(), "jump").map(|s| s.1), Some(true));
+        // Paused: the person taps Space and moves the mouse.
+        m.feed_held(&[Event::KeyDown { code: keys::SPACE, repeat: false }], &[], 0.016);
+        m.feed_held(&[Event::KeyUp { code: keys::SPACE }], &[], 0.016);
+        m.feed_held(&[Event::MouseMove { x: 10, y: 10 }], &[], 0.016);
+        m.feed_held(&[Event::MouseMove { x: 60, y: 40 }], &[], 0.016);
+        let (t, presses) = m.take_tick_and_presses();
+        assert!(presses.is_empty(), "no press of the game's: {presses:?}");
+        let mut ended = m.take_ended();
+        ended.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(ended, vec![("jump".to_owned(), Some(mallory.clone())), ("look".to_owned(), Some(mallory))], "both holds ended, under their holder");
+        assert_eq!(state(&t, "jump").map(|s| (s.0, s.1)), Some((false, false)), "the hold is gone: {t:?}");
+        assert!(m.holds_json().as_object().is_some_and(|h| h.is_empty()));
     }
 
     /// The input of a save written before presses were kept (the logic section's version 1)
