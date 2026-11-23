@@ -325,8 +325,14 @@ enum Seg {
     Bound { key: Key, fmt: Fmt },
 }
 
-/// Longest rendered template text, in bytes.
-pub const MAX_TEXT: usize = 512;
+/// Longest rendered template text, in bytes. What it bounds is a label's cost each frame: the
+/// text is rendered again, compared with the one last laid out, and drawn as one glyph quad a
+/// character (twice with a shadow), so a screen of labels stays far under the frame's glyph
+/// limit. It is a screenful, not a line: a game's end-of-day summary of sixteen lines joined by
+/// newlines is 300 to 600 bytes, which 512 would cut (2026-11-23: five of ten builders' games
+/// put such a summary into one kept text). 4 KiB is about fifty lines of eighty characters, more
+/// than a 1080p screen holds at a body size.
+pub const MAX_TEXT: usize = 4096;
 
 /// How deep string-table entries may nest through [`Value::Msg`] arguments: a message, a
 /// message in its arguments, and so on, [`MAX_DEPTH`] messages in all (a screen's own `@key`
@@ -971,7 +977,7 @@ mod tests {
     #[test]
     fn huge_values_are_capped() {
         let mut s = StateMap::new();
-        s.set_num("w", 1e300).set_str("long", &"x".repeat(5000));
+        s.set_num("w", 1e300).set_str("long", &"x".repeat(MAX_TEXT + 1000));
         assert_eq!(render("{w:.6}", &s), "1.000e300");
         assert_eq!(render("{w}", &s), "1.000e300");
         let long = render("{long}", &s);

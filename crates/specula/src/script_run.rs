@@ -726,7 +726,7 @@ impl Run<'_> {
             }
             states.set(name, module.get("state").cloned().unwrap_or(Json::Null));
         }
-        let unfilled = unfilled_texts(&ui);
+        let unfilled = unfilled_texts(&ui, &state);
         // What a line reads from the engine itself and no module keeps: a thing's place as
         // physics left it this tick (`world.PATH.position`), the sounds the rules asked for.
         let mut beyond = Json::obj::<&str>([]);
@@ -860,7 +860,10 @@ fn interface(run: &Run) -> Result<Json, Json> {
     let mut screens = Json::Null;
     let mut offset = 0u64;
     loop {
-        let page = run.call("ui_tree", Json::obj([("surface", Json::from("game")), ("offset", Json::from(offset)), ("limit", Json::from(200u64))]))?;
+        // Every text whole, as the screen shows it (a summary of a day is one label of many
+        // lines): a widget's text is at most a label's (`specula_ui::state::MAX_TEXT`), and a
+        // page's long texts together at most `specula_ui::agent::MAX_PAGE_TEXT`.
+        let page = run.call("ui_tree", Json::obj([("surface", Json::from("game")), ("offset", Json::from(offset)), ("limit", Json::from(200u64)), ("text_chars", Json::from(specula_ui::state::MAX_TEXT as u64))]))?;
         if screens.is_null() {
             screens = page.get("screens").cloned().unwrap_or(Json::Null);
         }
@@ -1141,8 +1144,12 @@ const MAX_SAID: usize = 6;
 
 /// What a screen shows as written because nothing fills it: a text with `{name.key}` left in
 /// it. (A binding the state has is replaced before a text is shown, so what is left is
-/// unfilled.) One line a key, with the text it shows in.
-fn unfilled_texts(ui: &Json) -> Vec<String> {
+/// unfilled.) One line a key, with the text it shows in, and why: a value the module keeps and
+/// the screens are not given is said as that, with the reason `game` (`game_state`) gives in
+/// its `not_shown`; "nothing keeps" is said only of a key no module keeps.
+fn unfilled_texts(ui: &Json, game: &Json) -> Vec<String> {
+    let not_shown = game.get("not_shown").and_then(Json::as_array).unwrap_or(&[]);
+    let more = game.get("not_shown_more").and_then(Json::as_bool) == Some(true);
     let mut out: Vec<String> = Vec::new();
     let mut seen: Vec<&str> = Vec::new();
     for text in ui.get("all_texts").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str) {
@@ -1158,7 +1165,16 @@ fn unfilled_texts(ui: &Json) -> Vec<String> {
             seen.push(key);
             if out.len() < MAX_SAID {
                 let shown: String = text.chars().take(80).collect();
-                out.push(format!("a screen shows \"{shown}\": nothing keeps \"{key}\" (a module keeps it with cx.set_state(\"{}\", ..), or the screen's text is changed)", key.split_once('.').map_or(key, |(_, k)| k)));
+                let why = not_shown.iter().find(|n| n.get("key").and_then(Json::as_str) == Some(key)).and_then(|n| n.get("why")).and_then(Json::as_str);
+                out.push(match why {
+                    Some(why) => format!("a screen shows \"{shown}\": \"{key}\" is kept and not given to the screens: it is {why}"),
+                    None if more => format!(
+                        "a screen shows \"{shown}\": nothing fills \"{key}\": no module keeps it, or it is one of the values kept that the screens are not given beyond the {} that game_state's not_shown lists (a module keeps it with cx.set_state(\"{}\", ..), or the screen's text is changed)",
+                        not_shown.len(),
+                        key.split_once('.').map_or(key, |(_, k)| k)
+                    ),
+                    None => format!("a screen shows \"{shown}\": nothing keeps \"{key}\" (a module keeps it with cx.set_state(\"{}\", ..), or the screen's text is changed)", key.split_once('.').map_or(key, |(_, k)| k)),
+                });
             }
         }
     }
@@ -1492,15 +1508,34 @@ mod tests {
     #[test]
     fn a_screen_text_nothing_fills_is_said() {
         let ui = Json::parse(r#"{"all_texts": ["Taps: {marble.taps}", "Time: {marble.left}", "Taps: {marble.taps}", "Score: 40", "Press {A} to start", "{} and {a.} and {.b}"]}"#).unwrap();
-        let said = unfilled_texts(&ui);
+        let said = unfilled_texts(&ui, &Json::Null);
         assert_eq!(said.len(), 2, "{said:?}");
         assert!(said[0].contains("\"Taps: {marble.taps}\"") && said[0].contains("nothing keeps \"marble.taps\"") && said[0].contains("cx.set_state(\"taps\""), "{}", said[0]);
         assert!(said[1].contains("marble.left"), "{}", said[1]);
         // Bounded: the keys past the most said are counted in one line.
         let many = Json::obj([("all_texts", Json::arr((0..20).map(|i| Json::from(format!("{{m.k{i}}}")))))]);
-        let said = unfilled_texts(&many);
+        let said = unfilled_texts(&many, &Json::Null);
         assert_eq!(said.len(), MAX_SAID + 1);
         assert!(said[MAX_SAID].contains("14 more"), "{}", said[MAX_SAID]);
-        assert!(unfilled_texts(&Json::Null).is_empty());
+        assert!(unfilled_texts(&Json::Null, &Json::Null).is_empty());
+    }
+
+    /// A key the module keeps and the screens are not given (`game_state`'s `not_shown`) is
+    /// said with why, never as kept by nothing; a key nobody keeps still is (2026-11-23: a
+    /// summary over the length was said as "nothing keeps", and sent the builder the wrong way).
+    #[test]
+    fn a_screen_text_a_kept_value_does_not_fill_says_why() {
+        let ui = Json::parse(r#"{"all_texts": ["{work.disp}", "Coins: {work.coins}"]}"#).unwrap();
+        let game = Json::parse(r#"{"not_shown": [{"key": "work.disp", "why": "a text of 5000 bytes, longer than the 4096 a screen is given: keep it shorter"}]}"#).unwrap();
+        let said = unfilled_texts(&ui, &game);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[0].contains("\"work.disp\" is kept and not given to the screens") && said[0].contains("5000 bytes") && !said[0].contains("nothing keeps"), "{}", said[0]);
+        assert!(said[1].contains("nothing keeps \"work.coins\""), "{}", said[1]);
+        // When the shell listed only some of what it did not show, a key not among them is
+        // not said to be kept by nothing.
+        let mut game = game;
+        game.set("not_shown_more", Json::Bool(true));
+        let said = unfilled_texts(&ui, &game);
+        assert!(!said[1].contains("nothing keeps") && said[1].contains("not_shown"), "{}", said[1]);
     }
 }

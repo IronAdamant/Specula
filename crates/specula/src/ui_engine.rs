@@ -1082,7 +1082,7 @@ impl Engine {
 
     fn ui_tree(&mut self, a: TreeArgs, session: &SessionInfo) -> Result<ToolOutput, WorldError> {
         let s = self.ui_read_surface(a.surface, session, "ui_tree")?;
-        let opts = TreeOpts { screen: a.screen.clone(), only: a.only, offset: a.offset, limit: a.limit };
+        let opts = TreeOpts { screen: a.screen.clone(), only: a.only, offset: a.offset, limit: a.limit, text_chars: a.text_chars };
         let (shown, by) = self.ui_display_for(Some(&session.id));
         let by = by.map(str::to_owned);
         let mut tree = self.with_ui(s, shown, |ui, state, scale, _, display| {

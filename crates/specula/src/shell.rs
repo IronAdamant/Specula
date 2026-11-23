@@ -59,9 +59,18 @@ const MAX_SCREENS: usize = 64;
 const MAX_TABLES: usize = 32;
 const MAX_FILE: u64 = 512 << 10;
 /// Most module values a screen is shown, the longest text among them, and most rows of a list.
+/// The text's bound is a label's own (`specula_ui::state::MAX_TEXT`, in bytes): a text is
+/// copied here only when it changes and compared in place on every tick, and what the modules
+/// keep is already at most `logic::handler::MAX_STATE_BYTES` a module, so the bound is what a
+/// label can show whole, not what this copy costs. (It was 256 characters, from when the shell
+/// was first built, with no reason given: a summary of a day of sixteen lines in one kept text
+/// was dropped, and the screen showed `{work.disp}`; 2026-11-23, five of ten builders' games.)
 const MAX_SHOWN: usize = 512;
-const MAX_SHOWN_TEXT: usize = 256;
+const MAX_SHOWN_TEXT: usize = specula_ui::state::MAX_TEXT;
 const MAX_ROWS: usize = 64;
+/// Most of the values the modules keep and the screens are not given that the shell lists
+/// with why ([`Unshown`]; `game_state`'s `not_shown`).
+const MAX_UNSHOWN: usize = 32;
 /// Most events waiting for the modules (a held button at a title screen must not grow without
 /// bound while the clock stands still).
 const MAX_EVENTS: usize = 256;
@@ -216,7 +225,7 @@ impl Shown {
             Value::Bool(b) => Some(Shown::Bool(*b)),
             Value::Int(n) => Some(Shown::Int(*n)),
             Value::Num(n) if n.is_finite() => Some(Shown::Num(*n)),
-            Value::Str(s) if s.chars().count() <= MAX_SHOWN_TEXT => Some(Shown::Text(s.clone())),
+            Value::Str(s) if s.len() <= MAX_SHOWN_TEXT => Some(Shown::Text(s.clone())),
             _ => None,
         };
         let fields = |map: &BTreeMap<String, Value>| -> Vec<(String, Shown)> { map.iter().take(32).filter_map(|(k, v)| scalar(v).map(|s| (k.clone(), s))).collect() };
@@ -253,7 +262,7 @@ impl Shown {
             match v {
                 Value::Bool(_) | Value::Int(_) => true,
                 Value::Num(n) => n.is_finite(),
-                Value::Str(s) => s.chars().count() <= MAX_SHOWN_TEXT,
+                Value::Str(s) => s.len() <= MAX_SHOWN_TEXT,
                 _ => false,
             }
         }
@@ -346,6 +355,53 @@ impl Shown {
     }
 }
 
+/// Why a value a module keeps is not given to the screens: a screen that binds it shows its
+/// `{module.key}` as written, and a run says this, not that nothing keeps it (2026-11-23: a
+/// summary over the length was dropped with no word, and the run's warning sent the builder
+/// to look for a `cx.set_state` that was there).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Unshown {
+    /// A text longer than [`MAX_SHOWN_TEXT`] bytes: its length.
+    Long(usize),
+    /// A kind a screen cannot show, in words.
+    Kind(&'static str),
+    /// Past the first [`MAX_SHOWN`] values the modules keep.
+    Past,
+}
+
+impl Unshown {
+    /// Why `value` is not shown ([`Shown::of`] found nothing in it).
+    fn of(value: &Value) -> Unshown {
+        match value {
+            Value::Str(s) => Unshown::Long(s.len()),
+            Value::Null => Unshown::Kind("null"),
+            Value::Num(_) => Unshown::Kind("a number that is not finite"),
+            Value::Map(map) => match map.get("msg") {
+                Some(Value::Str(_)) => Unshown::Kind("a map whose \"msg\" is longer than a string-table key (128 bytes)"),
+                _ => Unshown::Kind("a map without a \"msg\" (a line of the string tables)"),
+            },
+            // (Shown always: a list is rows, a scalar is itself.)
+            Value::Bool(_) | Value::Int(_) | Value::List(_) => Unshown::Kind("a value"),
+        }
+    }
+
+    /// What is wrong and what to do, in words.
+    fn words(&self) -> String {
+        match self {
+            Unshown::Long(bytes) => format!(
+                "a text of {bytes} bytes, longer than the {MAX_SHOWN_TEXT} a screen is given: keep it shorter, or keep it in parts (several keys, or a list of maps a screen shows as rows)"
+            ),
+            Unshown::Kind(kind) => format!("{kind}, which a screen cannot show: keep a text, a number, true or false, a map with \"msg\" and \"args\", or a list of maps (rows)"),
+            Unshown::Past => format!("past the first {MAX_SHOWN} values the modules keep, which are all the screens are given: keep fewer keys (what belongs together under one, as a list or a map)"),
+        }
+    }
+}
+
+/// Whether `have` is `module.key`, made of the two without a copy.
+fn is_key(have: &str, module: &str, key: &str) -> bool {
+    have.len() == module.len() + 1 + key.len() && have.starts_with(module) && have.as_bytes()[module.len()] == b'.' && have.ends_with(key)
+}
+
 /// The interface: the toolkit's instance for the window, a second one for captures (so a
 /// capture never touches what the player sees), and the state both are bound to.
 struct Face {
@@ -394,6 +450,10 @@ pub struct Shell {
     strings: Vec<(String, Arc<Strings>)>,
     /// What the modules keep, as last seen: `<module>.<key>`.
     shown: Vec<(String, Shown)>,
+    /// What the modules keep that the screens are not given, and why: the first
+    /// [`MAX_UNSHOWN`], and whether there were more.
+    unshown: Vec<(String, Unshown)>,
+    unshown_more: bool,
     events_out: Vec<(String, Value)>,
     /// What each of the game file's `keep` names last had in its module, in their order: a
     /// value is written to the player's file when it differs from this, and not looked at
@@ -478,6 +538,8 @@ impl Shell {
             tables: Vec::new(),
             strings: Vec::new(),
             shown: Vec::new(),
+            unshown: Vec::new(),
+            unshown_more: false,
             events_out: Vec::new(),
             kept_seen: Vec::new(),
             events_dropped: 0,
@@ -817,19 +879,46 @@ impl Shell {
     /// in place: an entry that has not changed costs a comparison, and nothing is marked for
     /// the screens to be filled again.
     fn see(&mut self, modules: &ModuleStates) {
-        let mut n = 0;
-        'all: for (module, store) in modules.each() {
+        self.see_each(modules.each());
+    }
+
+    /// [`Shell::see`], from each module's name and what it keeps. A value the screens are not
+    /// given is listed with why ([`Unshown`]), kept in place as what is shown is.
+    fn see_each<'m>(&mut self, each: impl Iterator<Item = (&'m str, &'m BTreeMap<String, Value>)>) {
+        let (mut n, mut m) = (0, 0);
+        let mut more = false;
+        'all: for (module, store) in each {
             for (key, value) in store {
-                if n >= MAX_SHOWN {
-                    break 'all;
-                }
-                let same_key = self.shown.get(n).is_some_and(|(k, _)| k.len() == module.len() + 1 + key.len() && k.starts_with(module) && k.as_bytes()[module.len()] == b'.' && k.ends_with(key.as_str()));
-                // As it was: no copy is made of it.
-                if same_key && self.shown[n].1.is(value) {
-                    n += 1;
+                let past = n >= MAX_SHOWN;
+                let shown = if past {
+                    None
+                } else {
+                    let same_key = self.shown.get(n).is_some_and(|(k, _)| is_key(k, module, key));
+                    // As it was: no copy is made of it.
+                    if same_key && self.shown[n].1.is(value) {
+                        n += 1;
+                        continue;
+                    }
+                    Shown::of(value)
+                };
+                let Some(shown) = shown else {
+                    if m == MAX_UNSHOWN {
+                        more = true;
+                        if past {
+                            break 'all;
+                        }
+                        continue;
+                    }
+                    let why = if past { Unshown::Past } else { Unshown::of(value) };
+                    match self.unshown.get_mut(m) {
+                        Some((k, w)) if is_key(k, module, key) => *w = why,
+                        Some(entry) => *entry = (format!("{module}.{key}"), why),
+                        None => self.unshown.push((format!("{module}.{key}"), why)),
+                    }
+                    m += 1;
                     continue;
-                }
-                let Some(shown) = Shown::of(value) else { continue };
+                };
+                let same_key = self.shown.get(n).is_some_and(|(k, _)| is_key(k, module, key));
                 if same_key {
                     if self.shown[n].1 != shown {
                         self.shown[n].1 = shown;
@@ -851,6 +940,8 @@ impl Shell {
             self.shown.truncate(n);
             self.stale = true;
         }
+        self.unshown.truncate(m);
+        self.unshown_more = more;
     }
 
     /// The value a key names, for a condition: a module's (`gate.hp`), a setting's
@@ -1138,6 +1229,14 @@ impl Shell {
         }
         if !self.problems.is_empty() {
             j.set("problems", Json::arr(self.problems.iter().map(|p| Json::from(p.as_str()))));
+        }
+        // What the modules keep that no screen is given, and why: a screen that binds one shows
+        // its key as written, and a run says why from this.
+        if !self.unshown.is_empty() {
+            j.set("not_shown", Json::arr(self.unshown.iter().map(|(key, why)| Json::obj([("key", Json::from(key.as_str())), ("why", Json::from(why.words()))]))));
+            if self.unshown_more {
+                j.set("not_shown_more", Json::Bool(true));
+            }
         }
         j
     }
@@ -1931,7 +2030,15 @@ mod tests {
     #[test]
     fn what_a_module_keeps_is_what_a_screen_is_given() {
         assert_eq!(Shown::of(&Value::Int(3)), Some(Shown::Int(3)));
-        assert_eq!(Shown::of(&Value::Str("x".repeat(MAX_SHOWN_TEXT + 1))), None, "a long text is not for a label");
+        // A screenful of text is shown whole, its lines with it (a day's summary in one kept
+        // text, 2026-11-23); past a label's own bound it is not, and why is said
+        // (`a_kept_value_no_screen_is_given_is_said_with_why`).
+        let summary: String = (1..=60).map(|i| format!("Line {i:02}: sold 12 apples for 36 coins, 3 spoiled\n")).collect();
+        assert!(summary.len() > 2000 && summary.len() <= MAX_SHOWN_TEXT);
+        assert_eq!(Shown::of(&Value::Str(summary.clone())), Some(Shown::Text(summary)));
+        assert_eq!(Shown::of(&Value::Str("x".repeat(MAX_SHOWN_TEXT))), Some(Shown::Text("x".repeat(MAX_SHOWN_TEXT))));
+        assert_eq!(Shown::of(&Value::Str("x".repeat(MAX_SHOWN_TEXT + 1))), None, "past a label's bound");
+        assert_eq!(MAX_SHOWN_TEXT, specula_ui::state::MAX_TEXT, "what is given is what a label shows whole");
         assert_eq!(Shown::of(&Value::Null), None);
         let msg = Value::map().with("msg", "hud.wave").with("args", Value::map().with("wave", 2i64).with("of", 5i64));
         assert_eq!(Shown::of(&msg), Some(Shown::Msg("hud.wave".into(), vec![("of".into(), Shown::Int(5)), ("wave".into(), Shown::Int(2))])));
@@ -1981,6 +2088,70 @@ mod tests {
         let state = shell.game_state().unwrap();
         assert_eq!(state.get("score").and_then(Json::as_f64), Some(40.0));
         assert_eq!(state.get("reads").map(Json::to_string).as_deref(), Some(r#"{"gate.hp":3,"gate.score":40,"gate.won":null}"#));
+    }
+
+    /// A day's summary of many lines in one kept text reaches the screen that binds it whole:
+    /// in the state, in the label laid out, and in the tree a run reads its texts from.
+    #[test]
+    fn a_long_text_of_many_lines_is_shown_whole() {
+        let mut files = ShellFiles::builtin(GAME);
+        let screen = r#"{"format": "specula.ui.screen.v1", "name": "sum", "input": "hud", "root": {"type": "panel", "children": [{"type": "label", "text": "{work.disp}"}]}}"#;
+        files.screens.push(("sum".into(), screen.into()));
+        let mut shell = Shell::build("gate", files).expect("a shell");
+        let summary: String = (1..=16).map(|i| format!("Stall {i:02}: 12 sold, 36 coins, 1 spoiled\n")).collect::<String>() + "Day 3 ends: 576 coins";
+        assert!(summary.len() > 600);
+        let store: BTreeMap<String, Value> = [("disp".to_owned(), Value::Str(summary.clone()))].into();
+        shell.see_each([("work", &store)].into_iter());
+        assert!(shell.unshown.is_empty(), "{:?}", shell.unshown);
+        shell.refresh();
+        assert!(matches!(shell.state.get("work.disp"), Some(specula_ui::state::Value::Str(s)) if *s == summary));
+        let display = shell.display;
+        let face = shell.face.as_mut().expect("an interface");
+        face.ui.show("sum").unwrap();
+        let view = Shell::viewport(&face.ui, &display, (800, 480), 1.0);
+        let opts = specula_ui::agent::TreeOpts { screen: Some("sum".into()), text_chars: specula_ui::state::MAX_TEXT, ..Default::default() };
+        let tree = face.ui.inspect(&shell.state, &view, |ui| ui.tree_page(&opts));
+        let texts: Vec<&str> = tree.get("widgets").and_then(Json::as_array).unwrap().iter().filter_map(|w| w.get("text").and_then(Json::as_str)).collect();
+        assert_eq!(texts, [summary.as_str()], "the label shows the text whole, its lines with it");
+        // A tree asked for no more than its own entries cuts it, as it always did.
+        let short = face.ui.inspect(&shell.state, &view, |ui| ui.tree_page(&specula_ui::agent::TreeOpts { screen: Some("sum".into()), ..Default::default() }));
+        let text = short.get("widgets").and_then(Json::as_array).unwrap()[0].get("text").and_then(Json::as_str).unwrap().to_owned();
+        assert_eq!(text.chars().count(), specula_ui::agent::MAX_ENTRY_TEXT + 1);
+        assert!(text.ends_with('…'));
+    }
+
+    /// What the modules keep that no screen is given is listed with why, in `game_state`:
+    /// a text past the bound with its length, a kind with what a screen can show; and taken
+    /// off the list when it is shown again. The list is bounded.
+    #[test]
+    fn a_kept_value_no_screen_is_given_is_said_with_why() {
+        let mut shell = shell();
+        let mut store: BTreeMap<String, Value> = BTreeMap::new();
+        store.insert("disp".into(), Value::Str("y".repeat(MAX_SHOWN_TEXT + 10)));
+        store.insert("hp".into(), Value::Int(3));
+        store.insert("inv".into(), Value::map().with("apples", 3i64));
+        store.insert("none".into(), Value::Null);
+        shell.see_each([("gate", &store)].into_iter());
+        let state = shell.game_state().unwrap();
+        let listed: Vec<(String, String)> = state.get("not_shown").and_then(Json::as_array).unwrap().iter().map(|n| (n.get("key").and_then(Json::as_str).unwrap().to_owned(), n.get("why").and_then(Json::as_str).unwrap().to_owned())).collect();
+        assert_eq!(listed.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["gate.disp", "gate.inv", "gate.none"]);
+        assert!(listed[0].1.contains(&format!("{} bytes", MAX_SHOWN_TEXT + 10)) && listed[0].1.contains(&format!("the {MAX_SHOWN_TEXT}")), "{}", listed[0].1);
+        assert!(listed[1].1.contains("without a \"msg\"") && listed[2].1.starts_with("null"), "{listed:?}");
+        assert_eq!(shell.value("gate.hp"), Some(Val::Num(3.0)), "what is shown is as it was");
+        assert!(state.get("not_shown_more").is_none());
+        // Shorter, it is shown, and no longer listed.
+        store.insert("disp".into(), Value::Str("Day 1".into()));
+        store.remove("inv");
+        store.remove("none");
+        shell.see_each([("gate", &store)].into_iter());
+        assert!(shell.game_state().unwrap().get("not_shown").is_none());
+        assert_eq!(shell.value("gate.disp"), Some(Val::Text("Day 1".into())));
+        // Bounded: the first so many, and that there were more.
+        let many: BTreeMap<String, Value> = (0..MAX_UNSHOWN + 5).map(|i| (format!("k{i:03}"), Value::Null)).collect();
+        shell.see_each([("gate", &many)].into_iter());
+        let state = shell.game_state().unwrap();
+        assert_eq!(state.get("not_shown").and_then(Json::as_array).map(<[Json]>::len), Some(MAX_UNSHOWN));
+        assert_eq!(state.get("not_shown_more").and_then(Json::as_bool), Some(true));
     }
 
     #[test]

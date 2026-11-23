@@ -3038,8 +3038,9 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
             description: "How the hosted game's run stands, as one bounded object: phase (title, running, paused, won, \
                           lost), outcome, the tick it ended on, score and standings when the game file names them, the \
                           screens that are up, the locale, the player's settings, `reads` (each key the game's outcome \
-                          reads, with its value now: why the run is where it is), the game file's modules, and problems \
-                          (files that did not load). A playtest's `expect` reads it (`{\"outcome\": \"won\"}`). For a project \
+                          reads, with its value now: why the run is where it is), the game file's modules, problems \
+                          (files that did not load), and not_shown (values the modules keep that no screen is given, \
+                          each with why: a text too long, a kind a screen cannot show). A playtest's `expect` reads it (`{\"outcome\": \"won\"}`). For a project \
                           with a game.json (docs/design/FIRST_HOUR.md); `no_game` otherwise."
                 .into(),
             input_schema: schema(vec![], &[]),

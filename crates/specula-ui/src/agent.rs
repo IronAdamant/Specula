@@ -17,8 +17,13 @@ use specula_input::{ActionMap, Input};
 
 /// Most widgets one [`Ui::tree_page`] lists.
 pub const MAX_PAGE: usize = 500;
-/// Longest text a tree entry carries (characters; longer ends in `…`).
+/// Longest text a tree entry carries unless asked for more (characters; longer ends in `…`).
 pub const MAX_ENTRY_TEXT: usize = 160;
+/// Most bytes of text one page carries past [`MAX_ENTRY_TEXT`] a widget, when a longer text is
+/// asked for ([`TreeOpts::text_chars`]): past it, the page's other texts are cut at
+/// [`MAX_ENTRY_TEXT`] again. So a page is at most this and [`MAX_PAGE`] short texts, however
+/// long the labels are.
+pub const MAX_PAGE_TEXT: usize = 64 << 10;
 /// Most d-pad presses a route may take.
 pub const MAX_ROUTE: usize = 64;
 
@@ -53,11 +58,15 @@ pub struct TreeOpts {
     pub offset: usize,
     /// At most [`MAX_PAGE`].
     pub limit: usize,
+    /// Longest text an entry carries, in characters (longer ends in `…`): [`MAX_ENTRY_TEXT`]
+    /// unless asked; at most a whole label ([`crate::state::MAX_TEXT`]), within the page's
+    /// [`MAX_PAGE_TEXT`].
+    pub text_chars: usize,
 }
 
 impl Default for TreeOpts {
     fn default() -> Self {
-        TreeOpts { screen: None, only: Only::Named, offset: 0, limit: 100 }
+        TreeOpts { screen: None, only: Only::Named, offset: 0, limit: 100, text_chars: MAX_ENTRY_TEXT }
     }
 }
 
@@ -84,13 +93,15 @@ fn rect_json(r: Rect) -> Json {
     Json::arr(r.to_array().map(round1))
 }
 
-fn clip_text(s: &str) -> String {
-    if s.chars().count() <= MAX_ENTRY_TEXT {
-        return s.to_owned();
+fn clip_text(s: &str, most: usize) -> String {
+    match s.char_indices().nth(most) {
+        None => s.to_owned(),
+        Some((cut, _)) => {
+            let mut t = s[..cut].to_owned();
+            t.push('…');
+            t
+        }
     }
-    let mut t: String = s.chars().take(MAX_ENTRY_TEXT).collect();
-    t.push('…');
-    t
 }
 
 /// The label's text doesn't fit its box (what `ui_check`'s `text_overflow` measures).
@@ -312,6 +323,9 @@ impl Ui {
     /// above takes its input), `path`.
     pub fn tree_page(&self, opts: &TreeOpts) -> Json {
         let limit = opts.limit.min(MAX_PAGE);
+        let text_chars = opts.text_chars.clamp(1, crate::state::MAX_TEXT);
+        // (What the page's long texts may still carry: [`MAX_PAGE_TEXT`].)
+        let mut long_left = MAX_PAGE_TEXT;
         let modal_at = self.order.iter().rposition(|&s| self.screens[s].screen.modal);
         let focus_screen = self.focus_screen();
         let mut screens = Vec::new();
@@ -367,7 +381,17 @@ impl Ui {
                 pairs.push(("type", Json::Str(n.kind.name().into())));
                 pairs.push(("rect", rect_json(c.rect)));
                 if is_label {
-                    pairs.push(("text", Json::Str(clip_text(&sr.rt[i].text))));
+                    let whole = &sr.rt[i].text;
+                    let mut text = clip_text(whole, text_chars);
+                    // (A text longer than an entry's own is carried while the page has room.)
+                    if text_chars > MAX_ENTRY_TEXT && whole.chars().nth(MAX_ENTRY_TEXT).is_some() {
+                        if text.len() <= long_left {
+                            long_left -= text.len();
+                        } else {
+                            text = clip_text(whole, MAX_ENTRY_TEXT);
+                        }
+                    }
+                    pairs.push(("text", Json::Str(text)));
                     if let Kind::Label { text: crate::screen::TextSource::Template(t), .. } = &n.kind {
                         if let Some(k) = t.key() {
                             pairs.push(("text_key", Json::Str(k.to_owned())));
