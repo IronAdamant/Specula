@@ -1,0 +1,1329 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "night",
+    "arm": "plain",
+    "kind": "plain",
+    "led": false,
+    "data": "evals/leverage",
+    "n": 4,
+    "phase": "judge",
+    "prepared": "2026-11-23T05:59:35Z",
+    "settings": {
+      "runs_per_cell": 5,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 4000000,
+        "wall_s": 14400
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      },
+      "baseline": "plain"
+    }
+  },
+  "costs": {
+    "left": {
+      "files": 4,
+      "bytes": 28169,
+      "text_lines": 583,
+      "lines_by_kind": {
+        ".json": 1,
+        ".md": 44,
+        ".py": 538
+      }
+    },
+    "finished": "2026-11-23T06:01:41Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "n01",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "python night.py headless --seed 1 --ticks 0 --script [] --store s0.json printed screen title with all brief keys (tick, screen, menu_index, volume, difficulty, texts, cursor, piece, stock, grid, slot, slots, clock, speed, coins, served, lost, queue, customers, arrivals, replaying, replay_ready, ledger)."
+        },
+        {
+          "id": "n02",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "--frame f0.png after a headless run: PNG header 800 x 480; all frames I made open as images."
+        },
+        {
+          "id": "n03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Fresh title texts [Night Market, Layout, Ledger, Settings, Quit], menu_index 0; down x10 -> 3, then up x10 -> 0."
+        },
+        {
+          "id": "n04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings: Volume: 5 / Difficulty: Normal at first; right x8 -> 10, left x8 -> 0; difficulty right x3 -> Hard, left x3 -> Easy; texts follow; escape -> title."
+        },
+        {
+          "id": "n05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Run 1 with --store p5.json set volume 7, Easy; run 2 on same store started with 7/easy (Settings texts too); fresh store -> 5/normal."
+        },
+        {
+          "id": "n06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Enter from title: screen layout, cursor (0,0), piece stove, slot 1, stock 3/4/2, grid [], texts Layout, Piece: Stove, Slot: 1, Stove: 3, Table: 4, Lamp: 2."
+        },
+        {
+          "id": "n07",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "up -> (0,1), right -> (1,0), up x9 -> y 4, right x12 -> x 7, down/left at 0 stay 0; menu_index stayed 0 and screen layout throughout."
+        },
+        {
+          "id": "n08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "next_piece x0..4: stove, table, lamp, stove, table; prev_piece x1..3: lamp, table, stove; Piece: text followed."
+        },
+        {
+          "id": "n09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "place -> stove at (0,0), Stove: 2; place on occupied cell no change; 4th stove, 5th table, 3rd lamp each refused, stock stayed 0."
+        },
+        {
+          "id": "n10",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "place then erase -> grid [] and Stove: 3; erase on empty cell no change; erasing a table and a lamp returned stock 3/4/2 with texts."
+        },
+        {
+          "id": "n11",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Escape -> title; re-entering Layout in same run shows grid with cursor (0,0); next run on same store shows stove (0,0), table (1,1)."
+        },
+        {
+          "id": "n12",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "next_slot 1,2,3,1 (Slot: text follows); save_slot copies grid leaving it; load_slot on slot 2 replaced changed grid with saved one, stock 2/4/2; load on empty slot no change."
+        },
+        {
+          "id": "n13",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Saved three different slots, second run on store printed identical slots; third run load_slot on slot 2 gave grid stove(0,0), table(1,0), stock 2/3/2."
+        },
+        {
+          "id": "n14",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Enter with empty grid, only stove, only table: stays layout with Needs a stove and a table (gone after next word); with stove+table: night, clock 0, slow, 0/0/0, grid same, 18:00."
+        },
+        {
+          "id": "n15",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Slow: clock 0 at 23 ticks, 1 at 24, 2 at 48, 10 at 240; fast: 1 at 6, 10 at 60; stop: clock 0 after 500 ticks, screen night; slow 12 then fast -> minute at 15th tick; slow 10, stop, slow -> minute at 14 slow ticks."
+        },
+        {
+          "id": "n16",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 1: [5,10,18,28,...] 51 entries, gaps 4..10, max 356, ints in order; same after 1000 ticks; seed 2 differs; seeds 3-8 all start 5, gaps 4..10, max under 360."
+        },
+        {
+          "id": "n17",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Tables (5,0),(2,3),(2,1): customers seated at (2,1), then (2,3), then (5,0); one table: queued with x/y null, queue reaches 3, arrival at 48 turned away -> lost 1 at minute 48."
+        },
+        {
+          "id": "n18",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Stove (0,0) table (1,0): customer 1 cooking at 5, still cooking at 24, eating at 25; table (2,0): cooking at 34, eating at 35."
+        },
+        {
+          "id": "n19",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Adjacent grid: minute 35 coins 8, served 1, table taken by next; with lamp (1,1) next to table: coins 12."
+        },
+        {
+          "id": "n20",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Hard, stove not next to table: at 35 customer 1 gone, lost 1, coins 0, next customer cooking at once; full nights at Easy/Normal/Hard on 6 grids x 2 seeds all match my own simulator of the brief."
+        },
+        {
+          "id": "n21",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Minute 35 (adjacent grid): customer 1 pays and customer 2 is seated and cooking at (1,0) in the same minute, matching the reference events."
+        },
+        {
+          "id": "n22",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "After 2160 fast ticks: summary, texts Night over, Coins: 60, Served: 5, Lost: 43, Enter: title, clock 360; 3 customers still in stall not counted (ref 60/5/43); clock 359 shows 23:59; Enter -> title."
+        },
+        {
+          "id": "n23",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 3, 2-stove grid: slow, fast and a mix with stop all end 60/6/39, equal to my reference."
+        },
+        {
+          "id": "n24",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Escape at clock 50: paused, texts Paused/Resume/Title, clock still 50 after 600 more ticks; Escape or Enter on Resume give state identical to an unpaused run; Title -> title, ledger and store file unchanged."
+        },
+        {
+          "id": "n25",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Fresh Ledger screen: No nights yet; after a night ledger [60/5/43 normal]; next run Ledger texts Coins 60, served 5, lost 43, Normal."
+        },
+        {
+          "id": "n26",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Four nights (seeds 1,7,2,3) on one store: ledger 36/72/84, first (60) gone, newest first; a replay and a night given up from pause left the ledger and store unchanged."
+        },
+        {
+          "id": "n27",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "After a night the title is Night Market, Layout, Replay, Ledger, Settings, Quit with replay_ready true, also in a later run on that store; menu last index 4."
+        },
+        {
+          "id": "n28",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "After changing seed to 42, difficulty Hard and grid, Replay: night, replaying true, Replay text, kept grid and seed-3 arrivals; at 360 Replay over 36/3/43 like the night; ledger and store unchanged; works with speed changes."
+        },
+        {
+          "id": "n29",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Grid edited, a non-empty slot loaded, difficulty changed to Hard, then Replay still gave the kept arrivals and 36/3/43."
+        },
+        {
+          "id": "n30",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Two copies of a store, same seed/ticks/script (replay with pause, and a night): identical printed states and identical stores; seed 6 gave other arrivals."
+        },
+        {
+          "id": "n31",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "fr_layout.png: 8x5 grid, stoves red S, tables brown T, lamp yellow L where the state says, white cursor box at (2,1), texts Piece: Table, Slot: 2, stock 0/1/1."
+        },
+        {
+          "id": "n32",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "fr_night.png at 18:29: grid and pieces, queued customer as blue square left of grid, seated (yellow), cooking (orange), eating (green) squares on their tables; Coins, Served, Lost, 18:29, Speed: Fast shown."
+        },
+        {
+          "id": "n33",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Title, settings, ledger, paused and summary frames show their texts; chosen entry marked with > (Settings, Difficulty, Back, Title)."
+        },
+        {
+          "id": "n34",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "README gives the play console, the headless command with --frame, and says everything kept is in the --store JSON file; the commands worked as written."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 32,
+          "of": 32
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 34,
+          "of": 34
+        }
+      },
+      "defects": [
+        "The frame font is uppercase only, so every text on the PNG is drawn in capitals (README admits it).",
+        "There is no real-time play mode; play is a text console driven by words and tick counts.",
+        "In the night frame a customer marker covers the table letter T, so an occupied table is told only by its brown color.",
+        "Nothing is kept unless --store is given; without it every run starts fresh."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 31192,
+      "tool_uses": 9,
+      "duration_s": 126.1,
+      "by_kind": {
+        "input": 16,
+        "cache_write": 25847,
+        "cache_read": 164684,
+        "output": 17282,
+        "requests": 8,
+        "context_at_end": 31192
+      },
+      "weighted": 135203,
+      "cost_usd": 0.2927084000000001,
+      "turns": 10,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 65397,
+      "tool_uses": 35,
+      "duration_s": 419,
+      "by_kind": {
+        "input": 38,
+        "cache_write": 60052,
+        "cache_read": 751415,
+        "output": 23437,
+        "requests": 19,
+        "context_at_end": 65397
+      },
+      "weighted": 267430,
+      "cost_usd": 1.099591,
+      "turns": 36,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done"
+    },
+    "where": {
+      "run": "night-plain-4",
+      "requests": 8,
+      "steps": 9,
+      "steps_before_the_first_code": 1,
+      "weighted": 135203,
+      "weighted_by_kind": {
+        "read_again": 16468,
+        "written_out": 86410,
+        "new_in_context": 32325
+      },
+      "builds": {
+        "steps": 0,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "write code": {
+          "steps": 4,
+          "answered_tokens": 659,
+          "written_tokens": 6630
+        },
+        "read its own files": {
+          "steps": 2,
+          "answered_tokens": 2918,
+          "written_tokens": 25
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 503
+        },
+        "run its own checks": {
+          "steps": 2,
+          "answered_tokens": 149,
+          "written_tokens": 230
+        },
+        "look at a frame": {
+          "steps": 1,
+          "answered_tokens": 0,
+          "written_tokens": 12
+        }
+      }
+    },
+    "trace": {
+      "run": "night-plain-4",
+      "who": "builder",
+      "complete": true,
+      "requests": 8,
+      "weighted": 135203,
+      "in_the_ledger": 135203,
+      "reading": 48793,
+      "writing": 86410,
+      "written_out": 17282,
+      "of_which_unseen": 9946,
+      "start": {
+        "context": 7930,
+        "carried": 9321
+      },
+      "context_at_end": 31192,
+      "by_kind": {
+        "write code": {
+          "requests": 4,
+          "steps": 5,
+          "answered": 667,
+          "written_out": 14317,
+          "writing": 71584,
+          "carried": 29155
+        },
+        "read its own files": {
+          "requests": 1,
+          "steps": 1,
+          "answered": 2910,
+          "written_out": 1149,
+          "writing": 5744,
+          "carried": 7846
+        },
+        "run its own checks": {
+          "requests": 2,
+          "steps": 3,
+          "answered": 149,
+          "written_out": 1408,
+          "writing": 7039,
+          "carried": 2472
+        },
+        "words only": {
+          "requests": 1,
+          "steps": 0,
+          "answered": 0,
+          "written_out": 409,
+          "writing": 2043,
+          "carried": 0
+        }
+      },
+      "files": [
+        {
+          "file": "<run>/work/night.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 5576
+        },
+        {
+          "file": "<run>\\BRIEF.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 2910,
+          "written": 0
+        },
+        {
+          "file": "<run>/work/README.md",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 733
+        },
+        {
+          "file": "<run>/work/f.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        }
+      ],
+      "rows": [
+        {
+          "n": 1,
+          "context": 7930,
+          "new": 2587,
+          "read_again": 5343,
+          "written_out": 1149,
+          "of_which_unseen": 1137,
+          "cost": 9511,
+          "cost_so_far": 9511,
+          "carried": 7846,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\BRIEF.md",
+              "written": 12,
+              "answered": 2910
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "context": 12170,
+          "new": 4242,
+          "read_again": 7928,
+          "written_out": 11715,
+          "of_which_unseen": 6139,
+          "cost": 64672,
+          "cost_so_far": 74183,
+          "carried": 23795,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/night.py",
+              "written": 5576,
+              "answered": 32
+            }
+          ]
+        },
+        {
+          "n": 3,
+          "context": 25766,
+          "new": 13598,
+          "read_again": 12168,
+          "written_out": 745,
+          "of_which_unseen": 608,
+          "cost": 21936,
+          "cost_so_far": 96119,
+          "carried": 2051,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "cd <run>/work && cat > /dev/null <<< \"\" ; python - <<'E' import json s=[[0,\"enter\"],[1,\"place\"],[2,\"right\"]...",
+              "written": 137,
+              "answered": 380
+            }
+          ]
+        },
+        {
+          "n": 4,
+          "context": 27008,
+          "new": 1244,
+          "read_again": 25764,
+          "written_out": 683,
+          "of_which_unseen": 499,
+          "cost": 7547,
+          "cost_so_far": 103666,
+          "carried": 1560,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "write code",
+              "what": "python - <<'E' import json s=[[0,\"enter\"],[1,\"place\"],[2,\"right\"],[3,\"next_piece\"],[4,\"place\"],[5,\"right\"],...",
+              "written": 184,
+              "answered": 214
+            }
+          ]
+        },
+        {
+          "n": 5,
+          "context": 28013,
+          "new": 1007,
+          "read_again": 27006,
+          "written_out": 494,
+          "of_which_unseen": 351,
+          "cost": 6429,
+          "cost_so_far": 110095,
+          "carried": 963,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "echo '[[0,\"down\"],[1,\"enter\"],[2,\"fast\"]]' > t2.json && python night.py headless --ticks 1500 --seed 9 --di...",
+              "written": 143,
+              "answered": 91
+            }
+          ]
+        },
+        {
+          "n": 6,
+          "context": 28676,
+          "new": 665,
+          "read_again": 28011,
+          "written_out": 914,
+          "of_which_unseen": 785,
+          "cost": 8201,
+          "cost_so_far": 118296,
+          "carried": 1508,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python night.py headless --ticks 3000 --seed 77 --store s.json --script t2.json --frame f3.png | python -c ...",
+              "written": 87,
+              "answered": 58
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>/work/f.png",
+              "written": 12,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 7,
+          "context": 29792,
+          "new": 1118,
+          "read_again": 28674,
+          "written_out": 1174,
+          "of_which_unseen": 428,
+          "cost": 10133,
+          "cost_so_far": 128429,
+          "carried": 1750,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>/work/README.md",
+              "written": 733,
+              "answered": 33
+            },
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "rm -f f2.png f3.png t2.json s.json && ls",
+              "written": 13,
+              "answered": 8
+            }
+          ]
+        },
+        {
+          "n": 8,
+          "context": 31192,
+          "new": 1402,
+          "read_again": 29790,
+          "written_out": 409,
+          "of_which_unseen": 0,
+          "cost": 6774,
+          "cost_so_far": 135203,
+          "carried": 0,
+          "steps": []
+        }
+      ],
+      "how": "context, new, read_again and how far the context grew are the run's own records. written_out a request is its growth less its answers (characters / 4), scaled to the run's exact total; of_which_unseen is that less the visible text (thinking). cost is what the request read and wrote, weighted; carried is what reading again what it added cost at every later request (start.carried: the same for what every request starts from). reading + writing is in_the_ledger"
+    },
+    "judge_trace": {
+      "run": "night-plain-4",
+      "who": "judge",
+      "complete": true,
+      "requests": 19,
+      "weighted": 267430,
+      "in_the_ledger": 267430,
+      "reading": 150245,
+      "writing": 117185,
+      "written_out": 23437,
+      "of_which_unseen": 14431,
+      "start": {
+        "context": 8226,
+        "carried": 18947
+      },
+      "context_at_end": 65397,
+      "by_kind": {
+        "write code": {
+          "requests": 10,
+          "steps": 17,
+          "answered": 3831,
+          "written_out": 14520,
+          "writing": 72601,
+          "carried": 58699
+        },
+        "read its own files": {
+          "requests": 3,
+          "steps": 8,
+          "answered": 11987,
+          "written_out": 4574,
+          "writing": 22868,
+          "carried": 57043
+        },
+        "look at a frame": {
+          "requests": 2,
+          "steps": 7,
+          "answered": 0,
+          "written_out": 2599,
+          "writing": 12995,
+          "carried": 6732
+        },
+        "run its own checks": {
+          "requests": 3,
+          "steps": 3,
+          "answered": 674,
+          "written_out": 1554,
+          "writing": 7772,
+          "carried": 8824
+        },
+        "words only": {
+          "requests": 1,
+          "steps": 0,
+          "answered": 0,
+          "written_out": 190,
+          "writing": 949,
+          "carried": 0
+        }
+      },
+      "files": [
+        {
+          "file": "<run>\\work\\night.py",
+          "reads": 1,
+          "writes": 0,
+          "answered": 5754,
+          "written": 0
+        },
+        {
+          "file": "<run>\\BRIEF.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 2910,
+          "written": 0
+        },
+        {
+          "file": "<run>\\JUDGE.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 2207,
+          "written": 0
+        },
+        {
+          "file": "<run>\\verdict.json",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 1939
+        },
+        {
+          "file": "<run>\\judge-scratch\\h.py",
+          "reads": 0,
+          "writes": 2,
+          "answered": 0,
+          "written": 1144
+        },
+        {
+          "file": "<run>\\judge-scratch\\t_e.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 1043
+        },
+        {
+          "file": "<run>\\judge-scratch\\t_a.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 1014
+        },
+        {
+          "file": "<run>\\judge-scratch\\t_d.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 882
+        },
+        {
+          "file": "<run>\\judge-scratch\\t_b.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 869
+        },
+        {
+          "file": "<run>\\work\\README.md",
+          "reads": 1,
+          "writes": 0,
+          "answered": 733,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\t_c.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 717
+        },
+        {
+          "file": "<run>\\judge-scratch\\t_f.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 501
+        },
+        {
+          "file": "<run>\\judge-scratch\\t_g.py",
+          "reads": 0,
+          "writes": 1,
+          "answered": 0,
+          "written": 211
+        },
+        {
+          "file": "<run>\\run.json",
+          "reads": 1,
+          "writes": 0,
+          "answered": 171,
+          "written": 0
+        },
+        {
+          "file": "<run>\\work\\t1.json",
+          "reads": 1,
+          "writes": 0,
+          "answered": 38,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_layout.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_night.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_title2.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_settings.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_ledger.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_paused.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        },
+        {
+          "file": "<run>\\judge-scratch\\fr_summary.png",
+          "reads": 1,
+          "writes": 0,
+          "answered": 0,
+          "written": 0
+        }
+      ],
+      "rows": [
+        {
+          "n": 1,
+          "context": 8226,
+          "new": 2883,
+          "read_again": 5343,
+          "written_out": 844,
+          "of_which_unseen": 810,
+          "cost": 8358,
+          "cost_so_far": 8358,
+          "carried": 11356,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\JUDGE.md",
+              "written": 12,
+              "answered": 2207
+            },
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "ls -la <run>; ls -laR <run>/work | head -100",
+              "written": 22,
+              "answered": 165
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "context": 12075,
+          "new": 3851,
+          "read_again": 8224,
+          "written_out": 3621,
+          "of_which_unseen": 3556,
+          "cost": 23743,
+          "cost_so_far": 32101,
+          "carried": 45439,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\BRIEF.md",
+              "written": 12,
+              "answered": 2910
+            },
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\work\\README.md",
+              "written": 14,
+              "answered": 733
+            },
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\work\\night.py",
+              "written": 14,
+              "answered": 5754
+            },
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\run.json",
+              "written": 12,
+              "answered": 171
+            },
+            {
+              "tool": "Read",
+              "kind": "read its own files",
+              "what": "<run>\\work\\t1.json",
+              "written": 13,
+              "answered": 38
+            }
+          ]
+        },
+        {
+          "n": 3,
+          "context": 28018,
+          "new": 15945,
+          "read_again": 12073,
+          "written_out": 986,
+          "of_which_unseen": 912,
+          "cost": 26067,
+          "cost_so_far": 58168,
+          "carried": 5078,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "mkdir judge-scratch && python --version && cd judge-scratch && echo '[]' > e.json && python ../work/night.p...",
+              "written": 74,
+              "answered": 121
+            }
+          ]
+        },
+        {
+          "n": 4,
+          "context": 29864,
+          "new": 1848,
+          "read_again": 28016,
+          "written_out": 1485,
+          "of_which_unseen": 485,
+          "cost": 12537,
+          "cost_so_far": 70706,
+          "carried": 6979,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\h.py",
+              "written": 1000,
+              "answered": 34
+            }
+          ]
+        },
+        {
+          "n": 5,
+          "context": 32497,
+          "new": 2635,
+          "read_again": 29862,
+          "written_out": 1136,
+          "of_which_unseen": 122,
+          "cost": 11957,
+          "cost_so_far": 82663,
+          "carried": 5155,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\t_a.py",
+              "written": 1014,
+              "answered": 34
+            }
+          ]
+        },
+        {
+          "n": 6,
+          "context": 34518,
+          "new": 2023,
+          "read_again": 32495,
+          "written_out": 348,
+          "of_which_unseen": 323,
+          "cost": 7518,
+          "cost_so_far": 90181,
+          "carried": 2567,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python t_a.py",
+              "written": 7,
+              "answered": 438
+            }
+          ]
+        },
+        {
+          "n": 7,
+          "context": 35565,
+          "new": 1049,
+          "read_again": 34516,
+          "written_out": 221,
+          "of_which_unseen": 194,
+          "cost": 5865,
+          "cost_so_far": 96046,
+          "carried": 1179,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python ../work/night.py headless --seed 1 --ticks 0 --script e.json --store p5b.json; echo rc=$?",
+              "written": 27,
+              "answered": 115
+            }
+          ]
+        },
+        {
+          "n": 8,
+          "context": 36066,
+          "new": 503,
+          "read_again": 35563,
+          "written_out": 745,
+          "of_which_unseen": 590,
+          "cost": 7908,
+          "cost_so_far": 103954,
+          "carried": 4158,
+          "steps": [
+            {
+              "tool": "Edit",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\h.py",
+              "written": 144,
+              "answered": 36
+            },
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python t_a.py 2>&1 | tail -n +14",
+              "written": 11,
+              "answered": 508
+            }
+          ]
+        },
+        {
+          "n": 9,
+          "context": 37913,
+          "new": 1849,
+          "read_again": 36064,
+          "written_out": 1717,
+          "of_which_unseen": 840,
+          "cost": 14501,
+          "cost_so_far": 118454,
+          "carried": 8011,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\t_b.py",
+              "written": 869,
+              "answered": 34
+            },
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python t_b.py 2>&1",
+              "written": 8,
+              "answered": 687
+            }
+          ]
+        },
+        {
+          "n": 10,
+          "context": 41638,
+          "new": 3727,
+          "read_again": 37911,
+          "written_out": 2252,
+          "of_which_unseen": 1522,
+          "cost": 19708,
+          "cost_so_far": 138162,
+          "carried": 10639,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\t_c.py",
+              "written": 717,
+              "answered": 34
+            },
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python t_c.py 2>&1",
+              "written": 13,
+              "answered": 1215
+            }
+          ]
+        },
+        {
+          "n": 11,
+          "context": 46827,
+          "new": 5191,
+          "read_again": 41636,
+          "written_out": 1929,
+          "of_which_unseen": 1034,
+          "cost": 20298,
+          "cost_so_far": 158460,
+          "carried": 7018,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\t_d.py",
+              "written": 882,
+              "answered": 34
+            },
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python t_d.py 2>&1",
+              "written": 13,
+              "answered": 188
+            }
+          ]
+        },
+        {
+          "n": 12,
+          "context": 50425,
+          "new": 3600,
+          "read_again": 46825,
+          "written_out": 1736,
+          "of_which_unseen": 655,
+          "cost": 17863,
+          "cost_so_far": 176323,
+          "carried": 6806,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\t_e.py",
+              "written": 1043,
+              "answered": 34
+            },
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python t_e.py 2>&1",
+              "written": 13,
+              "answered": 606
+            }
+          ]
+        },
+        {
+          "n": 13,
+          "context": 54103,
+          "new": 3680,
+          "read_again": 50423,
+          "written_out": 993,
+          "of_which_unseen": 479,
+          "cost": 14608,
+          "cost_so_far": 190931,
+          "carried": 3462,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\t_f.py",
+              "written": 501,
+              "answered": 34
+            },
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python t_f.py 2>&1",
+              "written": 13,
+              "answered": 205
+            }
+          ]
+        },
+        {
+          "n": 14,
+          "context": 56080,
+          "new": 1979,
+          "read_again": 54101,
+          "written_out": 499,
+          "of_which_unseen": 275,
+          "cost": 10378,
+          "cost_so_far": 201309,
+          "carried": 1634,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\judge-scratch\\t_g.py",
+              "written": 211,
+              "answered": 34
+            },
+            {
+              "tool": "Bash",
+              "kind": "run its own checks",
+              "what": "python t_g.py 2>&1",
+              "written": 13,
+              "answered": 82
+            }
+          ]
+        },
+        {
+          "n": 15,
+          "context": 57069,
+          "new": 991,
+          "read_again": 56078,
+          "written_out": 765,
+          "of_which_unseen": 731,
+          "cost": 10672,
+          "cost_so_far": 211981,
+          "carried": 2077,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_layout.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_night.png",
+              "written": 17,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 16,
+          "context": 58408,
+          "new": 1341,
+          "read_again": 57067,
+          "written_out": 1834,
+          "of_which_unseen": 1748,
+          "cost": 16552,
+          "cost_so_far": 228533,
+          "carried": 4655,
+          "steps": [
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_title2.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_settings.png",
+              "written": 18,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_ledger.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_paused.png",
+              "written": 17,
+              "answered": 0
+            },
+            {
+              "tool": "Read",
+              "kind": "look at a frame",
+              "what": "<run>\\judge-scratch\\fr_summary.png",
+              "written": 17,
+              "answered": 0
+            }
+          ]
+        },
+        {
+          "n": 17,
+          "context": 61617,
+          "new": 3211,
+          "read_again": 58406,
+          "written_out": 2029,
+          "of_which_unseen": 90,
+          "cost": 19998,
+          "cost_so_far": 248531,
+          "carried": 4837,
+          "steps": [
+            {
+              "tool": "Write",
+              "kind": "write code",
+              "what": "<run>\\verdict.json",
+              "written": 1939,
+              "answered": 32
+            }
+          ]
+        },
+        {
+          "n": 18,
+          "context": 65199,
+          "new": 3584,
+          "read_again": 61615,
+          "written_out": 108,
+          "of_which_unseen": 66,
+          "cost": 11181,
+          "cost_so_far": 259712,
+          "carried": 247,
+          "steps": [
+            {
+              "tool": "Bash",
+              "kind": "read its own files",
+              "what": "cd && python -c \"import json;d=json.load(open('verdict.json'));print(len(d['items']),sum(i['pass'] for i in...",
+              "written": 42,
+              "answered": 9
+            }
+          ]
+        },
+        {
+          "n": 19,
+          "context": 65397,
+          "new": 200,
+          "read_again": 65197,
+          "written_out": 190,
+          "of_which_unseen": 0,
+          "cost": 7718,
+          "cost_so_far": 267430,
+          "carried": 0,
+          "steps": []
+        }
+      ],
+      "how": "context, new, read_again and how far the context grew are the run's own records. written_out a request is its growth less its answers (characters / 4), scaled to the run's exact total; of_which_unseen is that less the visible text (thinking). cost is what the request read and wrote, weighted; carried is what reading again what it added cost at every later request (start.carried: the same for what every request starts from). reading + writing is in_the_ledger"
+    }
+  }
+}

@@ -1695,3 +1695,77 @@ this job again, unchanged, with a fresh plain arm, as a test of those mends and 
 more; a third job, sized by a pilot of its plain arm alone, since no plain build so far has
 needed more than one sitting. Jobs that ask for 3D and for several agents at once run
 beside this line, not in its place.
+
+## Results (2026-11-23: Night Market again after one mend, and a third job, Day Market)
+
+Two measurements on one build (`1dc2f432`; the engine is `3bb629b5`), cold briefs, builders
+Sonnet 5.5, judges Opus 5.5, the rule written into the handoff before either number: for each
+job by itself, engine over plain in the builders' weighted tokens at or under 2.2, the engine
+holds on that job; above 3.0, it does not; between, the runs are doubled. Records:
+`perf/leverage/2026-11-23-night-again` and `perf/leverage/2026-11-23-day`.
+
+| | Night Market again | Day Market |
+|---|---|---|
+| Runs, engine and plain | 5 and 5 | 10 and 10 (doubled by the rule: 2.74 after five and five) |
+| Engine, weighted tokens (mean; lowest to highest) | 471,262; 289,548 to 590,538 | 987,209; 710,147 to 1,739,856 |
+| Plain | 130,754; 124,057 to 139,615 | 328,019; 278,043 to 370,369 |
+| **Engine over plain, builders** (95% interval, resampled) | **3.60** (2.74 to 4.41) | **3.01** (2.49 to 3.67) |
+| Engine over plain, builders with judges | 2.13 (1.82 to 2.45) | 1.86 (1.61 to 2.15) |
+| Requests, engine and plain | 15 to 37; 6 to 8 | 30 to 79; 11 to 17 |
+| Minutes | 12 and 2 | 15 and 5 |
+| Checks passed | 33.8 and 33.8 of 34 | 54.2 and 59.8 of 61 |
+| Engine builders that read the repository | 4 of 5 (0 to 4 requests) | 10 of 10 (1 to 15 requests) |
+| Cost at list prices (USD) | 21.01 | about 84 (builds 24, judging 60 with two judgings that left no verdict) |
+
+**By the rule, the engine holds on neither job.** Night Market's interval lies between 2.7
+and 4.4; Day Market's lies across the 3.0 line, and "about three times" is all it supports.
+
+**What the one mend did.** Night Market was 7.39 with 32.2 of 34 checks; with a word given
+again pressed again it is 3.60 with the checks level. The engine arm's cost halved
+(1,096,486 to 471,262); the plain arm, built fresh, came in where it had been (148,378 then,
+130,754 now). One fault of the engine's was half of that job's cost.
+
+**Day Market is the first job nobody who knows the engine shaped**, and a plain build of it is
+still one sitting: 11 to 17 requests, five minutes, about 1,300 lines of Python, all ten
+within 14% of their mean. So the first bar of the success definition (a game that outgrows
+one sitting) is still untested.
+
+**Why the engine arm passes fewer checks on Day Market** (68 failed items against 12):
+
+- *A fault of the engine's, in six of ten games:* the Evening screen shows a placeholder
+  (`{work.disp}`) where its text should be. A text a module keeps for a screen is dropped
+  without a word when it is longer than 256 characters (`MAX_SHOWN_TEXT`), and the run's
+  warning then says "nothing keeps" the value, which is untrue and points the wrong way. No
+  page a builder reads gives the limit.
+- *A gap of the engine's, in four of ten:* the rules cannot end a headless run, so "Quit
+  prints the state as it stood" fails. Night Market's judges noted the same.
+- *About thirty of the rest are a judge saying it did not get there:* no visitor ever walked
+  out, the 99-unit cap was never reached, never enough coins for an upgrade. Judges of the
+  plain games reached those states, at least once by writing a saved slot by hand. **The two
+  arms are not equally easy to judge**, and this table's checks understate the engine games
+  by an amount nobody has measured. Two judges of engine games ran out of their 30 minutes
+  with no verdict and were judged again with 60 (as were all ten runs of the doubling, both
+  arms); day-engine-1's judge, in 30 minutes, marked fifteen items it had not exercised, and
+  is left as it judged.
+
+**What the engine builders went to the repository for** (Day Market): what happens to
+several words given at one tick (asked most often), a key with no button, how a
+script's inputs are read, how a run is ended. New questions again, though fewer requests
+were spent on them than on Night Market the first time (1 to 15 here; 20 to 41 on the first
+large job before its guide was mended).
+
+**One run was recorded by hand.** The builder of day-engine-8 stopped every `examen` process
+by name to clear a run of its game that hung, and so stopped the harness that watched it.
+The builder ran to its own end; its cost is from its stream (`leverage record`), and the
+harness's row shows no price or request count for it (the stream has 43 requests). A harness
+a builder can stop by name is a fault of the harness.
+
+**The reading, kept to what the runs say.** Across three large jobs the engine arm now costs
+1.9, 3.6 and 3.0 times a plain build, each in one sitting for the plain builder. Where it
+was far above that, a fault of the engine's was found and its mend moved the figure (7.39 to
+3.60). Nothing here shows the engine at or under a plain build's cost on a 2D game; nothing
+tests a game larger than a sitting. Counting the judges, the engine arm is about twice a
+plain build's cost on both jobs.
+
+**Not done, and frozen until the second reader has read these runs:** the 256-character
+limit and its warning; a run the rules can end; judging the two arms on equal terms.

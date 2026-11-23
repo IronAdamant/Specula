@@ -1,0 +1,2504 @@
+{
+  "leverage": 1,
+  "baseline": "plain",
+  "against_baseline": [
+    {
+      "job": "day",
+      "arm": "engine",
+      "baseline": "plain",
+      "weighted": 987209,
+      "baseline_weighted": 328019,
+      "times": 3.01,
+      "requests_times": null,
+      "passed": "54.2 / 61",
+      "baseline_passed": "59.8 / 61"
+    }
+  ],
+  "runs": [
+    {
+      "run": "day-engine-1",
+      "job": "day",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "1dc2f432d0",
+      "builder": {
+        "tokens": 115903,
+        "tool_uses": 34,
+        "duration_s": 1082.9,
+        "by_kind": {
+          "input": 62,
+          "cache_write": 110558,
+          "cache_read": 2468678,
+          "output": 65004,
+          "requests": 31,
+          "context_at_end": 115903
+        },
+        "weighted": 710147,
+        "cost_usd": 1.3392638000000001,
+        "turns": 35,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 30,
+        "refused": 4,
+        "args_bytes": 3896,
+        "answer_bytes": 22797,
+        "by_tool": {
+          "(run)": 30
+        }
+      },
+      "left": {
+        "files": 20,
+        "bytes": 119495,
+        "text_lines": 2866,
+        "lines_by_kind": {
+          ".json": 714,
+          ".md": 424,
+          ".rs": 1709,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50883,
+        "text_lines": 877,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 379,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 44,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 46,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Quit in a headless run does not end it: the game stops reacting but ticks keep counting to --ticks.",
+        "Records text 'Score 0, 1 days, Normal, bankrupt' (plural for one day).",
+        "Frame draws the stall front row (y 0) farther from the aisle/till area than the back row.",
+        "Day frame does not draw the aisle, queue or tills legibly; only an unlabelled square."
+      ],
+      "judge": {
+        "tokens": 116234,
+        "tool_uses": 44,
+        "duration_s": 1523.7,
+        "by_kind": {
+          "input": 74,
+          "cache_write": 110889,
+          "cache_read": 2131261,
+          "output": 48933,
+          "requests": 37,
+          "context_at_end": 116234
+        },
+        "weighted": 596476,
+        "cost_usd": 2.2923202000000003,
+        "turns": 45,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 37,
+          "refused": 4,
+          "args_bytes": 26513,
+          "answer_bytes": 13699651,
+          "by_tool": {
+            "(run)": 34,
+            "(check)": 3
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d03",
+          "evidence": "Title texts/menu_index 0/Up stop at 0/Down stop at 4 OK. Enter on Quit at tick 5 with --ticks 12: game stops answering (up ignored) but the run goes on and prints tick 12, not the state where it ended; with Continue, Quit at 7 printed tick 20."
+        },
+        {
+          "id": "d14",
+          "evidence": "Not enough coins shows, changes nothing, gone after next word (seen). The 99-unit cap was not exercised."
+        },
+        {
+          "id": "d20",
+          "evidence": "Single-cell moves and Up raising y seen; stopping at x 0/5 and y 0/1 was not exercised."
+        },
+        {
+          "id": "d22",
+          "evidence": "put placed crates and Crates N of 8 followed; 9th put at 8 crates refused; take removed crates. Put on an occupied cell and take on an empty cell not exercised."
+        },
+        {
+          "id": "d23",
+          "evidence": "price_up to 5 seen working; the bounds 1 and 3x reference were not exercised."
+        },
+        {
+          "id": "d32",
+          "evidence": "Cook took 2 apples at 4 at its column, budget -8; at price 5 only tourists bought. Prices 6 and 7 not run (my runs failed while the engine was busy)."
+        },
+        {
+          "id": "d37",
+          "evidence": "No queued wait reached patience in ~1900 checked minutes, but no walk-out ever happened in my runs, so its effects were not seen."
+        },
+        {
+          "id": "d42",
+          "evidence": "Bread bought that morning spoiled 6 that evening; honey never lost days. Fish over two days not exercised."
+        },
+        {
+          "id": "d43",
+          "evidence": "Heat day without Cool box: apples 5->3. The Cool box case on a heat day was not exercised."
+        },
+        {
+          "id": "d44",
+          "evidence": "Normal 20+2*3=26, Easy 15+2*7=29 and 15+2*8=31 seen. Hard rent not reached in my runs."
+        },
+        {
+          "id": "d47",
+          "evidence": "Buying Sign 133->103 'Sign: owned'; rebuying Second till changed nothing; Extra crates -> crate_limit 12, 'Crates: 5 of 12'. 'Not enough coins' on Upgrades not exercised."
+        },
+        {
+          "id": "d50",
+          "evidence": "Records 'Score 65, 3 days, Easy', 'Score 0, 2 days, Easy, bankrupt' in order; 'No records yet' fresh. Five-record cap, equal-score order and display in a later run not exercised."
+        },
+        {
+          "id": "d53",
+          "evidence": "Sold out earned when crated apples/flowers sold out (seed 1). The negative case (good without a crate) was not set up."
+        },
+        {
+          "id": "d59",
+          "evidence": "day.png: grid and text panel, one unlabelled red square below the grid; no visible aisle cells, queue or tills. Front row drawn farthest from the aisle."
+        },
+        {
+          "id": "d60",
+          "evidence": "title.png shows texts with '>' on chosen entry; stall/day panels show texts. Slots, settings, morning, upgrades, paused, evening and season-over frames were not viewed."
+        }
+      ]
+    },
+    {
+      "run": "day-engine-10",
+      "job": "day",
+      "arm": "engine",
+      "n": 10,
+      "from": null,
+      "engine_build": "1dc2f432d0",
+      "builder": {
+        "tokens": 123158,
+        "tool_uses": 44,
+        "duration_s": 727.3,
+        "by_kind": {
+          "input": 76,
+          "cache_write": 117813,
+          "cache_read": 3051894,
+          "output": 72418,
+          "requests": 38,
+          "context_at_end": 123158
+        },
+        "weighted": 814622,
+        "cost_usd": 1.5007734000000004,
+        "turns": 45,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 28,
+        "refused": 2,
+        "args_bytes": 5527,
+        "answer_bytes": 9382,
+        "by_tool": {
+          "(run)": 28
+        }
+      },
+      "left": {
+        "files": 32,
+        "bytes": 111492,
+        "text_lines": 2044,
+        "lines_by_kind": {
+          ".json": 627,
+          ".md": 435,
+          ".rs": 963,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50883,
+        "text_lines": 877,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 379,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 57,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 59,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Several words at the same tick: only one acts ('1:down,1:down' gives menu_index 1, not 2), against the brief's headless spec (README admits it).",
+        "The Evening screen is drawn as the literal placeholder '{work.display}' in frames; the engine prints a warning to that effect on runs that end on the Evening.",
+        "Bread and cheese crates are almost the same colour in frames.",
+        "A save whose batches are not sorted is used in stored order (remove does not sort); not reachable through play, only by a hand-edited save."
+      ],
+      "judge": {
+        "tokens": 137683,
+        "tool_uses": 77,
+        "duration_s": 1190.9,
+        "by_kind": {
+          "input": 124,
+          "cache_write": 132338,
+          "cache_read": 5137960,
+          "output": 48786,
+          "requests": 62,
+          "context_at_end": 137683
+        },
+        "weighted": 923272,
+        "cost_usd": 3.0625119999999995,
+        "turns": 78,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 86,
+          "refused": 1,
+          "args_bytes": 30711,
+          "answer_bytes": 20892824,
+          "by_tool": {
+            "(run)": 86
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d58",
+          "evidence": "Stall frame shows grid, cursor at its cell and the text panel, but bread (133,133,77) and cheese (133,133,63) crates are drawn in nearly the same colour: the six goods are not told apart."
+        },
+        {
+          "id": "d60",
+          "evidence": "Title, slots, settings, morning, upgrades, paused, season over frames show texts with '>' on the chosen row, but the Evening frame (two runs) shows only the raw '{work.display}' and the engine warns nothing keeps work.display."
+        }
+      ]
+    },
+    {
+      "run": "day-engine-2",
+      "job": "day",
+      "arm": "engine",
+      "n": 2,
+      "from": null,
+      "engine_build": "1dc2f432d0",
+      "builder": {
+        "tokens": 127382,
+        "tool_uses": 33,
+        "duration_s": 687.5,
+        "by_kind": {
+          "input": 60,
+          "cache_write": 122037,
+          "cache_read": 2246643,
+          "output": 71843,
+          "requests": 30,
+          "context_at_end": 127382
+        },
+        "weighted": 736486,
+        "cost_usd": 1.4313623000000004,
+        "turns": 34,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 15,
+        "refused": 2,
+        "args_bytes": 2262,
+        "answer_bytes": 18333,
+        "by_tool": {
+          "(run)": 15
+        }
+      },
+      "left": {
+        "files": 24,
+        "bytes": 146694,
+        "text_lines": 2717,
+        "lines_by_kind": {
+          ".json": 675,
+          ".md": 437,
+          ".rs": 1586,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50883,
+        "text_lines": 877,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 379,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 46,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 48,
+          "of": 61
+        }
+      },
+      "defects": [
+        "The season seed is saved as a JSON float and loses precision, so a season continued in a later run redraws its saved day differently.",
+        "Quit does not end a headless run; the printed tick is the full --ticks count.",
+        "Evening frames render '{work.view_a}' instead of the screen."
+      ],
+      "judge": {
+        "tokens": 115075,
+        "tool_uses": 59,
+        "duration_s": 674.5,
+        "by_kind": {
+          "input": 76,
+          "cache_write": 107981,
+          "cache_read": 2356783,
+          "output": 44317,
+          "requests": 38,
+          "context_at_end": 115075
+        },
+        "weighted": 592316,
+        "cost_usd": 2.2218485999999995,
+        "turns": 60,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 203,
+          "refused": 3,
+          "args_bytes": 137542,
+          "answer_bytes": 65313553,
+          "by_tool": {
+            "(run)": 203
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d03",
+          "evidence": "Texts, menu_index 0 and Up/Down stops are right, but Quit (enter on index 4 at tick 5) does not end the run: --ticks 20 printed tick 20 with screen title, not the state as it stood at the quit (README admits the run goes on counting ticks)."
+        },
+        {
+          "id": "d14",
+          "evidence": "With 14 coins Enter on Fish (36) changed nothing and showed 'Not enough coins' until the next word (accept). The 99-unit cap could not be reached in a run."
+        },
+        {
+          "id": "d17",
+          "evidence": "Continue in a later headless run gave day 2 wholesale 3/4/5/7/4/5 and order 4 Cheese for 66, but the season was saved with 2/2/7/6/3/5 and 6 Flowers for 63 (same within one run). Cause: the saved season seed is a 64-bit number kept as a JSON float (-7135811184969857000), so precision is lost."
+        },
+        {
+          "id": "d32",
+          "evidence": "Cooks took 2 apples at 4 at their column's minute with budget 8 lower; the price-5 cook and the 6/7 tourist cases were not run."
+        },
+        {
+          "id": "d35",
+          "evidence": "Ends = start + 2 + goods, paid totals with bargain tenth off, served/taken/sales all matched; that units leave the batch with the fewest days_left first was not observed (all units sold)."
+        },
+        {
+          "id": "d37",
+          "evidence": "No queued wait ever reached patience, but no visitor walked out in any run (queue at most 1), so the walk-out effects were not seen."
+        },
+        {
+          "id": "d40",
+          "evidence": "Sign was bought on one run but no back-row crate had stock on that day, so the effect was not seen."
+        },
+        {
+          "id": "d42",
+          "evidence": "Bread bought that Morning spoiled that evening (spoiled 6, line 'spoiled 6'); honey never spoiled; fish spoiling on the next day's evening was not observed (only seen on a heat day)."
+        },
+        {
+          "id": "d44",
+          "evidence": "Rent: 28 at Normal with 4 crates, Rent: 31 at Easy with 8 crates; Hard (30) not observed."
+        },
+        {
+          "id": "d50",
+          "evidence": "Records showed 'Score 261, 3 days, Easy' and 'Score 0, 2 days, Easy, bankrupt'; the five-cap, ordering among several and display in a later run were not checked."
+        },
+        {
+          "id": "d53",
+          "evidence": "Sold out earned when crated apples/bread/flowers sold out; the negative case (good without crate) was not isolated."
+        },
+        {
+          "id": "d54",
+          "evidence": "After Continue in a later run the day's draws differ from the unbroken game (wholesale and order differed, see d17), so the day cannot be the same."
+        },
+        {
+          "id": "d60",
+          "evidence": "Frames on the Evening (both the README's own command and mine) show only the placeholder '{work.view_a}' and the engine warns 'nothing keeps work.view_a'; the evening's texts are not drawn."
+        }
+      ]
+    },
+    {
+      "run": "day-engine-3",
+      "job": "day",
+      "arm": "engine",
+      "n": 3,
+      "from": null,
+      "engine_build": "1dc2f432d0",
+      "builder": {
+        "tokens": 128293,
+        "tool_uses": 41,
+        "duration_s": 799.5,
+        "by_kind": {
+          "input": 70,
+          "cache_write": 122948,
+          "cache_read": 2833481,
+          "output": 71619,
+          "requests": 35,
+          "context_at_end": 128293
+        },
+        "weighted": 795198,
+        "cost_usd": 1.4914701000000004,
+        "turns": 42,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 26,
+        "refused": 2,
+        "args_bytes": 3796,
+        "answer_bytes": 22731,
+        "by_tool": {
+          "(run)": 26
+        }
+      },
+      "left": {
+        "files": 23,
+        "bytes": 106382,
+        "text_lines": 2037,
+        "lines_by_kind": {
+          ".json": 509,
+          ".md": 468,
+          ".rs": 1041,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50883,
+        "text_lines": 877,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 379,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 53,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 55,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Several words at the same tick act only once (0:down,0:down,0:down gave menu_index 1); the brief requires each to act in order. README admits this.",
+        "A season that ends (bankrupt or finished) is cleared from the slot in memory, but the kept slot keeps the last Morning save. A later run offers Continue and replays the ended season.",
+        "The Evening frame renders the placeholder '{work.disp}' instead of the evening text.",
+        "Quit freezes input but does not end the headless run; tick keeps counting to --ticks.",
+        "A 'none' word does not clear 'Not enough coins' unless it releases a held word (README admits)."
+      ],
+      "judge": {
+        "tokens": 173801,
+        "tool_uses": 78,
+        "duration_s": 1151,
+        "by_kind": {
+          "input": 138,
+          "cache_write": 168456,
+          "cache_read": 7811960,
+          "output": 60074,
+          "requests": 69,
+          "context_at_end": 173801
+        },
+        "weighted": 1292274,
+        "cost_usd": 4.112072,
+        "turns": 79,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 105,
+          "refused": 3,
+          "args_bytes": 67261,
+          "answer_bytes": 20980043,
+          "by_tool": {
+            "(run)": 105
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d03",
+          "evidence": "Fresh title texts are right (no Continue), menu_index 0, Up at 0 and Down at 4 stop. But Quit (down x4, enter at tick 4) does not end the run: with --ticks 50 the state prints tick 50, and --at 5,6,20 shows the run going on. Words stop acting, but the run keeps ticking."
+        },
+        {
+          "id": "d14",
+          "evidence": "With 2 coins, Enter on Bread changed nothing and added 'Not enough coins', which went away at the next word. I could not reach the 99-unit cap: the most I could buy was 48 apples with 151 coins."
+        },
+        {
+          "id": "d37",
+          "evidence": "No queued visitor ever waited at or over its patience across ~2400 simulated minutes. But the queue never passed 2, walked_out stayed 0 in every run, and the walk-out path (goods back, rep -2, walked_out +1) was never seen."
+        },
+        {
+          "id": "d48",
+          "evidence": "In-run: coins -6 -> 'Bankrupt', slots [null,null,null], Season over 'Bankrupt','Score: 0', record bankrupt true. But the kept slot was never cleared: settings.json still held slot1, and the next run showed Continue and 'Slot 1: Day 2 of 7, 9 coins'."
+        },
+        {
+          "id": "d49",
+          "evidence": "In-run, the 3-day Easy season was right: 'Season over', 'Score: 486' (386+100), 'Days: 3', 'Best: 486', and no Continue. A later run on the same place showed Continue again, with 'Slot 1: Day 3 of 3, 201 coins' still in the kept file."
+        },
+        {
+          "id": "d60",
+          "evidence": "Title, slots, settings, morning, upgrades, paused and season_over frames show their texts with '> ' on the chosen row. The evening frame (three different runs, by finish and by rush) shows only the literal '{work.disp}' and none of the Evening texts."
+        }
+      ]
+    },
+    {
+      "run": "day-engine-4",
+      "job": "day",
+      "arm": "engine",
+      "n": 4,
+      "from": null,
+      "engine_build": "1dc2f432d0",
+      "builder": {
+        "tokens": 168944,
+        "tool_uses": 68,
+        "duration_s": 1440.4,
+        "by_kind": {
+          "input": 116,
+          "cache_write": 163599,
+          "cache_read": 5991057,
+          "output": 108973,
+          "requests": 58,
+          "context_at_end": 168944
+        },
+        "weighted": 1348585,
+        "cost_usd": 2.3434637,
+        "turns": 69,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 31,
+        "refused": 4,
+        "args_bytes": 4919,
+        "answer_bytes": 12170,
+        "by_tool": {
+          "(run)": 31
+        }
+      },
+      "left": {
+        "files": 24,
+        "bytes": 117055,
+        "text_lines": 2574,
+        "lines_by_kind": {
+          ".json": 540,
+          ".md": 454,
+          ".rs": 1561,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50883,
+        "text_lines": 877,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 379,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 47,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 49,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Stall: Up moves the cursor to lower y and Down to higher y, the reverse of the brief.",
+        "Stall/Day frame: the front row (y 0) is drawn on top, away from the aisle strip, which is next to the back row.",
+        "After Quit the printed tick is the script's full tick count, not the tick at which the run ended.",
+        "Enter on Language/Difficulty/Season in Settings steps the setting (README admits it).",
+        "Words given at the same tick: all but the last are lost (README admits it; brief requires them in order)."
+      ],
+      "judge": {
+        "tokens": 122971,
+        "tool_uses": 50,
+        "duration_s": 780.4,
+        "by_kind": {
+          "input": 68,
+          "cache_write": 117626,
+          "cache_read": 2382011,
+          "output": 45345,
+          "requests": 34,
+          "context_at_end": 122971
+        },
+        "weighted": 612027,
+        "cost_usd": 2.3245822,
+        "turns": 51,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 140,
+          "refused": 7,
+          "args_bytes": 71798,
+          "answer_bytes": 23360011,
+          "by_tool": {
+            "(run)": 137,
+            "(check)": 3
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d14",
+          "evidence": "Not enough coins: cheese at 6 with 2 coins changed neither coins nor stock, showed 'Not enough coins', and the line went away on the next word. The 99-unit cap was not exercised."
+        },
+        {
+          "id": "d20",
+          "evidence": "Up lowers y: from (0,0) Up stayed at y 0 and Down went to y 1, and from (1,1) Up went to (1,0). The brief says Up raises y. Left/Right stepped and stopped at 0 and 5 correctly."
+        },
+        {
+          "id": "d22",
+          "evidence": "put/take on empty and occupied cells behaved right and Crates: N of 8 followed, but a put with 8 crates already placed was never tried (could not check)."
+        },
+        {
+          "id": "d23",
+          "evidence": "Honey price went 9->11->1 and stopped at 1, with the Price text following. The upper stop (3x reference) was not exercised."
+        },
+        {
+          "id": "d32",
+          "evidence": "The specific cook/tourist price setups (4/5 and 6/7) were not built; only the general percentage rule was checked."
+        },
+        {
+          "id": "d37",
+          "evidence": "No queued wait reached patience, but no walk-out happened in any run (max queue 1), so its effects are unseen."
+        },
+        {
+          "id": "d38",
+          "evidence": "Evening came at clock 480, but no visitor was left on the aisle, in the queue or at a till at the end of any run."
+        },
+        {
+          "id": "d39",
+          "evidence": "With Second till, tills had 2 entries, but two services never ran at once in the run."
+        },
+        {
+          "id": "d43",
+          "evidence": "With Cool box, fish on a heat day went 2->1. The heat case without Cool box was not observed."
+        },
+        {
+          "id": "d50",
+          "evidence": "Records showed 'Score 65, 3 days, Easy' and 'Score 0, 2 days, Easy, bankrupt' in a later run, and 'No records yet' when empty. The cap of 5 and the tie order were not exercised."
+        },
+        {
+          "id": "d59",
+          "evidence": "Day frame showed crates, a till box and the time/speed/coins/taken/served/rep texts, but no visitor was on the aisle at that moment, so type drawing is unseen. The front row is drawn away from the aisle."
+        },
+        {
+          "id": "d60",
+          "evidence": "Frames of title/slots/settings/morning/upgrades/paused/evening/season over were not taken (judge budget)."
+        }
+      ]
+    },
+    {
+      "run": "day-engine-5",
+      "job": "day",
+      "arm": "engine",
+      "n": 5,
+      "from": null,
+      "engine_build": "1dc2f432d0",
+      "builder": {
+        "tokens": 135543,
+        "tool_uses": 53,
+        "duration_s": 765.7,
+        "by_kind": {
+          "input": 98,
+          "cache_write": 130198,
+          "cache_read": 4495875,
+          "output": 75498,
+          "requests": 49,
+          "context_at_end": 135543
+        },
+        "weighted": 989923,
+        "cost_usd": 1.7255555000000002,
+        "turns": 54,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 28,
+        "refused": 7,
+        "args_bytes": 9197,
+        "answer_bytes": 26628,
+        "by_tool": {
+          "(run)": 28
+        }
+      },
+      "left": {
+        "files": 26,
+        "bytes": 114496,
+        "text_lines": 2778,
+        "lines_by_kind": {
+          ".json": 709,
+          ".md": 456,
+          ".rs": 1539,
+          ".toml": 19,
+          ".txt": 55
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50883,
+        "text_lines": 877,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 379,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 58,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 60,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Several input words at the same tick: only one acts (1:down,1:down,1:down gives menu_index 1); the brief requires each to act in order. README admits it.",
+        "Quit at tick 9 reports tick 10 (one extra tick counted/run before the run ends).",
+        "State printed at tick 0 shows default settings/slots before the kept place is loaded (es/easy place reads en/normal at tick 0, es/easy from tick 1).",
+        "Day frame draws the aisle below the back row of the stall, i.e. beside the back row rather than in front of the front row.",
+        "Evening frame: main text panel shows the raw placeholder '{work.disp0}'.",
+        "game.txt comment says names are in assets/strings/<language>.json; the tables actually used are modules/work/strings/*.json (README is right)."
+      ],
+      "judge": {
+        "tokens": 129111,
+        "tool_uses": 72,
+        "duration_s": 1703.6,
+        "by_kind": {
+          "input": 98,
+          "cache_write": 123766,
+          "cache_read": 3655547,
+          "output": 53333,
+          "requests": 49,
+          "context_at_end": 129111
+        },
+        "weighted": 787025,
+        "cost_usd": 2.7882893999999996,
+        "turns": 73,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 130,
+          "refused": 3,
+          "args_bytes": 44674,
+          "answer_bytes": 27217870,
+          "by_tool": {
+            "(run)": 130
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d60",
+          "evidence": "Title, slots, settings, morning, upgrades, paused, season over frames show texts with '>' on chosen entry; but both Evening frames show only '{work.disp0}' in the main panel plus the last few lines (Reputation, Tomorrow, Stamp): Evening, day, Taken..Coins are not drawn (engine also warned 'nothing keeps work.disp0')."
+        }
+      ]
+    },
+    {
+      "run": "day-engine-6",
+      "job": "day",
+      "arm": "engine",
+      "n": 6,
+      "from": null,
+      "engine_build": "1dc2f432d0",
+      "builder": {
+        "tokens": 184503,
+        "tool_uses": 94,
+        "duration_s": 1206,
+        "by_kind": {
+          "input": 158,
+          "cache_write": 179158,
+          "cache_read": 9480056,
+          "output": 113549,
+          "requests": 79,
+          "context_at_end": 184503
+        },
+        "weighted": 1739856,
+        "cost_usd": 2.8004435999999995,
+        "turns": 95,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 46,
+        "refused": 8,
+        "args_bytes": 9749,
+        "answer_bytes": 22986,
+        "by_tool": {
+          "(run)": 46
+        }
+      },
+      "left": {
+        "files": 30,
+        "bytes": 122766,
+        "text_lines": 2770,
+        "lines_by_kind": {
+          ".json": 535,
+          ".md": 471,
+          ".rs": 1745,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50883,
+        "text_lines": 877,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 379,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 56,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 58,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Frame: the front row (y 0) is drawn at the top, farthest from the aisle strip, while the text grid in the same frame prints the back row first; the aisle is drawn next to the back row.",
+        "Bread and cheese crate colours are very close in the frames.",
+        "Records read 'Score 0, 1 days, ...' (plural with 1).",
+        "Quit freezes the run but the printed tick stops at the Quit tick + 1 rather than the requested tick count (as README admits)."
+      ],
+      "judge": {
+        "tokens": 146097,
+        "tool_uses": 70,
+        "duration_s": 1394.3,
+        "by_kind": {
+          "input": 116,
+          "cache_write": 140752,
+          "cache_read": 4913581,
+          "output": 58903,
+          "requests": 58,
+          "context_at_end": 146097
+        },
+        "weighted": 961929,
+        "cost_usd": 3.2872562,
+        "turns": 71,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 101,
+          "refused": 2,
+          "args_bytes": 58626,
+          "answer_bytes": 12445576,
+          "by_tool": {
+            "(run)": 101
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d14",
+          "evidence": "Too few coins: honey lot with 20 coins left coins and stock unchanged, 'Not enough coins' shown and gone after next word (up). The 99-unit cap could not be reached in my runs (stock_cap 99 is in rules.json, not seen acting)."
+        },
+        {
+          "id": "d37",
+          "evidence": "No queue ever formed in any day I played (6 days, 30 seeds scanned walked_out 0), so patience, goods returned, rep -2 and walked_out +1 were never seen."
+        },
+        {
+          "id": "d39",
+          "evidence": "With Second till tills has two entries in the day, but no queue ever formed so two services at once / till 1 first were never seen."
+        }
+      ]
+    },
+    {
+      "run": "day-engine-7",
+      "job": "day",
+      "arm": "engine",
+      "n": 7,
+      "from": null,
+      "engine_build": "1dc2f432d0",
+      "builder": {
+        "tokens": 121470,
+        "tool_uses": 41,
+        "duration_s": 817,
+        "by_kind": {
+          "input": 70,
+          "cache_write": 116125,
+          "cache_read": 3013308,
+          "output": 75318,
+          "requests": 35,
+          "context_at_end": 121470
+        },
+        "weighted": 823147,
+        "cost_usd": 1.5191508,
+        "turns": 42,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 42,
+        "refused": 3,
+        "args_bytes": 5804,
+        "answer_bytes": 13494,
+        "by_tool": {
+          "(run)": 42
+        }
+      },
+      "left": {
+        "files": 22,
+        "bytes": 117748,
+        "text_lines": 2829,
+        "lines_by_kind": {
+          ".json": 560,
+          ".md": 482,
+          ".py": 33,
+          ".rs": 1735,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50883,
+        "text_lines": 877,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 379,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 57,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 59,
+          "of": 61
+        }
+      },
+      "defects": [
+        "The Evening's frame is broken: it draws '{work.tx0}' and the stamp lines only, and every run that reaches the Evening prints the engine warning 'a screen shows {work.tx0}: nothing keeps work.tx0'.",
+        "Kept settings and slots load at tick 1: a 0-tick headless run on a place with Spanish/Hard/3 days kept prints en/normal/7 and the default title.",
+        "Several words at one tick ('T:a+b') act in a fixed order rather than the order given, and a repeated word acts once ('0:down+down+down+down+enter' opened Records, not Settings); the brief asks for words at the same tick to act one after another in the order given.",
+        "Frames are a small text panel in the top-left corner (crates as two-letter codes, visitors as letter+id); nothing is drawn as pictures."
+      ],
+      "judge": {
+        "tokens": 159217,
+        "tool_uses": 106,
+        "duration_s": 1389.3,
+        "by_kind": {
+          "input": 190,
+          "cache_write": 153872,
+          "cache_read": 9011852,
+          "output": 66437,
+          "requests": 95,
+          "context_at_end": 159217
+        },
+        "weighted": 1425900,
+        "cost_usd": 4.3628464,
+        "turns": 107,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 142,
+          "refused": 3,
+          "args_bytes": 66329,
+          "answer_bytes": 20076069,
+          "by_tool": {
+            "(run)": 142
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d37",
+          "evidence": "Over 8 played days (busy stalls, rep up to 100) the queue never exceeded 1 and no visitor walked out, so no queued wait reached patience and the walk-out effects (goods back, reputation -2, walked_out +1) could not be seen. Code at lib.rs:824 looks right but the item needs observed behaviour."
+        },
+        {
+          "id": "d60",
+          "evidence": "Title, slots, settings, morning, upgrades, paused and season over frames show their texts with '>' on the chosen row, but the Evening frame shows only '{work.tx0}' and the two 'Stamp:' lines (no Evening, Taken, goods, Rent, Coins...); the run also warns that nothing keeps work.tx0."
+        }
+      ]
+    },
+    {
+      "run": "day-engine-8",
+      "job": "day",
+      "arm": "engine",
+      "n": 8,
+      "from": null,
+      "engine_build": "1dc2f432d0",
+      "builder": {
+        "tokens": 997271,
+        "tool_uses": 45,
+        "duration_s": 895,
+        "by_kind": {
+          "input": 88,
+          "cache_write": 132076,
+          "cache_read": 4078431,
+          "output": 84849
+        },
+        "weighted": 997271,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": "The builder stopped every examen process by name (taskkill /F /IM examen.exe) and with them the harness watching it; the builder itself ran to its own end, and its cost is recorded by hand from its stream (output tokens from the stream's two result lines)."
+      },
+      "engine": {
+        "calls": 35,
+        "refused": 3,
+        "args_bytes": 4972,
+        "answer_bytes": 16701,
+        "by_tool": {
+          "(run)": 35
+        }
+      },
+      "left": {
+        "files": 24,
+        "bytes": 108229,
+        "text_lines": 2526,
+        "lines_by_kind": {
+          ".json": 478,
+          ".md": 460,
+          ".rs": 1569,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50883,
+        "text_lines": 877,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 379,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 57,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 59,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Records line says '1 days' for a one-day season.",
+        "Each headless run prints on stderr: 'a screen shows {work.shown}: nothing keeps work.shown' (the first frame before the state is set).",
+        "Quit given at tick 8 ends the run with tick 9 printed, one tick after the word."
+      ],
+      "judge": {
+        "tokens": 125497,
+        "tool_uses": 62,
+        "duration_s": 1096,
+        "by_kind": {
+          "input": 118,
+          "cache_write": 120152,
+          "cache_read": 4300842,
+          "output": 53910,
+          "requests": 59,
+          "context_at_end": 125497
+        },
+        "weighted": 849942,
+        "cost_usd": 2.9000564000000013,
+        "turns": 63,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 82,
+          "refused": 5,
+          "args_bytes": 36214,
+          "answer_bytes": 16860161,
+          "by_tool": {
+            "(run)": 82,
+            "engine.stop": 1
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d14",
+          "evidence": "Not enough coins: coins 2, Enter on fish changed nothing and showed 'Not enough coins' until the next word (up). The 99-unit cap was never reached in play (needs over 96 units of one good), so not seen."
+        },
+        {
+          "id": "d37",
+          "evidence": "No queued wait ever reached patience in ~2400 checked minutes, but no visitor ever walked out in any run (queue at most 2), so the leaving rule (goods back, rep -2, walked_out +1) was never seen."
+        }
+      ]
+    },
+    {
+      "run": "day-engine-9",
+      "job": "day",
+      "arm": "engine",
+      "n": 9,
+      "from": null,
+      "engine_build": "1dc2f432d0",
+      "builder": {
+        "tokens": 133487,
+        "tool_uses": 46,
+        "duration_s": 752.8,
+        "by_kind": {
+          "input": 78,
+          "cache_write": 128142,
+          "cache_read": 3641821,
+          "output": 78484,
+          "requests": 39,
+          "context_at_end": 133487
+        },
+        "weighted": 916858,
+        "cost_usd": 1.6617461000000007,
+        "turns": 47,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 29,
+        "refused": 4,
+        "args_bytes": 5820,
+        "answer_bytes": 25254,
+        "by_tool": {
+          "(run)": 29
+        }
+      },
+      "left": {
+        "files": 22,
+        "bytes": 136495,
+        "text_lines": 2607,
+        "lines_by_kind": {
+          ".json": 511,
+          ".md": 444,
+          ".rs": 1633,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 23,
+        "bytes": 50883,
+        "text_lines": 877,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 379,
+          ".rs": 110,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 47,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 49,
+          "of": 61
+        }
+      },
+      "defects": [
+        "After Quit the run keeps counting ticks: report tick is the full --ticks, not the tick Quit was given.",
+        "Spanish plural not handled: 'Puntos 0, 1 días'.",
+        "The frame is a small text panel in the top-left corner; no drawn grid or visitors."
+      ],
+      "judge": {
+        "tokens": 103242,
+        "tool_uses": 37,
+        "duration_s": 715.9,
+        "by_kind": {
+          "input": 48,
+          "cache_write": 97897,
+          "cache_read": 1346964,
+          "output": 36747,
+          "requests": 24,
+          "context_at_end": 103242
+        },
+        "weighted": 440851,
+        "cost_usd": 1.7877007999999999,
+        "turns": 38,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 47,
+          "refused": 2,
+          "args_bytes": 35805,
+          "answer_bytes": 10684810,
+          "by_tool": {
+            "(run)": 47
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "d03",
+          "evidence": "Title texts/menu_index/Up-Down limits correct, but Quit at tick 5 of a 30-tick run printed tick 30 (the run went on; later inputs ignored), so the state is not printed as it stood when Quit ended the run (README admits this)."
+        },
+        {
+          "id": "d14",
+          "evidence": "Not enough coins: coins/stock unchanged and the line shown until the next word (seen). The 99-unit cap could not be reached in a run I could set up."
+        },
+        {
+          "id": "d37",
+          "evidence": "No queued visitor waited to patience in matched days, but no walk-out ever happened in any run I made (12 seeds tried), so the leaving path was not seen."
+        },
+        {
+          "id": "d39",
+          "evidence": "Not checked: never had 80 coins at an Upgrades screen in my runs."
+        },
+        {
+          "id": "d41",
+          "evidence": "Failed order seen (rep -5, 'Order failed'); order not taken changed nothing; a delivered order was not reached."
+        },
+        {
+          "id": "d42",
+          "evidence": "Bread bought that morning spoiled that evening (spoiled 6, line shown); a 2-day-life good (flowers) had days_left 1 after first evening; fish and honey not checked directly."
+        },
+        {
+          "id": "d43",
+          "evidence": "Not checked: no heat day reached with stock."
+        },
+        {
+          "id": "d47",
+          "evidence": "Sign bought: coins 55->25, upgrades [sign], 'Sign: owned', second Enter no change. Not-enough-coins text on Upgrades and Extra crates (crate_limit 12) not captured."
+        },
+        {
+          "id": "d50",
+          "evidence": "Record lines 'Score 0, 2 days, Easy, bankrupt' shown in a later run; cap of 5 and ordering/tie-break not checked (one record per place)."
+        },
+        {
+          "id": "d53",
+          "evidence": "Sold out earned when crated apples sold out; the negative case (good with stock but no crate) not cleanly tested."
+        },
+        {
+          "id": "d59",
+          "evidence": "Day frame viewed shows stall rows, aisle, queue, till, time, speed, coins, taken, served, reputation as text, but no visitor was on the aisle in my frame, so type distinction not seen."
+        },
+        {
+          "id": "d60",
+          "evidence": "Frames of title, slots, settings, morning, upgrades, paused, evening, season over not taken; chosen-entry marking not seen."
+        }
+      ]
+    },
+    {
+      "run": "day-plain-1",
+      "job": "day",
+      "arm": "plain",
+      "n": 1,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 54088,
+        "tool_uses": 12,
+        "duration_s": 238.6,
+        "by_kind": {
+          "input": 22,
+          "cache_write": 48743,
+          "cache_read": 380373,
+          "output": 35811,
+          "requests": 11,
+          "context_at_end": 54088
+        },
+        "weighted": 278043,
+        "cost_usd": 0.5911633,
+        "turns": 13,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 6,
+        "bytes": 55153,
+        "text_lines": 1293,
+        "lines_by_kind": {
+          ".json": 131,
+          ".md": 45,
+          ".py": 1117
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 51,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 53,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Enter on the Evening skips the Upgrades screen entirely; no upgrade can ever be bought in play.",
+        "In one run, a slot's saved season shares the live stock/prices/stall objects, so giving the day up and continuing in the same run keeps purchases made after the Morning save (coins revert, stock does not).",
+        "Headless stdout is written in the console code page (cp1252 here), not UTF-8, when Spanish accented text is printed through a pipe.",
+        "In every frame the 'AISLE' label overlaps the bottom of the stall grid."
+      ],
+      "judge": {
+        "tokens": 110745,
+        "tool_uses": 55,
+        "duration_s": 583.5,
+        "by_kind": {
+          "input": 66,
+          "cache_write": 105400,
+          "cache_read": 2436810,
+          "output": 42313,
+          "requests": 33,
+          "context_at_end": 110745
+        },
+        "weighted": 587062,
+        "cost_usd": 2.177086,
+        "turns": 56,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "d06",
+          "evidence": "Spanish texts checked on title, both slots headings, settings (changes at once), records, stamps, morning, stall, day, paused, evening, season over: all Spanish. But the Upgrades screen can never be reached (Enter on Evening goes straight to the next Morning), so its Spanish could not be shown on that screen."
+        },
+        {
+          "id": "d18",
+          "evidence": "Paused texts [Paused, Resume, Title]; Resume/Escape restore morning (menu kept), stall cursor kept, day clock stood (10 at pause, 12 after 200 paused ticks + 10). Across runs Title leaves the slot as saved. But in the same run, buy apples -> Escape -> Title -> Continue -> slot 1 opens with coins 50 and the 6 apples bought that Morning still in stock: the saved slot shares the live season's stock."
+        },
+        {
+          "id": "d39",
+          "evidence": "Second till cannot be bought: Upgrades screen is unreachable. With a hand-written kept slot holding second_till, tills had 2 entries and 2 served at once, but not through the game."
+        },
+        {
+          "id": "d40",
+          "evidence": "Sign cannot be bought (Upgrades unreachable); not observable in play."
+        },
+        {
+          "id": "d43",
+          "evidence": "Heat day without Cool box: apples days_left 5->3 (correct). Cool box cannot be bought (Upgrades unreachable); only a hand-written slot with cool_box showed 5->4."
+        },
+        {
+          "id": "d46",
+          "evidence": "Enter on the Evening of a continuing season goes straight to 'Morning, Day 2 of 7'; the Upgrades screen never opens (game.py on_evening calls start_morning)."
+        },
+        {
+          "id": "d47",
+          "evidence": "No upgrade can be bought: Upgrades screen unreachable."
+        },
+        {
+          "id": "d60",
+          "evidence": "Settings, slots, morning, paused, evening, season over frames show their texts with the chosen row in yellow; the Upgrades screen cannot be reached, so its frame cannot be made."
+        }
+      ]
+    },
+    {
+      "run": "day-plain-10",
+      "job": "day",
+      "arm": "plain",
+      "n": 10,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 53132,
+        "tool_uses": 14,
+        "duration_s": 258.5,
+        "by_kind": {
+          "input": 22,
+          "cache_write": 47787,
+          "cache_read": 405403,
+          "output": 35805,
+          "requests": 11,
+          "context_at_end": 53132
+        },
+        "weighted": 279321,
+        "cost_usd": 0.5897823000000001,
+        "turns": 15,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 4,
+        "bytes": 49864,
+        "text_lines": 1115,
+        "lines_by_kind": {
+          ".json": 124,
+          ".md": 38,
+          ".py": 953
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 59,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 61,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Headless stdout is written in the console locale encoding (cp1252 on this Windows machine), not UTF-8, so Spanish texts come out as cp1252 bytes when piped.",
+        "Frame labels STALL, AISLE, QUEUE, TILLS, FREE, END are hard-coded English and stay English when the language is Spanish.",
+        "Frame font draws Spanish accented letters without their marks (stated in README).",
+        "Spanish uses Pausa both for the Paused screen and for the Hold speed."
+      ],
+      "judge": {
+        "tokens": 121484,
+        "tool_uses": 49,
+        "duration_s": 596.7,
+        "by_kind": {
+          "input": 74,
+          "cache_write": 116139,
+          "cache_read": 2947189,
+          "output": 56252,
+          "requests": 37,
+          "context_at_end": 121484
+        },
+        "weighted": 721227,
+        "cost_usd": 2.6438858,
+        "turns": 50,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "day-plain-2",
+      "job": "day",
+      "arm": "plain",
+      "n": 2,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 63553,
+        "tool_uses": 21,
+        "duration_s": 321.4,
+        "by_kind": {
+          "input": 34,
+          "cache_write": 58208,
+          "cache_read": 765498,
+          "output": 44205,
+          "requests": 17,
+          "context_at_end": 63553
+        },
+        "weighted": 370369,
+        "cost_usd": 0.7514997999999999,
+        "turns": 22,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 8,
+        "bytes": 57062,
+        "text_lines": 1441,
+        "lines_by_kind": {
+          ".json": 232,
+          ".md": 46,
+          ".py": 1163
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 59,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 61,
+          "of": 61
+        }
+      },
+      "defects": [
+        "The headless run prints its JSON with ensure_ascii=False in the console code page (cp1252 here), not UTF-8: a reader decoding UTF-8 fails on Spanish texts (I had to decode as cp1252), and a character outside the code page would crash the print.",
+        "The frame font is ASCII only: Spanish accents are dropped in the PNG (README says so).",
+        "The window mode (play) was never run by the builder and was not run here (it opens a window)."
+      ],
+      "judge": {
+        "tokens": 132541,
+        "tool_uses": 57,
+        "duration_s": 1281.6,
+        "by_kind": {
+          "input": 72,
+          "cache_write": 127196,
+          "cache_read": 2946109,
+          "output": 58607,
+          "requests": 36,
+          "context_at_end": 132541
+        },
+        "weighted": 746713,
+        "cost_usd": 2.7792178,
+        "turns": 58,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "day-plain-3",
+      "job": "day",
+      "arm": "plain",
+      "n": 3,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 61617,
+        "tool_uses": 22,
+        "duration_s": 296.1,
+        "by_kind": {
+          "input": 28,
+          "cache_write": 56272,
+          "cache_read": 555358,
+          "output": 41812,
+          "requests": 14,
+          "context_at_end": 61617
+        },
+        "weighted": 334964,
+        "cost_usd": 0.6987997999999997,
+        "turns": 23,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 13,
+        "bytes": 59904,
+        "text_lines": 1410,
+        "lines_by_kind": {
+          ".json": 146,
+          ".md": 37,
+          ".py": 1227
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 57,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 59,
+          "of": 61
+        }
+      },
+      "defects": [
+        "The seed enters the splitmix64 state linearly (seed*GOLDEN + ...), so nearby seeds give the same random stream shifted by a step: different seeds often produce identical visitor lists (5, 6, 9; 3, 4; 7, 8).",
+        "Evening frame with exactly 17 lines (e.g. an order delivered, no stamp) draws the last line 'Tomorrow: ...' half outside the 480px image.",
+        "Frame font has no accents: Spanish text is drawn without accents in the PNG (README admits it)."
+      ],
+      "judge": {
+        "tokens": 134681,
+        "tool_uses": 55,
+        "duration_s": 715.2,
+        "by_kind": {
+          "input": 88,
+          "cache_write": 129336,
+          "cache_read": 4058601,
+          "output": 60472,
+          "requests": 44,
+          "context_at_end": 134681
+        },
+        "weighted": 869978,
+        "cost_usd": 3.0562001999999997,
+        "turns": 56,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "d26",
+          "evidence": "Lists are well formed (ids 1.., minutes increasing in 0..479, wants distinct and 2/1/2/3) and same seed repeats, but another seed does not give another list: day-1 visitor lists of seeds 5, 6 and 9 are identical, so are 3 and 4, and 7 and 8 (seeds shift the same splitmix stream)."
+        },
+        {
+          "id": "d60",
+          "evidence": "Title, slots, settings, morning, upgrades, paused, season over frames show texts with the chosen row highlighted, but the Evening frame with 17 texts (order delivered, no stamp) clips the last line 'Tomorrow: Sun' off the bottom of the 480px image (render.py only tightens spacing above 17 lines)."
+        }
+      ]
+    },
+    {
+      "run": "day-plain-4",
+      "job": "day",
+      "arm": "plain",
+      "n": 4,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 63117,
+        "tool_uses": 27,
+        "duration_s": 299.7,
+        "by_kind": {
+          "input": 30,
+          "cache_write": 57772,
+          "cache_read": 653317,
+          "output": 43881,
+          "requests": 15,
+          "context_at_end": 63117
+        },
+        "weighted": 356982,
+        "cost_usd": 0.7352897,
+        "turns": 28,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 17,
+        "bytes": 66663,
+        "text_lines": 1369,
+        "lines_by_kind": {
+          ".json": 143,
+          ".md": 48,
+          ".py": 1178
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 59,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 61,
+          "of": 61
+        }
+      },
+      "defects": [
+        "The headless run prints the JSON with ensure_ascii=False through the console code page, so on this machine Spanish texts (Español, Día, Mañana) come out cp1252, not UTF-8, when stdout is piped; a UTF-8 reader fails to decode it.",
+        "The frame font has capitals only, so every text is drawn upper case (MORNING, APPLES) rather than as the strings read.",
+        "Spanish uses Mañana both for the Morning heading and the Tomorrow: line.",
+        "Adding a seventh good needs code changes (the draws and next_good use 6), as the README admits; upgrade and stamp effects are code, only their numbers are data.",
+        "Window mode (--play, tkinter) was not run by the builder or by me."
+      ],
+      "judge": {
+        "tokens": 108059,
+        "tool_uses": 46,
+        "duration_s": 737.8,
+        "by_kind": {
+          "input": 50,
+          "cache_write": 102714,
+          "cache_read": 1711826,
+          "output": 43848,
+          "requests": 25,
+          "context_at_end": 108059
+        },
+        "weighted": 518865,
+        "cost_usd": 2.0412372,
+        "turns": 47,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "day-plain-5",
+      "job": "day",
+      "arm": "plain",
+      "n": 5,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 60428,
+        "tool_uses": 21,
+        "duration_s": 295.7,
+        "by_kind": {
+          "input": 26,
+          "cache_write": 55083,
+          "cache_read": 528761,
+          "output": 42191,
+          "requests": 13,
+          "context_at_end": 60428
+        },
+        "weighted": 332711,
+        "cost_usd": 0.6951701000000001,
+        "turns": 22,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 11,
+        "bytes": 54440,
+        "text_lines": 1269,
+        "lines_by_kind": {
+          ".json": 140,
+          ".md": 47,
+          ".py": 1082
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 59,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 61,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Day frame: crate labels in the stall cells overlap their price digits (e.g. 'Ho' over '9'), still readable.",
+        "Spanish frames draw accented letters without accents (README admits it); the JSON texts carry the accents.",
+        "Spanish 'Enter: abrir' / 'Enter: titulo' keep the key name 'Enter' (a key label, not left-over English text).",
+        "The play window (tkinter) was not run by the builder and not by me."
+      ],
+      "judge": {
+        "tokens": 111973,
+        "tool_uses": 64,
+        "duration_s": 701.1,
+        "by_kind": {
+          "input": 64,
+          "cache_write": 106628,
+          "cache_read": 2280110,
+          "output": 41221,
+          "requests": 32,
+          "context_at_end": 111973
+        },
+        "weighted": 567465,
+        "cost_usd": 2.1337219999999997,
+        "turns": 65,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "day-plain-6",
+      "job": "day",
+      "arm": "plain",
+      "n": 6,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 59715,
+        "tool_uses": 23,
+        "duration_s": 263.2,
+        "by_kind": {
+          "input": 26,
+          "cache_write": 54370,
+          "cache_read": 517426,
+          "output": 40554,
+          "requests": 13,
+          "context_at_end": 59715
+        },
+        "weighted": 322501,
+        "cost_usd": 0.6748146,
+        "turns": 24,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 12,
+        "bytes": 56127,
+        "text_lines": 1257,
+        "lines_by_kind": {
+          ".json": 133,
+          ".md": 42,
+          ".py": 1082
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 59,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 61,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Spanish strings drop every accent and the n tilde (Manana, Dia, Espanol, Reputacion, Titulo); the Records heading and menu entry keep the English spelling 'Records' instead of a Spanish form such as 'Récords' or 'Registros'.",
+        "A visitor whose basket was empty takes from the front crate and then, in the same minute, also from the back crate of that column; the brief's 'if its basket already holds something' could also be read as 'before looking', which would forbid that.",
+        "Per the README a kept file that cannot be read is silently treated as the default (e.g. a corrupt records.json loses the records without warning)."
+      ],
+      "judge": {
+        "tokens": 117922,
+        "tool_uses": 52,
+        "duration_s": 442.9,
+        "by_kind": {
+          "input": 60,
+          "cache_write": 112577,
+          "cache_read": 2304130,
+          "output": 43721,
+          "requests": 30,
+          "context_at_end": 117922
+        },
+        "weighted": 589799,
+        "cost_usd": 2.2361019999999994,
+        "turns": 53,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "day-plain-7",
+      "job": "day",
+      "arm": "plain",
+      "n": 7,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 61126,
+        "tool_uses": 24,
+        "duration_s": 276.7,
+        "by_kind": {
+          "input": 28,
+          "cache_write": 55781,
+          "cache_read": 578871,
+          "output": 41784,
+          "requests": 14,
+          "context_at_end": 61126
+        },
+        "weighted": 336561,
+        "cost_usd": 0.6989071,
+        "turns": 25,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 11,
+        "bytes": 53735,
+        "text_lines": 1221,
+        "lines_by_kind": {
+          ".json": 137,
+          ".md": 53,
+          ".py": 1031
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 58,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 60,
+          "of": 61
+        }
+      },
+      "defects": [
+        "The headless run prints its JSON in the console code page (cp1252 here), not UTF-8, when piped. With Spanish texts the output is not valid UTF-8 (byte 0xf1 for n-tilde), so a UTF-8 reader fails until it decodes as cp1252.",
+        "Frame text is limited to 30 characters per line, and accents are dropped (the README says so). Longer lines such as the Evening good lines and the Spanish evening lines are cut off in the PNG.",
+        "With no --store, the kept files go to work/save, inside the game folder."
+      ],
+      "judge": {
+        "tokens": 118970,
+        "tool_uses": 55,
+        "duration_s": 698.1,
+        "by_kind": {
+          "input": 70,
+          "cache_write": 113625,
+          "cache_read": 2736850,
+          "output": 54396,
+          "requests": 35,
+          "context_at_end": 118970
+        },
+        "weighted": 687766,
+        "cost_usd": 2.5445699999999998,
+        "turns": 56,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "d60",
+          "evidence": "Title, settings, morning, upgrades, paused and season-over frames show their texts with the chosen row marked, but render.py cuts every line at 30 characters, so the Evening frame shows 'APPLES: SOLD 12, SPOILED 0, LE' and the 'left N' part of every good line is missing."
+        }
+      ]
+    },
+    {
+      "run": "day-plain-8",
+      "job": "day",
+      "arm": "plain",
+      "n": 8,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 63636,
+        "tool_uses": 23,
+        "duration_s": 296.6,
+        "by_kind": {
+          "input": 24,
+          "cache_write": 58291,
+          "cache_read": 502490,
+          "output": 45530,
+          "requests": 12,
+          "context_at_end": 63636
+        },
+        "weighted": 350787,
+        "cost_usd": 0.738761,
+        "turns": 24,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 14,
+        "bytes": 56906,
+        "text_lines": 1387,
+        "lines_by_kind": {
+          ".json": 154,
+          ".md": 53,
+          ".py": 1180
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 59,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 61,
+          "of": 61
+        }
+      },
+      "defects": [
+        "Stall texts draw the grid with the first letter of each good's name: Fish and Flowers are both F in English; in Spanish Manzanas/Miel are both M and Pan/Pescado both P.",
+        "Frame labels AISLE, QUEUE, TILLS, FRONT ROW IS BOTTOM and 'til N' are hard-coded English and are not translated in Spanish.",
+        "The frame font has no '#' glyph, so tills show '?19' for visitor 19; accents are dropped in frames (README says so)."
+      ],
+      "judge": {
+        "tokens": 130290,
+        "tool_uses": 54,
+        "duration_s": 869.8,
+        "by_kind": {
+          "input": 72,
+          "cache_write": 124945,
+          "cache_read": 2880496,
+          "output": 56722,
+          "requests": 36,
+          "context_at_end": 130290
+        },
+        "weighted": 727913,
+        "cost_usd": 2.7103872,
+        "turns": 55,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "day-plain-9",
+      "job": "day",
+      "arm": "plain",
+      "n": 9,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 57253,
+        "tool_uses": 19,
+        "duration_s": 245.3,
+        "by_kind": {
+          "input": 32,
+          "cache_write": 51908,
+          "cache_read": 643882,
+          "output": 37730,
+          "requests": 16,
+          "context_at_end": 57253
+        },
+        "weighted": 317955,
+        "cost_usd": 0.6493842,
+        "turns": 20,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 10,
+        "bytes": 61970,
+        "text_lines": 1327,
+        "lines_by_kind": {
+          ".json": 134,
+          ".md": 38,
+          ".py": 1155
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 58,
+          "of": 59
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 60,
+          "of": 61
+        }
+      },
+      "defects": [
+        "The state JSON is printed with ensure_ascii=False in the console's code page (cp1252 here), not UTF-8, so Spanish texts are not valid UTF-8 for a reader expecting it.",
+        "README says the default store is ./save, but the code defaults to a save folder beside daymarket.py (inside the game folder).",
+        "Paused over the Stall or Day: the frame does not mark Resume/Title as chosen.",
+        "Visitor labels in the day frame show only the last digit of the id (26 drawn as 6).",
+        "Spanish keeps the key name 'Enter' in 'Enter: abrir' and 'Enter: título'."
+      ],
+      "judge": {
+        "tokens": 121525,
+        "tool_uses": 55,
+        "duration_s": 542.9,
+        "by_kind": {
+          "input": 72,
+          "cache_write": 116180,
+          "cache_read": 2814335,
+          "output": 53137,
+          "requests": 36,
+          "context_at_end": 121525
+        },
+        "weighted": 692416,
+        "cost_usd": 2.555335000000001,
+        "turns": 56,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "d60",
+          "evidence": "Title, slots, settings, morning, upgrades frames mark the chosen row with '>' and a bar; evening and season over show their texts. But Paused from the Stall (or Day) shows Paused/Resume/Title with no row marked, even with menu_index 1 (frame.py draws paused-over-stall without the menu marker)."
+        }
+      ]
+    }
+  ]
+}
