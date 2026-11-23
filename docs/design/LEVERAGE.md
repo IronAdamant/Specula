@@ -1710,15 +1710,16 @@ holds on that job; above 3.0, it does not; between, the runs are doubled. Record
 | Engine, weighted tokens (mean; lowest to highest) | 471,262; 289,548 to 590,538 | 987,209; 710,147 to 1,739,856 |
 | Plain | 130,754; 124,057 to 139,615 | 328,019; 278,043 to 370,369 |
 | **Engine over plain, builders** (95% interval, resampled) | **3.60** (2.74 to 4.41) | **3.01** (2.49 to 3.67) |
-| Engine over plain, builders with judges | 2.13 (1.82 to 2.45) | 1.86 (1.61 to 2.15) |
+| Engine over plain, builders with judges | 2.13 (1.82 to 2.45) | 1.84 (1.56 to 2.14) |
 | Requests, engine and plain | 15 to 37; 6 to 8 | 30 to 79; 11 to 17 |
 | Minutes | 12 and 2 | 15 and 5 |
 | Checks passed | 33.8 and 33.8 of 34 | 54.2 and 59.8 of 61 |
 | Engine builders that read the repository | 4 of 5 (0 to 4 requests) | 10 of 10 (1 to 15 requests) |
 | Cost at list prices (USD) | 21.01 | about 84 (builds 24, judging 60 with two judgings that left no verdict) |
 
-**By the rule, the engine holds on neither job.** Night Market's interval lies between 2.7
-and 4.4; Day Market's lies across the 3.0 line, and "about three times" is all it supports.
+**By the rule, the engine holds on neither job.** By the point estimates, that is: both intervals
+(2.74 to 4.41, 2.49 to 3.67) reach into the band between 2.2 and 3.0, so neither is settled
+as the first Night Market was (7.39, wholly above 3.0).
 
 **What the one mend did.** Night Market was 7.39 with 32.2 of 34 checks; with a word given
 again pressed again it is 3.60 with the checks level. The engine arm's cost halved
@@ -1732,7 +1733,7 @@ one sitting) is still untested.
 
 **Why the engine arm passes fewer checks on Day Market** (68 failed items against 12):
 
-- *A fault of the engine's, in six of ten games:* the Evening screen shows a placeholder
+- *A fault of the engine's, in five of ten games:* the Evening screen shows a placeholder
   (`{work.disp}`) where its text should be. A text a module keeps for a screen is dropped
   without a word when it is longer than 256 characters (`MAX_SHOWN_TEXT`), and the run's
   warning then says "nothing keeps" the value, which is untrue and points the wrong way. No
@@ -1760,8 +1761,9 @@ The builder ran to its own end; its cost is from its stream (`leverage record`),
 harness's row shows no price or request count for it (the stream has 43 requests). A harness
 a builder can stop by name is a fault of the harness.
 
-**The reading, kept to what the runs say.** Across three large jobs the engine arm now costs
-1.9, 3.6 and 3.0 times a plain build, each in one sitting for the plain builder. Where it
+**The reading, kept to what the runs say.** The job the guide was
+fitted to stands at 1.9; a job it was not fitted to at 7.4, and 3.6 after one mend; a new job at
+3.0; each one sitting for a plain builder. Where it
 was far above that, a fault of the engine's was found and its mend moved the figure (7.39 to
 3.60). Nothing here shows the engine at or under a plain build's cost on a 2D game; nothing
 tests a game larger than a sitting. Counting the judges, the engine arm is about twice a
@@ -1769,3 +1771,43 @@ plain build's cost on both jobs.
 
 **Not done, and frozen until the second reader has read these runs:** the 256-character
 limit and its warning; a run the rules can end; judging the two arms on equal terms.
+
+### The second reader's assessment and two review passes, and what they correct (2026-11-23)
+
+The second reader recomputed every figure from the runs' token counts, read the engine at
+the pushed commit in two independent passes, ran the build, the tests and clippy on Linux
+(3,579 tests passed), and reproduced the faults below with tests of its own. The builders'
+ratios, the account of the hand-recorded run and the mend's effect on Night Market hold.
+Corrected above, in place:
+
+- **Day Market with the judges counted is 1.84 (1.56 to 2.14), not 1.86.** The lead's script
+  read the discarded first judging of the two runs judged again.
+- **The placeholder fault is five of ten games, not six**, by the verdicts' own words.
+- **"1.9, 3.6 and 3.0" read as a trend and left 7.39 out.**
+- **Both intervals, not Day Market's alone, reach into the band between 2.2 and 3.0.** "Does
+  not hold" is what the point estimates say; the runs do not settle it.
+
+What the lead had not said, or had wrong:
+
+- **Several words at one tick are a second fault of input, still open**: the runner gives
+  every word of a tick before any tick runs, each letting go of the one before, so the rules
+  see one press of the last. The lead had called the faults of input one fault.
+- **Quit is refused before it is ignored**: a script's press on a Quit button is an agent's
+  to the shell, and quitting is the player's alone; and a run reports the tick its script
+  had reached, not the ticks that played.
+- **The judging is not blind** (a run's brief names its arm) **and not equal** (the time
+  given, and how far a judge can reach). The second reader's count: 31 of the engine arm's
+  68 failed items are a state not reached; none of the plain arm's 12.
+- **The lead's brief to the clean agent was not neutral**: it asked for words that act once
+  at their tick, the lesson of Night Market, on the day the engine was mended for it. A fair
+  thing for a brief to ask, and a weaker independent test than it looks.
+- **Day Market is not large**, and should not be enlarged from its own pilot: the job that
+  outgrows a sitting needs an author who has not seen these ledgers.
+
+**Agreed next** (the owner: "Fix all"): the three faults mended (a long text shown, and a
+dropped one said truly; a quit that ends a headless run with the state as it stood; several
+words at one tick each acting in order); the guide otherwise frozen and Day Market's brief
+untouched; then Day Market again with fresh plain runs; its games judged again by both arms
+from one shared pack of scripts, the first verdicts kept. A good figure there will say the
+faults are gone, not that the engine generalises: the job will then be one the engine was
+mended against, as the first large job was.

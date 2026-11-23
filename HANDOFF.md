@@ -180,16 +180,20 @@ rounds.
   Night Market again: **3.60** (interval 2.74 to 4.41), from 7.39, checks level at 33.8 of
   34: the one mend halved the engine arm's cost. Day Market, doubled by the rule to ten and
   ten: **3.01** (2.49 to 3.67), 54.2 against 59.8 of 61 checks; all ten engine builders read
-  the repository. With the judges counted: 2.13 and 1.86
+  the repository. With the judges counted: 2.13 and 1.84
   ([LEVERAGE.md](docs/design/LEVERAGE.md), the last results). A plain build of Day Market is
   still one sitting (11 to 17 requests), so the first bar is still untested. **Found, not
   mended, frozen until the second reader has read the runs:** a text a module keeps for a
   screen is dropped without a word past 256 characters and the warning says "nothing keeps"
-  it (six of ten games failed an item so); the rules cannot end a headless run; judges
+  it (five of ten games failed an item so); the rules cannot end a headless run; judges
   reach fewer states in an engine game than in a plain one, so the checks understate the
   engine arm by an unknown amount; a builder stopped the harness by stopping `examen` by
-  name (its run was recorded by hand from its stream). Across three large jobs the engine
-  arm is 1.9, 3.6 and 3.0 times a plain build.
+  name (its run was recorded by hand from its stream). The job the guide was fitted to
+  stands at 1.9; one it was not at 7.4, then 3.6 after one mend; a new one at 3.0. Both
+  intervals reach into the band between 2.2 and 3.0. **The second reader confirmed the
+  figures and the three faults (a long text dropped, quit, several words at one tick) and
+  corrected four statements; the owner: "Fix all".** The mends are being made; then Day
+  Market again, and its games judged again from one shared pack of scripts.
 - **The second large job (2026-11-23; 25.83 USD): engine over plain 7.39. By the rule set
   before the number, 1.92 was fitted to one brief.** Night Market, written by the second
   reader and loaded as given; the engine and its guide frozen at `3207626c`; five engine and
