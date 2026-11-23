@@ -1,6 +1,6 @@
 # Design: the library of effects (`specula-effectus`, `specula-elementa`)
 
-Status: **designed, not built** (lane `m6-effectus`, 2026-11-24). Nothing in this note exists yet
+Status: **designed; Elementa's pure crate built (stage 5, below), the rest not built** (lane `m6-effectus`, 2026-11-24). Nothing in this note exists yet
 except where it says "I read" or "exists". Foundations F1 (an agent finds and changes an effect by
 name and numbers, in a batch, bounded), F2 (behaviour is simulation and holds its rules; looks are
 reproducible), F3 (the Intel iGPU is the reference; every cost known before spawning), F5 (every
@@ -348,6 +348,202 @@ new request op `element` (`Cx::element(id)`), and starts behaviour with ops `ign
 `Cx::push` is. **What a frozen or burning creature does is the rules' decision**: Elementa tells
 them it is in a `frozen` cell; a Lex `effect` such as `slow` or a module's own status does the
 rest.
+
+## Elementa as built (stage 5, the pure crate)
+
+Built in `crates/specula-elementa` (lane `m6-elementa`, 2026-11-24): std and `specula-core`
+only, `[lints] workspace = true`, the determinism `clippy.toml`, listed under `SIMULATION`.
+Nothing of the engine calls it yet (stage 6). What the note above left open, decided here:
+
+**Changed from the note, and why.**
+
+- **`cell_m` and `reach_m` are two numbers.** The note's "reach is its size plus `cell_m`" gave
+  one number two jobs. `cell_m` (default 2 m, 0.25..64) is the neighbour grid's cell;
+  `reach_m` (default 0.5 m, 0..`cell_m`) is the gap between two things' boxes that heat
+  crosses. Holding the reach within one cell is what keeps a query inside its cells (below).
+- **Nodes: 32,768 at most**, not 16,384 (the default stays 4,096): the forest this stage was
+  asked to hold is 20,000 nodes. The worst case at 32,768 is said before a run (below).
+- **Past the node limit**, `add` refuses the node with the limit's number (`limit`, `max`,
+  `asked`) and `add_many` keeps the lowest ids of the batch and reports how many were left
+  out. Both count into `refused`, which is saved and shown.
+- **Acts in stage 5: `ignite`, `chill`, `wet`**, on a node or a sphere (radius up to 64 m), at
+  most 64 between two ticks. `blast`, `strike`, `push` and wind zones are stages 9 and 10; the
+  materials already carry `conducts` for the strike. Water does not wet its neighbours yet
+  (stage 8: rain wetting its area).
+- **A node's box is its entity's world bounds** (centre and half size), not a sphere: gaps are
+  box to box, so a long log and a wall are what they look like.
+
+**The state and the step.** Each node keeps `heat` (−1..1), `fuel` (seconds), `wet` (0..1), a
+phase (intact, burning, burnt, frozen) and `since` (the tick it began). The world gives a wind
+(m/s; `world_env.wind.strength` 1 is 4 m/s, question 6) and an ambient heat (−1..1; below the
+freezing line of a material it freezes). `step()` is called every tick; every
+`tick_hz / spread_hz` ticks (6 at 60 Hz) a spread step of `dt = 1 / spread_hz` s runs:
+
+1. **Heat given.** Each burning node, in id order from a cursor, gives each neighbour within
+   the reach `heat_out × (1 − gap / reach) × lean × dt`, where
+   `lean = max(W_MIN, 1 + K_WIND × (wind · u) + K_UP × u.y)` and `u` is the unit vector from
+   the burning centre to the neighbour's. Gains are summed first and applied after, so no
+   node's place in the order changes another's result. A burning node of a material with
+   `embers` throws, with chance `embers × dt` (one draw of the run's stream per node and step,
+   only in a wind of at least 1 m/s), an ember downwind past its box by
+   `reach + U(0,1) × 3 m × min(wind / 4 m/s, 4)`; it gives 0.25 heat to what it lands in.
+2. **Taken in.** Wetness takes heat first (`LATENT`: 0.5 heat dries wet 1 to 0); the rest
+   raises heat, to at most 1. Ice's water is held: a frozen node warms without drying.
+3. **What ends**, in id order: a burning node at wetness 0.5 or more goes out (`by: wet`),
+   below its `ignite` goes out (`by: cold`; it keeps its fuel), with no fuel left burns out;
+   an intact node at or below its `freeze` freezes; a frozen one above `freeze + 0.1` thaws.
+4. **What catches**, in id order: an intact node with fuel, heat at or above its `ignite` and
+   wetness at most 0.05, while fewer than `limits.burning` burn; the rest wait (counted).
+5. **Time.** A burning node burns `dt` of fuel, moves `min(1, 2 × dt)` of the way to its
+   `flame` heat and dries 0.1 a second; any other moves `min(1, cool × dt)` of the way to the
+   ambient heat and dries `1/600 + 0.05 × max(heat, 0)` a second, never below its `quench`.
+6. **Events**, sorted by node id and then kind (ignited, burnt, extinguished, frozen, thawed),
+   queued for the engine to take; at most 64 of a kind named, the rest counted.
+
+So the time for heat to cross one gap is a recurrence, not a guess: `steps_to_ignite(from, to)`
+runs the same arithmetic in the same order and a run equals it exactly (the line test holds
+every one of 40 gaps to it, both ways).
+
+**Elementa's numbers.** None is measured from real materials; each is the engine's own, chosen
+so that a fire reads at game speed and an agent can predict it. The shape of the wind's effect
+follows what fire science reports (a head fire runs many times faster than a fire backing into
+the wind; Rothermel's 1972 spread model is the usual reference), but no number is taken from it.
+
+| Constant | Value | Why this value |
+|---|---|---|
+| `K_WIND` | 0.25 per m/s | a 4 m/s wind (strength 1, a breeze) doubles the heat given downwind |
+| `W_MIN` | 0.1 | a fire backing into a strong wind still creeps, at a tenth |
+| `K_UP` | 0.5 | heat rises: a thing above gets 1.5 times, below 0.5 times (+Y up, 2D and 3D alike) |
+| `LATENT` | 0.5 | a soaked thing takes 0.5 heat to dry, more than catching dry wood takes (0.35): wet visibly resists |
+| `WET_BLOCK` | 0.05 | damp is not wet: a nearly dry thing catches |
+| `DOUSE` | 0.5 | half soaked puts a fire out |
+| `DRY_BASE`, `DRY_HOT` | 1/600 s⁻¹, 0.05 s⁻¹ per heat | wet dries in ten minutes alone, in seconds beside a fire |
+| `BURN_DRY` | 0.1 s⁻¹ | a fire dries itself; a douse under 0.5 is beaten in a few seconds |
+| `FLAME_RATE` | 2 s⁻¹ | a burning thing settles at its flame heat in about a second |
+| `THAW_MARGIN` | 0.1 | a thing at its freezing line does not freeze and thaw every step |
+| ember heat, range, wind | 0.25, 3 m, 1 m/s | one ember warms; two close together light dry wood; calm air carries none |
+
+The built-in materials (a project overrides any field and adds its own; a new burning material
+with no `flame`, `burn_s` or `heat_out` gets midway to 1, 10 s and 0.5):
+
+| Material | ignite | burn_s | heat_out | flame | cool | embers | conducts | freeze | quench | starts at |
+|---|---|---|---|---|---|---|---|---|---|---|
+| cloth | 0.25 | 12 | 0.5 | 0.7 | 0.2 | 0.03 | | | | 0 |
+| flesh | 0.6 | 8 | 0.2 | 0.7 | 0.3 | | | | | 0 |
+| grass | 0.2 | 6 | 0.4 | 0.6 | 0.2 | 0.02 | | | | 0 |
+| ice | | | | | 0.02 | | | −0.2 | 1 | −0.6 (frozen) |
+| metal | | | | | 0.3 | | yes | | | 0 |
+| oil | 0.15 | 20 | 1.0 | 0.95 | 0.1 | | | | | 0 |
+| snow | | | | | 0.05 | | | −0.1 | 0.5 | −0.4 (frozen) |
+| stone | | | | | 0.05 | | | | | 0 |
+| water | | | | | 0.1 | | yes | −0.5 | 1 | 0 |
+| wood | 0.35 | 40 | 0.6 | 0.8 | 0.1 | 0.05 | | | | 0 |
+
+Ice in a world at ambient 0 thaws over a few minutes, as it would; a world that keeps it sets
+its ambient heat below −0.2. Water never warms from a fire (its quench of 1 takes the heat as
+drying), so a pond is never lit and never boils.
+
+**`elements.json`**, as parsed: `{"elements": 1, "materials": {...}, "tags": {...}, "cell_m",
+"reach_m", "spread_hz", "limits": {"nodes", "burning", "work"}}`. At most 64 KB (refused
+before parsing), 64 materials, 1,024 tags, names of 1 to 32 bytes of `a-z0-9_`; every key
+known (`unknown_key` lists the known ones), every number finite and in its range
+(`out_of_range` names the path, the value and the range), a key given twice refused, a tag
+naming no material refused, `"ignite": null` takes a threshold away, and a burning material's
+`flame` must be above its `ignite` (or it would put itself out). The engine's tick rate must be
+a whole multiple of `spread_hz` (1..60).
+
+**Near, without hashing.** Space is cut into cubes of `cell_m`. Each node is entered in every
+cell its box overlaps, at most 64 (refused at `add` as `too_large`, with the count, otherwise:
+a tree 1 × 10 × 1 m covers at most 2 × 6 × 2 cells of 2 m); the entries are one `Vec` of
+(cell, node) sorted by cell. A cell's nodes are a binary search away; a query walks its cells
+in x, y, z order and counts a node met in several cells once, in the first cell the two boxes
+share, so no set is needed. Since the reach is at most a cell, a burning node's query covers at
+most `(a+2)(b+2)(c+2)` cells where `abc ≤ 64`, so at most 594 lookups. The grid is derived:
+rebuilt (one sort) at the first step or act after a node is added, removed or moved, never
+saved or hashed.
+
+**What it costs for 20,000 nodes** (counted by the test `a_forest_of_20000_steps_within_the_
+stated_work_bound`, never timed: a 141 × 142 m forest at 1 m spacing, wood 0.7 × 3 × 0.7 m and
+grass 0.6 × 0.4 × 0.6 m, `reach_m` 1, a 4 m/s wind): 64,416 grid entries (3.2 a node; about
+1 MB, and 1.1 MB of nodes); every spread step 20,000 node updates plus at most the work limit
+(32,768); a burning node's heating costs about 97 lookups and checks in this forest, so the
+default work limit heats about 340 burning nodes a step and the rest wait for the next (in
+1,168 of 1,200 steps the budget or the burning limit of 512 was reached; the fire still spread
+to over 3,000 things in two minutes). **Work** is cell lookups plus neighbour checks;
+`StepReport` says each, and `work ≤ limits.work` every step is what the test asserts.
+
+**Bounded, and said before a run.** `Config::worst_case()`: ops per spread step at most
+`limits.nodes + limits.work` (52,768 at the default 4,096 and 32,768; 65,536 at 32,768 nodes);
+grid entries at most 64 a node; memory at most about 60 bytes a node plus 16 bytes an entry (at
+32,768 nodes, the worst 35 MB; the 20,000-node forest above about 2 MB). A step that would pass the
+work limit stops at it, in the middle of a node's query if it must, and the next step starts
+from the first burning node it did not reach (a cursor, saved): deterministic, and reported as
+`deferred` and `truncated`. Between spread steps a tick does nothing (0 ops). An act's work is
+at most the node count (a sphere with more cells than there are nodes looks at each node once).
+
+**The prediction.** `Elementa::check(&Scenario {acts, wind, ambient, ticks, max_ops})` runs the
+scenario on a copy (the state is untouched), at most 36,000 ticks and `max_ops` ops, and
+answers `Prediction`: how many caught, burnt out, were put out, froze and thawed; up to 64 burnt
+ids; the peak burning; the first and last ignition and when the fire went out; the ops spent,
+the worst step, the steps cut, the most that waited; `bound_ops` (the steps times the worst
+step, said before it runs); `cut` when `max_ops` stopped it; and the end state's hash. A test
+holds that a run of the same scenario gives the same counts and the same hash.
+
+**The save section `elementa`, version 1.** Self-contained: the config it ran under (every
+material, tag, the grid, the limits), the tick rate, tick, the stream's two words, the cursor,
+`refused`, wind, ambient, every node (id, material, centre, half, heat, fuel, wet, phase,
+since) in id order, and the events still waiting. Floats are their bits. On load: every count
+against its cap and the bytes left before anything is allocated (`r.count`), the config by the
+same `validate` a file passes, ids strictly rising, materials in the table, every number in its
+range, a phase its material allows (only what can burn burns, only what can freeze is frozen),
+no `since` or event after the save's tick, at most the burning limit burning, at most 64 named
+events a kind, nothing left over. A load saves to the same bytes and continues to the same hash
+(tested 600 ticks past a save taken mid-fire). The fuzzing test cuts the section at every
+length, flips every bit (and runs 60 ticks after every seventh flip that loads), and makes
+3,000 random edits with extreme values (stepping every edit that loads); nothing panics or
+hangs, and a count of `u32::MAX` is refused before allocation.
+
+**The hash** (`Elementa::hash`) covers the config's hash, tick rate, tick, stream, cursor,
+`refused`, wind, ambient, every node's every field, and the waiting events. Tested: the same
+seed and inputs give the same hash at each of 10,000 ticks, twice, and with the nodes added in
+a batch, one at a time in reverse, and in interleaved batches; another seed differs.
+
+**For the engine's lane (stage 6).** What it calls, all in `specula_elementa`:
+
+- *Setting up.* `Config::parse(&text)` for `elements.json` (or `Config::default()`), then
+  `Elementa::new(config, tick_hz, seed)`. `config.tag(tag)` and `config.material(name)` map an
+  entity to a material index. `config.worst_case()` and `elementa.info()` (JSON, a few hundred
+  bytes) for `elementa_info`.
+- *The change feed.* `add(NodeDesc::new(entity_id, material, centre, half))` (with
+  `.fuel(s)`, `.heat(h)`, `.wet(w)` from an `element` component), `add_many(&[...])` at a load
+  or a project start, `move_node(id, centre, half)` for an entity that moved, `remove(id)` for
+  one deleted. Errors are `ElementaError` (`code`, `message`, `details`; `to_json()`).
+- *The world.* `set_wind(Vec3)` in m/s (strength × 4) and `set_ambient(h)` whenever
+  `world_env` changes.
+- *Module ops.* `act(Act { kind: ActKind::Ignite | Chill | Wet, target: Target::Node(id) |
+  Target::Sphere { at, radius }, amount })` inside the tick that asks, as `Cx::push` is; the
+  answer's `ActReport` says how many it reached. `node(id)` answers `Cx::element(id)`.
+- *The tick.* `step()` once per tick, after physics and before the tick hash; it answers a
+  `StepReport` (for traces and `perf_frame`). Then `take_events()`: `Events { list, unnamed }`,
+  each `Event { tick, kind, id, at, by }`, `kind.name()` is the module event's name
+  (`element.ignited`, ...) and `Event::to_json()` its data; tell the modules at the next tick.
+- *The hash.* `hash()` into the tick hash and the save header's subsystem hashes.
+- *The save.* `save_state(&mut ByteWriter)` and `Elementa::restore_state(&mut ByteReader)`
+  (or `save()` and `load(&bytes)` for a whole section), section version `SECTION_VERSION` (1).
+  A load replaces the whole state, its config included; the engine compares the saved config's
+  hash with the project's file and says so if they differ.
+- *The prediction.* `check(&Scenario)` on a clone, on a worker (`Engine::offload`); it never
+  reads the world. `check_bound(ticks, acts)` is the ceiling to say before it runs.
+- *What the engine must decide:* whether a moved entity's node is moved every tick (each move
+  rebuilds the grid at the next step: one sort of all entries; batch the moves), and the order
+  the change feed adds nodes in (any order gives the same hash, below the node limit; past it
+  `add_many` keeps the lowest ids, `add` the first given).
+
+**Not done in stage 5, or unsure.** Insertion order changes nothing below the node limit; past
+it, single `add`s keep what came first, so an engine that adds in id order should use
+`add_many`. A burning node's heat to a node above it uses only the centres' direction, so a
+wide flat thing below a tall one leans less than it might. Burnt nodes stay tracked (counting
+against the node limit) until the engine removes them. Nothing here was run inside the engine.
 
 ## The look is the project's
 
