@@ -418,7 +418,7 @@ what follows from it:
   depth test; cutout sprites write depth and blended ones do not (sprite.rs). So an effect at
   z slightly behind a cutout layer is hidden by it, and an effect is always drawn over blended
   sprites whatever their layer. The 2D variant sets `soft` to 0 (a soft edge measured against a
-  coplanar sprite would fade the particles away: the probe below says what happens).
+  coplanar sprite fades the particles: the probe at the end saw it).
 - **Decals.** The decal pass is 3D only. In the 2D variant an entry's decal becomes a flat
   particle in the XY plane (E2) with the decal's life, up to Scintilla's 10 s; a mark that
   must stay longer is a sprite the game places.
@@ -683,4 +683,23 @@ Questions 2, 4, 6, 7, 8, 9 and 10 the lead can decide; 1, 3 and 5 touch what the
 
 ## What the probe showed
 
-(Filled in below by the lane after the probe ran.)
+A headless engine built from this branch's base (release, RTX 4090 Laptop GPU; not run on the
+integrated GPU), port 7820, `--settings off`. One `world_batch`: a flat cutout sprite 4 × 3 m at
+z = 0 (blue), a flat blended sprite 2.5 × 3 m at z = 0 (red), the built-in `fire` at z = 0 over
+the cutout, at z = +0.5 in front of it, at z = −0.5 behind it at its edge, at z = 0 over the
+blended sprite, and `sparks` in the open; one `sight_frame` with `view_2d` (centre [2, 0],
+7 m high, 960 × 540). Seen in the frame (the lane's own reading; not yet checked by another
+model; the frame is kept outside the repository, `C:/lv/lanes/fx/probe/2d_probe.png`):
+
+- the fire coplanar with the cutout sprite is **faint and washed out**: its soft edge (0.12 m)
+  fades it against the sprite's depth, as predicted. So the 2D variant sets `soft` to 0, or
+  puts the effect a little in front (z + a few centimetres);
+- the fire 0.5 m in front of the cutout draws whole;
+- the fire behind the cutout is **cut at the sprite's edge**: hidden over the sprite, drawn past
+  it. Cutout sprites do hide effects behind them by depth;
+- the fire over the blended sprite at the same z draws whole over it (no depth from blended
+  sprites);
+- the sparks fall and streak under the orthographic camera as in 3D.
+
+So particles already work in a 2D game; what the 2D variant needs is E7 (no motion along Z),
+`soft` 0 and a small z offset, and E2 for marks; nothing in the drawing path.
