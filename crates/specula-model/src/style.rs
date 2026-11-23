@@ -7,8 +7,15 @@
 //! { "style": "sepulcra",
 //!   "palette":   { "carved_highlight": "#aab4c0", ... },
 //!   "materials": { "carved_stone": { "color": "#8c96a3", "roughness": 0.75 },
-//!                  "wraith": { "kind": "glass", "color": "#9cff4f", "emissive": 0.8, "opacity": 0.35 } } }
+//!                  "wraith": { "kind": "glass", "color": "#9cff4f", "emissive": 0.8, "opacity": 0.35 } },
+//!   "roles":     { "coat": "carved_stone" } }
 //! ```
+//!
+//! **Roles** (docs/design/EXEMPLARIA.md, "The look is the project's"): a library entry names what
+//! a part is for (`coat`, `claw`, `hull`), never a preset of any one style. [`Style::role`]
+//! resolves a role to this style's preset of the same name, else through `roles`, else it is
+//! refused with the presets nearest in colour to the role's hint, so the same creature is built
+//! in each game's own materials.
 
 use std::collections::BTreeMap;
 
@@ -47,6 +54,30 @@ pub struct Style {
     pub name: String,
     pub palette: BTreeMap<String, Rgba>,
     pub materials: BTreeMap<String, MaterialPreset>,
+    /// A role (what a library entry's part is for) to one of `materials` by name.
+    pub roles: BTreeMap<String, String>,
+}
+
+/// Presets [`RoleMissing`] names: the nearest in colour to the role's hint.
+pub const ROLE_NEAREST: usize = 3;
+
+/// A role the style can't resolve: no preset of its name and no line in `roles`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoleMissing {
+    pub role: String,
+    /// The style's presets nearest in colour to the hint (at most [`ROLE_NEAREST`]; by name when
+    /// there is no hint).
+    pub nearest: Vec<String>,
+}
+
+impl std::fmt::Display for RoleMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the style has no preset for the role '{}': add \"roles\": {{\"{}\": PRESET}} to style.json", self.role, self.role)?;
+        if !self.nearest.is_empty() {
+            write!(f, " (nearest presets by colour: {})", self.nearest.join(", "))?;
+        }
+        Ok(())
+    }
 }
 
 /// `#rrggbb` or `#rrggbbaa` → sRGB 0..1.
@@ -86,10 +117,47 @@ impl Style {
                         style.materials.insert(name.clone(), parse_material(&path, m)?);
                     }
                 }
-                other => return Err(RecipeError::new(other, ErrorCode::UnknownField, "style accepts style, description, proposals, palette, materials")),
+                "roles" => {
+                    for (role, to) in v.as_object().ok_or_else(|| style_err("roles", "must be an object: {\"coat\": PRESET}"))? {
+                        let to = to.as_str().ok_or_else(|| style_err(&format!("roles.{role}"), "must be a material preset's name"))?;
+                        style.roles.insert(role.clone(), to.to_string());
+                    }
+                }
+                other => return Err(RecipeError::new(other, ErrorCode::UnknownField, "style accepts style, description, proposals, palette, materials, roles")),
+            }
+        }
+        // (Checked once every preset is read: `roles` may come before `materials`.)
+        for (role, to) in &style.roles {
+            if !style.materials.contains_key(to) {
+                let names: Vec<&str> = style.materials.keys().map(String::as_str).collect();
+                return Err(RecipeError::new(format!("roles.{role}"), ErrorCode::UnknownMaterial, format!("'{to}' is not a preset ({})", names.join(", "))));
             }
         }
         Ok(style)
+    }
+
+    /// The preset a role is drawn with: the preset of the role's own name, else the one `roles`
+    /// names; else refused with the presets nearest in colour to `hint` (sRGB, `#rrggbb`).
+    pub fn role(&self, role: &str, hint: Option<&str>) -> Result<&str, RoleMissing> {
+        if let Some((name, _)) = self.materials.get_key_value(role) {
+            return Ok(name);
+        }
+        if let Some(to) = self.roles.get(role) {
+            return Ok(to);
+        }
+        Err(RoleMissing { role: role.to_string(), nearest: self.nearest_presets(hint.and_then(parse_hex), ROLE_NEAREST) })
+    }
+
+    /// Up to `n` presets nearest in colour to `hint` (squared distance in sRGB, ties by name),
+    /// or the first `n` by name without one.
+    pub fn nearest_presets(&self, hint: Option<Rgba>, n: usize) -> Vec<String> {
+        let mut all: Vec<(f32, &String)> = self
+            .materials
+            .iter()
+            .map(|(name, m)| (hint.map_or(0.0, |h| (0..3).map(|i| (m.color[i] - h[i]) * (m.color[i] - h[i])).sum()), name))
+            .collect();
+        all.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        all.into_iter().take(n).map(|(_, name)| name.clone()).collect()
     }
 
     /// A colour by `#hex`, palette name or material name (its base colour).
@@ -158,6 +226,20 @@ mod tests {
         assert_eq!(s.materials["ghost"].kind, MaterialKind::Glass);
         assert!(s.color("nope").is_none());
         assert!(parse_hex("#12345").is_none() && parse_hex("123456").is_none() && parse_hex("#gg0000").is_none());
+    }
+
+    #[test]
+    fn roles_resolve_by_name_then_table_else_nearest() {
+        let s = Style::parse(r##"{"roles":{"coat":"fur"},"materials":{"fur":{"color":"#776a5a"},"bone":{"color":"#e0d8c0"},"claw":{"color":"#2a2420"},"ice":{"color":"#a0d0ff"}}}"##).unwrap();
+        assert_eq!(s.role("claw", None), Ok("claw"), "a preset of the role's own name");
+        assert_eq!(s.role("coat", Some("#000000")), Ok("fur"), "through the table");
+        let miss = s.role("underside", Some("#b8ab98")).unwrap_err();
+        assert_eq!(miss.nearest, ["bone", "fur", "ice"], "nearest by colour to the hint");
+        assert!(miss.to_string().contains("\"roles\"") && miss.to_string().contains("underside"), "{miss}");
+        assert_eq!(s.role("eye", None).unwrap_err().nearest, ["bone", "claw", "fur"], "by name with no hint");
+        let bad = Style::parse(r##"{"roles":{"coat":"felt"},"materials":{"fur":{"color":"#776a5a"}}}"##).unwrap_err();
+        assert_eq!((bad.code, bad.path.as_str()), (ErrorCode::UnknownMaterial, "roles.coat"));
+        assert_eq!(Style::parse(r#"{"roles":{"coat":3}}"#).unwrap_err().path, "roles.coat");
     }
 
     #[test]
