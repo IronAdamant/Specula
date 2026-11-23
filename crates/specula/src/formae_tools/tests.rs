@@ -287,7 +287,8 @@ fn check_index(answer: &Json, rows: &[(Kind, &str, &str)]) {
 /// **The first answer holds whatever is added to the library**: a made-up table twice the size
 /// of the library's (each family twice as long), one with twice as many families, and one of
 /// two hundred families of fifty forms each, all answer under the ceiling, every family named or
-/// counted (`check_index`); and the library's own table, while it fits, names every form.
+/// counted (`check_index`); and the library's own table names every family with at least four
+/// of its forms (it fitted whole until stage 4 added 24 forms).
 #[test]
 fn index_holds_any_table() {
     let real: Vec<(Kind, &str, &str)> = formae::forms().iter().map(|f| (f.kind, f.family.name(), f.name)).collect();
@@ -303,7 +304,18 @@ fn index_holds_any_table() {
     for (what, rows) in [("the library", &real), ("each family twice as long", &longer), ("twice the families", &wider), ("200 families of 50", &huge)] {
         let a = index_of(rows, 79);
         check_index(&a, rows);
-        assert!(what != "the library" || !a.to_string().contains(" more\""), "the library's table fits today, so every name is in it: {a}");
+        if what == "the library" {
+            // (Since stage 4 the library no longer fits whole: each family's line keeps its first
+            // names, and at least four of them, so a cold agent reads the common words of every
+            // family in the first answer.)
+            let text = a.to_string();
+            assert!(!text.contains("forms in"), "the library's table is cut to a line a kind: {text}");
+            for line in text.split('"').filter(|l| l.ends_with(" more")) {
+                let total: usize = line.split(" (").nth(1).and_then(|r| r.split(')').next()).and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("{line}"));
+                let more: usize = line.rsplit('+').next().and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("{line}"));
+                assert!(total - more >= 4, "a family's line keeps under four names: {line}");
+            }
+        }
     }
     // (The three larger tables are cut, the last to a line a kind.)
     assert!(index_of(&longer, 79).to_string().contains(" more"));

@@ -86,9 +86,11 @@ In the three senses the word has in games, all built:
   solid in the 2D world has at most 4,096 points and 4,096 faces (hidden faces are found pair by
   pair where the solid is not convex), and at most 64 layers.
 - **Two read-only tools**, in a family of their own (`formae`):
-  - `formae_list`: the catalogue. **With nothing asked, every name by kind and family, a line a
-    family, and how to ask for more, in under 3 KB** (about 600 tokens: stage 3b, a cheap first
-    read for a cold agent; it was 39 KB). With a kind, a family or a word, or `rows: true`: rows
+  - `formae_list`: the catalogue. **With nothing asked, every family by kind, a line a family
+    with its first names, and how to ask for more, in under 3 KB** (about 600 tokens: stage 3b, a
+    cheap first read for a cold agent; it was 39 KB). Until stage 4 every name fitted; since, a
+    family longer than the rest keeps its first seven names and says how many more it has
+    (`"band (10): sawtooth_band ... +3 more"`), so a family's first entries are its commonest. With a kind, a family or a word, or `rows: true`: rows
     that paste (the recipe shape, a plane figure's outline in an extrusion and its `shape2d`
     item), each parameter with its default, at most 200 rows and 8 KB a page. `figures: true`
     adds the measured human figure: the `figure` shape and the `figure` rig, with their fields
