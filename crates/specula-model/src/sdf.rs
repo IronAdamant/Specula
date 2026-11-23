@@ -254,6 +254,10 @@ pub struct SdfStats {
     /// Edges of the mesh shared by other than two triangles ([`tangled_edges`]): none, by
     /// construction; counted after the last weld, so that a fault would be said.
     pub tangled_edges: u64,
+    /// Evaluations of the field taken to make sure nothing lies past [`bounds`]'s box where
+    /// the reach says something may (none where it does not: [`mesh_box_seeded`]; at most
+    /// [`CLEAR_ASKS`]), charged to `work` at the tree's cost each.
+    pub box_asks: u64,
 }
 
 /// Edges shared by other than two triangles (by index, after the mesher's weld). Sorted, not
@@ -1869,6 +1873,245 @@ fn lip_slack(n: &SdfNode) -> (f32, f32) {
     (lip, slack)
 }
 
+/// A value past every field a tree can give, in place of an infinity (so that `a - b` of two
+/// such is never NaN).
+const UNKNOWN: f32 = 1e30;
+
+/// The most copies of a repeated node one ball of [`field_range`] may meet, all repeats under
+/// it together; past it the walk says nothing ([`UNKNOWN`] both ways).
+const RANGE_COPIES: u32 = 8;
+
+/// **The least and greatest values a node's field takes in the ball of radius `r` about `c`**
+/// (in its parent's frame), by its own primitives' factors and every operation's shape, not
+/// by one factor for the whole tree. Each step is a bound:
+///
+/// - **Into the node's frame** ([`local`]): a mirror (`|x|`), a move, a turn and an elongation
+///   (`q - clamp(q)`) take a ball into a ball of the same radius about the centre's image; a
+///   scale and a stretch divide it by the scale times the least stretch; a twist or a bend
+///   turns a point at `rho` from its axis by its rate times the coordinate it goes by, so two
+///   points `d` apart go at most `d (1 + rate * rho)` apart (`rho` the ball's furthest from the
+///   axis); a repetition takes a point to its nearest copy, so the ball goes to the copies its
+///   extent along each axis can reach, each a ball (at most [`RANGE_COPIES`] in all).
+/// - **A primitive**: its field at the centre, less and more its factor ([`prim_lip`]) times the
+///   radius and twice its slack ([`prim_slack`]: how far it may be from such a field).
+/// - **A group**: the polynomial join is non-decreasing in each operand (its derivative is
+///   `1 - h / 2` toward the lesser and `h / 2` toward the greater), so a union's chain of the
+///   children's least values is its least and of their greatest its greatest; a meeting the
+///   same; a cut is non-decreasing in its first child and non-increasing in the rest, so its
+///   least takes the rest's greatest. A near-union joins only the children within its width
+///   of the nearest, in order: leaving a child out of a chain never lowers it (each join is at
+///   most its running value, and the joins after are non-decreasing), so it is never below the
+///   chain of all its children, nor above its least child.
+/// - **Its distance modifiers**: the scale times the least stretch, a swelling (less a
+///   constant), a shell (`|d| - t`, from the range of `d`), noise (its amount each way: the
+///   noise is within -1 and 1).
+///
+/// `asks` counts the primitives' evaluations. (What [`clear_of_solid`] shows a box clear by.)
+fn field_range(n: &Prepared, c: V3, r: f32, copies: &mut u32, asks: &mut u64) -> (f32, f32) {
+    let m = &n.m;
+    let unknown = (-UNKNOWN, UNKNOWN);
+    let shrink = m.scale * m.stretch[0].min(m.stretch[1]).min(m.stretch[2]);
+    if !(shrink > 0.0 && shrink.is_finite()) {
+        return unknown;
+    }
+    // The ball in the node's frame, as `local` takes a point (mirror, move, turn, scale,
+    // stretch, then repeat, elongate, twist, bend).
+    let mut q = c;
+    for (qk, mk) in q.iter_mut().zip(m.mirror) {
+        if mk {
+            *qk = qk.abs();
+        }
+    }
+    q = math3::sub(q, m.at);
+    if n.rotated {
+        q = [math3::dot(n.inv_rot[0], q), math3::dot(n.inv_rot[1], q), math3::dot(n.inv_rot[2], q)];
+    }
+    if m.scale != 1.0 {
+        q = math3::scale(q, 1.0 / m.scale);
+    }
+    if m.stretch != [1.0; 3] {
+        q = [q[0] / m.stretch[0], q[1] / m.stretch[1], q[2] / m.stretch[2]];
+    }
+    let r = r / shrink * 1.0001;
+    // The copies the ball reaches along each axis (one, where it is not repeated).
+    let mut along: [(f32, f32); 3] = [(0.0, 0.0); 3];
+    let mut ways = [1u32; 3];
+    if let Some((count, spacing)) = m.repeat {
+        for k in 0..3 {
+            if count[k] > 1 && spacing[k] > 0.0 {
+                let half = (count[k] - 1) as f32 * 0.5;
+                let at = |x: f32| crate::dmath::floor(x / spacing[k] + half + 0.5).clamp(0.0, count[k] as f32 - 1.0);
+                let (first, last) = (at(q[k] - r), at(q[k] + r));
+                along[k] = (first, spacing[k]);
+                ways[k] = (last - first) as u32 + 1;
+                along[k].0 -= half;
+            }
+        }
+    }
+    let total = ways[0] * ways[1] * ways[2];
+    if total > 1 {
+        *copies = copies.saturating_mul(total);
+        if *copies > RANGE_COPIES {
+            return unknown;
+        }
+    }
+    let (mut lo, mut hi) = (UNKNOWN, -UNKNOWN);
+    for i in 0..ways[0] {
+        for j in 0..ways[1] {
+            for k in 0..ways[2] {
+                let mut p = q;
+                for (a, w) in [i, j, k].into_iter().enumerate() {
+                    if ways[a] > 1 || along[a].1 > 0.0 {
+                        p[a] -= (along[a].0 + w as f32) * along[a].1;
+                    }
+                }
+                let mut rr = r;
+                if m.elongate != [0.0; 3] {
+                    for (pk, ek) in p.iter_mut().zip(m.elongate) {
+                        *pk -= pk.clamp(-ek, ek);
+                    }
+                }
+                if m.twist != 0.0 {
+                    let rate = m.twist.abs() * (std::f32::consts::PI / 180.0);
+                    let rho = len2(p[0], p[2]) + rr;
+                    let (s, co) = crate::dmath::sin_cos(-m.twist * p[1] * (std::f32::consts::PI / 180.0));
+                    p = [co * p[0] - s * p[2], p[1], s * p[0] + co * p[2]];
+                    rr *= 1.0 + rate * rho;
+                }
+                if m.bend != 0.0 {
+                    let rate = m.bend.abs() * (std::f32::consts::PI / 180.0);
+                    let rho = len2(p[0], p[1]) + rr;
+                    let (s, co) = crate::dmath::sin_cos(-m.bend * p[0] * (std::f32::consts::PI / 180.0));
+                    p = [co * p[0] - s * p[1], s * p[0] + co * p[1], p[2]];
+                    rr *= 1.0 + rate * rho;
+                }
+                let (a, b) = inner_range(n, p, rr, copies, asks);
+                lo = lo.min(a);
+                hi = hi.max(b);
+            }
+        }
+    }
+    // (A least not known is nothing known; a greatest not known stays so.)
+    if lo <= -UNKNOWN {
+        return unknown;
+    }
+    // The distance modifiers, as `finish` applies them.
+    let (mut lo, mut hi) = (lo * shrink, if hi >= UNKNOWN { UNKNOWN } else { (hi * shrink).min(UNKNOWN) });
+    if m.round != 0.0 {
+        (lo, hi) = (lo - m.round, hi - m.round);
+    }
+    if m.shell > 0.0 {
+        (lo, hi) = if lo >= 0.0 { (lo, hi) } else if hi <= 0.0 { (-hi, -lo) } else { (0.0, hi.max(-lo)) };
+        (lo, hi) = (lo - m.shell * 0.5, hi - m.shell * 0.5);
+    }
+    if let Some((amount, _, _)) = m.displace {
+        (lo, hi) = (lo - amount.abs(), hi + amount.abs());
+    }
+    (lo, hi.min(UNKNOWN))
+}
+
+/// [`field_range`] of a node's own distance in its own frame, before its distance modifiers.
+fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, asks: &mut u64) -> (f32, f32) {
+    match &n.kind {
+        PKind::Prim(Prim::Ellipsoid { radii }) => {
+            // Its field reads short far from it, and faster than any one factor says (a flat
+            // one's, more than twice the distance's rate). What holds ([`ellipsoid_placed`]):
+            // where it is at most `L` the point is within `L (rho + 1 / rho) / 2` of the
+            // ellipsoid, so outside it is never below the distance over that, and the distance
+            // from a point of the ball is at least the middle's from the box round it, less the
+            // radius. Inside, never below minus its greatest radius (`(k0 - 1) k0 / k1`, with
+            // `k0 / k1` at most that). How far above: not bounded here.
+            *asks += 1;
+            let least = radii[0].min(radii[1]).min(radii[2]);
+            let most = radii[0].max(radii[1]).max(radii[2]);
+            if least.is_nan() || least <= 0.0 {
+                return (-UNKNOWN, UNKNOWN);
+            }
+            let rho = most / least;
+            let short = 0.5 * (rho + 1.0 / rho);
+            let out = (0..3).map(|k| (q[k].abs() - radii[k]).max(0.0)).map(|x| x * x).sum::<f32>().sqrt().max(math3::length(q) - most);
+            let down = if out > r { (out - r) / short } else { -most };
+            (down, UNKNOWN)
+        }
+        PKind::Prim(p @ Prim::Column { a, b, side, sections, count, square }) => {
+            // A column whose breadth and depth change in different proportions is not
+            // Lipschitz: far from it, its field changes along it ever faster. Its field is
+            // `(k - 1) cap`. Across the column `k` changes by at most one of the smaller radii a
+            // radius (a squarer section's measure is a norm whose gradient is at most one; a
+            // rounder one's, `2^(1/s - 1/2)`); past an end the section is fixed. Along it, by
+            // Euler's rule for the measure, the field changes by at most the growth `g` of the
+            // radii plus `(cap + f)` times how far the two radii's own rates differ, which
+            // [`column_wander`] bounds as `wander` over the least radius. So the field changes
+            // at most at `A + B f` a metre (`A` = the across rate + g + wander, `B` = wander /
+            // least): in the ball it is at most `F = (d + A / B) e^(B r) - A / B`, and at least
+            // `d - (A + B F) r`. With no wander, that is [`column_lip`].
+            *asks += 1;
+            let d = prim_distance(p, q);
+            // (Worked out once, in [`prepare`]: its least radius there is scaled by the node's
+            // scale, and its factor by any twist or bend, which only widens what follows.)
+            let (wander, least, lip) = (n.wander, n.least / n.m.scale, n.lip);
+            let grow = (lip * lip - 1.0).max(0.0).sqrt();
+            let across = if *square < 2.0 { crate::dmath::pow(2.0, 1.0 / square.max(0.5) - 0.5) } else { 1.0 };
+            let rate = across + grow + wander;
+            let up = if wander > 0.0 && least > 0.0 {
+                let bb = wander / least;
+                (d.max(0.0) + rate / bb) * crate::dmath::exp(bb * r) - rate / bb
+            } else {
+                d.max(0.0) + rate * r
+            };
+            let mut down = d - (rate + if least > 0.0 { wander / least * up.max(0.0) } else { 0.0 }) * r;
+            // And what its reach rests on ([`prim_reach`]): where its field is at most `L` the
+            // point is within `L` times its halves' greatest ratio of the box of its solid, so
+            // it is never below its distance from that box over the ratio (far from it, much
+            // the tighter). (That box and ratio take a walk of its curve: counted as eight.)
+            *asks += 8;
+            let used = &sections[..(*count as usize).clamp(1, MAX_SECTIONS)];
+            let ratio = column_ratio(used, *square);
+            if ratio.is_finite() {
+                let (lo, hi) = column_box(*a, *b, *side, used, *square, 0.0);
+                let out = (0..3).map(|k| (lo[k] - q[k]).max(q[k] - hi[k]).max(0.0)).map(|x| x * x).sum::<f32>().sqrt();
+                if out > r {
+                    down = down.max((out - r) / (ratio * (1.0 + 1e-5)));
+                }
+            }
+            if !(d.is_finite() && up.is_finite() && down.is_finite() && up < UNKNOWN && down > -UNKNOWN) {
+                return (-UNKNOWN, UNKNOWN);
+            }
+            (down, up.max(d))
+        }
+        PKind::Prim(p) => {
+            *asks += 1;
+            let d = prim_distance(p, q);
+            let by = prim_lip(p) * r + 2.0 * prim_slack(p);
+            if !(d.is_finite() && by.is_finite()) {
+                return (-UNKNOWN, UNKNOWN);
+            }
+            (d - by, d + by)
+        }
+        PKind::Group { op, kids, smooth } => {
+            let got: Vec<(f32, f32)> = kids.iter().map(|k| field_range(k, q, r, copies, asks)).collect();
+            if got.is_empty() {
+                return (UNKNOWN, UNKNOWN);
+            }
+            let chain = |first: f32, rest: &mut dyn Iterator<Item = f32>, join: &dyn Fn(f32, f32) -> f32| rest.fold(first, join);
+            let union = |a: f32, b: f32| smin(a, b, *smooth).0;
+            match op {
+                Combine::Union => (chain(got[0].0, &mut got[1..].iter().map(|g| g.0), &union), chain(got[0].1, &mut got[1..].iter().map(|g| g.1), &union)),
+                // (Never below the chain of all, never above the least child.)
+                Combine::Near => (chain(got[0].0, &mut got[1..].iter().map(|g| g.0), &union), got.iter().map(|g| g.1).fold(UNKNOWN, f32::min)),
+                Combine::Intersection => {
+                    let meet = |a: f32, b: f32| -smin(-a, -b, *smooth).0;
+                    (chain(got[0].0, &mut got[1..].iter().map(|g| g.0), &meet), chain(got[0].1, &mut got[1..].iter().map(|g| g.1), &meet))
+                }
+                Combine::Difference => {
+                    let cut = |a: f32, b: f32| -smin(-a, b, *smooth).0;
+                    (chain(got[0].0, &mut got[1..].iter().map(|g| g.1), &cut), chain(got[0].1, &mut got[1..].iter().map(|g| g.0), &cut))
+                }
+            }
+        }
+    }
+}
+
 /// Conservative bounds of a node in its parent's frame, and its Lipschitz factor (how much
 /// faster than distance the field may change) plus a fixed slack (displacement, smoothing).
 fn bounds(n: &SdfNode) -> Option<(V3, V3, f32, f32)> {
@@ -1992,36 +2235,136 @@ fn bounds(n: &SdfNode) -> Option<(V3, V3, f32, f32)> {
 /// a mesh's cells are its box's longest side over its resolution, so any box that shrank would
 /// move every mesh that is right today. It grows where `bounds` cut the solid off (a
 /// stretch, a twist or a bend; a flat ellipsoid or column swollen) and, since the reach is a
-/// bound, sometimes where it did not: for a tree with nothing stretched, twisted or bent, in
-/// 3 of the review's 600 drawn boxes and 23 of this crate's own 600 (2 of them an empty
-/// solid), each named, with why, in `an_ordinary_sculpt_is_meshed_in_the_old_box`. `None` where the tree is
-/// unbounded (a half-space in a union).
+/// bound, sometimes where it did not; so where it passes a side, the field itself is asked
+/// whether anything is there ([`mesh_box_seeded`]), and a side moves only where it may be.
+/// `None` where the tree is unbounded (a half-space in a union).
+#[cfg(test)]
 fn mesh_box(tree: &SdfNode, resolution: u32) -> Option<(V3, V3)> {
+    mesh_box_seeded(tree, resolution, 1).map(|(b, _)| b)
+}
+
+/// The most evaluations of the field [`mesh_box_seeded`] spends making sure that nothing lies
+/// past [`bounds`]'s box where [`reach`] says something may (all sides together). Past it, a
+/// side not yet shown clear moves out to the reach, which is sound.
+const CLEAR_ASKS: u64 = 1 << 14;
+
+/// [`mesh_box`] with the seed the field's noise is drawn with, and how many evaluations of
+/// the field it took (the build is charged for them; there are none where the reach passes no
+/// side by more than a quarter cell, which is every sculpt of the repository).
+///
+/// **A side of [`bounds`]'s box moves only where the solid may pass it.** Where the reach
+/// passes a side by more than a quarter cell, the slab between the two (as wide as the
+/// reach's box every other way, which holds the whole solid) is searched for solid
+/// ([`clear_of_solid`]) by the range of the field over balls ([`field_range`]: each
+/// primitive's own factor, and every operation's shape). A slab shown clear keeps the old
+/// side; any other side, or once [`CLEAR_ASKS`] is spent, moves out to the reach. So a sculpt whose
+/// solid lies within the old box (and a quarter cell) keeps the old box bit for bit, however
+/// loose the reach is there, and one whose solid passes it (a stretch, a twist or a bend; a
+/// flat ellipsoid or column swollen) is meshed in a box that holds it.
+fn mesh_box_seeded(tree: &SdfNode, resolution: u32, seed: u64) -> Option<((V3, V3), u64)> {
     let (lo, hi, _, _) = bounds(tree)?;
     // A side moves only when the reach passes it by more than a quarter of a cell. Nothing
     // within that is lost: the grid's samples begin a cell and a half before the box, the
     // first layer forced outside and the second, half a cell before it, evaluated; so a solid
     // that ends within a quarter cell past the box is sampled and meshed as in any larger box.
-    // (So the last places in which the two boxes differ, added up in different orders, and a
-    // reach a little more generous than the solid move no mesh.)
     let longest = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max);
     let close = 0.25 * longest / resolution.max(1) as f32;
-    let grown = match reach(tree, 0.0) {
+    // (Counted in evaluations of primitives: a tree's evaluation is all of them once.)
+    let prims = count_prims(tree).max(1) as u64;
+    let budget = CLEAR_ASKS * prims;
+    let mut asks = 0u64;
+    let (mut glo, mut ghi) = (lo, hi);
+    match reach(tree, 0.0) {
         // (Nothing to hold: the solid is empty, and the build says so in any box.)
-        Some(got) if got.is_nothing() => (lo, hi),
+        Some(got) if got.is_nothing() => {}
         Some(got) => {
             let (rlo, rhi) = got.within;
-            ([0, 1, 2].map(|k| if rlo[k] < lo[k] - close { rlo[k] } else { lo[k] }), [0, 1, 2].map(|k| if rhi[k] > hi[k] + close { rhi[k] } else { hi[k] }))
+            let mut prepared = None;
+            for k in 0..3 {
+                for low in [true, false] {
+                    let passes = if low { rlo[k] < lo[k] - close } else { rhi[k] > hi[k] + close };
+                    if !passes {
+                        continue;
+                    }
+                    // The slab past this side, within the reach's box every other way.
+                    let (mut slo, mut shi) = (rlo, rhi);
+                    if low {
+                        shi[k] = lo[k] - close;
+                    } else {
+                        slo[k] = hi[k] + close;
+                    }
+                    let p = prepared.get_or_insert_with(|| prepare(tree, seed, &mut 0));
+                    if !clear_of_solid(p, slo, shi, prims, budget, &mut asks) {
+                        if low {
+                            glo[k] = rlo[k];
+                        } else {
+                            ghi[k] = rhi[k];
+                        }
+                    }
+                }
+            }
         }
         // (A node whose scale or stretch is not above nothing, which no recipe can write.)
-        None => (lo, hi),
-    };
+        None => {}
+    }
+    let grown = (glo, ghi);
     #[cfg(test)]
     BOXES.with(|b| {
         let [taken, grew] = b.get();
         b.set([taken + 1, grew + u64::from(grown != (lo, hi))]);
     });
-    Some(grown)
+    // (Whole evaluations of the tree, rounded up: what the build is charged.)
+    Some((grown, asks.div_ceil(prims)))
+}
+
+fn count_prims(n: &SdfNode) -> usize {
+    match &n.kind {
+        Kind::Prim(_) => 1,
+        Kind::Group { kids, .. } => kids.iter().map(count_prims).sum(),
+    }
+}
+
+/// Whether the field is above nothing everywhere in the box `lo..hi`, shown by halving it: a
+/// box is clear where the least the field takes in the ball round it ([`field_range`]) is above
+/// nothing. `false` where a box's middle is at or below nothing (solid), when `asks`
+/// (evaluations of primitives) reach `budget` first, or when a box is too small to halve:
+/// never clear without being shown clear. Boxes are taken in a fixed order (deterministic).
+fn clear_of_solid(tree: &Prepared, lo: V3, hi: V3, prims: u64, budget: u64, asks: &mut u64) -> bool {
+    if !(0..3).all(|k| lo[k] <= hi[k]) {
+        return true;
+    }
+    let mut todo = vec![(lo, hi)];
+    while let Some((lo, hi)) = todo.pop() {
+        if *asks >= budget {
+            return false;
+        }
+        let mid = [0, 1, 2].map(|k| 0.5 * (lo[k] + hi[k]));
+        let half = [0, 1, 2].map(|k| 0.5 * (hi[k] - lo[k]));
+        let (least, most) = field_range(tree, mid, math3::length(half) * 1.001, &mut 1, asks);
+        // (Solid somewhere in it; a NaN is never clear.)
+        if most.is_nan() || most <= 0.0 {
+            return false;
+        }
+        if least > 0.0 {
+            continue;
+        }
+        // (Solid at its middle: no more to ask.)
+        *asks += prims;
+        let f = eval(tree, mid);
+        if f.is_nan() || f <= 0.0 {
+            return false;
+        }
+        let a = (0..3).fold(0, |a, k| if half[k] > half[a] { k } else { a });
+        if !(mid[a] > lo[a] && mid[a] < hi[a]) {
+            return false;
+        }
+        let (mut first_hi, mut second_lo) = (hi, lo);
+        first_hi[a] = mid[a];
+        second_lo[a] = mid[a];
+        todo.push((second_lo, hi));
+        todo.push((lo, first_hi));
+    }
+    true
 }
 
 #[cfg(test)]
@@ -2226,8 +2569,8 @@ fn reach_within(n: &SdfNode, need: f32, full: bool, asks: &mut u32) -> Option<Re
         got.within.0[k] -= by;
         got.within.1[k] += by;
     };
-    for k in 0..3 {
-        widen(k, m.elongate[k]);
+    for (k, by) in m.elongate.into_iter().enumerate() {
+        widen(k, by);
     }
     if let Some((count, spacing)) = m.repeat {
         for k in 0..3 {
@@ -2819,9 +3162,11 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     if !(2..=MAX_RESOLUTION).contains(&opt.resolution) {
         return Err(SdfError::limit(format!("resolution {} is outside 2..{MAX_RESOLUTION}", opt.resolution), opt.resolution as f64, MAX_RESOLUTION as f64));
     }
-    let (auto_lo, auto_hi) = match mesh_box(tree, opt.resolution) {
-        Some(b) => b,
-        None if opt.bounds.is_some() => ([0.0; 3], [0.0; 3]),
+    // (The automatic box is worked out only where the recipe gives none.)
+    let auto = if opt.bounds.is_some() { None } else { mesh_box_seeded(tree, opt.resolution, opt.seed) };
+    let (box_asks, (auto_lo, auto_hi)) = match auto {
+        Some((b, asks)) => (asks, b),
+        None if opt.bounds.is_some() => (0, ([0.0; 3], [0.0; 3])),
         None => return Err(SdfError::geometry("the sdf is unbounded (a half-space in a union): give it \"bounds\"")),
     };
     // Every node's Lipschitz factor and slack, bounded or not (an unbounded displaced cutter
@@ -2866,6 +3211,9 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
         }
         Ok(())
     };
+    // What making sure of the box took (none where the reach passes no side of `bounds`'s).
+    stats.box_asks = box_asks;
+    charge(&mut work, box_asks * cost)?;
     // What keeping sheets apart charges (cells grouped, faces asked, places shared, slivers
     // tested): all of it, in [`SdfStats::sheets_work`] too. (Tests can leave it out, to see
     // that the work is that much less.)
@@ -6076,7 +6424,7 @@ mod tests {
             }
         }
         // (Every primitive, combination and modifier the trees may hold is among them.)
-        let all = (1 << 9) - 1 | ((1 << 11) - 1) << 9 | 0xff << 20;
+        let all = ((1 << 9) - 1) | (((1 << 11) - 1) << 9) | (0xff << 20);
         assert_eq!(kinds & all, all, "kinds drawn: {kinds:b}");
         assert!(held > 1050, "{held} boxes held");
         // The trees whose box still grows, and why.
@@ -6092,13 +6440,151 @@ mod tests {
         }
     }
 
+    /// **The figure melted four and eight times wider than its default keeps its box** (bounds
+    /// review 1, finding 3: at `smooth` 0.1 and 0.2 every `whole` and some `body` builds
+    /// changed, the reach being looser than the solid there): both sexes, three statures, three
+    /// builds, the limbs at 35/7 and 60/45 degrees, every part. The search of the field shows
+    /// nothing past the old box, within its budget.
+    #[test]
+    fn a_figure_melted_wide_keeps_its_box() {
+        use specula_corpus::{Body, Sex};
+        let (mut n, mut grew, mut most) = (0, Vec::new(), 0u64);
+        for sex in [Sex::Female, Sex::Male] {
+            let [short, tall] = specula_corpus::ansur::statures(sex).map(|mm| mm / 1000.0);
+            for stature in [short, 0.5 * (short + tall), tall] {
+                for build in [-2.0, 0.0, 2.0] {
+                    let Ok(body) = Body::with_build(sex, stature, build) else { continue };
+                    for (arms, legs, smooth) in [(35.0, 7.0, 0.1f32), (35.0, 7.0, 0.2), (60.0, 45.0, 0.1), (60.0, 45.0, 0.2)] {
+                        let shaping = crate::figure::Shaping { arms, legs, smooth };
+                        for name in crate::figure::Part::NAMES {
+                            let part = crate::figure::Part::parse(name).unwrap();
+                            let tree = crate::figure::tree(&body, &shaping, part);
+                            let (lo, hi, _, _) = bounds(&tree).unwrap();
+                            let (b, asks) = mesh_box_seeded(&tree, part.resolution(), 1).unwrap();
+                            most = most.max(asks);
+                            n += 1;
+                            if b != (lo, hi) {
+                                grew.push(format!("{sex:?} {stature} {build} {arms}/{legs} {smooth} {name} asks {asks}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(n > 400, "{n} parts");
+        assert!(grew.is_empty(), "{grew:#?}");
+        assert!(most <= CLEAR_ASKS, "{most}");
+    }
+
+    /// **The range over a ball holds every value the field takes in it** ([`field_range`], on
+    /// which keeping the old box rests): trees drawn from a fixed sequence with every primitive,
+    /// combination and modifier (stretch, twist, bend, repeat, noise, near-unions among them),
+    /// balls from a thousandth of the tree's size to a third of it, about its box and past it;
+    /// every point sampled in a ball is evaluated by the field alone and lies within the range.
+    #[test]
+    fn a_fields_range_over_a_ball_holds_every_value_in_it() {
+        let mut r = Review(0x9e37_79b9_7f4a_7c15);
+        let (mut balls, mut unknown, mut points) = (0, 0, 0);
+        // Cases where each rule is tight, sampled more (each drawn tree after them).
+        let at = |mut n: SdfNode, p: V3| {
+            n.m.at = p;
+            n
+        };
+        let ball = |rad: f32, p: V3| at(prim(Prim::Sphere { radius: rad }), p);
+        let mut needle = prim(Prim::Sphere { radius: 0.05 });
+        needle.m.stretch = [8.0, 1.0, 1.0];
+        let mut flat = prim(Prim::Ellipsoid { radii: [0.5, 0.05, 0.3] });
+        flat.m.rotate = [20.0, 30.0, 40.0];
+        let mut wandering = [[0.0f32; 3]; MAX_SECTIONS];
+        wandering[..2].copy_from_slice(&[[0.0, 0.05, 0.25], [1.0, 0.25, 0.05]]);
+        // (A ball set off its cell's middle: its field jumps at the cells' edges.)
+        let mut rows = group(Combine::Union, vec![ball(0.2, [0.1, 0.0, 0.0])], 0.0);
+        rows.m.repeat = Some(([4, 1, 1], [0.25, 0.0, 0.0]));
+        let mut twisted = prim(Prim::Box { half: [0.4, 0.5, 0.05], round: 0.0 });
+        twisted.m.twist = 90.0;
+        let hard: Vec<SdfNode> = vec![
+            group(Combine::Near, (0..5).map(|i| ball(0.2, [0.05 * i as f32, 0.0, 0.0])).collect(), 0.2),
+            group(Combine::Union, vec![ball(0.2, [0.0; 3]), ball(0.2, [0.1, 0.0, 0.0])], 0.3),
+            group(Combine::Difference, vec![ball(0.4, [0.0; 3]), ball(0.3, [0.3, 0.0, 0.0])], 0.1),
+            group(Combine::Intersection, vec![ball(0.4, [0.0; 3]), ball(0.4, [0.4, 0.0, 0.0])], 0.1),
+            group(Combine::Near, vec![needle.clone(), at(needle, [0.0, 0.08, 0.0])], 0.1),
+            flat,
+            prim(Prim::Column { a: [0.0, -0.5, 0.0], b: [0.0, 0.5, 0.0], side: [1.0, 0.0, 0.0], sections: wandering, count: 2, square: 2.0 }),
+            rows,
+            twisted,
+        ];
+        let mut d = Draw(0x2545_f491_4f6c_dd1d);
+        // (The hard cases' balls mostly about their solids; the drawn trees' about and past.)
+        let trees: Vec<(usize, SdfNode, usize, f32)> = hard.into_iter().enumerate().map(|(i, t)| (1000 + i, t, 1500, 0.1)).chain((0..240).map(|t| (t, drawn_tree(&mut d, 0), 12, 0.5))).collect();
+        for (t, tree, many, past) in trees {
+            if count_nodes(&tree) > MAX_NODES {
+                continue;
+            }
+            let (lo, hi) = match bounds(&tree) {
+                Some((lo, hi, _, _)) => (lo, hi),
+                None => ([-1.0; 3], [1.0; 3]),
+            };
+            let size = (0..3).map(|k| hi[k] - lo[k]).fold(0.05f32, f32::max);
+            let p = prepare(&tree, 1, &mut 0);
+            for _ in 0..many {
+                let c = [0, 1, 2].map(|k| r.range(lo[k] - past * size, hi[k] + past * size));
+                let rad = size * [0.001, 0.01, 0.05, 0.3][r.pick(4)];
+                let (least, most) = field_range(&p, c, rad, &mut 1, &mut 0);
+                if least <= -UNKNOWN {
+                    unknown += 1;
+                    continue;
+                }
+                balls += 1;
+                for _ in 0..24 {
+                    let v = loop {
+                        let v = r.v3(-1.0, 1.0);
+                        if math3::length(v) <= 1.0 {
+                            break v;
+                        }
+                    };
+                    let q = math3::add(c, math3::scale(v, rad));
+                    let f = eval(&p, q);
+                    let tol = 1e-5 * (1.0 + f.abs());
+                    assert!(f >= least - tol && f <= most + tol, "tree {t}: {f} at {q:?} outside {least}..{most} (ball {c:?}, {rad})\n{tree:?}");
+                    points += 1;
+                }
+            }
+        }
+        assert!(balls > 1500 && points > 36_000, "{balls} balls, {unknown} unknown, {points} points");
+    }
+
+    /// **The search is bounded, charged and sound past its budget** ([`CLEAR_ASKS`]): a tree of
+    /// the crate's drawn set whose search runs out (a column whose field changes nearly ten
+    /// times faster than the distance, near-joined) asks no more than the budget and one ball's
+    /// copies, and the side it could not show clear moves out to the reach; a build of it is
+    /// charged those evaluations at the tree's cost (its work is the work of the same grid in
+    /// that box given, and that); a tree that passes no side asks nothing.
+    #[test]
+    fn the_search_of_the_box_is_bounded_and_charged() {
+        let mut d = Draw(0x51ed_270b_27a3_c4e9);
+        let tree = (0..=150).map(|_| drawn_tree_as(&mut d, 0, true)).last().unwrap();
+        let (lo, hi, _, _) = bounds(&tree).unwrap();
+        let (rlo, rhi) = reach(&tree, 0.0).unwrap().within;
+        let (b, asks) = mesh_box_seeded(&tree, 24, 1).unwrap();
+        assert!((CLEAR_ASKS..=CLEAR_ASKS + RANGE_COPIES as u64 + 2).contains(&asks), "{asks}");
+        assert!((0..3).all(|k| b.0[k] <= lo[k] && b.1[k] >= hi[k]), "{b:?}");
+        assert!((0..3).any(|k| b.0[k] == rlo[k] || b.1[k] == rhi[k]), "no side moved to the reach: {b:?}");
+        let (_, st) = mesh(&tree, &opts(24)).unwrap();
+        let (_, given) = mesh(&tree, &MeshOptions { bounds: Some(b), ..opts(24) }).unwrap();
+        assert_eq!((st.box_asks, given.box_asks), (asks, 0));
+        assert_eq!(st.work, given.work + asks * eval_cost(&tree));
+        // (Nothing to ask where the reach passes no side.)
+        let ball = prim(Prim::Sphere { radius: 0.3 });
+        assert_eq!(mesh_box_seeded(&ball, 48, 1), Some((bounds(&ball).map(|b| (b.0, b.1)).unwrap(), 0)));
+    }
+
     /// Why an ordinary tree's box grows ([`an_ordinary_sculpt_is_meshed_in_the_old_box`]).
     enum Grows {
-        /// The solid is empty: a meeting of parts that do not meet, but for noise that could
-        /// make them (which `bounds` takes for a point at the meeting's origin, and the reach
-        /// for the parts' levels, which meet). The build is refused in either box.
-        Empty,
-        /// The reach is looser than the solid by this many cells at most, and sound. The mesh
+        /// The reach is looser than the solid by this many cells at most, and sound, and the
+        /// search of the field ([`clear_of_solid`]) could not show the slab past the old box
+        /// clear: its budget ran out (repetitions, whose copies a ball can meet several of; a
+        /// column whose field changes several times faster than the distance), or a rounded
+        /// shape is trusted only to within its slack. The mesh
         /// in a box much larger reaches no further than the old box: nothing was cut off, and
         /// the box is that much larger. Two causes, each where a part's level set really
         /// does reach past what `bounds` says but the solid is held in by what the part is
@@ -6121,8 +6607,7 @@ mod tests {
     impl Grows {
         fn most_cells(&self) -> f32 {
             match self {
-                // (An empty meeting's old box can be a point: growth past any count of cells.)
-                Grows::Empty | Grows::Cuts => f32::INFINITY,
+                Grows::Cuts => f32::INFINITY,
                 Grows::Looser(cells) => *cells,
             }
         }
@@ -6131,16 +6616,6 @@ mod tests {
             let (lo, hi, _, _) = bounds(tree).unwrap();
             let size = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max);
             match self {
-                Grows::Empty => {
-                    // (In the old box, which may be a point, the mesher's, and one its size
-                    // larger every way: nothing to mesh in any.)
-                    let (glo, ghi) = mesh_box(tree, res).unwrap();
-                    let gsize = (0..3).map(|k| ghi[k] - glo[k]).fold(size, f32::max);
-                    for b in [(lo, hi), (glo, ghi), (math3::sub(glo, [gsize; 3]), math3::add(ghi, [gsize; 3]))] {
-                        let e = mesh(tree, &MeshOptions { bounds: Some(b), ..opts(res) }).map(|_| ()).unwrap_err();
-                        assert!(e.message.contains("no surface") || e.message.contains("the shape is nowhere"), "{}", e.message);
-                    }
-                }
                 Grows::Looser(_) | Grows::Cuts => {
                     // (A box half its size larger on every side than the mesher's, at a cell
                     // no coarser than the old box's.)
@@ -6148,7 +6623,7 @@ mod tests {
                     let gsize = (0..3).map(|k| ghi[k] - glo[k]).fold(0.0f32, f32::max);
                     let big = (math3::sub(glo, [0.5 * gsize; 3]), math3::add(ghi, [0.5 * gsize; 3]));
                     let cell = size / res as f32;
-                    let fine = ((2.0 * gsize / cell).ceil() as u32).min(MAX_RESOLUTION);
+                    let fine = (crate::dmath::ceil(2.0 * gsize / cell) as u32).min(MAX_RESOLUTION);
                     let (shape, _) = mesh(tree, &MeshOptions { bounds: Some(big), max_work: MAX_WORK * 8, max_triangles: 3_000_000, ..opts(fine) }).unwrap();
                     let past = |lo: V3, hi: V3| shape.positions.iter().map(|p| (0..3).map(|a| (lo[a] - p[a]).max(p[a] - hi[a])).fold(f32::MIN, f32::max)).fold(f32::MIN, f32::max);
                     if matches!(self, Grows::Cuts) {
@@ -6161,36 +6636,22 @@ mod tests {
         }
     }
 
-    /// The ordinary trees whose box grows: which set, which tree, at which resolution, and why
-    /// (of the reviewer's 600 boxes, 70 grew at the merge reviewed and 3 now; of this crate's
-    /// own 600, 27: 4 where `bounds` cuts the solid off, 2 of an empty solid, 21 looser).
+    /// The ordinary trees whose box grows: which set, which tree, at which resolution, and why.
+    /// Of the reviewer's 600 boxes, 70 grew at the merge reviewed, 3 at the round after, and
+    /// none since the field is searched; of this crate's own 600, 14: 4 where `bounds` cuts
+    /// the solid off, 10 (five trees) where the search could not show the slab clear (it was 27
+    /// before the search, two of them an empty solid's).
     const ORDINARY_THAT_GROW: &[(&str, usize, u32, Grows)] = &[
-        ("review", 45, 64, Grows::Looser(0.6)),
-        ("review", 284, 24, Grows::Empty),
-        ("review", 284, 64, Grows::Empty),
         ("own", 37, 24, Grows::Cuts),
         ("own", 37, 64, Grows::Cuts),
-        ("own", 62, 24, Grows::Looser(1.9)),
-        ("own", 62, 64, Grows::Looser(5.0)),
         ("own", 63, 24, Grows::Looser(3.9)),
         ("own", 63, 64, Grows::Looser(10.3)),
-        ("own", 72, 24, Grows::Looser(2.1)),
-        ("own", 72, 64, Grows::Looser(5.4)),
-        ("own", 91, 24, Grows::Empty),
-        ("own", 91, 64, Grows::Empty),
         ("own", 101, 24, Grows::Looser(0.8)),
         ("own", 101, 64, Grows::Looser(2.2)),
-        ("own", 105, 24, Grows::Looser(1.4)),
-        ("own", 105, 64, Grows::Looser(3.7)),
-        ("own", 107, 64, Grows::Looser(0.6)),
         ("own", 128, 24, Grows::Looser(0.7)),
         ("own", 128, 64, Grows::Looser(1.8)),
         ("own", 150, 24, Grows::Looser(6.0)),
         ("own", 150, 64, Grows::Looser(15.9)),
-        ("own", 153, 24, Grows::Looser(0.3)),
-        ("own", 153, 64, Grows::Looser(0.8)),
-        ("own", 177, 24, Grows::Looser(1.8)),
-        ("own", 177, 64, Grows::Looser(4.6)),
         ("own", 226, 24, Grows::Cuts),
         ("own", 226, 64, Grows::Cuts),
         ("own", 296, 24, Grows::Looser(8.6)),
@@ -6522,7 +6983,7 @@ mod tests {
         use specula_corpus::Sex;
         let figures = figure_meshes(&[(Sex::Female, 1), (Sex::Male, 1)], &[(35.0, 7.0, 0.025)]);
         assert_eq!(one_sheet(&figures), (ONE_SHEET_FIGURES.into(), 7));
-        assert_eq!(one_sheet(&drawn_meshes()), (ONE_SHEET_DRAWN.into(), 75));
+        assert_eq!(one_sheet(&drawn_meshes()), (ONE_SHEET_DRAWN.into(), 72));
         // Hands whose meshes close slivers (the closing tried in the order it always was,
         // shortest edge first), as they were.
         for (sex, res, before) in [(Sex::Female, 44, "6af6fcd32dc319e1"), (Sex::Male, 108, "84faf7f67535aaac"), (Sex::Male, 152, "f03d6d2b54bd4fc0")] {
@@ -6538,10 +6999,12 @@ mod tests {
     // (Taken from the mesher before each sheet had a vertex of its own: the hashes of the
     // meshes with one sheet a cell, in this order.)
     const ONE_SHEET_FIGURES: &str = "74bcb25b940c52b3";
-    // (The drawn set's, again on the merge with the sculpt box's second round: eight of its
-    // trees, stretched, twisted or bent among them, take another box than the first round
-    // gave, and only those meshes moved; mesh by mesh, every other is as it was.)
-    const ONE_SHEET_DRAWN: &str = "5f5958af273d872e";
+    // (The drawn set's, taken again twice since: on the merge with the sculpt box's second
+    // round, eight of its trees took another box than the first round gave; and with the
+    // box asking the field before a side moves, eight trees (stretched, twisted or bent among
+    // them) keep a side of `bounds`'s box that the reach had moved. Mesh by mesh, each time,
+    // only meshes whose box moved changed.)
+    const ONE_SHEET_DRAWN: &str = "f76c5dfd7b39f488";
     const ONE_SHEET_FIGURES_ALL: &str = "a7df68f7523d352a";
 
     /// The same for the figure at both sexes' shortest, middle and tallest statures and three

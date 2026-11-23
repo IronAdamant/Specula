@@ -220,10 +220,10 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   curve between its sections, below). A twist or a bend keeps a point's distance from its axis
   and turns it by at most its rate times the coordinate it goes by. **The mesher takes the old
   box and moves a side out only where this reaches more than a quarter of a cell past it** (the
-  grid samples half a cell past its box, so nothing within a quarter is lost). Every mesh that
-  was right is the same mesh only where the reach is as tight as the old box: it was not, for
-  ordinary sculpts (its review, below); since the second round it is for nearly all of them,
-  and those it is not for are named.
+  grid samples half a cell past its box, so nothing within a quarter is lost) **and a search of
+  the field cannot show the slab past that side empty** (since the third round, below). So a
+  sculpt whose solid lies within the old box keeps the old box, bit for bit, wherever the
+  search succeeds; those of the drawn sets where it does not are named.
   - **How it is held** (`sdf.rs` tests): each case below reaches its whole surface, closed
     (two needles joined, a needle rounded, shelled, and a group's swelling over one, two groups
     of four needles, a flat box twisted, a box bent; each failed before); the recipe of two
@@ -246,9 +246,9 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     coordinate); now it does. A rotated meeting of several boxes joined smoothly does not
     escape the old box (a meeting's field is never below any operand's, and the box was widened
     by a cube of the join's width, not a ball): run, 2 to 6 copies, widths 0.1 to 0.3.
-  - **Still a limit**: the reach is a bound, sometimes more generous than the solid (since the
-    second round, the figure's and the ordinary sculpts' remainders are below). A sliver thinner
-    than the sampling of the truth test could pass it unseen.
+  - **Still a limit**: the reach is a bound, sometimes more generous than the solid; where the
+    search of the field cannot show that (the third round's remainders, below), the box is that
+    much larger. A sliver thinner than the sampling of the truth test could pass it unseen.
 
 - **The fault as found** (2026-11-20, by holding the modeller against
   [DISTANCE_FIELDS.md](DISTANCE_FIELDS.md): each case meshed inside the automatic box and inside
@@ -352,6 +352,43 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     `past_the_ask_budget_the_reach_is_still_sound`); a thin part's place (`thin_at`, and the
     note) is in the sculpt's own frame, before any operation on it or its part, and the note
     now says so; the quarter cell is held by a sweep (`the_box_moves_only_past_a_quarter_cell_and_loses_nothing_within_it`).
+  - **Third round: the field is asked before a side moves** (2026-11-24, by an agent that wrote
+    none of the first two). The reach stays as it is, a bound of every point where the field
+    is at most the level; but a bound can be looser than the solid, and the second round
+    still grew 30 of the 1,200 drawn ordinary boxes where nothing was cut off. So `mesh_box`
+    now asks the field: where the reach passes a side of `bounds`'s box by more than a quarter
+    cell, the slab between them (as wide as the reach's box every other way, which holds the
+    whole solid) is halved into boxes until each is shown clear, and the side stays where it
+    was only when every one is. **A box is shown clear by the least value the field takes in
+    the ball round it** (`field_range`), worked out through the tree and not by one factor for
+    the whole of it: into each node's frame (a move, a turn, a mirror and an elongation keep
+    the ball's radius; a scale and a stretch divide it by the scale times the least stretch; a
+    twist or a bend multiplies it by one and its rate times the ball's furthest from the axis;
+    a repetition sends it to each copy its extent can reach, at most eight in all); a
+    primitive's own factor (`prim_lip`) and twice its slack; the polynomial join is
+    non-decreasing in each operand, so a union's or a meeting's least is the chain of its
+    children's least, and a cut's takes its cutters' greatest; a near-union is never below the
+    chain of all its children (leaving a child out of a chain never lowers it) nor above its
+    least child; then the scale, a swelling, a shell (`|d| - t` over the range) and noise
+    (its amount each way). A box whose middle is solid ends the search; so does a budget of
+    16,384 evaluations of the tree a box (`CLEAR_ASKS`; the search is charged to the build's
+    work at the tree's cost, `SdfStats::box_asks`). A side not shown clear moves out to the
+    reach, as before: the search only ever keeps a side the field shows nothing past.
+    **What still grows, by count** (the same 1,200 boxes): of the reviewer's 600, **none**
+    (the five balls, the turned ellipsoid and the empty meeting keep the old box); of the
+    crate's own 600, **14**: the 4 where the old box cuts the solid off (a flat ellipsoid
+    swollen; a flat column swollen), and 10 (five trees) where the search could not show the
+    slab clear and nothing was cut off: four ran out of budget (three with repetitions, whose
+    balls meet several copies near their cells' edges; a near-joined column whose field
+    changes nearly ten times faster than the distance), and one is a rounded cylinder shelled
+    in a meeting, whose field is trusted only to within its slack, which is more than its
+    0.017 m clearance. **The figure melted at `smooth` 0.1 and 0.2 keeps its box** in all 476
+    part builds (`a_figure_melted_wide_keeps_its_box`; the second round grew every `whole` and
+    six `body` builds there). Held also by `a_fields_range_over_a_ball_holds_every_value_in_it`
+    (drawn trees with every primitive and modifier, stretch, twist, bend, repetition, noise
+    and near-unions among them; every sampled point of every ball within its range) and
+    `the_search_of_the_box_is_bounded_and_charged`. No repository sculpt's search asks
+    anything (no reach passes their boxes), so their meshes, work and hashes do not move.
 - **A part thinner than a cell meshes with edges that four triangles share** (looked into on
   2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
   It is not the join and not the box: **one crescent** (`{"op": "difference", "of": [{"op":
