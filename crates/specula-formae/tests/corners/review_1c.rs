@@ -277,8 +277,10 @@ fn sets(default: usize) -> usize {
     std::env::var("FORMAE_REVIEW_SETS").ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+/// Every plane figure, or only the one `FORMAE_CORNER_WORD` names (as the other arms do).
 fn plane_figures() -> Vec<Found> {
-    forms().iter().filter(|f| f.kind == Kind::Plane).map(|f| Found { form: f, alias: None }).collect()
+    let only = std::env::var("FORMAE_CORNER_WORD").ok();
+    forms().iter().filter(|f| f.kind == Kind::Plane && only.as_deref().is_none_or(|w| w == f.name)).map(|f| Found { form: f, alias: None }).collect()
 }
 
 fn outline_of(fig: &Spec, detail: u32) -> Option<Vec<Vec<P2>>> {

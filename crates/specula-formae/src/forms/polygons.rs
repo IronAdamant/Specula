@@ -24,11 +24,11 @@ const KIN_TRI_BH: &[&str] = &[
     "triangular_prism", "pyramid", "tetrahedron", "wedge", "bipyramid", "small_stellated_dodecahedron", "triakis_tetrahedron", "triakis_octahedron", "tetrakis_hexahedron",
     "triakis_icosahedron", "pentakis_dodecahedron",
 ];
-const KIN_RECT: &[&str] = &["box", "wedge", "cube_in_sphere", "cuboctahedron", "truncated_octahedron", "rhombicuboctahedron", "truncated_cuboctahedron", "snub_cube", "rhombicosidodecahedron", "truncated_icosidodecahedron", "barrel", "mobius_band", "steinmetz_solid"];
+const KIN_RECT: &[&str] = &["box", "wedge", "cube_in_sphere", "cuboctahedron", "truncated_octahedron", "rhombicuboctahedron", "truncated_cuboctahedron", "snub_cube", "rhombicosidodecahedron", "truncated_icosidodecahedron", "barrel", "mobius_band", "steinmetz_solid", "chamfered_box"];
 const KIN_POLY: &[&str] = &[
     "prism", "antiprism", "pyramid", "bipyramid", "pyramid_frustum", "dodecahedron", "dodecahedron_in_sphere", "truncated_tetrahedron", "truncated_cube", "truncated_octahedron",
     "truncated_cuboctahedron", "icosidodecahedron", "truncated_dodecahedron", "truncated_icosahedron", "rhombicosidodecahedron", "truncated_icosidodecahedron", "snub_dodecahedron",
-    "pentagonal_icositetrahedron", "pentagonal_hexecontahedron",
+    "pentagonal_icositetrahedron", "pentagonal_hexecontahedron", "crystal", "gem",
 ];
 const KIN_PRISM: &[&str] = &["prism"];
 
@@ -643,7 +643,7 @@ pub(crate) const FORMS: &[Form] = &[
     plane!("shield", Symbol, "a heater shield: a straight top and sides, and two arcs meeting at the point", POLY_ORIGIN, P_SHIELD, curved: true, kin: KIN_PRISM, shield_geom, none, shield_anchors),
     plane!("l_section", Section, "an L (angle) section", POLY_ORIGIN, P_LSEC, curved: false, kin: KIN_PRISM, pts!(lsec_pts), lsec_closed, verts!(lsec_pts)),
     plane!("t_section", Section, "a T section: a flange on top of a web", POLY_ORIGIN, P_TSEC, curved: false, kin: KIN_PRISM, pts!(tsec_pts), tsec_closed, verts!(tsec_pts)),
-    plane!("u_section", Section, "a U (channel) section, open upward", POLY_ORIGIN, P_USEC, curved: false, kin: KIN_PRISM, pts!(usec_pts), usec_closed, verts!(usec_pts)),
+    plane!("u_section", Section, "a U (channel) section, open upward", POLY_ORIGIN, P_USEC, curved: false, kin: &["prism", "cup"], pts!(usec_pts), usec_closed, verts!(usec_pts)),
     plane!("h_section", Section, "an H (I-beam) section: two flanges joined by a web", POLY_ORIGIN, P_HSEC, curved: false, kin: KIN_PRISM, pts!(hsec_pts), hsec_closed, verts!(hsec_pts)),
     plane!("z_section", Section, "a Z section: a web with flanges to opposite sides", POLY_ORIGIN, P_ZSEC, curved: false, kin: KIN_PRISM, pts!(zsec_pts), zsec_closed, verts!(zsec_pts)),
     plane!("frame", Frame, "a rectangle with a rectangular hole of an even border", "the centre", P_FRAME, curved: false, kin: &["slab"], frame_geom, frame_closed, frame_anchors),

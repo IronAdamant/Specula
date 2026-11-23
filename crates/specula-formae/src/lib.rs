@@ -73,6 +73,8 @@ mod tests;
 mod tests_solid;
 #[cfg(test)]
 mod tests_raise;
+#[cfg(test)]
+mod tests_stage4;
 
 pub use anchor::{Anchor, On};
 pub use detail::{detail_for, sag, segments, DETAIL_DEFAULT, DETAIL_MAX, DETAIL_MIN};

@@ -126,9 +126,53 @@ In the three senses the word has in games, all built:
   The small stellated dodecahedron and the stella octangula are here as their outer surfaces.
 - **A cross of three boxes as one surface**: a union, which the modeller's booleans make.
 - **A hollow sphere**: two surfaces (the dome and the bowl, shells with an opening, are here).
-- **Letters and symbols; organic shapes** (leaves, bones): part 5's libraries.
+- **Letters and symbols; organic shapes** (bones, bodies): part 5's libraries. A leaf (and a
+  petal) is here, as two arcs a side.
 - **An involute gear**: the gear's teeth have straight flanks.
-- **The Johnson solids and simple fractals**: the next stage's.
+- **The Johnson solids** (cupolas, rotundas, augmented and diminished solids): rarely what a game
+  asks for; a later stage.
+- **Fractals whose parts touch**: the Sierpinski triangle (its holes meet the outline at points:
+  not simple rings) and tetrahedron (its pieces meet at points: not one closed surface). The
+  Menger sponge is one closed surface, but its count and its genus grow twentyfold a level:
+  later. The Koch snowflake and the Sierpinski carpet are here, to a bounded depth.
+- **Pipe tees and crosses**: two tubes' union, which the modeller's booleans make; the saddle
+  where they meet is not a construction this library proves sound.
+- **A screw's thread**: sound by construction (each section star-shaped about the axis), but its
+  distance has no closed form and its build's field is past the field's ceiling at any useful
+  detail: later.
+- **What a recipe already says in one line from the table**: a chamfered or bevelled prism of
+  any figure, a pillow, a plaque (the raise of a figure: `bevelled`, `pillow`, `slab`); an arch's
+  ring and a barrel vault (`annular_sector` raised and turned upright); a ramp (`wedge`). The
+  rounded cylinder is here although the raise of a circle bevelled round is the same solid,
+  because turned it has exact measures and a field of a few operations, where the raise's is its
+  build's.
+
+## Stage 4: further families (2026-11-24)
+
+What an agent building props, buildings, machines, plants and creatures reaches for and the first
+table lacked: 11 plane figures and 13 solids, in seven new families and four old ones, each
+entered once with its parameters, measures, anchors, count and field by the rules above.
+
+- **Plane figures** (lines and arcs only, so everything about them is exact): three moulding
+  profiles in a profile's frame (back on `x = 0`, bed on `y = 0`, face toward `+x`, so an outline
+  by name sweeps along a wall): `cavetto`, `cyma_recta`, `cyma_reversa` (each S is two equal arcs
+  of at most a quarter turn, point-symmetric about its middle, so its area is a polygon's; an S
+  flatter than fifty to one is refused, as its arcs' centres would be too far off to keep the
+  measures' digits); `arch_portal` (the wall round an arched opening); `stair_profile`; `grate`
+  and `truss` (figures with holes, raised by a slab); `banner`; `leaf` (its width a share of its
+  length, which bounds how shallow its arcs are); `koch_snowflake` (depth 0 to 7) and
+  `sierpinski_carpet` (depth 1 to 5). New words for old shapes: `ovolo` and `quarter_round` (the
+  sector at 90 degrees), `bead` and `astragal` (the semicircle).
+- **Solids**: turned (a profile of lines and arcs from the axis to the axis: exact measures, a
+  bounded error, an exact field): `rounded_cylinder`, the hollow vessels `cup`, `bell` and
+  `goblet` (the cavity is part of the one profile: in from the floor's middle, round the rim, down
+  the outside), and the props `bottle`, `vase`, `baluster`, `mushroom`. Flat: `chamfered_box`
+  (every edge cut at 45 degrees and a triangle at each corner: 24 points, 26 faces), `stairs`,
+  `crystal`, `gem` (a crown of triangles between the girdle and a table turned half a side; the
+  table's corners must lie inside the girdle's sides). And `chain_link`: a round wire along a
+  stadium, two half tori and two cylinders with every quad planar, whose field is the stadium's
+  plane field lifted (`wire`: the distance to the curve less the wire's radius, exact on both
+  sides while the wire is thinner than the bend, which the form requires).
 
 ## Adding a form
 
@@ -174,6 +218,7 @@ How each kind of form gets its field, and what it rests on:
 | The same through part of a turn | its meeting with the turn's wedge | exact inside up to a half turn, else a bound; a bound outside | 3.3 |
 | On an ellipse (ellipsoids, the elliptic cylinder) | the turned field scaled unevenly | a bound | 2.5 |
 | Spheres built any way, the rounded box, the bicylinder | in closed form | exact; the bicylinder exact inside only | 2.1, below; 3.3 |
+| A wire along a plane figure's boundary (the chain link) | the plane field's size at `(x, −z)`, lifted: `√(d² + (y − y₀)²) − r` | exact while `r` is under the curve's reach | 4.3; `field::Plan::wire` |
 | Any other solid (polyhedra, pyramids, bevelled, pillowed and stepped figures, superellipsoids, sweeps) | its build at the detail: the nearest face, edge or corner where it is convex, else the nearest triangle with the winding number's sign | exact for the build | 2.1 |
 | Curves | refused: a curve has no inside | | |
 
@@ -278,6 +323,17 @@ Every form at its defaults and detail 64 (made from the crate; held by `crates/s
 | `epicycloid` | plane | plane | exact | exact | samples (error estimated) | 66 / 1 / 0 |
 | `hypocycloid` | plane | plane | exact | exact | samples (error estimated) | 64 / 1 / 0 |
 | `superformula` | plane | plane | exact | exact | samples (error estimated) | 66 / 1 / 0 |
+| `cavetto` | plane | plane | exact | exact | the form | 5 / 2 / 0 |
+| `cyma_recta` | plane | plane | exact | exact | the form | 6 / 3 / 0 |
+| `cyma_reversa` | plane | plane | exact | exact | the form | 7 / 3 / 0 |
+| `arch_portal` | plane | plane | exact | exact | the form | 8 / 2 / 0 |
+| `stair_profile` | plane | plane | exact | exact | the form | 12 / 1 / 0 |
+| `grate` | plane | plane | exact | exact | the form | 68 / 1 / 0 |
+| `truss` | plane | plane | exact | exact | the form | 31 / 1 / 0 |
+| `banner` | plane | plane | exact | exact | the form | 5 / 1 / 0 |
+| `leaf` | plane | plane | exact | exact | the form | 4 / 5 / 0 |
+| `koch_snowflake` | plane | plane | exact | exact | the form | 192 / 1 / 0 |
+| `sierpinski_carpet` | plane | plane | exact | exact | the form | 40 / 1 / 0 |
 | `line_segment` | curve | refused | - | - | refused: `a_curve_has_no_inside` | - |
 | `zigzag` | curve | refused | - | - | refused: `a_curve_has_no_inside` | - |
 | `arc` | curve | refused | - | - | refused: `a_curve_has_no_inside` | - |
@@ -380,6 +436,19 @@ Every form at its defaults and detail 64 (made from the crate; held by `crates/s
 | `mobius_band` | solid | mesh_build | exact | exact | samples (error estimated) | 1024 / 3073 / 1024 |
 | `steinmetz_solid` | solid | meeting | bound | exact | the form | 0 / 2 / 0 |
 | `round_arrow` | solid | turned | exact | exact | the form | 5 / 2 / 0 |
+| `rounded_cylinder` | solid | turned | exact | exact | the form | 6 / 4 / 0 |
+| `chamfered_box` | solid | convex_build | exact | exact | the form | 122 / 1 / 0 |
+| `stairs` | solid | mesh_build | exact | exact | the form | 44 / 133 / 44 |
+| `cup` | solid | turned | exact | exact | the form | 6 / 2 / 0 |
+| `bell` | solid | turned | exact | exact | the form | 6 / 4 / 0 |
+| `goblet` | solid | turned | exact | exact | the form | 8 / 4 / 0 |
+| `bottle` | solid | turned | exact | exact | the form | 6 / 3 / 0 |
+| `vase` | solid | turned | exact | exact | the form | 5 / 3 / 0 |
+| `baluster` | solid | turned | exact | exact | the form | 9 / 3 / 0 |
+| `mushroom` | solid | turned | exact | exact | the form | 5 / 3 / 0 |
+| `crystal` | solid | convex_build | exact | exact | the form | 78 / 1 / 0 |
+| `gem` | solid | convex_build | exact | exact | the form | 105 / 1 / 0 |
+| `chain_link` | solid | wire | exact | exact | the form | 4 / 4 / 0 |
 <!-- fields-table: end -->
 
 ## The table of every form
@@ -513,6 +582,52 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 | `epicycloid` | the curve a point of a circle traces rolling round the outside of another | `cusps` count 3 (1..24), `radius` m 0.1 (0.0001..10000) |
 | `hypocycloid` | the curve a point of a circle traces rolling round the inside of another | `cusps` count 4 (3..24), `radius` m 0.125 (0.0001..10000) |
 | `superformula` | Gielis's superformula, a polar curve (closed and simple wherever it is accepted) | `m` count 6 (0..40), `n1` ratio 1 (0.5..20), `n2` ratio 7 (0.5..20), `n3` ratio 8 (0.5..20), `a` ratio 1 (0.25..4), `b` ratio 1 (0.25..4), `scale` m 0.5 (0.0001..10000) |
+
+#### plane forms, moulding
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `cavetto` | a cove moulding: a block less a quarter disc at its outer upper corner (back on x = 0, bed on y = 0) | `width` m 0.1 (0.0001..10000), `height` m 0.1 (0.0001..10000), `radius` m 0.08 (0.0001..10000) |
+| `cyma_recta` | an ogee moulding: an S of two equal arcs, convex below and concave above, level at its ends (a crown moulding's) | `width` m 0.1 (0.0001..10000), `height` m 0.1 (0.0001..10000), `fillet` m 0.012 (0.0001..10000) |
+| `cyma_reversa` | a reverse ogee moulding: an S of two equal arcs, concave below and convex above, upright at its ends | `width` m 0.08 (0.0001..10000), `height` m 0.12 (0.0001..10000), `fillet` m 0.01 (0.0001..10000) |
+
+#### plane forms, arch
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `arch_portal` | a wall with a round-arched opening from its floor (a doorway or a gate's wall) | `width` m 2 (0.0001..10000), `height` m 3 (0.0001..10000), `opening` m 1 (0.0001..10000), `spring` m 1.6 (0.0001..10000) |
+
+#### plane forms, stair
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `stair_profile` | the side of a flight of steps rising along +x, down to the floor | `steps` count 5 (1..100), `rise` m 0.18 (0.0001..10000), `run` m 0.28 (0.0001..10000) |
+
+#### plane forms, frame
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `grate` | a panel with a grid of rectangular holes (a grille, a vent, a window's bars) | `width` m 1 (0.0001..10000), `height` m 1 (0.0001..10000), `columns` count 4 (1..8), `rows` count 4 (1..8), `bar` m 0.05 (0.0001..10000) |
+| `truss` | a Warren truss panel: chords, end posts and diagonals of one width, with triangular holes | `length` m 4 (0.0001..10000), `height` m 0.6 (0.0001..10000), `bays` count 4 (1..100), `bar` m 0.05 (0.0001..10000) |
+
+#### plane forms, symbol
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `banner` | a swallowtail banner: a rectangle with a V cut into its fly end | `length` m 1 (0.0001..10000), `height` m 0.6 (0.0001..10000), `notch` m 0.25 (0.0001..10000) |
+
+#### plane forms, leaf
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `leaf` | a leaf (or a petal) of two arcs a side, pointed at its base and its tip, widest where asked | `length` m 0.1 (0.0001..10000), `width` ratio 0.4 (0.02..1), `widest` ratio 0.4 (0.1..0.9) |
+
+#### plane forms, fractal
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `koch_snowflake` | the Koch snowflake to a depth: each side of a triangle replaced by four, again and again | `side` m 1 (0.0001..10000), `depth` count 3 (0..5) |
+| `sierpinski_carpet` | the Sierpinski carpet to a depth: a square with its middle ninth taken out, and each of the eight left the same | `size` m 1 (0.0001..10000), `depth` count 2 (1..3) |
 
 #### curve forms, line
 
@@ -711,6 +826,54 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 | `steinmetz_solid` | the bicylinder: where two cylinders of one radius, along x and along z, cross | `radius` m 0.5 (0.0001..10000) |
 | `round_arrow` | an arrow as one solid of revolution along +Y: a shaft and a conical head | `shaft` m 0.05 (0.0001..10000), `length` m 0.8 (0.0001..10000), `head` m 0.12 (0.0001..10000), `head_length` m 0.25 (0.0001..10000) |
 
+#### solid forms, cylinder
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `rounded_cylinder` | a cylinder with its two rims rounded to a true radius (a puck, a coin, a button, a cushion) | `radius` m 0.5 (0.0001..10000), `height` m 0.2 (0.0001..10000), `fillet` m 0.05 (0.0001..10000) |
+
+#### solid forms, block
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `chamfered_box` | a box with every edge cut at 45 degrees and a triangle at each corner (the bevelled cube of modelling tools) | `width` m 1 (0.0001..10000), `height` m 1 (0.0001..10000), `depth` m 1 (0.0001..10000), `chamfer` m 0.1 (0.0001..10000) |
+
+#### solid forms, stair
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `stairs` | a straight flight of steps rising along +x, solid down to the floor | `steps` count 5 (1..100), `rise` m 0.18 (0.0001..10000), `run` m 0.28 (0.0001..10000), `width` m 1 (0.0001..10000) |
+
+#### solid forms, vessel
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `cup` | a hollow vessel: a floor and a wall of one thickness, straight or tapered (a cup, a bucket, a pot) | `radius` m 0.4 (0.0001..10000), `top` m 0.45 (0.0001..10000), `height` m 0.5 (0.0001..10000), `wall` m 0.03 (0.0001..10000), `floor` m 0.04 (0.0001..10000) |
+| `bell` | a hollow bell: a flat crown and a flare bowed in, its wall one thickness (two concentric arcs) | `radius` m 0.5 (0.0001..10000), `crown` m 0.2 (0.0001..10000), `height` m 0.6 (0.0001..10000), `wall` m 0.03 (0.0001..10000), `curve` ratio 1.5 (0.55..4) |
+| `goblet` | a goblet: a hollow half-ball cup on a stem and a round foot | `radius` m 0.04 (0.0001..10000), `wall` m 0.003 (0.0001..10000), `stem` m 0.005 (0.0001..10000), `length` m 0.08 (0.0001..10000), `foot` m 0.035 (0.0001..10000), `base` m 0.004 (0.0001..10000) |
+
+#### solid forms, lathe
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `bottle` | a bottle: a body, a shoulder (an arc upright at the body) and a neck | `radius` m 0.038 (0.0001..10000), `height` m 0.3 (0.0001..10000), `neck` m 0.0145 (0.0001..10000), `neck_length` m 0.09 (0.0001..10000), `shoulder` m 0.04 (0.0001..10000) |
+| `vase` | a vase: a ball belly on a foot, a neck flaring to the mouth (solid: no cavity) | `radius` m 0.12 (0.0001..10000), `foot` m 0.06 (0.0001..10000), `neck` m 0.05 (0.0001..10000), `mouth` m 0.07 (0.0001..10000), `neck_length` m 0.08 (0.0001..10000) |
+| `baluster` | a baluster: a ball on a plinth, a neck and a cap (a railing's post, a table's leg) | `radius` m 0.06 (0.0001..10000), `base` m 0.05 (0.0001..10000), `thickness` m 0.03 (0.0001..10000), `neck` m 0.025 (0.0001..10000), `neck_length` m 0.25 (0.0001..10000) |
+| `mushroom` | a mushroom: a stem under a spherical cap | `stem` m 0.02 (0.0001..10000), `stem_height` m 0.06 (0.0001..10000), `cap` m 0.06 (0.0001..10000), `cap_height` m 0.04 (0.0001..10000) |
+
+#### solid forms, crystal
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `crystal` | a crystal: a prism on a regular polygon with a pyramid on its top and, if asked, under its foot | `sides` count 6 (3..64), `radius` m 0.1 (0.0001..10000), `height` m 0.3 (0.0001..10000), `tip` m 0.1 (0.0001..10000), `foot` m 0.05 (0..10000) |
+| `gem` | a cut stone: a flat table, a crown of triangles, a girdle and a pointed pavilion | `sides` count 8 (3..64), `radius` m 0.05 (0.0001..10000), `table` ratio 0.55 (0.1..0.95), `crown` m 0.016 (0.0001..10000), `pavilion` m 0.043 (0.0001..10000) |
+
+#### solid forms, torus
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `chain_link` | a chain link: a round wire along a stadium (two half tori and two cylinders), lying flat | `radius` m 0.03 (0.0001..10000), `length` m 0.04 (0.0001..10000), `wire` m 0.008 (0.0001..10000) |
+
 #### Aliases
 
 | Word | Kind | Is | With |
@@ -772,6 +935,27 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 | `deltoid` | plane | `hypocycloid` | `cusps` = 3 |
 | `astroid` | plane | `hypocycloid` | `cusps` = 4 |
 | `gielis` | plane | `superformula` | - |
+| `cove` | plane | `cavetto` | - |
+| `cove_moulding` | plane | `cavetto` | - |
+| `ogee_moulding` | plane | `cyma_recta` | - |
+| `crown_moulding` | plane | `cyma_recta` | - |
+| `reverse_ogee` | plane | `cyma_reversa` | - |
+| `ovolo` | plane | `sector` | `angle` = 90 |
+| `quarter_round` | plane | `sector` | `angle` = 90 |
+| `bead` | plane | `semicircle` | - |
+| `astragal` | plane | `semicircle` | - |
+| `doorway` | plane | `arch_portal` | - |
+| `archway` | plane | `arch_portal` | - |
+| `stair_side` | plane | `stair_profile` | - |
+| `grille` | plane | `grate` | - |
+| `grid_panel` | plane | `grate` | - |
+| `warren_truss` | plane | `truss` | - |
+| `girder` | plane | `truss` | - |
+| `swallowtail` | plane | `banner` | - |
+| `pennon` | plane | `banner` | - |
+| `petal` | plane | `leaf` | - |
+| `snowflake` | plane | `koch_snowflake` | - |
+| `menger_carpet` | plane | `sierpinski_carpet` | - |
 | `segment` | curve | `line_segment` | - |
 | `polyline_zigzag` | curve | `zigzag` | - |
 | `circular_arc` | curve | `arc` | - |
@@ -861,4 +1045,22 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 | `mobius_strip` | solid | `mobius_band` | - |
 | `bicylinder` | solid | `steinmetz_solid` | - |
 | `arrow_solid` | solid | `round_arrow` | - |
+| `puck` | solid | `rounded_cylinder` | - |
+| `tablet` | solid | `rounded_cylinder` | - |
+| `bevelled_box` | solid | `chamfered_box` | - |
+| `beveled_box` | solid | `chamfered_box` | - |
+| `staircase` | solid | `stairs` | - |
+| `steps` | solid | `stairs` | - |
+| `bucket` | solid | `cup` | - |
+| `pail` | solid | `cup` | - |
+| `tumbler` | solid | `cup` | - |
+| `flowerpot` | solid | `cup` | - |
+| `chalice` | solid | `goblet` | - |
+| `wine_glass` | solid | `goblet` | - |
+| `urn` | solid | `vase` | - |
+| `toadstool` | solid | `mushroom` | - |
+| `gemstone` | solid | `gem` | - |
+| `jewel` | solid | `gem` | - |
+| `brilliant` | solid | `gem` | - |
+| `link` | solid | `chain_link` | - |
 <!-- formae-table: end -->

@@ -904,6 +904,46 @@ fn t8_builds_are_pinned() {
 // 1.6e-15 of its arc's centre distance and radius.)
 const PINNED: u64 = 0x5828_3630_0961_f0e0;
 
+/// The forms of stage 4 by test 8's rule: the bytes of every one's build at its defaults (points
+/// in order, and a solid's faces) at an odd detail and at the default one hash to a pinned value,
+/// and two builds of one form at one detail are the same bytes.
+#[test]
+fn t8_stage_4_builds_are_pinned() {
+    let names = [
+        "cavetto", "cyma_recta", "cyma_reversa", "arch_portal", "stair_profile", "grate", "truss", "banner", "leaf", "koch_snowflake", "sierpinski_carpet", "rounded_cylinder", "chamfered_box", "stairs", "cup",
+        "bell", "goblet", "bottle", "vase", "baluster", "mushroom", "crystal", "gem", "chain_link",
+    ];
+    let bytes_of = |name: &str, d: u32| {
+        let b = Spec::new(name, None, &[]).unwrap().build(d).unwrap();
+        let mut bytes = Vec::new();
+        let mut put = |x: f64| bytes.extend_from_slice(&x.to_bits().to_le_bytes());
+        match &b {
+            Built::Outline(o) => o.points().for_each(|p| p.iter().for_each(|&x| put(x))),
+            Built::Curve(c) => c.points.iter().for_each(|p| p.iter().for_each(|&x| put(x))),
+            Built::Mesh(m) => {
+                m.points.iter().for_each(|p| p.iter().for_each(|&x| put(x)));
+                for f in &m.faces {
+                    for v in &f.verts {
+                        bytes.extend_from_slice(&v.to_le_bytes());
+                    }
+                }
+            }
+        }
+        bytes
+    };
+    let mut all = Vec::new();
+    for name in names {
+        for d in [33, DETAIL_DEFAULT] {
+            let once = bytes_of(name, d);
+            assert_eq!(once, bytes_of(name, d), "{name} at {d}: two builds differ");
+            all.extend(once);
+        }
+    }
+    let h = specula_core::hash::hash_bytes(&all);
+    assert_eq!(h, PINNED_4, "the stage 4 builds moved: hash {h:#018x}");
+}
+const PINNED_4: u64 = 0x854f_9547_8e75_dc40;
+
 // ---------------------------------------------------------------- particular checks
 
 #[test]

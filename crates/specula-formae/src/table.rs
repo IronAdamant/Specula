@@ -100,6 +100,20 @@ pub enum Family {
     Sweep,
     /// Solids from other solids: the intersection of cylinders, an arrow.
     Compound,
+    /// Moulding profiles: the cavetto and the two cymas, to sweep along a wall.
+    Moulding,
+    /// Stairs: a flight's side as a figure, and the flight as a solid.
+    Stair,
+    /// Leaves and petals.
+    Leaf,
+    /// Fractals of a bounded depth: the Koch snowflake, the Sierpinski carpet.
+    Fractal,
+    /// Hollow vessels with a wall: cups, bells, goblets.
+    Vessel,
+    /// Turned props: bottles, vases, balusters, mushrooms.
+    Lathe,
+    /// Crystals and cut stones.
+    Crystal,
 }
 
 impl Family {
@@ -138,6 +152,13 @@ impl Family {
             Family::Shell => "shell",
             Family::Sweep => "sweep",
             Family::Compound => "compound",
+            Family::Moulding => "moulding",
+            Family::Stair => "stair",
+            Family::Leaf => "leaf",
+            Family::Fractal => "fractal",
+            Family::Vessel => "vessel",
+            Family::Lathe => "lathe",
+            Family::Crystal => "crystal",
         }
     }
 }
@@ -294,11 +315,11 @@ impl Form {
 
 /// The families' own lists, in catalogue order. A new family adds its list here; a new form in
 /// a family is one entry in that family's file.
-fn lists() -> [&'static [Form]; 5] {
-    [crate::forms::polygons::FORMS, crate::forms::round::FORMS, crate::forms::curves::FORMS, crate::forms::flat::FORMS, crate::forms::curved::FORMS]
+fn lists() -> [&'static [Form]; 7] {
+    [crate::forms::polygons::FORMS, crate::forms::round::FORMS, crate::forms::ornamenta::FORMS, crate::forms::curves::FORMS, crate::forms::flat::FORMS, crate::forms::curved::FORMS, crate::forms::supellex::FORMS]
 }
-fn alias_lists() -> [&'static [Alias]; 5] {
-    [crate::forms::polygons::ALIASES, crate::forms::round::ALIASES, crate::forms::curves::ALIASES, crate::forms::flat::ALIASES, crate::forms::curved::ALIASES]
+fn alias_lists() -> [&'static [Alias]; 7] {
+    [crate::forms::polygons::ALIASES, crate::forms::round::ALIASES, crate::forms::ornamenta::ALIASES, crate::forms::curves::ALIASES, crate::forms::flat::ALIASES, crate::forms::curved::ALIASES, crate::forms::supellex::ALIASES]
 }
 
 /// Every form, in catalogue order.
