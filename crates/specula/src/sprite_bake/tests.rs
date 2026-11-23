@@ -477,12 +477,16 @@ fn engine_built(e: &mut crate::Engine, recipe: &str) -> Arc<Built> {
 }
 
 fn bake_on(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<Vec<[u8; 3]>>, cancel_after: Option<usize>) -> (Result<job::Baked, ToolOutput>, Plan) {
+    bake_until(e, built, ask, palette, cancel_after, Instant::now() + std::time::Duration::from_secs(3600))
+}
+
+fn bake_until(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<Vec<[u8; 3]>>, cancel_after: Option<usize>, deadline: Instant) -> (Result<job::Baked, ToolOutput>, Plan) {
     use crate::steps::{Step, StepJob};
     let p = plan(built, built.anims.as_deref(), ask).unwrap();
     let out = Arc::new(Mutex::new(None));
     let cancel = Arc::new(AtomicBool::new(false));
     let bake = job::Bake { plan: p.clone(), built: Arc::clone(built), rig: specula_studio::rules::neutral_rig(), palette, outline: None, cancel: Arc::clone(&cancel), owner_name: Arc::default(), out: Arc::clone(&out) };
-    let mut j = job::BakeJob::new(e, bake, "sprite-test");
+    let mut j = job::BakeJob::new(e, bake, "sprite-test", deadline);
     let (reply, _answer) = crate::jobs::channel();
     let give_up = Instant::now() + std::time::Duration::from_secs(120);
     let mut steps = 0;
@@ -594,4 +598,9 @@ fn a_cancelled_bake_stops_and_hands_nothing_over() {
     let (r, _) = bake_on(&mut e, &built, &ask(Clips::Still, 8, Rate::Frames(1), 32, 1), None, Some(2));
     let out = r.err().expect("cancelled");
     assert!(format!("{out:?}").contains("cancelled"), "{out:?}");
+    // A call whose time is (nearly) out answers why, with what it managed, and hands nothing
+    // over (where the step queue would drop it unanswered at the deadline).
+    let (r, _) = bake_until(&mut e, &built, &ask(Clips::Still, 8, Rate::Frames(1), 32, 1), None, None, Instant::now() + job::DEADLINE_MARGIN / 2);
+    let out = format!("{:?}", r.err().expect("out of time"));
+    assert!(out.contains(job::OUT_OF_TIME) && out.contains("nothing was written") && out.contains("cells_that_fit"), "{out}");
 }

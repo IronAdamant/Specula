@@ -21,6 +21,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+/// The code a bake answers when the call's time runs out before its last cell.
+pub const OUT_OF_TIME: &str = "out_of_time";
+
 /// Keys of bakes' GPU pins (apart from the studio's call ids and filmstrips').
 static PIN_KEYS: AtomicU64 = AtomicU64::new(1 << 61);
 
@@ -69,7 +72,10 @@ fn environment(rig: &Rig, azimuth_deg: f32, reach: f32, world: &specula_gpu::Sha
         ambient_intensity: rig.ambient_intensity,
         exposure: rig.exposure,
         tonemap: true,
-        shadow: specula_gpu::ShadowSettings { enabled: rig.shadows, resolution, cascades, distance: reach, softness: 1.5, bias: 1.0 },
+        // No shadow map: a sprite carries no ground to receive one, a 2D game draws its own,
+        // and the cascades are fitted for a perspective view, not this orthographic one
+        // (SPRITE_BAKE.md, "Feet, outline, in place, shadow"). The rig's `shadows` is not read.
+        shadow: specula_gpu::ShadowSettings { enabled: false, resolution, cascades, distance: reach, softness: 1.5, bias: 1.0 },
         // No post effect that spreads a pixel into its neighbours: alpha is the ID buffer's.
         bloom: specula_gpu::BloomSettings { enabled: false, ..Default::default() },
         fxaa: false,
@@ -87,14 +93,50 @@ pub(crate) struct BakeJob {
     pin: u64,
     engine_ms: f64,
     max_step_ms: f64,
+    /// The call's deadline: the bake answers [`OUT_OF_TIME`] before it, rather than be dropped
+    /// unanswered by the step queue (`timed_out`), so the caller still has time to say why.
+    deadline: Instant,
+    started: Instant,
 }
 
+/// How long before the call's deadline a bake that is not done gives up (the caller's thread
+/// still encodes and commits after the last cell, and needs this to say what happened).
+pub(crate) const DEADLINE_MARGIN: std::time::Duration = std::time::Duration::from_millis(1500);
+
 impl BakeJob {
-    pub(crate) fn new(e: &mut Engine, bake: Bake, session: &str) -> BakeJob {
+    pub(crate) fn new(e: &mut Engine, bake: Bake, session: &str, deadline: Instant) -> BakeJob {
         let pin = PIN_KEYS.fetch_add(1, Ordering::Relaxed);
         e.pin_for_job(pin, session, bake.built.id);
         let [w, h] = bake.plan.atlas;
-        BakeJob { atlas: vec![0u8; w as usize * h as usize * 4], bake, at: 0, touching: Vec::new(), pin, engine_ms: 0.0, max_step_ms: 0.0 }
+        BakeJob { atlas: vec![0u8; w as usize * h as usize * 4], bake, at: 0, touching: Vec::new(), pin, engine_ms: 0.0, max_step_ms: 0.0, deadline, started: Instant::now() }
+    }
+
+    /// The answer when the call's time runs out before the last cell: how far it got, at what
+    /// pace, and how many cells a call would have managed at that pace. Nothing is written.
+    fn out_of_time(&self) -> ToolOutput {
+        let total = self.bake.plan.cells.len();
+        let took = self.started.elapsed().as_secs_f64();
+        let per = took / self.at.max(1) as f64;
+        // What fitted, with a fifth kept spare (the engine's other work varies).
+        let fits = self.at * 4 / 5;
+        ToolOutput::error(
+            Json::obj([
+                ("error", Json::from(OUT_OF_TIME)),
+                (
+                    "message",
+                    Json::from(format!(
+                        "the call's time ran out after {} of {total} cells ({:.1} s, about {:.0} ms a cell with the engine's other work); nothing was written: bake fewer cells a call (about {fits} at this pace: fewer directions, frames or clips, or a smaller cell or supersample) as several sheets",
+                        self.at,
+                        took,
+                        per * 1000.0
+                    )),
+                ),
+                ("rendered", Json::from(self.at)),
+                ("cells", Json::from(total)),
+                ("cells_that_fit", Json::from(fits)),
+            ])
+            .to_string(),
+        )
     }
 
     /// Renders cell `self.at` into the atlas: `Ok(false)` when the pipelines it is drawn with are
@@ -192,6 +234,10 @@ impl StepJob for BakeJob {
             e.studio_done(self.pin);
             return Step::Done(err("cancelled", format!("the bake was cancelled by its owner after {} of {} cells; nothing was written", self.at, self.bake.plan.cells.len())));
         }
+        if Instant::now() + DEADLINE_MARGIN > self.deadline {
+            e.studio_done(self.pin);
+            return Step::Done(self.out_of_time());
+        }
         let started = Instant::now();
         let r = self.render_cell(e);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -226,7 +272,7 @@ impl Engine {
         let Request { command: Command::SpriteBake(bake), session, reply, deadline, call, .. } = request else { unreachable!("only sprite bakes come here") };
         let owner = jobs::JobOwner { name: self.swarm.agent_name(&session), key: self.swarm.key(&session) };
         let _ = bake.owner_name.set(owner.name.clone());
-        let job = BakeJob::new(self, *bake, &session.id);
+        let job = BakeJob::new(self, *bake, &session.id, deadline);
         self.step_job(StepStart { owner, session: session.id.clone(), call, reply, deadline, class: crate::schedule::Class::Render }, Box::new(job));
     }
 }

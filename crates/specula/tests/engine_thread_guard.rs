@@ -127,6 +127,8 @@ const ALLOWED: &[Allowed] = &[
     Allowed { file: "workers.rs", counts: &[("remove_tree_inside", 1), ("thread::Builder", 1)], why: "the worker pool itself, and the trash emptied inside its trash-lane job" },
     Allowed { file: "world_load.rs", counts: &[("fs::", 2), ("persist::load", 1)], why: "the world, its board and review queue read inside world_load's world-lane worker job" },
     Allowed { file: "world_save.rs", counts: &[(".exists()", 2), ("peek_entity_count", 1), ("persist::execute", 1)], why: "the write, the world_exists check and its count run inside the world-lane job; one stat when a save under another name asks for the lead" },
+    Allowed { file: "sprite_bake.rs", counts: &[("fs::", 2), ("png::encode", 1)], why: "caller-thread tool (CallerThread::Terrain): the style files read and the atlas encoded on the agent's connection, never on the engine thread" },
+    Allowed { file: "sprite_bake/job.rs", counts: &[("read_rgba8", 1)], why: "one cell's render and readback per step job slice, as the filmstrip's tiles" },
 ];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {

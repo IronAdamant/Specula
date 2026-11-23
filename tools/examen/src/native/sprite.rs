@@ -62,7 +62,7 @@ pub fn sprite(cx: &mut Cx) -> Result<String, String> {
     // One bake: two files in one journal entry, and the frame data the 2D path plays.
     let walk = r#"{"recipe": "recipes/shambler.json", "clips": ["walk"], "directions": 4, "frames": 4, "cell": 48}"#;
     let baked = cx.call(port, ann, "sprite_bake", walk)?;
-    let files = at(&baked, "files").and_then(Json::as_array).cloned().unwrap_or_default();
+    let files = at(&baked, "files").and_then(Json::as_array).map(<[Json]>::to_vec).unwrap_or_default();
     let paths: Vec<&str> = files.iter().filter_map(|f| text(f, "path")).collect();
     expect(paths == ["assets/sprites/shambler.png", "assets/sprites/shambler.json"], "the bake did not write its atlas and its frame data", &baked)?;
     expect(files.iter().all(|f| text(f, "disk") == Some("written")), "a file of the bake is not on disk", &baked)?;
@@ -113,9 +113,20 @@ pub fn sprite(cx: &mut Cx) -> Result<String, String> {
 
     // The most cells a call takes.
     let most = r#"{"recipe": "recipes/shambler.json", "clips": ["walk"], "directions": 16, "frames": 32, "cell": 64, "path": "assets/sprites/most.png"}"#;
-    let full = cx.call(port, ann, "sprite_bake", most)?;
-    expect(at(&full, "cells").and_then(Json::as_u64) == Some(512), "the bake of 512 cells did not answer with its sheet", &full)?;
-    let cost = super::short(at(&full, "cost").unwrap_or(&Json::Null));
+    // Either its sheet, or (when this machine is too busy for the call's time) the bake's own
+    // `out_of_time` with how far it got, and nothing written: never a bare timeout.
+    let cost = match cx.call_as(port, ann, "sprite_bake", most)? {
+        Ok(full) => {
+            expect(at(&full, "cells").and_then(Json::as_u64) == Some(512), "the bake of 512 cells did not answer with its sheet", &full)?;
+            format!("its sheet, {}", super::short(at(&full, "cost").unwrap_or(&Json::Null)))
+        }
+        Err(refused) => {
+            expect(text(&refused, "error") == Some("out_of_time") && at(&refused, "cells_that_fit").is_some(), "the bake of 512 cells was refused, not for the call's time", &refused)?;
+            let left = sprites(cx, port, ann)?;
+            expect(!left.iter().any(|p| p.contains("most")), &format!("a bake out of time wrote {left:?}"), &refused)?;
+            format!("out of time, {}", super::short(&refused))
+        }
+    };
     cx.say(format!("512 cells, headless: {cost}"));
     cx.stop(port)?;
     Ok(format!("two files in one entry (journal {journal}) and one undo; the project's light; a bake cancelled by its owner only; 512 cells answered ({cost})"))

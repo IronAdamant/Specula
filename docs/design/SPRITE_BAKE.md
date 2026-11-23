@@ -93,13 +93,59 @@ round differently, so another adapter's sheet differs by a few levels in shading
 The plan (the scale, the pivot, the layout, the frame data) is computed on the CPU and is the
 same wherever the same build of the engine runs.
 
+## Feet, outline, in place, shadow
+
+- **Which feet are down** (`strips[].feet`, `strips[].feet_down`: per frame, the names of the
+  feet down). The feet are the ones `anim_check` finds (a graph's `feet`, else the clip's
+  footstep bones, else bones named `foot*`); a foot is down in a frame when it is within 2 cm
+  (`FOOT_DOWN_M`) of its ground, its 15th-percentile height over the clip (as
+  `measure::foot_contact` finds the ground). A model with none of those says so in the answer.
+- **Outline** (`outline: true`, pixel art only): the palette's darkest colour (Oklab lightness)
+  on every transparent pixel beside the silhouette, never within one pixel of the cell's edge
+  (the fit keeps two clear).
+- **In place** (`in_place: true`): each frame's root bone is put back over its rest place
+  sideways (its height kept), so a 2D game that moves the sprite itself gets no wander. The
+  wander is said either way (`root_drift`, with what was done with it).
+- **Shadows.** A sprite carries no ground: only the model is drawn, so nothing receives a cast
+  shadow. By default no shadow is baked in at all (a 2D game draws its own): the shadow map is
+  off in every bake, which also keeps the model from shadowing itself through a cascade fitted
+  for a perspective camera. `shadow: "blob"` adds one cell after the strips (beginning a row):
+  a soft, alpha-only ellipse (black, alpha 0.6 at its middle falling smoothly to 0; pixel art:
+  one alpha, half, inside 85% of the ellipse), as wide as the model's footprint (its lowest
+  fifth of height, from the first pose) and as tall as that seen from the sheet's elevation,
+  on a pivot of its own (the cell's middle). The frame data's `shadow` gives its frame, rect,
+  pivot, radii and the 2D path's sprite object that draws it, to be drawn under the model at
+  the model's pivot.
+
+## The multi-file commit
+
+`ProjectCall::CommitFiles` writes several project files in one journal entry. It is held as the
+single-file commit is: each file goes through `project_prepare` (its base version and hash, its
+mount and kind, a linked folder, the store's room, the binary store's room, the disk budget, a
+second spelling of an existing file); then the batch as a whole: two spellings of one file
+refused (`check_batch`, as the taste tools' batches are), the store's and the binary store's
+room and the disk budget for all the files together. All are written in one
+`world.commit(.., Rule::Project, ..)` through `project_engine::files_commit`, so a claim on any
+one refuses all of them and one `world_undo` takes all back. Each file's disk state is answered
+for itself (`written`, `pending`, `held`). The regression table `every_write_path_holds_the_policy`
+has two rows for it (both files written; the frame data claimed by another agent, refused with
+the world as it was), and `sprite_bake_writes_and_undoes_its_two_files_together` holds one entry
+and one undo. One tool call makes one commit (AGENTS rule 14).
+
+## Cancel
+
+`sprite_bake {cancel: true}` stops the caller's own bakes (its identity key: another connection
+of the same agent counts). When the caller runs none and another agent does, it is refused
+(`not_job_owner`) naming the owners; nothing of theirs is cancelled.
+
 ## Not done
 
-- Which feet are down in each frame (EXEMPLARIA.md lists it): not computed.
-- An outline for pixel art: not drawn.
 - A model's world anim assets (clips written with `anim_set`) are not baked: the build's own
-  clips are.
-- Root motion: clips are taken in place (the engine's clips carry their travel as `distance`,
-  given per strip as `distance_m`); a clip whose root wanders sideways is named in the answer
-  (`root_drift`).
+  clips are. What it would take: the engine lends, with the build, the anim set the world's
+  assets laid over it (`Library::anim_set_for_write(handle, world.anim_assets())`, as a graph
+  write settles against it) when the caller asks for it, and the plan reads that set instead
+  of `built.anims`. The renders need nothing new (they draw the plan's skinning matrices).
+  It touches the model call's lending path in the engine, which other lanes share; left for a
+  change of its own.
+- Root motion beyond the drift and `in_place` (a clip's travel is `distance_m`).
 - Vector 2D (`formae::draw` frame by frame) and a 2D skeleton: stage D2, not designed here.
