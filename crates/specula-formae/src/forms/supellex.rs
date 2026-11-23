@@ -214,7 +214,9 @@ const P_GOBLET: &[Param] = &[
     len("foot", "the foot's radius", 0.035),
     len("base", "the foot's thickness", 0.004),
 ];
-fn goblet_parts(a: &Args) -> Result<(f64, f64, f64, f64, f64, f64, f64), Refusal> {
+/// Seven numbers of a turned form, in the order its `_parts` function says.
+type Seven = (f64, f64, f64, f64, f64, f64, f64);
+fn goblet_parts(a: &Args) -> Result<Seven, Refusal> {
     let (r, t, s, l, f, b) = (a.f("radius"), a.f("wall"), a.f("stem"), a.f("length"), a.f("foot"), a.f("base"));
     let nums = [("radius", r), ("wall", t), ("stem", s), ("foot", f)];
     if s >= r || s >= f {
@@ -309,7 +311,7 @@ const P_VASE: &[Param] = &[
     len("mouth", "the mouth's radius", 0.07),
     len("neck_length", "the neck's length", 0.08),
 ];
-fn vase_parts(a: &Args) -> Result<(f64, f64, f64, f64, f64, f64, f64), Refusal> {
+fn vase_parts(a: &Args) -> Result<Seven, Refusal> {
     let (r, f, n, mo, ln) = (a.f("radius"), a.f("foot"), a.f("neck"), a.f("mouth"), a.f("neck_length"));
     if f >= r || n >= r {
         return Err(refuse("foot_or_neck_past_the_belly", "the foot and the neck must be narrower than the belly", &[("radius", r), ("foot", f), ("neck", n)]));

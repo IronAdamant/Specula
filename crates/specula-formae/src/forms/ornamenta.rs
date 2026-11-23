@@ -255,7 +255,9 @@ fn steps_anchors(a: &Args) -> Vec<Anchor> {
 // ---------------------------------------------------------------- a grate and a truss
 
 const P_GRATE: &[Param] = &[len("width", "along x", 1.0), len("height", "along y", 1.0), count("columns", "the holes across", 4.0, 1.0, 8.0), count("rows", "the holes up", 4.0, 1.0, 8.0), len("bar", "each bar's width, the border's too", 0.05)];
-fn grate_parts(a: &Args) -> Result<(f64, f64, usize, usize, f64, f64, f64), Refusal> {
+/// A grate's width, height, columns, rows, bar, and its holes' width and height.
+type GrateParts = (f64, f64, usize, usize, f64, f64, f64);
+fn grate_parts(a: &Args) -> Result<GrateParts, Refusal> {
     let (w, h, c, r, b) = (a.f("width"), a.f("height"), a.n("columns"), a.n("rows"), a.f("bar"));
     let hw = (w - (c as f64 + 1.0) * b) / c as f64;
     let hh = (h - (r as f64 + 1.0) * b) / r as f64;
@@ -321,7 +323,7 @@ fn meet(a: Half, b: Half) -> Pt {
 /// index where the bars leave none.
 fn truss_holes(l: f64, h: f64, n: usize, b: f64) -> Result<Vec<[Pt; 3]>, usize> {
     let (x0, x1, y0, y1) = (-0.5 * l + b, 0.5 * l - b, b, h - b);
-    let z = |j: usize| [x0 + (x1 - x0) * j as f64 / (2 * n) as f64, if j % 2 == 0 { y0 } else { y1 }];
+    let z = |j: usize| [x0 + (x1 - x0) * j as f64 / (2 * n) as f64, if j.is_multiple_of(2) { y0 } else { y1 }];
     let mut out = Vec::new();
     // A hole is the triangle `t` of the inner band, shrunk by the half-planes `hs`.
     let mut take = |t: [Pt; 3], hs: [Half; 3]| -> Result<(), usize> {
