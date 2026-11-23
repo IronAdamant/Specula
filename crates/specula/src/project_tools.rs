@@ -71,8 +71,12 @@ pub enum ProjectCall {
     /// Several files written in one journal entry (each still at its base, each checked as
     /// [`ProjectCall::Commit`] checks one): all or none, one undo takes them all back
     /// (`sprite_bake`'s atlas and its frame data).
-    CommitFiles { files: Vec<(String, (u64, u64), (FileKind, Arc<str>))>, reply: Sender<Committed> },
+    CommitFiles { files: Vec<FileWrite>, reply: Sender<Committed> },
 }
+
+/// One file of a multi-file commit ([`ProjectCall::CommitFiles`]): its path, the base
+/// (version, hash) it must still be at, and its kind and text.
+pub type FileWrite = (String, (u64, u64), (FileKind, Arc<str>));
 
 /// An entity change committed with a project file ([`ProjectCall::Commit`]'s `also`).
 pub type Also = Box<(crate::world::EntityKey, crate::world::UpdateSpec)>;

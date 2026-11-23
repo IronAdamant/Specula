@@ -251,7 +251,7 @@ pub fn shadow_blob(cell: [u32; 2], pivot: [u32; 2], radii: [f32; 2], pixel_art: 
 /// Pixels within `margin` of the cell's edge are never drawn on (the fit keeps them clear).
 pub fn outline(rgba: &mut [u8], cell: [u32; 2], colour: [u8; 3], margin: u32) {
     let (w, h, m) = (cell[0] as i64, cell[1] as i64, i64::from(margin));
-    let seen: Vec<bool> = rgba.chunks_exact(4).map(|p| p[3] > 0).collect();
+    let seen: Vec<bool> = rgba.as_chunks::<4>().0.iter().map(|p| p[3] > 0).collect();
     for y in m..h - m {
         for x in m..w - m {
             let i = (y * w + x) as usize;
@@ -365,17 +365,44 @@ pub fn frames_for(clip: &str, duration: f32, rate: Rate) -> Result<u32, Refusal>
 /// (the 2D path's `sheet` + `anim {first, count}` plays them as they are). The refusal names the
 /// size it would have been.
 pub fn layout(counts: &[u32], cell: [u32; 2]) -> Result<(u32, Vec<u32>, [u32; 2]), Refusal> {
+    let most_columns = (MAX_ATLAS_SIDE / cell[0]).max(1);
+    let fits = |w: u64, h: u64| h <= u64::from(MAX_ATLAS_SIDE) && w * h <= MAX_ATLAS_PIXELS;
+    // Each strip beginning a row, as wide as the longest strip.
     let widest = counts.iter().copied().max().unwrap_or(1).max(1);
-    let columns = widest.min((MAX_ATLAS_SIDE / cell[0]).max(1));
+    let columns = widest.min(most_columns);
     let mut firsts = Vec::with_capacity(counts.len());
     let mut rows = 0u32;
     for &n in counts {
         firsts.push(rows * columns);
         rows += n.max(1).div_ceil(columns);
     }
-    let (w, h) = (u64::from(columns) * u64::from(cell[0]), u64::from(rows) * u64::from(cell[1]));
+    let (mut w, mut h) = (u64::from(columns) * u64::from(cell[0]), u64::from(rows) * u64::from(cell[1]));
+    let mut columns = columns;
+    if !fits(w, h) {
+        // Many short strips make a tall, narrow atlas (a cold try: 44 strips of 6 frames were
+        // 768x5632). Packed instead: strips one after another, wrapping where a row ends (a
+        // strip's sheet frames are still consecutive, which is all the 2D path reads), in about
+        // a square atlas.
+        let total: u64 = counts.iter().map(|&n| u64::from(n.max(1))).sum();
+        let mut c = 1u64;
+        while c < u64::from(most_columns) && c * u64::from(cell[0]) < total.div_ceil(c) * u64::from(cell[1]) {
+            c += 1;
+        }
+        let packed_rows = total.div_ceil(c);
+        let (pw, ph) = (c * u64::from(cell[0]), packed_rows * u64::from(cell[1]));
+        if pw * ph < w * h || fits(pw, ph) {
+            columns = c as u32;
+            (w, h) = (pw, ph);
+            firsts.clear();
+            let mut at = 0u32;
+            for &n in counts {
+                firsts.push(at);
+                at += n.max(1);
+            }
+        }
+    }
     let px = w * h;
-    if h > u64::from(MAX_ATLAS_SIDE) || px > MAX_ATLAS_PIXELS {
+    if !fits(w, h) {
         return Err(Refusal {
             code: "atlas_too_large",
             message: format!(
@@ -723,7 +750,7 @@ pub fn to_srgb8(v: f32) -> u8 {
 /// all or nothing (half covered or more: shown). Pixel art has no soft edge.
 pub fn snap_to_palette(rgba: &mut [u8], palette: &[[u8; 3]]) {
     let labs: Vec<[f32; 3]> = palette.iter().map(|c| specula_studio::colour::oklab(specula_studio::colour::from8(*c))).collect();
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0.iter_mut() {
         if px[3] < 128 {
             px.copy_from_slice(&[0, 0, 0, 0]);
             continue;
@@ -749,7 +776,7 @@ pub fn snap_to_palette(rgba: &mut [u8], palette: &[[u8; 3]]) {
 /// alpha is never changed.
 pub fn bleed(rgba: &mut [u8], cell: [u32; 2], px: u32) {
     let (w, h) = (cell[0] as i64, cell[1] as i64);
-    let mut filled: Vec<bool> = rgba.chunks_exact(4).map(|p| p[3] > 0).collect();
+    let mut filled: Vec<bool> = rgba.as_chunks::<4>().0.iter().map(|p| p[3] > 0).collect();
     for _ in 0..px {
         let mut next = Vec::new();
         for y in 0..h {

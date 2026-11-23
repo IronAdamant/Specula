@@ -146,7 +146,7 @@ impl BakeJob {
         let plan = &self.bake.plan;
         let cell = &plan.cells[self.at];
         let mut px = plan::resolve(&colour, &ids, plan.cell, plan.supersample);
-        if !px.chunks_exact(4).any(|p| p[3] > 0) {
+        if !px.as_chunks::<4>().0.iter().any(|p| p[3] > 0) {
             // The fit holds every vertex in view: an empty cell is a missing ID buffer (its
             // pipelines not ready), never a picture to write.
             return Err(err("ids_missing", format!("cell {} came back with no pixel of the model in the ID buffer; nothing was written: call again in a moment", self.at)));
@@ -167,6 +167,9 @@ impl BakeJob {
     }
 }
 
+/// A cell's render: its colour (sRGB RGBA) and its opaque ids.
+pub(crate) type Raw = (Vec<u8>, Vec<u32>);
+
 /// The background a cell is rendered over: a colour no model is lit to, so a test sees at once
 /// a pixel the ID buffer and the picture disagree on. It never reaches the atlas (alpha 0 there,
 /// and the colour bleed writes over it).
@@ -174,7 +177,7 @@ pub(crate) const CLEAR: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
 
 /// Cell `at`'s render at the supersampled size: its colour (sRGB RGBA) and its opaque ids, or
 /// `None` while the pipelines it is drawn with are still being built.
-pub(crate) fn render_raw(e: &mut Engine, bake: &Bake, at: usize) -> Result<Option<(Vec<u8>, Vec<u32>)>, ToolOutput> {
+pub(crate) fn render_raw(e: &mut Engine, bake: &Bake, at: usize) -> Result<Option<Raw>, ToolOutput> {
     {
         let plan = &bake.plan;
         let cell = &plan.cells[at];

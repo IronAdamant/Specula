@@ -204,6 +204,9 @@ pub fn parse(args: &Json) -> Result<Call, String> {
 /// engine knows it (set when its job starts; refusals name it).
 type Entry = (String, Arc<AtomicBool>, Arc<OnceLock<String>>);
 
+/// A bake started: its id, its cancel flag, its owner's name cell.
+pub type Started = (u64, Arc<AtomicBool>, Arc<OnceLock<String>>);
+
 /// The bakes running, by owner (identity key): `sprite_bake {cancel: true}` stops the caller's.
 #[derive(Default)]
 pub struct Running {
@@ -218,7 +221,7 @@ impl Running {
 
     /// A new bake of `owner`'s, or the refusal when it already runs [`MAX_RUNNING_PER_OWNER`]:
     /// its id, its cancel flag, and the cell its owner's name goes in.
-    pub fn start(&self, owner: &str) -> Result<(u64, Arc<AtomicBool>, Arc<OnceLock<String>>), String> {
+    pub fn start(&self, owner: &str) -> Result<Started, String> {
         let mut by = self.locked();
         let mine = by.values().filter(|(o, _, _)| o == owner).count();
         if mine >= MAX_RUNNING_PER_OWNER {
@@ -274,9 +277,12 @@ fn owner_key(tools: &Tools, session: &SessionInfo) -> Option<String> {
     crate::project_binary::owner(tools, session).map(|k| k.split('\u{1f}').next().unwrap_or_default().to_owned())
 }
 
+/// A bake's look: the rig, what the light is called, the palette (pixel art) and notes.
+type Look = (specula_studio::rules::Rig, String, Option<Vec<[u8; 3]>>, Vec<String>);
+
 /// The rig and the palette for a bake: the style files beside the build (read here, on the
 /// caller's thread). The light says which it was (`project` falls back to `neutral`, said).
-fn look_of(tools: &Tools, built: &crate::models::Built, req: &Request) -> Result<(specula_studio::rules::Rig, String, Option<Vec<[u8; 3]>>, Vec<String>), ToolOutput> {
+fn look_of(tools: &Tools, built: &crate::models::Built, req: &Request) -> Result<Look, ToolOutput> {
     let root = tools.procgen.assets.clone();
     let (style_json, style_toml) = crate::studio::bible_files(&root, &built.style, &req.spec.recipe);
     let style = style_json.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| specula_model::Style::parse(&t).ok());
@@ -560,7 +566,9 @@ pub fn definitions() -> Vec<ToolDef> {
              all-or-nothing alpha, colours snapped to the project's palette. Refused before any render when the atlas would pass {} pixels a side or \
              {} in all (the size it would have been is said), past {} cells, or a clip past {} frames. Written as two project files in one journal entry \
              (claims, versions, world_undo). The same inputs on the same adapter give the same bytes. Rendered a cell a step off the frame's \
-             budget; {{cancel: true}} stops your own bakes. dry_run plans and says the atlas without rendering.",
+             budget; a bake that would outrun the call answers out_of_time with how many cells fit (split the sheet); {{cancel: true}} stops your \
+             own bakes. No shadow is baked in (shadow: \"blob\" adds a soft one in a cell of its own); each strip says which feet are down per \
+             frame. dry_run plans and says the atlas without rendering.",
             plan::MAX_ATLAS_SIDE,
             plan::MAX_ATLAS_PIXELS,
             plan::MAX_CELLS,

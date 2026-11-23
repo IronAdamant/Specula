@@ -12,6 +12,9 @@ Two project files, written in **one journal entry** (claims on `/project/<path>`
 
 - `assets/sprites/<name>.png`: the atlas, RGBA **with alpha**. A strip (one clip from one
   direction) begins a row and wraps onto the next, so its frames are consecutive in the grid.
+  When a row a strip would make the atlas taller than 4096 (many short strips: every clip of
+  a model at a few frames), the strips are packed one after another instead, wrapping where a
+  row ends, in about a square atlas: their frames are still consecutive sheet frames.
 - `assets/sprites/<name>.json`: the frame data, project file kind `sprite_sheet` (`*.json` in a
   folder named `sprites`; `sprites` is also a folder PNGs are mirrored in). Format
   `specula.sprite_sheet`, version 1: the atlas size, the cell, the columns, the **pivot** (the
@@ -55,6 +58,31 @@ the ID buffer and its readback, then the cell's resolve. It holds its build pinn
 stops at its next step when its session closes or its owner calls `sprite_bake {cancel: true}`
 (an agent's cancel stops that agent's bakes only), and answers within the call's deadline.
 
+**A bake answers in its call; it is not a background job.** When its next cell would start
+within 1.5 s of the call's deadline (25 s), it stops and answers `out_of_time` with the cells
+rendered, the pace, and about how many cells a call fits at that pace (four fifths of what it
+managed); nothing is written. So a call never ends in the step queue's bare `timed_out`.
+Measured on 2026-11-24, the shambler's walk at 16 directions and 32 frames (512 cells, the most
+a call takes), wall time of the call:
+
+| Engine | cell 64, supersample 2 | cell 112, supersample 4 (the heaviest) |
+|---|---|---|
+| headless, discrete (RTX 4090 Laptop) | 4.4 s | 8.0 s |
+| headless, integrated (Intel RaptorLake-S) | 4.5 s | 8.7 s |
+| window at 960x540, integrated | 20.2 s | `out_of_time` after 444 of 512 cells (23.5 s) |
+
+With a window the step jobs get a quarter of the engine thread, so the largest bakes do not fit
+a call on the reference iGPU: the agent is told to split the sheet. A bake that outlives its
+call (answered as a job and committed later, as a GI bake is) is not built: the commit is the
+caller thread's, after its encode.
+
+**Each cell's render waits for the GPU on the engine thread**, as `anim_filmstrip`'s tiles do
+(the engine-thread guard allows one `read_rgba8` in `sprite_bake/job.rs` for it). On the
+windowed iGPU above, 47 steps of the two bakes passed the render class's 30 ms budget (most
+36-75 ms; the first, which makes the offscreen target, 169 ms). An asynchronous render
+(`render_async` with `Step::Wait`, as `perf_light` lands its renders) on a target of the bake's
+own would take that off the frame; it is not built.
+
 Back on the caller's thread: the PNG is encoded, checked as the project checks a PNG, the frame
 data is read back by its own reader, and both are committed.
 
@@ -88,10 +116,23 @@ on screen, as a 2D sheet expects.
 ## The same bytes
 
 The same inputs on the same adapter and driver give the same bytes (a test bakes twice and
-compares the atlases). Across adapters this is not promised: GPUs rasterise edges, shade and
-round differently, so another adapter's sheet differs by a few levels in shading and at edges.
+compares the atlases). Across adapters this is not promised: GPUs shade and round differently.
+Measured (2026-11-24, discrete RTX 4090 Laptop against integrated Intel RaptorLake-S, the same
+binary): the alpha was identical in every pixel of four sheets (the ID buffer's coverage); the
+colour differed in about a quarter of the visible pixels by at most 5 levels (mean 1); in pixel
+art 0.5% of the walk's visible pixels (and 0.4% of the angel's) took another palette colour.
 The plan (the scale, the pivot, the layout, the frame data) is computed on the CPU and is the
-same wherever the same build of the engine runs.
+same wherever the same build of the engine runs (the frame data was byte-identical).
+
+## Playback, as written
+
+Shown in a headless engine (2026-11-24): the `e` strip of the shambler's walk spawned with
+`world_spawn {shape: "sprite", sprite: <strips[2].sprite>}` and rendered by
+`sight_frame {view_2d, time_s}` at nine times one clip frame apart (1/4.706 s): each showed the
+next frame, the ninth (one clip duration, 1.7 s, later) was the first again exactly (the same
+`visible_px` and box), a time inside a frame showed that frame, and a marker at the sprite's
+position stayed on the same pixels in every frame. The 2D path's `sheet` + `anim` reader plays
+the strips as written; nothing was added to it.
 
 ## Feet, outline, in place, shadow
 
@@ -108,8 +149,12 @@ same wherever the same build of the engine runs.
   wander is said either way (`root_drift`, with what was done with it).
 - **Shadows.** A sprite carries no ground: only the model is drawn, so nothing receives a cast
   shadow. By default no shadow is baked in at all (a 2D game draws its own): the shadow map is
-  off in every bake, which also keeps the model from shadowing itself through a cascade fitted
-  for a perspective camera. `shadow: "blob"` adds one cell after the strips (beginning a row):
+  off in every bake, whatever the rig says. Looked at with it on (the first build): no ground,
+  so nothing under the model; the model shadowed itself (a wing on the body, an arm on the
+  torso; 13% of the shambler's and 12% of the angel's visible pixels changed, by up to 102
+  levels; the alpha not at all), plausibly and without visible artefacts, but that is a cast shadow baked in and the
+  cascades are fitted for a perspective view, not this one; a self-shadow option is left for a
+  game that asks. `shadow: "blob"` adds one cell after the strips (beginning a row):
   a soft, alpha-only ellipse (black, alpha 0.6 at its middle falling smoothly to 0; pixel art:
   one alpha, half, inside 85% of the ellipse), as wide as the model's footprint (its lowest
   fifth of height, from the first pose) and as tall as that seen from the sheet's elevation,

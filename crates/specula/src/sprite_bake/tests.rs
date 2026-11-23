@@ -194,9 +194,9 @@ fn resolve_gives_alpha_from_the_id_buffer_alone_and_no_background_colour() {
 fn the_bleed_and_the_palette_never_change_where_the_model_is() {
     let mut px = vec![0u8; 5 * 5 * 4];
     px[(2 * 5 + 2) * 4..(2 * 5 + 2) * 4 + 4].copy_from_slice(&[90, 40, 20, 200]);
-    let alpha: Vec<u8> = px.chunks_exact(4).map(|p| p[3]).collect();
+    let alpha: Vec<u8> = px.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
     bleed(&mut px, [5, 5], 2);
-    assert_eq!(px.chunks_exact(4).map(|p| p[3]).collect::<Vec<_>>(), alpha, "alpha unchanged");
+    assert_eq!(px.as_chunks::<4>().0.iter().map(|p| p[3]).collect::<Vec<_>>(), alpha, "alpha unchanged");
     assert_eq!(&px[(2 * 5 + 3) * 4..(2 * 5 + 3) * 4 + 3], &[90, 40, 20], "the edge colour carried out");
     assert_eq!(&px[0..4], &[0, 0, 0, 0], "beyond two pixels: untouched");
     let palette = [[10u8, 10, 10], [200, 50, 50], [240, 240, 240]];
@@ -272,6 +272,21 @@ fn too_many_cells_and_too_large_an_atlas_are_refused_before_anything_renders() {
     assert_eq!((w, h, bytes), (4096, 32 * 2 * 512, 4096 * 32 * 2 * 512 * 4));
 }
 
+/// Many short strips (a cold try: every clip of the wraith at 4 directions, 6 frames each) were
+/// a 768x5632 atlas, refused for its height though its pixels fit: packed, they fit, and each
+/// strip's frames are still consecutive sheet frames.
+#[test]
+fn many_short_strips_are_packed_when_a_row_each_is_too_tall() {
+    let counts = vec![6u32; 44];
+    let (columns, firsts, atlas) = layout(&counts, [128, 128]).unwrap();
+    assert!(atlas[0] <= MAX_ATLAS_SIDE && atlas[1] <= MAX_ATLAS_SIDE && u64::from(atlas[0]) * u64::from(atlas[1]) <= MAX_ATLAS_PIXELS, "{atlas:?}");
+    assert_eq!(firsts, (0..44).map(|i| i * 6).collect::<Vec<u32>>(), "packed one after another");
+    assert!(columns * 128 == atlas[0] && (44 * 6u32).div_ceil(columns) * 128 == atlas[1]);
+    // A layout that fits a row a strip keeps it.
+    let (columns, firsts, _) = layout(&[6, 6, 6], [128, 128]).unwrap();
+    assert_eq!((columns, firsts), (6, vec![0, 6, 12]));
+}
+
 /// Which feet are down: the shambler's walk has feet anim_check knows, and over a cycle each
 /// foot is down in some frames and up in others. In place: every frame's root stands over its
 /// rest place sideways (the skinned root head's x and z are the rest's).
@@ -336,11 +351,11 @@ fn the_outline_rings_the_silhouette_and_the_blob_is_alpha_only() {
     assert_eq!(darkest(&[[200, 200, 200], [10, 12, 30], [90, 90, 90]]), Some([10, 12, 30]));
     let blob = shadow_blob([32, 32], [16, 16], [10.0, 4.0], false);
     let a = |x: usize, y: usize| blob[(y * 32 + x) * 4 + 3];
-    assert!(blob.chunks_exact(4).all(|p| p[..3] == [0, 0, 0]), "alpha only");
+    assert!(blob.as_chunks::<4>().0.iter().all(|p| p[..3] == [0, 0, 0]), "alpha only");
     assert!(a(16, 16) > a(20, 16) && a(20, 16) > a(24, 16) && a(24, 16) > 0, "soft from the middle out");
     assert_eq!((a(27, 16), a(16, 21), a(0, 0)), (0, 0, 0), "nothing outside the ellipse");
     let hard = shadow_blob([32, 32], [16, 16], [10.0, 4.0], true);
-    assert!(hard.chunks_exact(4).all(|p| p[3] == 0 || p[3] == 128), "pixel art's blob: one alpha");
+    assert!(hard.as_chunks::<4>().0.iter().all(|p| p[3] == 0 || p[3] == 128), "pixel art's blob: one alpha");
 }
 
 /// The blob's cell and the feet go into the frame data and read back; a blob that is not where
@@ -582,7 +597,7 @@ fn the_same_bake_twice_gives_the_same_bytes() {
     let palette = vec![[20u8, 20, 24], [90, 80, 70], [160, 150, 130], [220, 210, 190]];
     let (art, _) = bake_on(&mut e, &built, &Ask { supersample: 1, ..a }, Some(palette.clone()), None);
     let art = art.unwrap_or_else(|o| panic!("{o:?}"));
-    for px in art.rgba.chunks_exact(4) {
+    for px in art.rgba.as_chunks::<4>().0.iter() {
         assert!(px[3] == 0 || px[3] == 255);
         if px[3] == 255 {
             assert!(palette.contains(&[px[0], px[1], px[2]]), "{px:?}");

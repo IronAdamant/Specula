@@ -383,7 +383,7 @@ impl Engine {
     /// Several files in one journal entry ([`ProjectCall::CommitFiles`]): each is checked as one
     /// commit checks its file (its base, its mount and kind, the store's room, the disk's
     /// budget), then all are written under the project rule, or none is.
-    fn project_commit_files(&mut self, files: Vec<(String, (u64, u64), (FileKind, Arc<str>))>, w: Writer, by: &str) -> Result<(Option<u64>, Vec<String>), Committed> {
+    fn project_commit_files(&mut self, files: Vec<crate::project_tools::FileWrite>, w: Writer, by: &str) -> Result<(Option<u64>, Vec<String>), Committed> {
         // Two spellings of one file in one commit (one file on Windows and macOS): refused, as
         // a batch of the taste tools' is.
         check_batch(&files.iter().map(|(p, _, _)| p.as_str()).collect::<Vec<_>>(), crate::write_policy::Rule::Project, &[]).map_err(Committed::Refused)?;

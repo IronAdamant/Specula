@@ -89,7 +89,7 @@ pub fn sprite(cx: &mut Cx) -> Result<String, String> {
     // ann's cancel from another connection stops it.
     let (exe, p) = (cx.exe.to_string_lossy().into_owned(), port.to_string());
     let long = r#"{"recipe": "recipes/shambler.json", "clips": ["walk"], "directions": 16, "frames": 32, "cell": 128, "path": "assets/sprites/long.png"}"#;
-    let mut running = Command::new(&exe)
+    let running = Command::new(&exe)
         .args(["call", "sprite_bake", long, "--port", &p, "--settings", &settings, "--as", "ann", "--role", "builder"])
         .current_dir(&cx.out)
         .stdin(Stdio::null())
