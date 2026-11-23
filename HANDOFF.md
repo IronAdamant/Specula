@@ -23,9 +23,23 @@ rounds.
   this size, nearly the same game delivered; cheaper on one job (the 3D change, 0.68). The
   bullets below on the comparison are the record of how it got there, not work in hand. The
   pause on part 4 of 2026-11-22 ("We're still paused on shape, recipe, template, and sfx")
-  is lifted by this. **Whether subagents may be used for part 4 has not been said:** the
-  owner allowed several for the three mends ("Deploy several agents now"), for that work.
-  Ask before the first one. What part 4 had open is in the table below and under "Where M6
+  is lifted by this.
+  **Subagents, as many as the work needs (the owner, 2026-11-24):** "I want you to run as
+  many sub agents as you need to get sfx (sfx meaning like lightning, fire, and all that),
+  and then the template and so on. How you do it is at your discretion. But I want it done".
+  This replaces "by hand only" below for part 4 and the libraries. Lanes in worktrees of
+  their own, each reviewed by a model that wrote none of it before the lead merges, pictures
+  checked by a model that did not take them; `model` always passed (Opus for builders and
+  reviewers, Sonnet for picture checks). The machine's memory is the limit, not the owner
+  (`CARGO_BUILD_JOBS=3` a lane). The lanes' shared rules:
+  `.swarmnotes/m6/part4/lanes-2026-11-24/rules.md`. **Started 2026-11-24:** the sculpt's box
+  mend, finished from where it stopped (`C:/sr-k30`, `m6-bounds2`; the shape library's forms
+  as sculpt nodes wait for it); a project's catalogue and the orientation, finished from the
+  18 uncommitted files (`C:/sf-formae`, `m6-formae`); the effects library, its design note
+  and build plan first (`C:/sl-fx`, `m6-effectus`); the library of sample assets, its design
+  note and build plan first (`C:/sl-tpl`, `m6-exemplar`). Scratch: `C:/lv/lanes/`. Probe
+  ports 7800 to 7839, ten a lane.
+  What part 4 had open is in the table below and under "Where M6
   stands".
 - **By hand only, and lean.** The owner: "Only by hand working", then "For now we'll stick to 1
   agent". No subagent, and no paid measurement (`examen leverage` builders and judges) beyond what they ask for, until they
