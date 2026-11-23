@@ -164,6 +164,18 @@ rounds.
   the `resume` trap (below); then stage 2 as planned (a smaller project to start from,
   signatures, what changed handed over without a request); a larger job written before it
   is measured, since a plain build of this one is a four-minute sitting.
+- **Two measurements, started 2026-11-23 on `3bb629b5`, and the rule written before either
+  number** (the owner: "Yes. Go for it"; about 65 USD). **Night Market again**, the job
+  unchanged, five engine and five fresh plain runs: a test of one mend (a word given again
+  is pressed again) on the job that showed the fault, and of nothing more. **Day Market**,
+  as the clean agent wrote it, five and five: a job nobody who knows the engine shaped. The
+  lead has not read its text; the second reader has not yet re-assessed it (its bundle is
+  with the owner), so a fault it finds in the job afterwards counts against the run, not
+  for it. **The rule, for each job by itself:** engine over plain in the builders' weighted
+  tokens at or under 2.2, the engine holds on that job; above 3.0, it does not; between, the
+  runs are doubled before anything is said. The builders' cost and the builders' with the
+  judges' are both reported, with the count of builders that opened the engine's source.
+  For Night Market the figure to hold against is 7.39.
 - **The second large job (2026-11-23; 25.83 USD): engine over plain 7.39. By the rule set
   before the number, 1.92 was fitted to one brief.** Night Market, written by the second
   reader and loaded as given; the engine and its guide frozen at `3207626c`; five engine and
@@ -186,6 +198,7 @@ rounds.
   engine did not pause the game it answers nothing and the rules never hear it. Five of
   fifteen games failed the pause item so. The same holds for any engine word (`pause`,
   `title`, `start`) on a screen the rules put up.
+- **The gate passed on `3bb629b5`** (2026-11-23, everything for an engine change; `search_check` and `new_project_check` passed on it).
 - **The gate passed on `3207626c`** (2026-11-23, everything for an engine change), **at the second run.** The first failed on one speed budget in a crate the change does not touch (`specula-studio`, `reading_the_largest_record_is_bounded`: 565 ms against 400). Measured before running again: about 220 ms on a quiet machine, twelve times; about 750 ms with every core busy. So the machine was loaded by something outside the gate during that step; which, is not known. The budget is under twice the quiet time: thin for a laptop that had run comparisons, tests and gates since morning. If it fails again, look at the budget, not at the clock.
 - **The gate passed on `ff4b1298`** (2026-11-23, everything for an engine change; the three cells ran on it).
 - **The gate passed on `93c46983`** (2026-11-22, everything for an engine change; stage 1's runs were made on it).
