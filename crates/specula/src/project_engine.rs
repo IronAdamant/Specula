@@ -50,7 +50,7 @@ enum CommitStep {
 
 /// Whether a project call reads or writes the disk (so waits for a sync in progress).
 fn waits_for_sync(call: &ProjectCall) -> bool {
-    matches!(call, ProjectCall::Snapshot { .. } | ProjectCall::Commit { .. } | ProjectCall::ModuleTexts { .. } | ProjectCall::CommitFixes { .. } | ProjectCall::Mount { .. })
+    matches!(call, ProjectCall::Snapshot { .. } | ProjectCall::Commit { .. } | ProjectCall::ModuleTexts { .. } | ProjectCall::CommitFixes { .. } | ProjectCall::Mount { .. } | ProjectCall::CommitFiles { .. })
 }
 
 /// The text `path` had at `version`, and the changes after it (newest first), from the journal
@@ -266,6 +266,27 @@ impl Engine {
                 let _ = reply.send(w.session.unwrap_or(w.name).to_owned());
                 ToolOutput::text("{}")
             }
+            ProjectCall::CommitFiles { files, reply } => {
+                match self.project_commit_files(files, w, by) {
+                    Err(c) => {
+                        let _ = reply.send(c);
+                    }
+                    // Answered once every file is on disk (written on a worker).
+                    Ok((seq, paths)) => self.project_sync_then(None, move |e, disk, reloaded| {
+                        let files = paths.iter().map(|p| {
+                            let f = e.world.files().get(p);
+                            Json::obj([
+                                ("path", Json::from(p.as_str())),
+                                ("version", Json::from(f.map(|f| f.version))),
+                                ("bytes", Json::from(f.map_or(0, |f| if f.kind.is_binary() { project::binary_bytes(f) } else { f.text.len() as u64 }))),
+                            ])
+                        });
+                        let j = Json::obj([("files", Json::arr(files)), ("journal", Json::from(seq)), ("disk", disk), ("reloaded", Json::arr(reloaded.into_iter().map(Json::from)))]);
+                        let _ = reply.send(Committed::Done(j));
+                    }),
+                }
+                ToolOutput::text("{}")
+            }
             ProjectCall::CommitFixes { files, reply } => {
                 let (mut done, written) = self.project_commit_fixes(files, w, by);
                 match written {
@@ -337,6 +358,28 @@ impl Engine {
         match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, rule, |wd| file_commit(wd, path, new, also, by)) {
             Err(e) => Err(Committed::Refused(e)),
             Ok((_, seq)) => Ok((seq, backup)),
+        }
+    }
+
+    /// Several files in one journal entry ([`ProjectCall::CommitFiles`]): each is checked as one
+    /// commit checks its file (its base, its mount and kind, the store's room, the disk's
+    /// budget), then all are written under the project rule, or none is.
+    fn project_commit_files(&mut self, files: Vec<(String, (u64, u64), (FileKind, Arc<str>))>, w: Writer, by: &str) -> Result<(Option<u64>, Vec<String>), Committed> {
+        let mut puts = Vec::with_capacity(files.len());
+        for (path, base, file) in files {
+            let (new, _) = self.project_prepare(&path, base, Some(file), false, by)?;
+            puts.push((path, new));
+        }
+        let paths: Vec<String> = puts.iter().map(|(p, _)| p.clone()).collect();
+        let tick = self.clock.tick();
+        match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, crate::write_policy::Rule::Project, |wd| {
+            for (p, f) in puts {
+                wd.put_file(&p, f, false);
+            }
+            Ok(())
+        }) {
+            Err(e) => Err(Committed::Refused(e)),
+            Ok((_, seq)) => Ok((seq, paths)),
         }
     }
 

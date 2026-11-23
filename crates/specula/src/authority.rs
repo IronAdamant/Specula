@@ -797,6 +797,8 @@ pub fn access(tool: &str) -> Option<Access> {
         "tools_activate" | "tools_deactivate" => Open("changes only the caller's own tool list, within the cap the lead set (tools_scope)"),
         "tools_invoke" => Open("calls another tool by name, inside the caller's scope: that tool's own access applies"),
         "disk_prune" => Open("prunes only what the disk budget needs, never saves, worlds, journals or project files; free_mb, which deletes more, needs the lead"),
+        // Two project files in one journal entry, as the caller (claims on /project/<path>); its cancel stops the caller's own bakes only.
+        "sprite_bake" => World("project"),
         _ => return None,
     })
 }
