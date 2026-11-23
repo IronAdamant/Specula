@@ -67,7 +67,7 @@ fn cavetto_anchors(a: &Args) -> Vec<Anchor> {
 /// How much flatter than square an S may be.
 const FLAT: f64 = 50.0;
 const P_CYMA: &[Param] = &[len("width", "its projection from the wall, along x", 0.1), len("height", "along y", 0.1), len("fillet", "the flats at the S's ends", 0.012)];
-const P_CYMA_REV: &[Param] = &[len("width", "its projection from the wall, along x", 0.08), len("height", "along y", 0.12), len("fillet", "the flats at the S's ends", 0.01)];
+const P_CYMA_REV: &[Param] = &[len("width", "its projection from the wall, along x", 0.3), len("height", "along y", 0.45), len("fillet", "the flats at the S's ends", 0.04)];
 
 /// The cyma recta: its S from `(f, 0)` to `(w, h − f)`, level at both ends, the arc below
 /// centred above its end (convex), the arc above centred below its end (concave); `(ρ, θ)` each

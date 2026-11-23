@@ -942,7 +942,7 @@ fn t8_stage_4_builds_are_pinned() {
     let h = specula_core::hash::hash_bytes(&all);
     assert_eq!(h, PINNED_4, "the stage 4 builds moved: hash {h:#018x}");
 }
-const PINNED_4: u64 = 0x854f_9547_8e75_dc40;
+const PINNED_4: u64 = 0xc980_2ea2_fa59_a651;
 
 // ---------------------------------------------------------------- particular checks
 

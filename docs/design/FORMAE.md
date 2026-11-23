@@ -589,7 +589,7 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 |---|---|---|
 | `cavetto` | a cove moulding: a block less a quarter disc at its outer upper corner (back on x = 0, bed on y = 0) | `width` m 0.1 (0.0001..10000), `height` m 0.1 (0.0001..10000), `radius` m 0.08 (0.0001..10000) |
 | `cyma_recta` | an ogee moulding: an S of two equal arcs, convex below and concave above, level at its ends (a crown moulding's) | `width` m 0.1 (0.0001..10000), `height` m 0.1 (0.0001..10000), `fillet` m 0.012 (0.0001..10000) |
-| `cyma_reversa` | a reverse ogee moulding: an S of two equal arcs, concave below and convex above, upright at its ends | `width` m 0.08 (0.0001..10000), `height` m 0.12 (0.0001..10000), `fillet` m 0.01 (0.0001..10000) |
+| `cyma_reversa` | a reverse ogee moulding: an S of two equal arcs, concave below and convex above, upright at its ends | `width` m 0.3 (0.0001..10000), `height` m 0.45 (0.0001..10000), `fillet` m 0.04 (0.0001..10000) |
 
 #### plane forms, arch
 
