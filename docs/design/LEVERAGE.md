@@ -1589,7 +1589,7 @@ above 3.0, it was fitted to one brief; between, the runs are doubled.
 | plain | 148,378 (130,807 to 167,306) | 7.4 (7 or 8 in every run) | 598 to 745 | 33.8 |
 | engine | 1,096,486 (523,399 to 1,834,602) | 61.4 (28 to 95) | 1,581 to 2,512 | 32.2 |
 
-**Engine over plain: 7.39. By the rule, 1.92 was fitted to one brief.** Every engine run
+**Engine over plain: 7.39 (95% interval 4.99 to 10.17; with the judges' cost counted, 3.64). By the rule, 1.92 was fitted to one brief.** Every engine run
 costs more than three times every plain run. All five engine builders opened the engine's
 source (8 to 26 steps into the repository each).
 
@@ -1642,3 +1642,56 @@ build, and on the two that were meant to, the engine costs two to seven times as
 rule the owner and the lead set says what that means: above 1.5 after the mends, the design
 is wrong, not short of mends. What the engine is for (3D, physics, sound, content at a
 scale no one file holds, several agents at once) is what none of these jobs asks of it.
+
+### The second reader's assessment of this result, and what it corrects (2026-11-23)
+
+The second reader recomputed every run from its token counts (they match), held the result
+against the note it had sealed with the owner before the runs, and read this section. The
+figures stand. Four statements above say more than the runs do:
+
+- **The headline has two figures.** Builders alone: 7.39, 95% interval 4.99 to 10.17 (the
+  second reader's resampling), wholly above 3.0, so the rule's verdict holds. With the
+  judges' cost counted: 3.64, interval 2.71 to 4.59. Judging a plain game costs about twice
+  building it, which is why the two differ so.
+- **"A script cannot say press it again" is too strong.** The engine's script runner cannot
+  press a held action twice running. Two of the five builders got past that with a hidden
+  button and a chord for every word, which the guide does not mention, and passed the items;
+  three said so in their README and failed them.
+- **"Five to seven times where the guide does not answer" is two jobs**, the first measured
+  twice (5.92, 5.61) and this one (7.39): two data points, not a rule.
+- **"The engine arm also delivers less" is weakly held.** 32.2 against 33.8 of 34; one judge
+  passed n28 on the behaviour for which two others failed it (the state's `grid` in a
+  replay, which the brief does not settle). With that ruled one way for all, 32.8 against
+  33.8.
+
+And the conclusion drawn in the handoff, "stop mending for 2D games", goes beyond one job
+chosen to ask what the guide does not answer. What the runs do say, in the second reader's
+words: where a plain model can write the whole game from a clear spec in one request, the
+engine arm loses on cost, and its cost is in friction that can be named, plus the number of
+requests.
+
+**The friction named**, with its share of each engine builder's cost by the second reader's
+hand count (rough): the delivery of input, 26 to 48%. Three things, and they are the
+engine's to mend, not a guide's to explain:
+
+1. The same word of a module's on two inputs running is one press.
+2. A key cannot reach the rules on a screen the rules put up unless a button stands for it.
+3. The rules cannot change a setting, so a settings screen of the game's own is awkward.
+
+**And the shape of the work**: a plain builder writes the game whole at its second request
+and checks it in a few batches of a script of its own; an engine builder plays 19 to 63
+single runs at a context of 50,000 to 140,000 tokens. The engine arm's brief forbids "a
+program of yours around" the run command; the plain arm has no such line.
+
+**The sealed note against what happened** (the second reader's own account): of the three
+gaps it had sealed, the first was met through a neighbour it had listed only as a risk (the
+repeated word); the second cost nothing, because the brief itself gave the answer away; the
+third cost nothing, as expected. Its forecast of a plain build was three to four times too
+high. Neither of the two who write and read these jobs can yet say what a job will cost
+either arm.
+
+**What follows, agreed with the owner:** the three input faults mended in the engine; then
+this job again, unchanged, with a fresh plain arm, as a test of those mends and of nothing
+more; a third job, sized by a pilot of its plain arm alone, since no plain build so far has
+needed more than one sitting. Jobs that ask for 3D and for several agents at once run
+beside this line, not in its place.
