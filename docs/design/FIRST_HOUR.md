@@ -875,6 +875,26 @@ The second reader's two passes over Day Market found two more faults, both repro
   version 1 still loads). No change to the SDK: a project's copy of it builds as it was.
   The interface's words take another path, a press each, so `0:down,0:down` moves a menu's
   focus twice. The guide says both in four lines, paid for by wording nearby.
+### A screenful of text in one kept value (2026-11-23, after Day Market)
+
+Five of ten cold builders' Day Market games put a whole end-of-day summary (about sixteen
+lines, 300 to 600 characters, joined by newlines) into one kept text bound by one label. The
+shell gave a screen no text longer than 256 characters and dropped a longer one without a
+word; the label showed `{work.disp}` as written, and the run's warning said that nothing kept
+`work.disp`, which sent the builder to look for a `cx.set_state` that was there. No page gave
+the limit, and nothing recorded a reason for it.
+
+- **The bound is a label's own now**: a kept text of up to 4,096 bytes reaches a screen whole
+  (`specula_ui::state::MAX_TEXT`, raised from 512 bytes, which a summary of that size would
+  have been cut at). What it bounds is a label's cost a frame (rendered, compared with the
+  last layout, one glyph quad a character); what the modules keep is bounded by their store.
+- **A value that is still not shown is said, with why**: `game_state` lists it under
+  `not_shown` (its key, and a text's length against the bound, or a kind a screen cannot
+  show, with what to do), and a run's problem for a screen that binds it says so. "Nothing
+  keeps" is said only of a key no module keeps.
+- **A run's `ui.texts` holds a text whole** (`ui_tree`'s `text_chars`, up to a label's
+  bound; a page's long texts are at most 64 KiB together). `ui_tree` still cuts at 160
+  characters unless asked.
 
 ## As built
 
