@@ -170,6 +170,7 @@ rounds.
   engine did not pause the game it answers nothing and the rules never hear it. Five of
   fifteen games failed the pause item so. The same holds for any engine word (`pause`,
   `title`, `start`) on a screen the rules put up.
+- **The gate passed on `3207626c`** (2026-11-23, everything for an engine change), **at the second run.** The first failed on one speed budget in a crate the change does not touch (`specula-studio`, `reading_the_largest_record_is_bounded`: 565 ms against 400). Measured before running again: about 220 ms on a quiet machine, twelve times; about 750 ms with every core busy. So the machine was loaded by something outside the gate during that step; which, is not known. The budget is under twice the quiet time: thin for a laptop that had run comparisons, tests and gates since morning. If it fails again, look at the budget, not at the clock.
 - **The gate passed on `ff4b1298`** (2026-11-23, everything for an engine change; the three cells ran on it).
 - **The gate passed on `93c46983`** (2026-11-22, everything for an engine change; stage 1's runs were made on it).
 - **The gate passed on `74007d71`** (2026-11-22, everything for an engine change; the comparison ran on it).
