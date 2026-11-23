@@ -1826,12 +1826,13 @@ hold against (3.01) were written before the runs. Records: `perf/leverage/2026-1
 | Engine, weighted tokens (mean; lowest to highest) | 987,209; 710,147 to 1,739,856 | 902,731; 680,966 to 1,311,905 |
 | Plain | 328,019; 278,043 to 370,369 | 342,402; 272,054 to 396,568 |
 | **Engine over plain, builders** (95% interval, resampled) | **3.01** (2.49 to 3.67) | **2.64** (2.26 to 3.08) |
-| Engine over plain, builders with judges, first judging | 1.84 (1.56 to 2.14) | 1.75 (1.50 to 2.00) |
+| Engine over plain, builders with judges, first judging | 1.84 (1.56 to 2.14) | 1.75 (1.50 to 2.00); 2.07 (1.65 to 2.53) with the five judges that ran out of time counted |
+| Engine, the middle run (median) | 870,002 | 877,690 |
 | Requests, engine and plain | 30 to 79; 11 to 17 | 27 to 67 (mean 39); 10 to 19 (mean 14) |
 | Minutes | 15 and 5 | 13 and 5 |
 | Checks passed, each judge finding its own inputs | 54.2 and 59.8 of 61 | 55.9 and 60.3 |
 | Checks passed, every judge given the same pack of scripts | not judged so | **59.0 and 60.5** |
-| Engine builders that opened the repository | 10 of 10 (1 to 15 requests) | 7 of 10 (1 to 10 requests) |
+| Engine builders that opened the repository | 10 of 10 (1 to 15 requests) | 9 of 10 (1 to 10 requests) |
 
 **By the rule the result is between the bars** (above 2.2, at or under 3.0), where the rule
 says to double the runs before anything is said. They were not doubled: twenty and twenty is
@@ -1839,21 +1840,33 @@ the owner's to ask for. What can be said without it: the interval (2.26 to 3.08)
 above 2.2, so on this job the engine does not hold; and it overlaps the interval of the day
 before (2.49 to 3.67) almost entirely, so **the three mends did not show as a change in what
 a build costs.** The engine arm's mean fell by 9% and the plain arm's rose by 4%; both are
-inside what either arm moves by between two days.
+inside what either arm moves by between two days. **The move from 3.01 to 2.64 is within
+noise:** the change in the ratio, resampled, lies between -1.13 and +0.32; the middle engine
+run did not move (870,002, then 877,690); and one run of 1,739,856 in the first set, with
+none as dear in the second, is about 70% of the fall.
 
 **What the mends did change is what was delivered.** No game shows a placeholder for a long
 text (five of ten did), and no game fails the Quit item (four of ten did). All ten builders
 took presses from the `press` event and asked to quit by the `quit` key, from the guide's
 three new statements; none read `.pressed`. The engine arm's failed items fell from 68 to 51
-with the judging unchanged.
+at the first judging; the judging was not quite the same as the day before (the five judges
+judged again had a real 60 minutes for the first time, below).
 
 **The judging, done twice.** Of those 51 failed items, 40 are a judge saying it never reached
 the state (no walk-out, the 99-unit cap, too few coins for an upgrade, a frame not taken);
 the plain arm's ten games fail 7 items in all. So every game of both arms was judged again by
 a fresh judge given the same pack of input scripts (43 scenarios, written from the brief and
 validated the day before on four games of 2026-11-23), with 60 minutes. **With the same route
-to every state the arms are 59.0 and 60.5 of 61**: the gap of 4.4 checks was 1.5 checks of
-the games and 2.9 of the judging. What the engine games still fail, 20 items in ten games
+to every state the arms are 59.0 and 60.5 of 61**: by the arithmetic the gap of 4.4 checks
+was 1.5 of the games and 2.9 of the judging, **which reads more exact than it is.** The gap
+of 1.5 has an interval of 0.0 to 3.3. Two judges of one engine game agree less than two of a
+plain one: 57 of 610 items changed between the two judgings (44 from fail to pass, 13 from
+pass to fail; agreement beyond chance, kappa, 0.16) against 6 of 610 for the plain games,
+which are at the ceiling and so bound nothing. The pack and the 60 minutes came together and
+cannot be told apart. And the 13 that went from pass to fail are mostly a pack judge that
+did not run a scenario: the pack brings a noise of its own. What stands: the engine games
+are about one to two checks of 61 behind, and the first judging overstated it; by how much
+is not measured. What the engine games still fail, 20 items in ten games
 against 5: mostly the drawn frame (d58 to d61, 8 of the 20: no mark on the chosen row, a
 stall or a till not drawn as the state has it), then single items (a slot not emptied in
 what is kept, a record read back wrong, a menu row not kept across a pause). The first
@@ -1862,10 +1875,13 @@ judging's, and with the pack judging in its place it is 1.50 (1.36 to 1.66), whi
 pack costs a plain game's judge more than an engine game's and nothing about the builds.
 
 **What the builders went to the repository for:** a screen with a list of rows whose number
-changes (asked by most of the seven), a text with numbers in it in two languages (`msg` and
+changes (asked by most of them), a text with numbers in it in two languages (`msg` and
 `args`), where a run's seed is read. One builder spent ten requests there (267,019 weighted
-tokens, a fifth of its cost); the other six, one to four. Three builders opened nothing
-outside their project.
+tokens, a fifth of its cost); the other eight, four or fewer, two of them only listing or
+searching the documents. One builder (day-engine-1) opened nothing outside its project. (The
+lead first wrote seven of ten, from `examen leverage trace`: it knows the repository by one
+spelling of its path and missed two builders that wrote it another way. The same undercount
+may stand in earlier results' counts of builders that read the repository.)
 
 **Where the cost is,** unchanged: 39 requests against 14, each carrying a context that ends
 near 130,000 tokens (111,000 to 170,000) against a plain build's 60,000 to 70,000. Two in five
@@ -1893,8 +1909,8 @@ each market, neither knowing of the other, the lead only watching). Read as: one
 builder each, by the same harness, in a root of their own. *Night Market:* 304,256 weighted
 tokens, 18 requests, five minutes, 34 of 34 checks, nothing opened outside its project; the
 plain arm of the day before averaged 130,754, so about 2.3 times, on one run. It is the
-cheapest engine build of Night Market so far (the five of the day before: 289,548 to
-590,538). *Day Market:* 1,156,305 weighted tokens, 50 requests, 55 of 61 at its own judge's
+second cheapest of the six engine builds of Night Market on the mended engine (the five of
+the day before: 289,548 to 590,538). *Day Market:* 1,156,305 weighted tokens, 50 requests, 55 of 61 at its own judge's
 inputs, thirteen steps in the repository (the list of rows, `msg`, how a run's line is
 read by key): inside the ten's range, at its dear end. One run each is an observation, not a
 measurement.
@@ -1910,3 +1926,52 @@ is delivered and not what it costs. The cost is the number of requests and the c
 carries, as it has been since 2026-11-21, and no mend of a fault touches that. A plain build
 of this job is still one sitting (10 to 19 requests), so the first bar of the success
 definition is still untested.
+
+### The second reader's assessment and a second verification, and what they correct (2026-11-24)
+
+Two readers recomputed every figure from the raw cost and verdict files, the second without
+the first's report: 2.64 holds (2.26 to 3.07), the patch in the bundle is the code on `main`
+line for line, all twelve engine runs record `5c416dc3`. The label they give the result:
+**does not hold at 2.2; not decided at 3.0; about 2.6 times a plain build.** What they
+corrected is corrected in place above:
+
+- The single Night Market build is the second cheapest of six, not the cheapest.
+- Nine of ten builders opened the repository, not seven (the lead's tool missed a spelling of
+  the path).
+- With the judges counted, 1.75 leaves out the five judges that ran out of time; with them
+  it is 2.07 (1.65 to 2.53). Both are given.
+- "With the judging unchanged" was untrue of five runs.
+- The move from 3.01 to 2.64 is noise from one dear run, not a small gain. The commit that
+  recorded this pass is headed "2.64 times a plain build, from 3.01" and reads as a gain; it
+  is pushed and stays as it is.
+- "Most of the gap was the judging" is half supported: the gap is smaller than the first
+  judging said; how much of it was the judging is a reasonable guess and not a measurement.
+- About 160 USD stands (the second verification: about 158).
+
+**Several words at one tick, asked about and tested directly.** One game's README
+(day-engine-5) says several words at one tick on its Settings screen "can act on the row the
+focus had before the tick"; a pack judge marked it from the README without seeing it. That
+screen is the engine's own (buttons that step a setting, the engine's focus). Played by the
+lead: Down then Right at one tick, Down twice then Right, Right then Down then Right, and
+the same at the tick straight after the screen opens, all act in order as the brief asks,
+and Escape then Down at one tick acts in order on the way out. **One case does not:** Enter
+on the title (the rules' own menu) with Down and Right at the same tick. The Settings screen
+comes up, its focus moves down, and the Right is lost. A word that follows, in the same
+tick, the word by which the rules put an engine's screen up is not all given to that
+screen: the screen is shown a tick after the rules ask. Six pack judges gave three words at
+one tick on the title menu and saw them act in order. Left open with the other three of
+FIRST_HOUR.md section 17; not mended.
+
+**The measuring ends here** (the owner, 2026-11-24: "we're no longer doing any further
+testing. We did as much reduction as we can. We need to move on with finishing shape, sfx,
+recipe and template libraries, and then rest of part 4 and onwards."). Where it stands, for
+whoever takes it up again: on jobs of this size a build through the engine costs about two
+to three times a plain one and delivers nearly the same game; the one job where it is
+cheaper is the 3D change (0.68); the cost is the number of requests and the context each
+carries; no job measured outgrows one sitting of a plain builder, so the first bar of the
+success definition was never tested; three agents on one game were never measured. Faults of
+the harness found and not mended, to mend before any measurement is taken up again: a
+judge's time limit set in a run's file is not read; a judge's stream is written over by the
+next judging of the same run (the streams of the five judges that ran out are lost); a pack
+cannot be handed to a judge; a judge's page names the arm; `trace` knows the repository by
+one spelling of its path.

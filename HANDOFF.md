@@ -2,7 +2,7 @@
 
 Notes from Claude (Fable 5.2 since 2026-11-12) to whoever picks up Specula next, most likely a new
 Claude conversation with no memory of the earlier ones. This page is **current state and what's
-next** only. Last updated **2026-11-22**.
+next** only. Last updated **2026-11-24**.
 
 **The full record is [HANDOFF_HISTORY.md](HANDOFF_HISTORY.md)**: this page as it stood on
 2026-11-21 before it was cut down (the owner's words by date, every review round of M6 part 4,
@@ -11,8 +11,22 @@ need. Older history is in [CHANGELOG.md](CHANGELOG.md). The page was cut because
 full at the start of every session and had grown to 228 KB, most of it the history of review
 rounds.
 
-## Right now (2026-11-22)
+## Right now (2026-11-24)
 
+- **The measuring is over; part 4 and the libraries are next (the owner, 2026-11-24).** After
+  two readers' assessments of Day Market again: "Fix them but after that, we're no longer
+  doing any further testing. We did as much reduction as we can. We need to move on with
+  finishing shape, sfx, recipe and template libraries, and then rest of part 4 and onwards."
+  The corrections are made ([LEVERAGE.md](docs/design/LEVERAGE.md), the last part). No more
+  `examen leverage` builders or judges, and no further debugging toward cost parity, unless
+  the owner asks. Where the cost stands: about two to three times a plain build on jobs of
+  this size, nearly the same game delivered; cheaper on one job (the 3D change, 0.68). The
+  bullets below on the comparison are the record of how it got there, not work in hand. The
+  pause on part 4 of 2026-11-22 ("We're still paused on shape, recipe, template, and sfx")
+  is lifted by this. **Whether subagents may be used for part 4 has not been said:** the
+  owner allowed several for the three mends ("Deploy several agents now"), for that work.
+  Ask before the first one. What part 4 had open is in the table below and under "Where M6
+  stands".
 - **By hand only, and lean.** The owner: "Only by hand working", then "For now we'll stick to 1
   agent". No subagent, and no paid measurement (`examen leverage` builders and judges) beyond what they ask for, until they
   say. When subagents come back: one or two at a time, and always with `model` passed (Opus for
@@ -180,25 +194,30 @@ rounds.
   85): 2.64 times a plain build (2.26 to 3.08), from 3.01.** Between the rule's bars, where
   it says to double; not doubled (twenty and twenty is the owner's to ask for). The interval
   lies above 2.2 and over the one before it: **the mends changed what is delivered, not what
-  it costs.** No game shows a placeholder or fails Quit; all ten builders used the `press`
+  it costs** (the fall from 3.01 is noise: the middle engine run did not move, 870,002 then
+  877,690). No game shows a placeholder or fails Quit; all ten builders used the `press`
   event and the `quit` key. **Judged twice:** each judge finding its own inputs, 55.9 against
   60.3 of 61; every game of both arms judged again from the shared pack, **59.0 against
-  60.5**, so most of the old gap was the judging. What the engine games still fail is mostly
-  the drawn frame (no mark on the chosen row). Seven of ten builders opened the repository
-  (ten of ten before), for a screen with a list of rows of changing number, a text with
-  numbers in two languages, a run's seed. With the judges counted: 1.75
+  60.5** (the gap has an interval of 0.0 to 3.3; two judges of one engine game differ on 57 of
+  610 items, of a plain one on 6: the gap is smaller than the first judging said, by how much
+  is not measured). What the engine games still fail is mostly
+  the drawn frame (no mark on the chosen row). Nine of ten builders opened the repository
+  (ten of ten before; the lead first wrote seven, from a tool that missed a spelling of the
+  path), for a screen with a list of rows of changing number, a text with
+  numbers in two languages, a run's seed. With the judges counted: 1.75, and 2.07 with the five
+  judges that ran out of time
   ([LEVERAGE.md](docs/design/LEVERAGE.md), the last results). **The two single builders**
   (read as one cold engine builder on each market, by the harness, in a root of their own):
   Night Market 304,256 weighted tokens, 18 requests, 34 of 34, about 2.3 times the plain arm
-  of the day before and the cheapest engine build of it so far; Day Market 1,156,305, 55 of
+  of the day before and the second cheapest of six engine builds of it; Day Market 1,156,305, 55 of
   61. **Found on the way:** the judges' 60 minutes were never given (the limit is read from
   the data folder's settings, not from a run's file: a copy of the data folder with the
   limit raised gives them); a judge that stops process trees by id takes the harness with
   it; `examen leverage` cannot hand a judge a pack. **The lead's reading:** faults are no
   longer what the cost is; it is 39 requests against 14 at twice the context, and the next
   step that can move it is the shape of a build (stage 2) or a job a plain builder cannot do
-  in a sitting. Not started: which, is the owner's. **Owed to the owner: the reminder on
-  hooks that no harness owns.**
+  in a sitting. The owner chose neither: the measuring ends (the top of this page). The reminder on hooks
+  that no harness owns was given on 2026-11-24, with this result.
 - **The three faults mended (2026-11-24; by two subagents on Opus 5.5, reviewed in three
   rounds by a third that wrote none of it: "merge" at `b52ddcc0`)** (FIRST_HOUR.md, section
   17, the last three parts). *A long text:* a kept text of up to 4,096 bytes reaches its
@@ -219,7 +238,10 @@ rounds.
   window wins over an agent's hold. **Left open, not blocking:** a default report carries a
   long text three times; a rules-driven Quit chosen at tick T prints T+1 (the module reads
   a word in the next tick); a game that reads `.pressed` still counts one press for one
-  action given twice at a tick. **A shared pack of scripts for judging Day Market**
+  action given twice at a tick; a word given in the same tick after the word by which
+  the rules put an engine's screen up is not all given to that screen (Enter on a title of
+  the rules' own with Down and Right at one tick: the focus moves, the Right is lost; found
+  from a builder's README, tested by the lead on 2026-11-24). **A shared pack of scripts for judging Day Market**
   (`C:/lv/pack`, not tracked; 43 scenarios, validated on two plain and two engine games)
   reached every state the engine judges had called unreached, on both arms alike: those
   failures were the judging's, not the games'. **The owner (2026-11-23): "ten and ten" for
