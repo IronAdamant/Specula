@@ -875,7 +875,16 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   samples), sparse: 8³-cell blocks whose centre is farther from the surface than the tree's
   conservative Lipschitz reach are filled by sign. The reach (Lipschitz factor and slack) folds in
   every node, bounded or not: an unbounded displaced cutter (a half-space with noise) counts as
-  much as a bounded one. **A block that is sampled leaves out what cannot matter in it**: for the
+  much as a bounded one. **Where the tree's factor bounds nothing** (an ellipsoid whose radii
+  differ, a column whose proportions change, a repetition: [DISTANCE_FIELDS.md](DISTANCE_FIELDS.md),
+  2.6 and 2.7), a block the factor shows clear is filled only when its range over the block,
+  worked out through the tree (`field_range`, with an ellipsoid's greatest bounded too), shows
+  it clear as well; and pruning takes a loose child's span from that range, not from a factor
+  (both charged). Until 2026-11-24 a factor of 2 stood for the ellipsoid: a flat one with
+  blocks' middles on its middle plane was meshed with four blocks filled solid, and flat
+  ellipsoids of ratio 5 to 10 turned every way, long ones, and repetitions set off their
+  cells' middles came out wrong in about one build in twenty of a drawn set; none of the
+  repository's sculpts, figures or drawn trees moved. **A block that is sampled leaves out what cannot matter in it**: for the
   block, then for each half of it, then for each quarter, the tree is pruned of the children of its
   unions that are too far to touch the surface or its smoothing there (`sdf::prune`), exactly for
   the distance (tests compare the pruned and the whole tree bit for bit; a colour is the same through

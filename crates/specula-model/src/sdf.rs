@@ -183,6 +183,20 @@ struct Prepared {
     /// The least radius of such a column (of the least such column under a group), in the
     /// node's parent's frame: what "one of its own radii" is.
     least: f32,
+    /// This node or one under it is an ellipsoid whose radii differ ([`ellipsoid_is_loose`]):
+    /// its field changes faster than any one factor says, so no factor bounds it across a
+    /// ball; only [`field_range`] does.
+    loose: bool,
+}
+
+/// Whether a primitive's field is not bounded by its factor ([`prim_lip`]) across a ball: an
+/// ellipsoid whose radii differ. Its field reads short outside and never more than the
+/// distance there, but inside it reads up to the ratio of its radii too deep, and near its
+/// middle it changes direction by direction between minus its greatest and minus its least
+/// radius, so no factor holds it (`docs/design/DISTANCE_FIELDS.md`, 2.6). (A ball, all radii
+/// equal, is the distance itself.)
+fn ellipsoid_is_loose(p: &Prim) -> bool {
+    matches!(p, Prim::Ellipsoid { radii } if !(radii[0] == radii[1] && radii[1] == radii[2]))
 }
 
 #[derive(Clone, Debug)]
@@ -354,7 +368,11 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
         // A column whose breadth and depth change in different proportions (or a group with
         // one in it) is steady only unstretched: `prune` then allows for its wander.
         && (wander == 0.0 || m.stretch == [1.0; 3]);
-    Prepared { kind, m: n.m.clone(), inv_rot, rotated: n.m.rotate != [0.0; 3], seed: my_seed, lip, slack, steady, wander, least }
+    let loose = match &kind {
+        PKind::Prim(p) => ellipsoid_is_loose(p),
+        PKind::Group { kids, .. } => kids.iter().any(|k| k.loose),
+    };
+    Prepared { kind, m: n.m.clone(), inv_rot, rotated: n.m.rotate != [0.0; 3], seed: my_seed, lip, slack, steady, wander, least, loose }
 }
 
 /// The tree as it is for every point within `reach` of `c` (both in the node's parent's
@@ -373,12 +391,16 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
 /// displacement keeps every child, as its distances no longer bound each other), and a child
 /// with any of those anywhere under it is never dropped.
 fn prune(n: &Prepared, c: V3, reach: f32) -> Prepared {
+    #[cfg(test)]
+    if NO_PRUNE.with(|f| f.get()) {
+        return n.clone();
+    }
     pruned(n, c, reach, &valued(n, c))
 }
 
 /// [`prune`], with every node's distance at the ball's middle already taken ([`valued`]).
 fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued) -> Prepared {
-    let keep_all = |kind: PKind| Prepared { kind, m: n.m.clone(), inv_rot: n.inv_rot, rotated: n.rotated, seed: n.seed, lip: n.lip, slack: n.slack, steady: n.steady, wander: n.wander, least: n.least };
+    let keep_all = |kind: PKind| Prepared { kind, m: n.m.clone(), inv_rot: n.inv_rot, rotated: n.rotated, seed: n.seed, lip: n.lip, slack: n.slack, steady: n.steady, wander: n.wander, least: n.least, loose: n.loose };
     let PKind::Group { op, kids, smooth } = &n.kind else { return n.clone() };
     let m = &n.m;
     if !plain(m) || at.kids.len() != kids.len() {
@@ -402,6 +424,17 @@ fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued) -> Prepared {
         .zip(&at.kids)
         .map(|(k, v)| {
             let d = v.d;
+            #[cfg(test)]
+            let old = OLD_FACTORS.with(|f| f.get());
+            #[cfg(not(test))]
+            let old = false;
+            if k.loose && !old {
+                // An ellipsoid whose radii differ, or a group with one in it: its factor holds
+                // nothing across the ball (inside it changes as fast as it likes near its
+                // middle; outside a flat one's changes hundreds of times faster than the
+                // distance): its range in the ball is worked out through it instead.
+                return field_range_as(k, q, r, &mut 1, &mut 0, true);
+            }
             if k.wander == 0.0 {
                 let spread = k.lip * r + k.slack;
                 return (d - spread, d + spread);
@@ -1757,6 +1790,18 @@ pub(crate) fn field_at(n: &SdfNode, p: V3) -> f32 {
     eval(&prepare(n, 1, &mut 0), p)
 }
 
+/// What [`prune`] spends past one evaluation of the tree: the ranges of its loose children
+/// ([`field_range_as`], each about one evaluation of what it walks).
+fn loose_cost(n: &Prepared) -> u64 {
+    if !n.loose {
+        return 0;
+    }
+    match &n.kind {
+        PKind::Prim(_) => prepared_cost(n),
+        PKind::Group { kids, .. } => 8 + modifiers_cost(&n.m) + kids.iter().map(loose_cost).sum::<u64>(),
+    }
+}
+
 fn prepared_cost(n: &Prepared) -> u64 {
     match &n.kind {
         PKind::Prim(p) => prim_cost(p) + modifiers_cost(&n.m),
@@ -1908,6 +1953,14 @@ const RANGE_COPIES: u32 = 8;
 ///
 /// `asks` counts the primitives' evaluations. (What [`clear_of_solid`] shows a box clear by.)
 fn field_range(n: &Prepared, c: V3, r: f32, copies: &mut u32, asks: &mut u64) -> (f32, f32) {
+    field_range_as(n, c, r, copies, asks, false)
+}
+
+/// [`field_range`], and with `tight` an ellipsoid's greatest is bounded too (its least is the
+/// same either way): what the mesher asks ([`mesh`], [`pruned`]), so that a block inside a
+/// flat ellipsoid can still be shown solid. (The box's search asks without it, as it was
+/// reviewed.)
+fn field_range_as(n: &Prepared, c: V3, r: f32, copies: &mut u32, asks: &mut u64, tight: bool) -> (f32, f32) {
     let m = &n.m;
     let unknown = (-UNKNOWN, UNKNOWN);
     let shrink = m.scale * m.stretch[0].min(m.stretch[1]).min(m.stretch[2]);
@@ -1985,7 +2038,7 @@ fn field_range(n: &Prepared, c: V3, r: f32, copies: &mut u32, asks: &mut u64) ->
                     p = [co * p[0] - s * p[1], s * p[0] + co * p[1], p[2]];
                     rr *= 1.0 + rate * rho;
                 }
-                let (a, b) = inner_range(n, p, rr, copies, asks);
+                let (a, b) = inner_range(n, p, rr, copies, asks, tight);
                 lo = lo.min(a);
                 hi = hi.max(b);
             }
@@ -2011,7 +2064,7 @@ fn field_range(n: &Prepared, c: V3, r: f32, copies: &mut u32, asks: &mut u64) ->
 }
 
 /// [`field_range`] of a node's own distance in its own frame, before its distance modifiers.
-fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, asks: &mut u64) -> (f32, f32) {
+fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, asks: &mut u64, tight: bool) -> (f32, f32) {
     match &n.kind {
         PKind::Prim(Prim::Ellipsoid { radii }) => {
             // Its field reads short far from it, and faster than any one factor says (a flat
@@ -2031,7 +2084,24 @@ fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, asks: &mut u64) ->
             let short = 0.5 * (rho + 1.0 / rho);
             let out = (0..3).map(|k| (q[k].abs() - radii[k]).max(0.0)).map(|x| x * x).sum::<f32>().sqrt().max(math3::length(q) - most);
             let down = if out > r { (out - r) / short } else { -most };
-            (down, UNKNOWN)
+            if !tight {
+                return (down, UNKNOWN);
+            }
+            // How far above (DISTANCE_FIELDS 2.6): the true signed distance at the middle is at
+            // most `|q| (1 - 1 / k0)` outside (the point `q / k0` is on the surface) and at
+            // most `-(1 - k0) least` inside (`k0` changes by at most one over the least radius
+            // a metre), so in the ball at most that plus `r`. Where that is not below nothing
+            // the field is at most it (outside, the field is the distance to a touching plane,
+            // never more than the distance); where it is, every point of the ball is inside,
+            // at least that deep, and the field reads at most the depth over the ratio of the
+            // radii (it is at most `-(1 - k0) least` and the depth at most `(1 - k0) most`).
+            let k0 = math3::length([q[0] / radii[0], q[1] / radii[1], q[2] / radii[2]]);
+            let top = if k0 >= 1.0 { math3::length(q) * (1.0 - 1.0 / k0) } else { -(1.0 - k0) * least } + r;
+            let up = if top >= 0.0 { top } else { top / rho };
+            if !(up.is_finite() && k0.is_finite()) {
+                return (down, UNKNOWN);
+            }
+            (down, up + 1e-5 * up.abs() + 1e-7)
         }
         PKind::Prim(p @ Prim::Column { a, b, side, sections, count, square }) => {
             // A column whose breadth and depth change in different proportions is not
@@ -2089,7 +2159,7 @@ fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, asks: &mut u64) ->
             (d - by, d + by)
         }
         PKind::Group { op, kids, smooth } => {
-            let got: Vec<(f32, f32)> = kids.iter().map(|k| field_range(k, q, r, copies, asks)).collect();
+            let got: Vec<(f32, f32)> = kids.iter().map(|k| field_range_as(k, q, r, copies, asks, tight)).collect();
             if got.is_empty() {
                 return (UNKNOWN, UNKNOWN);
             }
@@ -2315,6 +2385,11 @@ fn mesh_box_seeded(tree: &SdfNode, resolution: u32, seed: u64) -> Option<((V3, V
     });
     // (Whole evaluations of the tree, rounded up: what the build is charged.)
     Some((grown, asks.div_ceil(prims)))
+}
+
+/// Whether a node or any under it is repeated.
+fn has_repeat(n: &SdfNode) -> bool {
+    n.m.repeat.is_some() || matches!(&n.kind, Kind::Group { kids, .. } if kids.iter().any(has_repeat))
 }
 
 fn count_prims(n: &SdfNode) -> usize {
@@ -3192,6 +3267,17 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
         return Err(SdfError::limit(format!("the sdf grid would have {samples} samples; at most {MAX_SAMPLES} (lower the resolution)"), samples as f64, MAX_SAMPLES as f64));
     }
     let prepared = prepare(tree, opt.seed, &mut 0);
+    // Whether the tree's factor bounds its field across any ball (DISTANCE_FIELDS 2.6): not
+    // with an ellipsoid whose radii differ, a column whose breadth and depth change in
+    // different proportions, or a repetition (its field jumps at its cells' edges) anywhere in
+    // it. Then a block the factor shows clear is shown clear again by [`field_range_as`].
+    let factor_holds = !prepared.loose && prepared.wander == 0.0 && !has_repeat(tree);
+    #[cfg(test)]
+    let factor_holds = factor_holds || OLD_FACTORS.with(|f| f.get());
+    let prims = count_prims(tree).max(1) as u64;
+    #[cfg(test)]
+    let loose_cost = |t: &Prepared| if OLD_FACTORS.with(|f| f.get()) { 0 } else { loose_cost(t) };
+    let loose_whole = loose_cost(&prepared);
     let mut stats = SdfStats { dims: dims.map(|d| d as u32), cell, ..SdfStats::default() };
     let mut work = 0u64;
     // What rounded shapes' samples took past what their weight covers ([`ROUNDED_ALLOW`]
@@ -3254,7 +3340,20 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
                 let c = [origin[0] + (i0 + i1) as f32 * 0.5 * cell, origin[1] + (j0 + j1) as f32 * 0.5 * cell, origin[2] + (k0 + k1) as f32 * 0.5 * cell];
                 charge(&mut work, cost)?;
                 let dc = eval(&prepared, c);
-                if dc.abs() > half_diag * lip + slack + cell {
+                #[cfg(test)]
+                let dc = if NO_SKIP.with(|f| f.get()) { 0.0 } else { dc };
+                // Clear by the tree's factor; and where that factor is no bound of its field
+                // across the block (a flat ellipsoid, a column of changing proportions, a
+                // repetition: `factor_holds`), shown clear by the range its field takes there,
+                // worked out through the tree ([`field_range_as`]).
+                let clear = dc.abs() > half_diag * lip + slack + cell
+                    && (factor_holds || {
+                        let mut asks = 0;
+                        let (least, most) = field_range_as(&prepared, c, half_diag * 1.001, &mut 1, &mut asks, true);
+                        charge(&mut work, asks.div_ceil(prims) * cost)?;
+                        least > 0.0 || most < 0.0
+                    });
+                if clear {
                     stats.blocks_skipped += 1;
                     for k in k0..=k1 {
                         for j in j0..=j1 {
@@ -3268,8 +3367,9 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
                     }
                     continue;
                 }
-                // (Finding what is near costs one more evaluation of the tree it is found in.)
-                charge(&mut work, cost)?;
+                // (Finding what is near costs one more evaluation of the tree it is found in, and
+                // the ranges of its loose children: [`loose_cost`].)
+                charge(&mut work, cost + loose_whole)?;
                 let here = prune(&prepared, c, half_diag + 0.25 * cell);
                 let here_cost = prepared_cost(&here);
                 // Boxes of samples from `from` in steps of `step`, the last ending at `to`.
@@ -3288,12 +3388,12 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
                 };
                 for (half_lo, half_hi) in boxes([i0, j0, k0], [i1, j1, k1], B / 2) {
                     let (middle, reach) = ball(half_lo, half_hi);
-                    charge(&mut work, here_cost)?;
+                    charge(&mut work, here_cost + loose_cost(&here))?;
                     let half = prune(&here, middle, reach);
                     let half_cost = prepared_cost(&half);
                     for (lo, hi) in boxes(half_lo, half_hi, FINE) {
                         let (middle, reach) = ball(lo, hi);
-                        charge(&mut work, half_cost)?;
+                        charge(&mut work, half_cost + loose_cost(&half))?;
                         let quarter = prune(&half, middle, reach);
                         let quarter_cost = prepared_cost(&quarter);
                         let mut fresh = 0u64;
@@ -3832,6 +3932,14 @@ thread_local! {
     static MESHED: std::cell::RefCell<Option<Vec<(Shape, SdfStats)>>> = const { std::cell::RefCell::new(None) };
     /// (Tests only) leave what keeping sheets apart costs out of the work.
     static FREE_SHEETS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// (Tests only) skip no block: every sample is evaluated, so a mesh made so is what the
+    /// skip must not change.
+    static NO_SKIP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// (Tests only) prune nothing.
+    static NO_PRUNE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// (Tests only) skip and prune by the tree's factors alone, as before 2026-11-24: what
+    /// lost surface beside flat ellipsoids.
+    static OLD_FACTORS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// (Tests only) every byte of a mesh, as one hash: its positions, triangles and colours.
@@ -6624,7 +6732,12 @@ mod tests {
                     let big = (math3::sub(glo, [0.5 * gsize; 3]), math3::add(ghi, [0.5 * gsize; 3]));
                     let cell = size / res as f32;
                     let fine = (crate::dmath::ceil(2.0 * gsize / cell) as u32).min(MAX_RESOLUTION);
-                    let (shape, _) = mesh(tree, &MeshOptions { bounds: Some(big), max_work: MAX_WORK * 8, max_triangles: 3_000_000, ..opts(fine) }).unwrap();
+                    // (Twenty times the limit, from eight: where a tree's factor bounds
+                    // nothing, a block is filled only when its range shows it clear
+                    // (DISTANCE_FIELDS 2.7), and in this wide box `own` 63 (a repetition, a flat
+                    // ellipsoid and columns of changing proportions) has no block its range
+                    // shows clear: 23.8 thousand million units, from 10.6.)
+                    let (shape, _) = mesh(tree, &MeshOptions { bounds: Some(big), max_work: MAX_WORK * 20, max_triangles: 3_000_000, ..opts(fine) }).unwrap();
                     let past = |lo: V3, hi: V3| shape.positions.iter().map(|p| (0..3).map(|a| (lo[a] - p[a]).max(p[a] - hi[a])).fold(f32::MIN, f32::max)).fold(f32::MIN, f32::max);
                     if matches!(self, Grows::Cuts) {
                         assert!(past(lo, hi) > 0.5 * cell && past(glo, ghi) <= 0.25 * cell, "past the old box {}, past the new {} (cell {cell})", past(lo, hi), past(glo, ghi));
@@ -7221,5 +7334,335 @@ mod tests {
             }
         }
         None
+    }
+
+    /// A mesh made three ways: as the mesher makes it, by the factors alone (as before
+    /// 2026-11-24), and with nothing skipped and nothing pruned (what both must equal).
+    fn three_ways(tree: &SdfNode, o: &MeshOptions) -> Option<[(Shape, SdfStats); 3]> {
+        let now = mesh(tree, o).ok()?;
+        OLD_FACTORS.with(|f| f.set(true));
+        let old = mesh(tree, o);
+        OLD_FACTORS.with(|f| f.set(false));
+        NO_SKIP.with(|f| f.set(true));
+        NO_PRUNE.with(|f| f.set(true));
+        let whole = mesh(tree, o);
+        NO_SKIP.with(|f| f.set(false));
+        NO_PRUNE.with(|f| f.set(false));
+        Some([now, old.ok()?, whole.ok()?])
+    }
+
+    #[test]
+    #[ignore = "survey of the block skip and pruning: run by hand, in release"]
+    #[allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings), not simulation code")]
+    fn skip_survey() {
+        let mut r = Review(0x1234_5678_9abc_def1);
+        let rot = |r: &mut Review| r.v3(-180.0, 180.0);
+        // (meshed, old differs from whole, now differs from whole, old work, now work)
+        type Seen = (u32, u32, u32, u64, u64);
+        let report = |name: &str, tree: &SdfNode, res: u32, bounds: Option<(V3, V3)>, seen: &mut Seen| {
+            let o = MeshOptions { bounds, max_triangles: 2_000_000, ..opts(res) };
+            if let Some([now, old, whole]) = three_ways(tree, &o) {
+                seen.0 += 1;
+                seen.3 += old.1.work;
+                seen.4 += now.1.work;
+                let h = mesh_hash(&whole.0);
+                if mesh_hash(&old.0) != h {
+                    seen.1 += 1;
+                }
+                if mesh_hash(&now.0) != h {
+                    seen.2 += 1;
+                    println!("  NOW DIFFERS {name} res {res}: {} tris, whole {}\n    {tree:?}", now.0.tris.len(), whole.0.tris.len());
+                }
+            }
+        };
+        {
+            let mut seen = (0, 0, 0, 0, 0);
+            let tree = prim(Prim::Ellipsoid { radii: [0.5, 0.02, 0.5] });
+            report("aligned flat", &tree, 60, Some(([-0.6, -0.05, -0.6], [0.6, 0.05, 0.6])), &mut seen);
+            println!("aligned flat ellipsoid: (meshed, old wrong, now wrong, old work, now work) {seen:?}");
+        }
+        for (label, flat) in [("flat", true), ("needle", false)] {
+            for rho in [1.5f32, 2.0, 3.0, 5.0, 10.0, 25.0, 50.0, 100.0] {
+                let mut seen = (0, 0, 0, 0, 0);
+                for _ in 0..40 {
+                    let a = r.range(0.1, 0.6);
+                    let radii = if flat { [a, a / rho, a * r.range(0.4, 1.0)] } else { [a / rho, a, a / rho * r.range(1.0, 2.0)] };
+                    let mut t = prim(Prim::Ellipsoid { radii });
+                    t.m.rotate = rot(&mut r);
+                    t.m.at = r.v3(-0.1, 0.1);
+                    let tree = if r.chance(0.5) {
+                        let mut s = prim(Prim::Sphere { radius: 0.05 });
+                        s.m.at = [2.5 * a, 0.0, 0.0];
+                        group(Combine::Union, vec![t, s], 0.0)
+                    } else {
+                        t
+                    };
+                    let res = [24, 40, 64, 96][r.pick(4)];
+                    report(label, &tree, res, None, &mut seen);
+                }
+                println!("{label} ellipsoids at {rho}: {seen:?}");
+            }
+        }
+        for steep in [0.3f32, 1.0, 3.0] {
+            let mut seen = (0, 0, 0, 0, 0);
+            for _ in 0..60 {
+                let count = 2 + r.pick(4);
+                let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+                let length = r.range(0.2, 1.0);
+                for (i, row) in sections.iter_mut().take(count).enumerate() {
+                    *row = [i as f32 / (count - 1) as f32, r.range(0.01, 0.06 + 0.1 * steep), r.range(0.01, 0.06 + 0.1 * steep)];
+                }
+                let square = if r.chance(0.5) { 2.0 } else { r.range(2.0, 8.0) };
+                let mut t = prim(Prim::Column { a: [0.0, -length * 0.5, 0.0], b: [0.0, length * 0.5, 0.0], side: [1.0, 0.0, 0.0], sections, count: count as u8, square });
+                t.m.rotate = rot(&mut r);
+                let tree = if r.chance(0.5) {
+                    let mut s = prim(Prim::Sphere { radius: 0.03 });
+                    s.m.at = [1.5 * length, 0.0, 0.0];
+                    group(Combine::Near, vec![t, s], 0.02)
+                } else {
+                    t
+                };
+                let res = [24, 40, 64, 96][r.pick(4)];
+                report("column", &tree, res, None, &mut seen);
+            }
+            println!("columns steep {steep}: {seen:?}");
+        }
+        {
+            let mut seen = (0, 0, 0, 0, 0);
+            for _ in 0..120 {
+                let a = r.range(0.1, 0.5);
+                let rho = [3.0, 5.0, 10.0, 30.0][r.pick(4)];
+                let mut e = prim(Prim::Ellipsoid { radii: if r.chance(0.5) { [a, a / rho, a * 0.8] } else { [a / rho, a, a / rho] } });
+                e.m.rotate = rot(&mut r);
+                let mut kids = vec![e];
+                for _ in 0..1 + r.pick(3) {
+                    let mut s = prim(Prim::Sphere { radius: r.range(0.02, 0.2) });
+                    s.m.at = r.v3(-1.5 * a, 1.5 * a);
+                    kids.push(s);
+                }
+                let mut tree = group([Combine::Union, Combine::Difference, Combine::Near][r.pick(3)], kids, [0.0, 0.02, 0.1][r.pick(3)]);
+                if r.chance(0.2) {
+                    tree.m.displace = Some((0.01, 0.1, 2));
+                }
+                if r.chance(0.2) {
+                    tree.m.shell = 0.02;
+                }
+                let res = [24, 40, 64, 96][r.pick(4)];
+                report("joined", &tree, res, None, &mut seen);
+            }
+            println!("joined flat ellipsoids: {seen:?}");
+        }
+        {
+            let mut seen = (0, 0, 0, 0, 0);
+            for _ in 0..60 {
+                let spacing = r.range(0.2, 0.6);
+                let mut s = prim(Prim::Sphere { radius: r.range(0.05, 0.25) * spacing });
+                s.m.at = [r.range(-0.45, 0.45) * spacing, 0.0, 0.0];
+                let mut tree = group(Combine::Union, vec![s], 0.0);
+                tree.m.repeat = Some(([2 + r.pick(4) as u32, 1, 1], [spacing, 0.0, 0.0]));
+                let res = [24, 40, 64, 96][r.pick(4)];
+                report("repeat", &tree, res, None, &mut seen);
+            }
+            println!("repeats off their cells' middles: {seen:?}");
+        }
+        // The repository's sculpts, the figure and the drawn set: old against now, and the
+        // work and time each way.
+        let timed = |f: &dyn Fn() -> Vec<(Shape, SdfStats)>| {
+            let t = std::time::Instant::now();
+            let m = f();
+            (m, t.elapsed().as_secs_f64())
+        };
+        type Set = Box<dyn Fn() -> Vec<(Shape, SdfStats)>>;
+        let sets: Vec<(&str, Set)> = vec![
+            ("repository", Box::new(|| repository_sculpts().into_iter().flat_map(|(_, m)| m).collect())),
+            (
+                "figures",
+                Box::new(|| {
+                    use specula_corpus::Sex;
+                    figure_meshes(&[(Sex::Female, 0), (Sex::Female, 1), (Sex::Female, 2), (Sex::Male, 0), (Sex::Male, 1), (Sex::Male, 2)], &[(35.0, 7.0, 0.025)])
+                }),
+            ),
+            ("drawn", Box::new(drawn_meshes)),
+        ];
+        for (name, f) in &sets {
+            let (now, tn) = timed(f.as_ref());
+            OLD_FACTORS.with(|x| x.set(true));
+            let (old, to) = timed(f.as_ref());
+            OLD_FACTORS.with(|x| x.set(false));
+            let differ = now.iter().zip(&old).filter(|(a, b)| mesh_hash(&a.0) != mesh_hash(&b.0)).count();
+            let sum = |m: &[(Shape, SdfStats)], g: &dyn Fn(&SdfStats) -> u64| m.iter().map(|x| g(&x.1)).sum::<u64>();
+            println!(
+                "{name}: {} meshes, {differ} differ; work {} old, {} now; samples {} old, {} now; blocks skipped {} old, {} now; {to:.2} s old, {tn:.2} s now",
+                now.len(),
+                sum(&old, &|s| s.work),
+                sum(&now, &|s| s.work),
+                sum(&old, &|s| s.samples_evaluated),
+                sum(&now, &|s| s.samples_evaluated),
+                sum(&old, &|s| s.blocks_skipped),
+                sum(&now, &|s| s.blocks_skipped)
+            );
+        }
+    }
+
+    /// **Every primitive's factor bounds it, or it is marked loose and its range is asked
+    /// instead** (`docs/design/DISTANCE_FIELDS.md`, 2.6 and 2.7). Across each primitive's whole
+    /// range of parameters, near it and far from it: a primitive with a factor never changes
+    /// faster than that factor between two points (with twice its slack); an ellipsoid whose
+    /// radii differ, and a column whose proportions change, do change faster (so the test
+    /// would see a factor taken for them), are marked so (`loose`, `wander`), and over every
+    /// ball the range the mesher asks ([`field_range_as`], tight) holds every value in it.
+    #[test]
+    fn every_primitives_factor_bounds_it_or_its_range_is_asked() {
+        let mut r = Review(0x0bad_cafe_1234_5679);
+        let (mut faster, mut pairs, mut balls) = (0, 0, 0);
+        for case in 0..400 {
+            let p = match case % 10 {
+                0 => {
+                    let rho = [1.0, 1.2, 2.0, 5.0, 25.0, 100.0][r.pick(6)];
+                    let a = r.range(0.05, 0.5);
+                    let mut e = [a, a / rho, a * r.range(1.0 / rho, 1.0)];
+                    e.rotate_left(r.pick(3));
+                    Prim::Ellipsoid { radii: e }
+                }
+                1 => {
+                    let count = 1 + r.pick(MAX_SECTIONS);
+                    let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+                    let steep = [0.05, 0.3, 1.0, 3.0][r.pick(4)];
+                    let keep = r.chance(0.3);
+                    let shape = r.range(0.5, 2.0);
+                    for (i, row) in sections.iter_mut().take(count).enumerate() {
+                        let w = r.range(0.01, 0.01 + 0.1 * steep);
+                        *row = [if count == 1 { 0.5 } else { i as f32 / (count - 1) as f32 }, w, if keep { w * shape } else { r.range(0.01, 0.01 + 0.1 * steep) }];
+                    }
+                    let length = r.range(0.1, 1.0);
+                    Prim::Column { a: [0.0, 0.0, 0.0], b: [0.0, length, 0.0], side: [1.0, 0.0, 0.0], sections, count: count as u8, square: [2.0, 3.0, 4.0, r.range(2.0, 8.0), 8.0][r.pick(5)] }
+                }
+                2 => Prim::Sphere { radius: r.range(0.01, 0.5) },
+                3 => {
+                    let half = r.v3(0.01, 0.5);
+                    Prim::Box { half, round: r.range(0.0, 1.0) * half[0].min(half[1]).min(half[2]) }
+                }
+                4 => {
+                    let (radius, half_height) = (r.range(0.01, 0.5), r.range(0.01, 0.5));
+                    Prim::Cylinder { radius, radius_top: if r.chance(0.5) { radius } else { r.range(0.0, 0.5) }, half_height, round: 0.0 }
+                }
+                5 => Prim::Capsule { radius: r.range(0.01, 0.4), half_height: r.range(0.0, 0.5) },
+                6 => Prim::Torus { radius: r.range(0.05, 0.5), tube: r.range(0.01, 0.2) },
+                7 => Prim::RoundCone { a: r.v3(-0.3, 0.3), b: r.v3(-0.3, 0.3), ra: r.range(0.01, 0.3), rb: r.range(0.01, 0.3) },
+                8 => Prim::Rounded { half: r.v3(0.02, 0.5), power: 2.0 / r.range(0.05, 1.0), disc: r.chance(0.3) },
+                _ => {
+                    let half = r.v3(0.01, 0.5);
+                    Prim::Box { half, round: 0.0 }
+                }
+            };
+            let node = prim(p);
+            let pp = prepare(&node, 1, &mut 0);
+            let (lo, hi, _, _) = bounds(&node).unwrap();
+            let size = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max);
+            let mid = [0, 1, 2].map(|k| 0.5 * (lo[k] + hi[k]));
+            let lip = prim_lip(&p);
+            let slack = prim_slack(&p);
+            let loose = pp.loose || pp.wander > 0.0;
+            assert_eq!(pp.loose, ellipsoid_is_loose(&p));
+            let mut fastest = 0.0f32;
+            for k in 0..300 {
+                // Near the middle, near the surface and far out (up to five sizes).
+                let span = [0.05, 0.6, 5.0][k % 3] * size;
+                let c = math3::add(mid, r.v3(-span, span));
+                let step = size * [1e-3, 0.05][k % 2];
+                let q = math3::add(c, math3::scale(math3::normalize(r.v3(-1.0, 1.0)), step));
+                let (f0, f1) = (eval(&pp, c), eval(&pp, q));
+                let rate = ((f1 - f0).abs() - 2.0 * slack).max(0.0) / step;
+                fastest = fastest.max(rate);
+                pairs += 1;
+                if !loose {
+                    assert!(rate <= lip * (1.0 + 1e-3) + 1e-3, "{p:?}: changes at {rate} between {c:?} and {q:?}, past its factor {lip}");
+                }
+                // The tight range holds every value of a ball about `c`.
+                let rad = size * [0.005, 0.05, 0.3][r.pick(3)];
+                let (least, most) = field_range_as(&pp, c, rad, &mut 1, &mut 0, true);
+                for _ in 0..6 {
+                    let v = math3::scale(math3::normalize(r.v3(-1.0, 1.0)), rad * r.unit());
+                    let f = eval(&pp, math3::add(c, v));
+                    let tol = 1e-5 * (1.0 + f.abs());
+                    assert!(f >= least - tol && f <= most + tol, "{p:?}: {f} at {:?} outside {least}..{most} (ball {c:?}, {rad})", math3::add(c, v));
+                }
+                balls += 1;
+            }
+            if loose && fastest > lip * 1.01 {
+                faster += 1;
+            }
+        }
+        // (The loose ones the test drew did change faster than a factor says: it would see one
+        // taken for them.)
+        assert!(faster > 20 && pairs == 120_000 && balls == 120_000, "{faster} loose primitives changed faster than a factor; {pairs} pairs, {balls} balls");
+    }
+
+    /// **A block is skipped, and a union pruned, only where nothing of the surface is lost**
+    /// (DISTANCE_FIELDS 2.7). A flat ellipsoid whose blocks have their middles on its middle
+    /// plane, where its field reads its greatest half axis deep and its surface is its least
+    /// away: by the factors alone (as before 2026-11-24) four blocks were filled solid (9,010
+    /// triangles for 8,290); now the mesh is that of the tree sampled whole. So are flat and
+    /// long ellipsoids turned every way, joined and cut with balls, and a repetition whose
+    /// copies sit off their cells' middles.
+    #[test]
+    fn a_skipped_block_or_a_pruned_child_loses_no_surface() {
+        let whole = |tree: &SdfNode, o: &MeshOptions| {
+            NO_SKIP.with(|f| f.set(true));
+            NO_PRUNE.with(|f| f.set(true));
+            let m = mesh(tree, o);
+            NO_SKIP.with(|f| f.set(false));
+            NO_PRUNE.with(|f| f.set(false));
+            m.unwrap()
+        };
+        let flat = prim(Prim::Ellipsoid { radii: [0.5, 0.02, 0.5] });
+        let o = MeshOptions { bounds: Some(([-0.6, -0.05, -0.6], [0.6, 0.05, 0.6])), ..opts(60) };
+        let (now, st) = mesh(&flat, &o).unwrap();
+        let all = whole(&flat, &o);
+        assert_eq!((now.tris.len(), mesh_hash(&now)), (all.0.tris.len(), mesh_hash(&all.0)), "{st:?}");
+        OLD_FACTORS.with(|f| f.set(true));
+        let (old, _) = mesh(&flat, &o).unwrap();
+        OLD_FACTORS.with(|f| f.set(false));
+        assert_eq!((old.tris.len(), all.0.tris.len()), (9010, 8290), "the case no longer shows what the factors alone lost");
+        let mut r = Review(0x1234_5678_9abc_def1);
+        let mut old_wrong = 0;
+        for case in 0..36 {
+            let a = r.range(0.1, 0.5);
+            let rho = [5.0, 10.0, 10.0, 30.0][r.pick(4)];
+            let mut e = prim(Prim::Ellipsoid { radii: if case % 2 == 0 { [a, a / rho, a * r.range(0.4, 1.0)] } else { [a / rho, a, a / rho] } });
+            e.m.rotate = r.v3(-180.0, 180.0);
+            e.m.at = r.v3(-0.1, 0.1);
+            let tree = match case % 4 {
+                0 => e,
+                1 => {
+                    let mut s = prim(Prim::Sphere { radius: r.range(0.02, 0.15) });
+                    s.m.at = r.v3(-1.5 * a, 1.5 * a);
+                    group([Combine::Union, Combine::Near, Combine::Difference][r.pick(3)], vec![e, s], [0.0, 0.02][r.pick(2)])
+                }
+                2 => {
+                    let mut s = prim(Prim::Sphere { radius: 0.05 });
+                    s.m.at = [2.5 * a, 0.0, 0.0];
+                    group(Combine::Union, vec![e, s], 0.0)
+                }
+                _ => {
+                    let spacing = r.range(0.2, 0.6);
+                    let mut s = prim(Prim::Sphere { radius: r.range(0.05, 0.25) * spacing });
+                    s.m.at = [r.range(-0.45, 0.45) * spacing, 0.0, 0.0];
+                    let mut t = group(Combine::Union, vec![s], 0.0);
+                    t.m.repeat = Some(([2 + r.pick(4) as u32, 1, 1], [spacing, 0.0, 0.0]));
+                    t
+                }
+            };
+            let o = opts([40, 64, 96][r.pick(3)]);
+            let (now, _) = mesh(&tree, &o).unwrap();
+            let all = whole(&tree, &o);
+            assert_eq!(mesh_hash(&now), mesh_hash(&all.0), "case {case}: {} triangles, {} sampled whole\n{tree:?}", now.tris.len(), all.0.tris.len());
+            OLD_FACTORS.with(|f| f.set(true));
+            let (old, _) = mesh(&tree, &o).unwrap();
+            OLD_FACTORS.with(|f| f.set(false));
+            old_wrong += usize::from(mesh_hash(&old) != mesh_hash(&all.0));
+        }
+        // (By the factors alone some of these lost surface: the set can see the fault.)
+        assert!(old_wrong > 0, "none of the drawn cases differed by the factors alone");
     }
 }
