@@ -797,6 +797,8 @@ pub fn access(tool: &str) -> Option<Access> {
         "tools_activate" | "tools_deactivate" => Open("changes only the caller's own tool list, within the cap the lead set (tools_scope)"),
         "tools_invoke" => Open("calls another tool by name, inside the caller's scope: that tool's own access applies"),
         "disk_prune" => Open("prunes only what the disk budget needs, never saves, worlds, journals or project files; free_mb, which deletes more, needs the lead"),
+        "exemplar_list" | "exemplar_get" => ReadOnly,
+        "exemplar_take" => World("project"),
         _ => return None,
     })
 }

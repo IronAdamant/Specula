@@ -740,6 +740,9 @@ pub enum CallerThread {
     /// The `formae_*` tools: the shape library is read and its forms built here (pure: nothing
     /// of the world is read).
     Formae,
+    /// The `exemplar_*` tools: the library of sample assets is read here (pure); a take writes
+    /// through `project_write`.
+    Exemplar,
 }
 
 impl CallerThread {
@@ -771,6 +774,7 @@ impl CallerThread {
             n if n.starts_with("tools_") => CallerThread::Scope,
             n if n.starts_with("disk_") => CallerThread::Disk,
             n if n.starts_with("audio_") => CallerThread::Audio,
+            n if n.starts_with("exemplar_") => CallerThread::Exemplar,
             _ => return None,
         })
     }
@@ -800,6 +804,7 @@ impl CallerThread {
             CallerThread::L10n => "l10n_* tools read and write string tables on your connection: translate and check before or after the playtest (ui_check {pseudo: true} works inside one)",
             CallerThread::Memory => "memory_* tools read and write the project's notes on your connection: read what the project remembers before the playtest, and note what it showed after",
             CallerThread::Formae => "formae_* tools read the shape library on your connection: look forms up before or after the playtest",
+            CallerThread::Exemplar => "exemplar_* tools read the library of sample assets and write a copy into the project on your connection: take kinds before the playtest",
         }
     }
 }
@@ -904,6 +909,8 @@ impl Tools {
                 Some(CallerThread::Memory) => return crate::memory_tools::call(self, session, name, arguments),
                 // The shape library is pure: its catalogue and its forms are answered on this thread.
                 Some(CallerThread::Formae) => return crate::formae_tools::call(session, name, arguments),
+                // The library of sample assets is pure; a take is a project_write on this thread.
+                Some(CallerThread::Exemplar) => return crate::exemplar_tools::call(self, session, name, arguments),
                 // (Answered above.)
                 // tools_* reach here only from a caller that skipped `ToolHandler::call` (tests).
                 Some(CallerThread::LogicBuild | CallerThread::LogicReload | CallerThread::MergeSuggest | CallerThread::Scope) | None => parse(name, arguments),
@@ -3094,6 +3101,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::l10n_tools::definitions())
     .chain(crate::memory_tools::definitions())
     .chain(crate::formae_tools::definitions())
+    .chain(crate::exemplar_tools::definitions())
     .chain(crate::trace_tools::definitions())
     .chain(crate::editor_tools::definitions())
     .chain(crate::inputguard_tools::definitions())

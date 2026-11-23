@@ -66,6 +66,17 @@
 //!
 //! # glTF assets
 //!
+//! # Kinds of the library of sample assets
+//!
+//! A recipe path ending in `.kind.json` is a kind (`specula-exemplaria`, docs/design/EXEMPLARIA.md):
+//! read, hashed and hot-reloaded as a recipe is (its `base`, another `<name>.kind.json` of the
+//! folder, counts as an include), checked at spawn by writing its mean in the recipe's style
+//! (every role resolved), and on the build worker written at the spec's seed into the recipe and
+//! the anims text it builds from ([`crate::exemplar_tools::expand_for_build`]). So each seed is a
+//! specimen of its own, cached by its seed as any recipe's variant is.
+//!
+//! # glTF assets
+//!
 //! A model entity whose `recipe` ends in `.glb` or `.gltf` imports that asset (`specula-gltf`,
 //! textures kept, not baked into vertex colours) on a worker thread instead of building a recipe;
 //! it takes no `params` and no `seed`. Its key is the file's path, size and modification time
@@ -315,6 +326,8 @@ struct RecipeInfo {
     anims: Option<Arc<str>>,
     /// It or something it includes is procedural: built on the heavy worker.
     heavy: bool,
+    /// A kind (`*.kind.json`): its build writes the recipe at the spec's seed first.
+    kind: bool,
 }
 
 /// A spec's slot: what it draws now and what it waits for.
@@ -358,6 +371,8 @@ struct Job {
     gltf: Option<PathBuf>,
     /// A rigged recipe's anim-set file text.
     anims: Option<Arc<str>>,
+    /// `text` is a kind: written at `seed` into its recipe and anims first.
+    kind: bool,
     /// Set when nobody wants the build any more: a running build stops at its next budget check.
     cancel: Arc<AtomicBool>,
     /// The call that queued it: the worker builds inside it (docs/design/TRACE.md).
@@ -632,6 +647,13 @@ fn run(job: &Job, build: BuildFn) -> Outcome {
     let params = BuildParams { values: &values, seed: job.seed, library: Some(&job.library), ..BuildParams::new(&job.style) };
     let built = specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| match &job.gltf {
         Some(path) => import_gltf(path),
+        // A kind: its recipe and clips at this seed, written here on the worker.
+        None if job.kind => crate::exemplar_tools::expand_for_build(&job.text, &job.library, job.seed, &job.style, &job.recipe).and_then(|(recipe, anims)| {
+            build(&recipe, &params).map(|model| {
+                let extras = recipe_extras(&model, anims.as_deref());
+                (model, extras)
+            })
+        }),
         None => build(&job.text, &params).map(|model| {
             let extras = recipe_extras(&model, job.anims.as_deref());
             (model, extras)
@@ -1677,6 +1699,7 @@ impl Library {
                 seed: None,
                 gltf: Some(g.path.clone()),
                 anims: None,
+                kind: false,
                 cancel: Arc::clone(&cancel),
                 trace: specula_core::trace::Ctx::current(),
             },
@@ -1695,6 +1718,7 @@ impl Library {
                     seed: spec.seed,
                     gltf: None,
                     anims: info.anims.clone(),
+                    kind: info.kind,
                     cancel: Arc::clone(&cancel),
                     trace: specula_core::trace::Ctx::current(),
                 }
@@ -1823,11 +1847,30 @@ impl Library {
             .with("recipe", recipe)
         })?;
         let (style, style_hash) = self.style(&style_path, recipe)?;
-        let parsed = Recipe::parse(&text, &style).map_err(|e| recipe_error(recipe, &e))?;
+        // A kind is checked by writing its mean in this style (its base read from the folder),
+        // and parsed as the recipe that writes; its base is its one include.
+        let kind = crate::exemplar_tools::is_kind(stem);
+        let parsed = if kind {
+            let files = &self.folders[folder].files;
+            let base = |b: &str| files.get(&format!("{b}.kind")).and_then(|f| f.text.as_ref().ok()).map(|t| t.to_string());
+            let mean = crate::exemplar_tools::check_kind(&text, &base, &style, recipe).map_err(|e| recipe_error(recipe, &e))?;
+            Recipe::parse(&mean, &style).map_err(|e| recipe_error(recipe, &e))?
+        } else {
+            Recipe::parse(&text, &style).map_err(|e| recipe_error(recipe, &e))?
+        };
         // The files it includes, transitively; a missing one is left for the build to report.
         let files = &self.folders[folder].files;
         let mut library = BTreeMap::new();
         let mut includes = BTreeSet::new();
+        if kind {
+            if let Some(b) = specula_exemplaria::Kind::parse(&text).ok().and_then(|k| k.base) {
+                let stem = format!("{b}.kind");
+                if let Some(Ok(t)) = files.get(&stem).map(|f| &f.text) {
+                    library.insert(stem.clone(), t.to_string());
+                }
+                includes.insert(stem);
+            }
+        }
         let mut todo = parsed.includes();
         while let Some(name) = todo.pop() {
             if !includes.insert(name.clone()) || library.contains_key(&name) {
@@ -1850,7 +1893,8 @@ impl Library {
         // A rig's anim set is part of the build (generated clips depend on the skeleton).
         let anims_path = self.anims_path(folder, stem);
         let (_, anims_mtime) = stamp_of(&anims_path);
-        let anims = is_regular(&anims_path)
+        // (A kind writes its own clips: no anims file is read for it.)
+        let anims = (!kind && is_regular(&anims_path))
             .then(|| std::fs::read_to_string(&anims_path).ok())
             .flatten()
             .map(|t| (Arc::<str>::from(t), anims_path.clone()));
@@ -1860,6 +1904,9 @@ impl Library {
                 h.write_str(t);
             }
             None => h.write_u8(0),
+        }
+        if kind {
+            h.write_str("kind");
         }
         let heavy = procedural(&text) || library.values().any(|t| procedural(t));
         Ok(RecipeInfo {
@@ -1875,6 +1922,7 @@ impl Library {
             anims_path,
             anims_mtime,
             anims: anims.map(|(t, _)| t),
+            kind,
         })
     }
 
@@ -5801,6 +5849,7 @@ mod tests {
             seed: None,
             gltf: None,
             anims: None,
+            kind: false,
             cancel: Arc::new(AtomicBool::new(false)),
             trace: specula_core::trace::Ctx::default(),
         }
@@ -6001,6 +6050,7 @@ mod tests {
             seed: None,
             gltf: None,
             anims: None,
+            kind: false,
             cancel: Arc::new(AtomicBool::new(false)),
             trace: specula_core::trace::Ctx::default(),
         };

@@ -117,10 +117,18 @@ pub const STYLE_OVERRIDE: &str = "(--style)";
 pub fn context(path: &str, kind: FileKind, files: &BTreeMap<String, ProjectFile>, style_override: Option<&Arc<str>>) -> Vec<(String, FileKind, Arc<str>)> {
     let get = |p: &str| files.get(p).map(|f| (p.to_owned(), f.kind, Arc::clone(&f.text)));
     match kind {
-        FileKind::Recipe => match style_override {
-            Some(t) => vec![(STYLE_OVERRIDE.to_owned(), FileKind::Style, Arc::clone(t))],
-            None => style_for(path, files).and_then(|s| get(&s)).into_iter().collect(),
-        },
+        FileKind::Recipe => {
+            let mut out: Vec<(String, FileKind, Arc<str>)> = match style_override {
+                Some(t) => vec![(STYLE_OVERRIDE.to_owned(), FileKind::Style, Arc::clone(t))],
+                None => style_for(path, files).and_then(|s| get(&s)).into_iter().collect(),
+            };
+            // A kind's base is another kind beside it: the folder's kinds go with it.
+            if crate::exemplar_tools::is_kind(path) {
+                let dir = folder(path);
+                out.extend(files.iter().filter(|(p, f)| f.kind == FileKind::Recipe && *p != path && folder(p) == dir && crate::exemplar_tools::is_kind(p)).map(|(p, f)| (p.clone(), f.kind, Arc::clone(&f.text))));
+            }
+            out
+        }
         FileKind::UiScreen => get(&format!("{}/theme.json", folder(path))).into_iter().collect(),
         FileKind::Style if style_override.is_some() => Vec::new(),
         FileKind::Style => {
@@ -236,7 +244,17 @@ pub fn check_module_manifest(file: &str, text: &str) -> Vec<Problem> {
     out
 }
 
-fn recipe(file: &str, text: &str, style: &specula_model::Style) -> Option<Problem> {
+/// A recipe checked against its style. A kind (`*.kind.json`, docs/design/EXEMPLARIA.md) is
+/// checked as the model library reads it: parsed, over its base (a `<name>.kind.json` beside it,
+/// found in `context`), and written at its mean with every role resolved by the style.
+fn recipe(file: &str, text: &str, style: &specula_model::Style, context: &[(String, FileKind, Arc<str>)]) -> Option<Problem> {
+    if crate::exemplar_tools::is_kind(file) {
+        let base = |b: &str| {
+            let want = format!("{}/{b}.kind.json", folder(file));
+            context.iter().find(|c| c.0 == want).map(|c| c.2.to_string())
+        };
+        return crate::exemplar_tools::check_kind(text, &base, style, file).err().map(|e| from_json_error(file, &e.to_json()));
+    }
     specula_model::Recipe::parse(text, style).err().map(|e| from_json_error(file, &e.to_json()))
 }
 
@@ -253,7 +271,7 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
     match kind {
         FileKind::Recipe => match context.iter().find(|c| c.1 == FileKind::Style) {
             Some((sp, _, st)) => match specula_model::Style::parse(st) {
-                Ok(style) => out.extend(recipe(path, text, &style)),
+                Ok(style) => out.extend(recipe(path, text, &style, context)),
                 Err(e) => {
                     out.extend(json_syntax(path, text));
                     out.push(warning(path, "style_invalid", format!("its style {sp} doesn't parse ({}), so only JSON syntax was checked", e.message)));
@@ -269,7 +287,7 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
             Ok(style) => {
                 let old_style = old.and_then(|o| specula_model::Style::parse(o).ok());
                 for (rp, _, rt) in context.iter().filter(|c| c.1 == FileKind::Recipe) {
-                    if let Some(mut p) = recipe(rp, rt, &style) {
+                    if let Some(mut p) = recipe(rp, rt, &style, context) {
                         // Fine before: with this file's old text, or (a new, closer style) with the
                         // style that governed the recipe until now.
                         let before = match (&old_style, old) {
@@ -277,7 +295,7 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
                             (None, Some(_)) => None,
                             (None, None) => other_style(rp, path, context),
                         };
-                        let was_fine = before.as_ref().is_some_and(|b| recipe(rp, rt, b).is_none());
+                        let was_fine = before.as_ref().is_some_and(|b| recipe(rp, rt, b, context).is_none());
                         if !was_fine {
                             p.severity = "warning";
                             p.message = format!("(already broken before this edit) {}", p.message);
@@ -409,11 +427,11 @@ pub fn validate_delete(path: &str, kind: FileKind, old: &str, context: &[(String
         FileKind::Style => {
             let Ok(old_style) = specula_model::Style::parse(old) else { return out };
             for (rp, _, rt) in context.iter().filter(|c| c.1 == FileKind::Recipe) {
-                if recipe(rp, rt, &old_style).is_some() {
+                if recipe(rp, rt, &old_style, context).is_some() {
                     continue; // already broken
                 }
                 match other_style(rp, path, context) {
-                    Some(next) => out.extend(recipe(rp, rt, &next)),
+                    Some(next) => out.extend(recipe(rp, rt, &next, context)),
                     None => out.push(Problem {
                         file: rp.clone(),
                         severity: "error",

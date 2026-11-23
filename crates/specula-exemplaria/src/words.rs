@@ -45,8 +45,13 @@ pub fn nearness(word: &str, name: &str) -> Option<usize> {
     if name == word {
         return Some(0);
     }
-    if word.len() >= 3 && (name.contains(&word) || word.contains(name)) {
+    // A name that holds the word is one edit away; a name the word holds (a part of it) two, so
+    // a near-miss of a long name ranks before its first syllable.
+    if word.len() >= 3 && name.contains(&word) {
         return Some(1);
+    }
+    if name.len() >= 3 && word.contains(name) {
+        return Some(2);
     }
     let d = distance(&word, name);
     (d <= (word.len().max(name.len()) / 3).max(2)).then_some(d)

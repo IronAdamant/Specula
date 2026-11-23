@@ -1,8 +1,9 @@
 # Design: the libraries of sample assets (`exemplaria`)
 
-Status: **designed 2026-11-24, not built.** The design note and the staged plan for ROADMAP M6 part 5,
-"A library of sample assets, for any game", written before any of its code. Lanes build it after the
-lead (and a reader who wrote none of it) has read this.
+Status: **designed 2026-11-24; stage S0 (the frame) built 2026-11-24** (branch `m6-exemplar`, not
+yet reviewed). The design note and the staged plan for ROADMAP M6 part 5, "A library of sample
+assets, for any game", written before any of its code; what S0 settled for the other stages is in
+"For the plans' lanes" (section B).
 
 The owner (2026-11-16): "Build up the assets of animals, fantasy creatures like dragons, undead, and both
 tech and living assets, and tech like robots. Set up animation. Keep them as sample, along side actually
@@ -397,6 +398,79 @@ engine, looked at by the builder and then by a model that did not take them.
   (`undulate`, `flap`) are generators of their own files and can run beside Q.
 - **P, L and H** touch the terrain and foliage code and nothing of the animals': beside anything.
 - **F waits** for part 4's figure lane.
+
+### For the plans' lanes (what S0 built, and how a stage adds to it)
+
+S0 is built in `crates/specula-exemplaria` and four files of the engine. What a later stage
+needs to know, beyond the code's own notes:
+
+**Adding a plan** (a stage's plan, `quadruped`, `wheeled`...):
+
+1. A file `crates/specula-exemplaria/src/plans/<plan>.rs` with a unit struct and
+   `pub static PLAN: MyPlan`, implementing `plan::Plan`: `name`, `about`, and its tables as
+   `'static` arrays (`size`, `numbers`, `traits`, `roles`, `options`, `motions`), then `write`,
+   which turns a `Specimen` into bones, parts and clips through `write::Writing` (`bone`,
+   `part`, `block`, `clip`, `gait`, `fact`; `material(role)` resolves a role).
+   `plans/box_creature.rs` is the pattern, at about 200 lines.
+2. **One line** in `plans/mod.rs`: `pub mod <plan>;` and `&<plan>::PLAN,` in `PLANS`.
+3. Nothing else registers it: `resolve` checks a kind against the plan's tables, and the test
+   `the_plans_tables_are_sound` holds every plan's tables (names valid and unique, a number's
+   traits known, at most four roles, every motion's generator one of `specula-anim`'s kinds,
+   every pattern in `gaits::PATTERNS`).
+
+A plan's defaults are the engine's own numbers: a kind that leaves a number out takes the plan's
+share, and `exemplar_get` counts those as "at the plan's default share". A plan writes text and
+touches no part of the modeller: a new shape it needs (S1's `body`) is the modeller's lane.
+
+**Adding a kind**:
+
+1. Its file at `exemplaria/<plan>/<name>.kind.json` (the format: `kind.rs`'s notes; every
+   number with `source` or `own`, never both).
+2. **One line** in `crates/specula-exemplaria/src/library.rs`, `ENTRIES`: its path and
+   `include_str!` of it. The test `every_kind_file_has_its_line_and_every_line_its_file` fails
+   until both are there.
+3. Rows in the table of `tests/library.rs` for the seeds worth holding (at least the mean and
+   two seeds): the test prints the rows as they are, to paste once their specimens have been
+   looked at. A change that moves a specimen changes those rows in the same commit, saying why.
+4. A base is another kind of the same plan, by name, one level: in the library it is looked up
+   in `ENTRIES`; in a project, beside the kind's file (`<base>.kind.json`). A project's copy
+   (`exemplar_take`) has its base written into it, so it is one file.
+
+**Adding a generator** (`mechanism`, `undulate`, `flap`) after the split: each kind is a file of
+its own under `crates/specula-anim/src/gen/`. A new one is `gen/<kind>.rs` with
+`use super::*;` and `pub(super) fn <kind>(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32],
+duration: f32) -> Result<Out, AnimError>` (the shared `Body`, `Frame`, `Out`, `solve_all` and the
+pose helpers stay in `gen/mod.rs`, visible to its files), then three single lines in
+`gen/mod.rs`: `mod <kind>;`, its name in the `use {...}` line, and its arm in the dispatch
+(`"<kind>" => <kind>(&mut o, skel, &body, &times, duration)?,`), with its name in `KINDS`. A
+plan's `MotionDef.generator` names it, and the plans' test checks the name against its own copy
+of `KINDS` (`specula_anim_kinds` in `src/tests.rs`: add the name there too).
+
+**What S0 decided that the note did not say:**
+
+- **The library is built into the engine** (`include_str!` of each kind file), so what the
+  engine answers and what the table of hashes holds are the same bytes. The folder
+  `exemplaria/` is the source; reading it from beside the executable instead (A.8) is not built.
+- **A kind is read as a recipe** where its path ends in `.kind.json`: the model library checks
+  it at a spawn by writing its mean in the recipe's style (every role resolved), and its build
+  worker writes the recipe and clips at the spec's seed; a project's `project_write` checks it
+  the same way. A kind's clips are written by the plan: no `anims/<name>.json` is read for it.
+- **Roles** resolve through `specula_model::Style::role`: a preset of the role's name, else the
+  style's `"roles"` table, else refused with the three presets nearest in colour to the kind's
+  hint. A kind's first part written in an unresolved role is the one named.
+- **The copy goes to `assets/recipes/`**, which the project store mirrors as recipes (a new
+  project keeps its own models in `assets/models/`, which it does not mirror: `project_write`
+  could not write there).
+- **The name index** is `crates/specula/src/catalog_names.rs`: a `Source` per list (`Shapes`,
+  `Kinds`); the project's catalogue (lane `m6-formae`) plugs in as a third `Source` in
+  `sources()` when it merges. `formae_get`'s refusal names the nearest kinds, and `exemplar_*`
+  refusals the nearest shapes; `exemplar_list`'s first answer counts the shapes. `formae_list`'s
+  first answer does **not** name the kinds yet: one more line puts it over its 3 KB and cuts the
+  shape names it shows today (its test `index_holds_any_table` says so).
+- **A specimen's seed** is the model library's, 0 to 1,000,000; `exemplar_get` takes the same.
+- **Not in S0**: a scatter item by kind (a scatter's `include` reads recipes only), the record
+  file of A.8 (a test may not write into the checkout), a deleted base refused by
+  `project_delete`, and the `footfalls` and `stride` checks (stage Q).
 
 ### The size
 

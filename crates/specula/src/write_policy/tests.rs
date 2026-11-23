@@ -403,6 +403,19 @@ fn terrain_edit_undoes_recipe_and_collider_together() {
     assert_eq!(f.live.files().get("assets/recipes/fixture.json").map(|x| x.text.to_string()).as_deref(), Some("{}"));
 }
 
+/// exemplar_take's commit: the project_write it makes (project_engine::file_commit), a copy of
+/// the library's box_creature into the project's recipes, as mallory under the project tools'
+/// rule. `claimed`: alice claims the recipes folder first.
+fn exemplar_take(f: &mut Fix, claimed: bool) -> Result<(), WorldError> {
+    if claimed {
+        let s1 = session("aaaaaa11");
+        f.sw.take_claim(&f.live, &s1, ClaimSpec { scope: Scope::path("/project/assets/recipes").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+    }
+    let kind = specula_exemplaria::library::entry("box_creature").unwrap().resolved().unwrap().kind;
+    let file = crate::project::ProjectFile::new(crate::project::FileKind::Recipe, Arc::from(kind.to_json().to_pretty()), 1, Arc::from("mallory"));
+    agent(f, MALLORY, Kind::File, Rule::Project, |wd| crate::project_engine::file_commit(wd, "assets/recipes/box_creature.kind.json", Some(file), None, "mallory"))
+}
+
 /// The review queue's promotion (review_engine): the roots at `path` move under `to` in one
 /// Rule::World batch, as the decider (mallory here).
 fn review_promote(f: &mut Fix, path: &str, to: &str) -> Result<(), WorldError> {
@@ -533,6 +546,10 @@ const ROWS: &[(&str, Write, Expect)] = &[
             Ok(())
         })
     }, Expect::Refused("reserved")),
+    // exemplar_take (exemplar_tools.rs): a library kind's copy, one project_write under the
+    // project tools' rule; a claim on the recipes folder holds against it.
+    ("exemplar_take's copy into a claimed recipes folder", |f| exemplar_take(f, true), Expect::Refused("claimed")),
+    ("exemplar_take's copy under the project tools' rule", |f| exemplar_take(f, false), Expect::Allowed),
     ("vfx_set's rule on a claimed entity", |f| set_abox(f, Rule::Vfx), Expect::Refused("claimed")),
     // Timeline playback (M5): entity tracks write as the agent who started the playback, so a
     // claim refuses them (the playback pauses as blocked), and reserved data stays refused.
