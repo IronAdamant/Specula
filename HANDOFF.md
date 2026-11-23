@@ -176,6 +176,32 @@ rounds.
   runs are doubled before anything is said. The builders' cost and the builders' with the
   judges' are both reported, with the count of builders that opened the engine's source.
   For Night Market the figure to hold against is 7.39.
+- **The three faults mended (2026-11-24; by two subagents on Opus 5.5, reviewed in three
+  rounds by a third that wrote none of it: "merge" at `b52ddcc0`)** (FIRST_HOUR.md, section
+  17, the last three parts). *A long text:* a kept text of up to 4,096 bytes reaches its
+  screen and a run's report whole (two more cuts stood behind the 256: a label at 512 bytes,
+  a report's text at 160 characters); a value the screens are not given is said with why
+  (`not_shown`), and "nothing keeps" only of a key truly not kept. *Quit:* under a script
+  (`specula run`) the script's press on a Quit button is the player's, and the rules ask by
+  a key (`"quit": "MODULE.KEY"` in game.json); the run ends on that tick, no later input is
+  given, `run.quit` says the tick and `run.ticks` the ticks that played; an agent's quit by
+  word is refused as before and the rules never close a window. *Several words at one
+  tick:* a hold let go before a tick read it is still a press, and every press since the
+  last tick reaches its module in order as the event `press` (no change to the SDK; the
+  logic section of a save is version 2 and version 1 loads). **The guide changed by three
+  statements** (words at one tick, the `quit` key, the `press` event), paid for by
+  tightening; it is otherwise as frozen. **The reviews found, and the lanes mended:** a
+  quit on the tick a run ends was seen late; a quit outliving a save's load in a search;
+  a mend that dropped a person's presses while paused and with them the sign by which the
+  window wins over an agent's hold. **Left open, not blocking:** a default report carries a
+  long text three times; a rules-driven Quit chosen at tick T prints T+1 (the module reads
+  a word in the next tick); a game that reads `.pressed` still counts one press for one
+  action given twice at a tick. **A shared pack of scripts for judging Day Market**
+  (`C:/lv/pack`, not tracked; 43 scenarios, validated on two plain and two engine games)
+  reached every state the engine judges had called unreached, on both arms alike: those
+  failures were the judging's, not the games'. **The owner (2026-11-23): "ten and ten" for
+  Day Market again; standing authority to push and to judge; two blank-slate builders, one
+  on each market, neither knowing of the other, the lead only watching.**
 - **Both measured (2026-11-23; about 105 USD): by the rule the engine holds on neither job.**
   Night Market again: **3.60** (interval 2.74 to 4.41), from 7.39, checks level at 33.8 of
   34: the one mend halved the engine arm's cost. Day Market, doubled by the rule to ten and
