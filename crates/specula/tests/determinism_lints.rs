@@ -57,6 +57,8 @@ const SIMULATION: [&str; 25] = [
     "games/colloquium",
     "games/quaestio",
     "games/exemplum",
+    // Elementa: fire, cold, wet and wind as simulation, saved and hashed (docs/design/EFFECTUS.md).
+    "crates/specula-elementa",
 ];
 
 /// Crates outside the simulation (rendering, platform, tools, presentation; or the engine, whose

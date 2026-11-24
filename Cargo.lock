@@ -169,6 +169,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-elementa"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+]
+
+[[package]]
 name = "specula-examen"
 version = "0.3.0"
 dependencies = [

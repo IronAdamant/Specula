@@ -6350,12 +6350,8 @@ mod tests {
         gpu.inject_background_fault(specula_gpu::BackgroundFault::Error);
         let mut models = GpuModels::default();
         assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
-        while models.waiting(world.get(walker).unwrap()) {
-            assert!(std::time::Instant::now() < deadline, "the build never finished");
-            std::thread::sleep(Duration::from_millis(5));
-            models.refresh_ready(&mut gpu);
-        }
+        built(&mut models, &mut gpu);
+        assert!(!models.waiting(world.get(walker).unwrap()), "the build ended: no longer a wait");
         let e = world.get(walker).unwrap();
         let warning = models.pipeline_problem(e).expect("a failed build is reported");
         assert!(warning.contains("skinned") && warning.contains("VkResult -2") && warning.contains("Mesh"), "{warning}");
@@ -6371,17 +6367,22 @@ mod tests {
         assert!(gpu.retry_failed_variants());
         models.refresh_ready(&mut gpu);
         assert!(models.pipeline_problem(world.get(walker).unwrap()).is_none(), "retrying: waiting again, not failed");
-        while models.waiting(world.get(walker).unwrap()) {
-            assert!(std::time::Instant::now() < deadline, "the retry never finished");
-            std::thread::sleep(Duration::from_millis(5));
-            models.refresh_ready(&mut gpu);
-        }
+        built(&mut models, &mut gpu);
+        assert!(!models.waiting(world.get(walker).unwrap()), "the retry ended");
         assert!(models.pipeline_problem(world.get(walker).unwrap()).is_none() && models.pipeline_failure_json().is_none());
         let mut stats = LodStats::default();
         models.begin_frame(0.5);
         models.draw(world.get(walker).unwrap(), Vec3::new(0.0, 1.0, 4.0), 50.0, 1080, &mut LodChoice::Fixed(0), &mut stats, &mut out);
         assert!(stats.pipeline_failed == 0 && !out.is_empty(), "drawn after the retry");
         let _ = models.take_bones();
+    }
+
+    /// Waits for the background pipeline build to end (a join: `Gpu::wait_for_pipelines`,
+    /// never a deadline: a minute's ran out once on a loaded machine, 2026-11-24) and tells
+    /// `models` what it made.
+    fn built(models: &mut GpuModels, gpu: &mut Gpu) {
+        gpu.wait_for_pipelines();
+        models.refresh_ready(gpu);
     }
 
     /// A GPU for a test, or `None` after saying why the test is skipped (rule 7: a machine
@@ -6447,13 +6448,9 @@ mod tests {
         assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
         // The skinned pipelines are built on a worker: the walker is held back (not drawn,
         // captures wait) until they exist; the still one, unanimated, draws at once.
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
-        while models.waiting(world.get(walker).unwrap()) {
-            assert!(!models.waiting(world.get(still).unwrap()), "an unanimated model needs no skinned pipeline");
-            assert!(std::time::Instant::now() < deadline, "the skinned pipelines were never built");
-            std::thread::sleep(Duration::from_millis(5));
-            models.refresh_ready(&mut gpu);
-        }
+        assert!(!models.waiting(world.get(still).unwrap()), "an unanimated model needs no skinned pipeline");
+        built(&mut models, &mut gpu);
+        assert!(!models.waiting(world.get(walker).unwrap()) && !models.waiting(world.get(still).unwrap()), "the skinned pipelines were built");
         let bones_of = |models: &GpuModels, t: f64| {
             models.begin_frame(t);
             let mut out = Vec::new();

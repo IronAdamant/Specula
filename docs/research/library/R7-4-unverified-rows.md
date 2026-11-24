@@ -1,0 +1,43 @@
+# R7-4 Part 4: rows marked unverified, garbled or thin (U rows)
+
+Round 7, brief section 4. **Access date for every source below: 2026-11-24.** U1 and U18 are answered elsewhere (R7-34 and R7-00) and are not repeated. Conventions as in R7-3: "computed" = my arithmetic; "search extract" = seen only in a search engine's extract.
+
+**Access note.** The Journal of Experimental Biology (journals.biologists.com) answered HTTP 403 to my script and its pages timed out or returned unrelated articles through the fetch service; JEB papers are not in PubMed Central. So every row whose settling source is a JEB paper (U2, U5, U6 in part, U7, U8, U9) could not be read this round. A person in an ordinary browser can usually open JEB's free back issues; that is the way to close these rows.
+
+## Rows
+
+| # | What would settle it | What I found | Source, licence, access | Status |
+|---|---|---|---|---|
+| U2 | Kram, Wong and Full 1997, *J. Exp. Biol.* 200: 1919, Table 1 | JEB blocked (HTTP 403) | - | Not found (access) |
+| U3 | Cruse 1976, Table 3, doi:10.1007/BF00606541 | Springer, paywalled; not opened | - | Not attempted |
+| U4 | Ramdya et al. 2017, *Nat. Commun.* 8: 14494, Supplementary Table 2 | **Supplementary Table 2, "Geometric dimensions of the model's legs (hind/metathoracic; middle/mesothoracic; front/prothoracic)"**, capsule lengths in mm, values in that order: coxa 0.1547; 0.0952; 0.2737. Trochanter/femur 0.5653; 0.5177; 0.4879. Tibia 0.5534; 0.4879; 0.4165. Tarsus 0.6069; 0.5415; 0.5355. Capsule diameters (all three legs): coxa 0.1547, femur 0.1309, tibia 0.0952, tarsus 0.0714 mm; pretarsus a sphere of 0.119 mm. Segment masses (mg, one value per segment type): coxa 0.0494, femur 0.0247, tibia 0.0247, tarsus 0.0247, pretarsus 0.0124. These are the **simulation model's** dimensions (a Webots model of *Drosophila*; the caption says larger 25 mm and 250 mm models were scaled up at equal density), not a measured sample: no n or spread. Supplementary Table 4 gives the model's joint ranges of motion in degrees, for example coxa-femur flexion hind [40, 107.2], middle [80, 90], front [90, 160] | Ramdya P, Thandiackal R, Cherney R, Asselborn T, Benton R, Ijspeert AJ, Floreano D (2017) Climbing favours the tripod gait over alternative faster insect gaits. *Nat. Commun.* 8: 14494, doi:10.1038/ncomms14494; PMC5321742; Supplementary Information PDF (ncomms14494-s1.pdf) p. 12-14, from the Europe PMC supplementary archive. Free to read; CC BY 4.0 (Crossref licence field) | Confirmed (model values) |
+| U5 | Biancardi et al. 2011, *J. Exp. Biol.*, doi:10.1242/jeb.057471 | JEB blocked | - | Not found (access) |
+| U6 | Full and Tu 1991; Bender et al. 2011 (PMC3102013) | Full and Tu: JEB blocked. Bender et al.: Europe PMC returned no full text for PMC3102013 to my script; not read | - | Not found (access) |
+| U7 | Fieler and Jayne 1998, *J. Exp. Biol.* 201: 609 | JEB blocked | - | Not found (access) |
+| U8 | Fieler and Jayne 1998, Fig. 7; McElroy, Hickey and Reilly 2008, doi:10.1242/jeb.015503 | JEB blocked | - | Not found (access) |
+| U9 | Reilly and Elias 1998, *J. Exp. Biol.* 201: 2559 | JEB blocked | - | Not found (access) |
+| U10 | Jayes and Alexander 1980, *J. Zool.* | Wiley, paywalled; not opened | - | Not attempted |
+| U11 | Matolcsi 1970; Teichert 1969; von den Driesch and Boessneck 1974 | Not opened (Wiley paywall; the others are print) | - | Not attempted |
+| U12 | Kubo et al. 2019, supplementary species table | Not opened | - | Not attempted |
+| U13 | Đikić et al. 2007, *Poljoprivreda* 13(1): 172-174 | A Crossref search found no DOI for it; the journal's archive was not searched | - | Not found |
+| U14 | Hildebrand 1959, *J. Mammal.* 40: 481-495 | Paywalled (JSTOR/Oxford); not opened | - | Not attempted |
+| U15 | Norberg and Rayner 1987, *Phil. Trans. R. Soc. B*, Tables 1 and 4 | royalsocietypublishing.org returned an HTML page, not the PDF, to my script | - | Not found (access) |
+| U16 | Castillo-Figueroa 2020, Table 1 and supplement S1 | **Table 1 (mm, mean ± SD) gives the minima to *Eptesicus furinalis*: n = 1, forearm 37.01, LD3 50.31, LD4 41.99, LD5 36.7 (no spread, n = 1).** The Results text says the same 50.31 and 41.99 belong to "*Eptesicus fuscus*", a species not in Table 1, so the text is the error and the table is right. Neighbours for scale: *E. brasiliensis* n = 2: FL 42.31 ± 1.78, LD3 71.73 ± 1.12, LD4 59.39 ± 2.80, LD5 50.26 ± 1.68; *E. andinus* n = 1: 46.49, 85.49, 68.72, 57.34; maximum *Noctilio leporinus* n = 2: 84.32 ± 1.25, 176.205 ± 2.80, 132.67 ± 2.30, 100.96 ± 2.85. Measurements: right wing, dorsal side, digital caliper (0.01 mm), one measurer, 1,512 museum vouchers of 97 species (MPUJ-MAMM, Bogotá). Supplement S1 is an MDS loadings table (no lengths). Licence: see R7-3 W82 (free to read, no open licence stated) | Castillo-Figueroa D (2020) *Zool. Stud.* 59: 60, doi:10.6620/ZS.2020.59-60; PMC8181164 Table 1 and Results; journal PDF | Settled: **table species is right, text species wrong** |
+| U17 | Nudds 2007; Nudds, Dyke and Rayner 2004; Wang and Clarke 2015 | Not opened | - | Not attempted |
+| U19 | Beech; *Forest Ecosystems* 2024; baobab; coconut | The paper is Peng X, Calders K, Terryn L, Verbeeck H (2025), *Forest Ecosystems* 12: 100279 (the brief says 2024; the DOI carries 2024 from acceptance), "Evaluating tree branch angle measurements of European beech using terrestrial laser scanning" (doi:10.1016/j.fecs.2024.100279; **CC BY 4.0**, per Crossref). Its text did not load (ScienceDirect timed out; Elsevier API refused), so the 30.7° / 54.1° values were not checked. Baobab and coconut not attempted | Crossref metadata | Partly (source identified, values not read) |
+| U20 | Oak height, the same source's mean | Not attempted (the source is not named in the brief) | - | Not attempted |
+| U21 | Ground albedo primaries | Not attempted | - | Not attempted |
+| U22 | Secchi record attribution | **The 79 m belongs to Gieskes et al. 1987, Weddell Sea, not Berman et al. 1985.** Gieskes WWC, Veth C, Woehrmann A, Graefe M (1987), "Secchi disc visibility world record shattered", *Eos* 68(9): 123, doi:10.1029/EO068i009p00123-01: on 13 Oct 1986 in a coastal polynya of the eastern Weddell Sea a disc stayed visible to 79 m and vanished at 80 m (search extract of the Wiley page; not opened). Berman T et al. (1985), "Secchi disk depth record: a claim for the eastern Mediterranean", *Limnol. Oceanogr.* 30(2): 447-448, doi:10.4319/lo.1985.30.2.0447 (citation confirmed on Crossref; its 53 m not read). Jerlov, Forel-Ule and the other papers not attempted | Eos (Wiley, licence not checked); L&O (Wiley, all rights reserved) | **Corrected** attribution; values second-hand |
+| U23 | Barnes 1967 (public domain); Rouse 1936; Kennedy | Barnes: 50 natural stream sites with Manning n computed from measured floods, each with colour photographs; in the contents list the values run from **n = 0.024** (lowest) to **0.075** (Rock Creek near Darby, Mont.), with two values given for some sites (for example Rolling Fork near Boston, Ky., 0.046 and 0.097; which subsection each applies to was not checked). Rouse 1936 and Kennedy not opened; Chow 1959 (a book) not used | Barnes HH Jr (1967) *Roughness characteristics of natural channels*, USGS Water-Supply Paper 1849 (pubs.usgs.gov). US government work, public domain | Partly (Manning n only) |
+| U24 | A typical rotor figure of merit | Full-scale rotor on the Langley helicopter test tower: maximum figure of merit **0.75 to 0.80** over mean lift coefficients 0.50-0.93 at tip Mach numbers of 0.54 and below; compressibility cut the maximum to **0.715** and **0.705** at tip Mach 0.63 and 0.67 (Fig. 6; text and Conclusion 2). So 0.75 is a fair "typical" value for a good rotor at low tip Mach. Leishman's textbook was not used (in copyright) | Shivers JP (1961) NASA TN D-742, "Hovering characteristics of a rotor having an airfoil section designed for flying-crane type of helicopter" (NTRS 20040027945). US government work, public domain | Confirmed (range 0.705 to 0.80 for one rotor) |
+| U25 | Growth studies; de Leva 1996; Dempster 1955 | Not attempted | - | Not attempted |
+
+## Not found (this file)
+U2, U5, U6, U7, U8, U9, U13, U15; U19 values; U22 Berman's 53 m.
+
+## Not attempted (this file)
+U3, U10, U11, U12, U14, U17, U20, U21, U25; the rest of U19, U22 and U23.
+
+## Sources disagree (this file)
+- U16: Castillo-Figueroa 2020 disagrees with itself: the text names *E. fuscus*, Table 1 *E. furinalis*. The table is right.
+- U22: the delivered file credits 79 m to "Berman et al. 1985, Weddell Sea"; it is Gieskes et al. 1987 (Weddell Sea); Berman et al. 1985 is the eastern Mediterranean claim.

@@ -743,6 +743,23 @@ impl GpuInner {
         self.pipelines.ready()
     }
 
+    /// Waits for the background build running now, and the one queued behind it, and takes
+    /// their pipelines. Ends when the worker does (a join), never on a time.
+    pub fn wait_for_pipelines(&mut self) -> crate::PipelineVariants {
+        // Each turn takes one build; a queued request starts one more, and none is asked for
+        // while this waits: two turns at most.
+        loop {
+            self.pipelines.poll_background(true);
+            if let Some((want, _)) = self.pipelines.take_requeue() {
+                let formats = self.formats();
+                self.pipelines.request_variants(&self.device, want, &formats);
+            }
+            if !self.pipelines.building() {
+                return self.pipelines.ready();
+            }
+        }
+    }
+
     pub fn retry_failed_variants(&mut self) -> bool {
         self.poll_pipelines();
         let Some(f) = self.pipelines.ready().failed else { return false };
