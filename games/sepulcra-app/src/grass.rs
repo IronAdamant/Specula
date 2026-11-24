@@ -130,4 +130,13 @@ mod tests {
         let specs: std::collections::BTreeSet<String> = cells.iter().map(|id| format!("{:?}", patch_spec(u64::from(hash(*id) >> 8)))).collect();
         assert!(specs.len() as u64 <= VARIANTS);
     }
+
+    /// The elements' fuel (the rules' `fuel::grass_drawn`) is the grass drawn here, cell for
+    /// cell, so fire burns where grass is seen (DESIGN.md, "What burns on the slab").
+    #[test]
+    fn the_rules_burn_the_grass_that_is_drawn() {
+        let content = sepulcra::content::Content::builtin();
+        assert_eq!(cells(&content.map), sepulcra::fuel::grass_drawn(&content.map));
+        assert_eq!(MAX_PATCHES, sepulcra::fuel::MAX_GRASS);
+    }
 }

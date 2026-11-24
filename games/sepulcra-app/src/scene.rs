@@ -685,6 +685,49 @@ impl Scene {
                     let [x, _, z] = map.graveyard_centre.to_f32();
                     self.flash(world, now, Vec3::new(x, 1.5, z), 1.0, 6.0, 0.7, GRAVE_GLOW, 1.0, Some(0.2));
                 }
+                // ---- The elements (proving ground). PLACEHOLDER looks, made only of what the
+                // working line has (glow spheres, the old built-in effects and decals), so that
+                // a person can see that each rule fired; what each will look like is DESIGN.md,
+                // "Elemental stones", and waits for the effects library (Effectus). ----
+                Event::Struck { enemy, .. } | Event::Shattered { enemy, .. } => {
+                    if let Some(e) = state.enemy(enemy) {
+                        let [x, y, z] = e.pos.to_f32();
+                        let p = Vec3::new(x, y + 1.0, z);
+                        self.vfx.hit(world, &self.agent, now, p);
+                        self.flash(world, now, p, 0.2, 0.9, 0.2, RUNE_PALE, 2.0, None);
+                    }
+                }
+                Event::Ignited { enemy } => {
+                    if let Some(e) = state.enemy(enemy) {
+                        let [x, y, z] = e.pos.to_f32();
+                        self.flash(world, now, Vec3::new(x, y + 0.9, z), 0.3, 1.0, 0.4, FIRE_FLAME, 1.6, Some(0.4));
+                    }
+                }
+                Event::Frozen { enemy } | Event::Thawed { enemy, .. } | Event::Extinguished { enemy } => {
+                    if let Some(e) = state.enemy(enemy) {
+                        let [x, y, z] = e.pos.to_f32();
+                        self.flash(world, now, Vec3::new(x, y + 0.9, z), 0.6, 1.3, 0.6, RUNE_PALE, 0.6, Some(0.35));
+                    }
+                }
+                Event::Gusted { stone, .. } => {
+                    let (a, _) = self.geo.anchor(map, stone);
+                    self.disc(world, now, a + Vec3::new(0.0, 0.4, 0.0), 4.0, 0.5);
+                }
+                Event::Heaved { at, .. } | Event::RubbleRaised { cell: at } | Event::WallCrumbled { cell: at } => {
+                    let (a, _) = self.geo.anchor(map, at);
+                    self.vfx.wall_broken(world, &self.agent, now, a);
+                }
+                Event::Detonated { pos, .. } => {
+                    let [x, y, z] = pos.to_f32();
+                    let p = Vec3::new(x, y + 0.5, z);
+                    self.flash(world, now, p, 0.5, 6.0, 0.45, FIRE_FLAME, 2.0, Some(0.35));
+                    self.vfx.splash(world, &self.agent, now, Vec3::new(x, y, z), 3.0);
+                }
+                Event::CellCaught { cell } => {
+                    let (a, _) = self.geo.anchor(map, cell);
+                    self.vfx.splash(world, &self.agent, now, a, 1.0);
+                    self.flash(world, now, a + Vec3::new(0.0, 0.3, 0.0), 0.4, 1.6, 0.6, FIRE_FLAME, 1.4, Some(0.4));
+                }
                 _ => {}
             }
         }

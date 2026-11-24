@@ -91,7 +91,7 @@ fn a_save_mid_fire_and_mid_wave_continues_the_same() {
             s.step_into(&[], &mut ev);
             let busy = s.blaze().burning(s.content()).count() > 0 || s.enemies().iter().any(|e| e.el != Default::default());
             fire_seen |= ev.iter().any(|e| matches!(e, Event::CellCaught { .. }));
-            if busy && s.tick() % 450 == 0 {
+            if busy && s.tick().is_multiple_of(450) {
                 let bytes = s.to_bytes();
                 let mut b = State::from_bytes(Arc::clone(&c), &bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
                 assert_eq!(b.to_bytes(), bytes, "{name}: canonical bytes");

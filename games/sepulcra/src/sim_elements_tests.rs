@@ -196,7 +196,7 @@ fn each_later_shove_is_weaker() {
         s.w.shove(&c, i, 3_000, 15);
         got.push(s.w.enemies[i].el.shove);
     }
-    assert_eq!(got, vec![3_000, (3_000_000 / (1000 + fade)) as i32, (3_000_000 / (1000 + 2 * fade)) as i32]);
+    assert_eq!(got, vec![3_000, 3_000_000 / (1000 + fade), 3_000_000 / (1000 + 2 * fade)]);
 }
 
 /// Nothing but the shove moves them (a speed of zero): slows them to a stop.

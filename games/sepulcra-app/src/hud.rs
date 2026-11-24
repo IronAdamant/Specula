@@ -629,6 +629,10 @@ pub fn stone_detail(content: &Content, kind: u8, tier: u8) -> Said {
         Attack::Bolt => Said::new("stone.detail.bolt"),
         Attack::Lob => Said::new("stone.detail.lob").num("splash", t.splash as f64 / 1000.0),
         Attack::Pulse => Said::new("stone.detail.pulse").int("slow", t.slow / 10).num("slow_time", secs(t.slow_ticks)),
+        // PLACEHOLDER: the elemental stones (proving ground only) are said as the nearest shipped
+        // attack until their own strings are written in every language.
+        Attack::Strike | Attack::Heave => Said::new("stone.detail.bolt"),
+        Attack::Gust => Said::new("stone.detail.pulse").int("slow", 0).num("slow_time", 0.0),
     };
     s.num("damage", dmg).num("cooldown", secs(t.cooldown)).num("range", range)
 }
