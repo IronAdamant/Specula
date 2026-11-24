@@ -389,6 +389,21 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     units (about 146 s for 704 million before), and the time a unit no longer moves with the
     squareness (`the_search_spends_no_more_than_it_is_charged`,
     `a_cancel_or_the_limit_stops_the_search_within_a_ball`, `a_rounded_shapes_search_is_billed`).
+    **So is the reach the search starts from** (third review, the same day: it walked a
+    column's curve again at every level it asked, charged nothing and could not be cancelled;
+    a chain of 64 smooth unions of columns took seven seconds, and a cancel was seen eight
+    seconds after it was raised). A column's curve is walked once into a table, from which
+    its box at any level is a few products a place, bit for bit what the walk gave; every
+    node asked, every child gathered, every pair of a smooth union met, every walk and every
+    level asked of a table is charged before it is done, and a cancel is looked for before
+    every charge. Every mesh without a box given pays it (`SdfStats::reach_work`): the
+    repository's sculpts by 0.01% to 6.9% of a mesh's work (1,200 to 53,000 units), the
+    figure's parts by 0.08% to 0.48% (37,000 to 677,000); no mesh, box or answer moved. The
+    chain of 64 now takes about 0.13 s, and a cancel ends a mesh within a charge
+    (`the_reach_is_charged_what_it_does`, `a_cancel_or_the_limit_stops_the_reach_at_once`).
+    Every step of the search and of the reach is counted where it is done, by kind, and the
+    charge is held to each kind's count at its weight: a weight left out of the charge fails
+    the test.
     **What still grows, by count** (the same 1,200 boxes): of the reviewer's 600, **none**
     (the five balls, the turned ellipsoid and the empty meeting keep the old box); of the
     crate's own 600, **14**: the 4 where the old box cuts the solid off (a flat ellipsoid
