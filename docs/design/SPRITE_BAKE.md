@@ -15,8 +15,9 @@ Two project files, written in **one journal entry** (claims on `/project/<path>`
   When a row a strip would make the atlas taller than 4096 (many short strips: every clip of
   a model at a few frames), the strips are packed one after another instead, wrapping where a
   row ends, in about a square atlas: their frames are still consecutive sheet frames.
-- `assets/sprites/<name>.json`: the frame data, project file kind `sprite_sheet` (`*.json` in a
-  folder named `sprites`; `sprites` is also a folder PNGs are mirrored in). Format
+- `assets/sprites/<name>.sheet.json`: the frame data, project file kind `sprite_sheet` (`<name>.sheet.json` directly in a
+  folder named `sprites`: see "Where the files go" below; `sprites` is also a folder PNGs are
+  mirrored in). Format
   `specula.sprite_sheet`, version 2: the atlas size, the cell, the columns, the **pivot** (the
   model's origin on its ground, in pixels from each cell's top left), the **metres per pixel**,
   the view and **elevation** (the angle the camera looks down, in degrees), the light, the
@@ -115,13 +116,84 @@ size, cells, frames a clip) stay refusals before any work.
   at once.
 - **Cancel:** `{cancel: true}` stops the caller's bakes, `{cancel: true, job: N}` that one. A
   bake is its owner's: another agent's cancel is refused `not_job_owner` naming the owner
-  (`owners` when no job is named). A cancelled bake lands its render in flight, frees its
-  target and answers `cancelled`, nothing written.
-- **A test's gate:** with `SPECULA_TEST_BAKE_HOLD=<atlas file name>` in the engine's
-  environment, a bake of that atlas holds before its first render while the engine's clock is
-  paused (`time_control`), its phase saying so. The live check uses it to cancel a bake that
-  cannot have finished, on any GPU, and to take a claim on a bake's path before it ends; it
-  never depends on how fast the GPU is.
+  (`owners` when no job is named). A cancelled bake frees its target (one whose render is still
+  on the GPU goes back once a later poll finds it done), lets its pin go, takes back what its
+  encode put in the content store, and answers `cancelled`, nothing written.
+- **Too late (review 1, finding 2):** a cancel is honoured until the bake begins writing its
+  two files: while it renders, while its atlas is encoded, and once it is encoded and stored
+  (the stored atlas is then taken back: `ContentStore::withdraw`, only while nothing else has
+  put or read the same bytes and nothing refers to them). From the moment the bake begins its
+  writing a cancel is refused `too_late`, saying the files are being written and that the
+  answer says what was written (`world_undo` takes both back); `{cancel: true}` with no job
+  lists such bakes under `too_late` and does not count them. One atomic state decides
+  (`sprite_bake::Stop`: running, cancelled, writing), so a cancel and the bake's own start of
+  its writing can never both win. Before, a cancel while the bake encoded or wrote was ignored
+  and answered "cancelled: 1 ... nothing of it is written" while both files were committed.
+- **A lead's forced cancel (review 1, finding 4; AUTHORITY.md, "Jobs"):** `{cancel: true,
+  job: N, force: true}` from a lead or the owner (`authority::of_session`) stops another
+  agent's bake; the bake logs it on the board when it stops (`sprite_bake`, "forced cancel of
+  ann's bake of ..."), and its answer says who stopped it. Force from anyone else is refused
+  `force_needs_lead`; force names one job; a lead without `force` is refused like anyone. A
+  lead (or the owner) may also read any bake (`{job: N}`) and list every bake running or kept
+  (`{list: true}`, at most 32, newest first); anyone else lists and reads their own.
+- **A caller with no name (review 1, finding 4):** a bake is kept for its owner's identity,
+  and a caller that never said `agent_hello` (a shell's `specula call` without `--as`) has
+  none but its session's id, which ends with the session: a bake kept past its call would be
+  read by nobody (the reviewer saw one, owned by `specula-cli-2ba666`, commit and its answer
+  become unreadable). So such a caller's bake runs **within its call or not at all**: asked
+  with `wait_s: 0` it is refused at once (`needs_a_name`, saying how to name itself:
+  `agent_hello {name}`, or `specula call --as NAME`); if it has not ended at its `wait_s`, it
+  is stopped and the call answers `needs_a_name` with the same words, nothing written; if it
+  is already writing its files then, the call waits up to 2 s more for its answer and gives
+  it. A named caller's bake is kept, as before.
+- **Where it goes:** one rule, said by the schema, the parser, the file kinds and the refusals
+  alike (`sprite_bake::PATH_RULE`, `sprite_path_ok`): the atlas is a `.png` **directly** in a
+  folder named `sprites` under `assets/` (`assets/sprites/wolf.png`,
+  `assets/art/sprites/wolf.png`), its frame data beside it as `<name>.sheet.json`. Before, the
+  parser took a `.png` anywhere below a `sprites` folder while the frame data's kind needed
+  its parent to be one: `assets/sprites/h11/held.png` passed the parser and was refused
+  `not_a_sprite_path` with a message restating the rule it met (review 1, finding 5).
+- **A test's gate:** with `SPECULA_TEST_BAKE_HOLD` in the engine's environment (atlas file
+  names, comma-separated, each with an optional phase), a bake of that atlas holds while the
+  engine's clock is paused (`time_control`), its phase saying so: `held.png` before its first
+  render, `enc.png@encoded` once its atlas is encoded and stored (a cancel there is honoured
+  and lets it go at once), `wr.png@writing` once its writing has begun (a cancel there is
+  refused `too_late`; the clock played, it writes). The live check uses it to cancel a bake in
+  each phase and to take a claim on a bake's path before it ends; nothing depends on how fast
+  the GPU is. In a release build it is read too (the same class as
+  `SPECULA_TEST_WORKER_DELAY_MS`): it acts only on an atlas of that exact name while the clock
+  is paused, and the bake's deadline still ends it.
+
+**What a bake holds, and when it goes (review 1, findings 1 and 3).** A bake holds a render
+target (from the engine's cache, alone while it runs) and a **pin** on its model's build, which
+keeps the model uploaded between frames though no entity wants it. The pin was the session's
+(pinned once, under the session that started the bake), and the studio prunes a pin whose
+session has closed or that sat 60 s unrefreshed: a shell's `specula call` closes its session
+at once, so within a second the pin went, and in an engine with a window every cell then
+uploaded the model again in `posed_draws` for the window's next sync to drop it (the reviewer
+measured a bake started by `specula call` at 54.4 s against 13.1 s from a kept session, with a
+`gpu.flush_uploads` zone of mean 28.5 ms and max 368 ms a step; and a textured model, whose
+textures leave the CPU at their first upload, cannot be uploaded twice: its bake would have
+ended `render_unavailable` midway). The pin is now **the job's** (`Engine::pin_for_kept_job`):
+held by no session and no clock, never pruned, asked for again at each step (a map lookup),
+and let go at once when the job ends (`Engine::studio_unpin`): no pin outlives its job. The
+step queue calls a job's end hook (`StepJob::on_end`) on **every** way it leaves the queue:
+answered (in its call or a pass), refused `job_busy` after its first slices ran, past its
+deadline, its session closed (never a kept job), the engine shutting down (every queued job is
+answered `shutting_down`). There the bake gives its target back (one whose render is still on
+the GPU waits in the step queue's orphans until a poll finds that render done: never waited
+for, except at shutdown) and lets its pin go. A bake's answer counts its uploads of the build
+(`cost.uploads`: 1, or 0 when an entity had it on the GPU), so a check reads what happened
+without a clock.
+
+**Cells whose ids are taken.** A landed cell is read out of its readback in the same step its
+poll finds it done (it used to wait there for a worker slot, where another tool's ID render
+could take its ids). Another tool's render can still settle the bake's and render IDs of its
+own before the bake's next step: that cell is rendered again, and was so without end under ID
+captures running all the while. It is rendered again at most `MAX_RERENDERS_PER_CELL` (8)
+times; past that the bake ends `render_contended`, nothing written, its target given back.
+Held by a test that renders IDs on another target between every render of the bake and its
+landing.
 
 **Measured** (2026-11-24, a windowed engine at 1280x720 on the integrated GPU, Intel
 RaptorLake-S, `--no-activate`, a debug-profile build; the shambler's walk at 16 directions and 32
@@ -245,6 +317,28 @@ the strips as written; nothing was added to it.
   on a pivot of its own (the cell's middle). The frame data's `shadow` gives its frame, rect,
   pivot, radii and the 2D path's sprite object that draws it, to be drawn under the model at
   the model's pivot.
+
+## Where the files go (and what that changed for existing projects)
+
+A bake's atlas must be a project file, so `sprites` joined the folders a project mirrors PNGs
+from (`project::PNG_FOLDERS`: `textures`, `images`, `references`, `icons`, `sprites`; any
+folder on the way counts, as for the others). What that changed for a 2D project that already
+keeps hand-made art in a `sprites` folder (review 1, finding 6), decided 2026-11-24:
+
+- **Its PNGs are mirrored from then on**: listed by `project_list`, read by `project_read`,
+  put in the content store, counted against the binary store's room, journaled when changed,
+  exactly as a PNG under `textures` has always been. Judged right: a sprite is art the project
+  owns, and the engine's 2D path reads it from there. A project with more sprite art than the
+  binary store holds would see the store's own `store_full` refusals, as one with too many
+  textures does.
+- **Its JSON is not touched.** The first build made every `*.json` directly in a `sprites`
+  folder the frame-data kind, validated by the sheet reader: an Aseprite or TexturePacker
+  sheet (`hero.json` beside `hero.png`) would have been mirrored as `sprite_sheet` and shown
+  `invalid_sprite_sheet` problems, and `project_write` to it refused without `allow_errors`.
+  Narrowed: the kind is `<name>.sheet.json` directly in a `sprites` folder only, the name
+  `sprite_bake` writes; any other JSON there is not mirrored, as before the kind existed
+  (tested: `a_projects_own_sprite_sheets_are_left_as_they_were`, with an Aseprite sheet).
+- PROJECT_DATA.md's table has the `sprite_sheet` row and the `png` row's fifth folder.
 
 ## The multi-file commit
 

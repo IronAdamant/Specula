@@ -65,7 +65,7 @@ pub const CHECKS: &[Check] = &[
     },
     Check {
         name: "sprite_check",
-        about: "sprite_bake end to end: two files in one journal entry and one undo, the project's light, a held bake cancelled by its owner only, a claim taken while a bake runs refusing its commit, 512 cells answered as a job (docs/design/SPRITE_BAKE.md)",
+        about: "sprite_bake end to end: two files in one journal entry and one undo, the project's light, a held bake cancelled by its owner only and by a lead's force, none kept for a caller with no name, a cancel honoured once encoded and refused too_late once writing, a claim taken while a bake runs refusing its commit, 512 cells answered as a job, and a windowed bake from a shell uploading its model once (docs/design/SPRITE_BAKE.md)",
         run: sprite::sprite,
     },
 ];
