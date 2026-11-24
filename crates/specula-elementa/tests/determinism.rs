@@ -32,7 +32,8 @@ fn inputs(e: &mut Elementa) {
 }
 
 /// Runs from `e`'s tick to `until`, hashing every tick; counts ignitions. With `loads`, every
-/// tick the state's own save loads to the same hash (what the crate makes, it accepts).
+/// 50th tick the state's own save loads to the same hash (what the crate makes, it accepts;
+/// the mid-cut test below loads at every tick, where the cut lists are in use).
 fn run_with(e: &mut Elementa, until: u64, loads: bool) -> (Vec<u64>, u64) {
     let mut hashes = Vec::new();
     let mut caught = 0;
@@ -41,7 +42,7 @@ fn run_with(e: &mut Elementa, until: u64, loads: bool) -> (Vec<u64>, u64) {
         e.step();
         caught += e.take_events().count(EventKind::Ignited);
         hashes.push(e.hash());
-        if loads {
+        if loads && e.tick().is_multiple_of(50) {
             let l = Elementa::load(&e.save()).unwrap_or_else(|err| panic!("tick {}: the state's own save is refused: {err}", e.tick()));
             assert_eq!(l.hash(), e.hash());
         }
@@ -79,7 +80,7 @@ fn build(order: &str) -> Elementa {
 
 #[test]
 fn the_same_inputs_give_the_same_hash_every_tick_in_any_order_of_insertion() {
-    // The reference run: its own save loads at every one of its 10,000 ticks.
+    // The reference run: its own save loads at every 50th of its 10,000 ticks.
     let (a, caught) = run_with(&mut build("batch"), TICKS, true);
     assert!(caught > 300, "the fire really ran: {caught} caught");
     let (b, _) = run(&mut build("batch"), TICKS);

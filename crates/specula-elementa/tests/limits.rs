@@ -350,3 +350,47 @@ fn small_things(e: &Elementa) -> Vec<NodeDesc> {
     let wood = mat(e, "wood");
     (0..3000u64).map(|i| NodeDesc::new(1 + i, wood, Vec3::new((i % 55) as f32 + 0.5, 0.3, (i / 55) as f32 + 0.5), Vec3::new(0.2, 0.2, 0.2))).collect()
 }
+
+#[test]
+fn a_world_on_whole_coordinates_pays_for_the_margin_and_half_a_cell_of_offset_takes_it_away() {
+    // Unit cubes at whole coordinates (3 m apart), cell 1 m, reach 1 m, all burning, with room:
+    // each box grown by the reach lands on cell boundaries, and the rounding margin takes in one
+    // more cell on its low side (the fifth reviewer: 64 cells a query on b2d675d4, 125 now, 1.93
+    // times the work). The same world moved by half a cell (an offset the engine adds to what it
+    // feeds) looks up 64. Both within the stated most a query looks up.
+    let json = r#"{"elements": 1, "materials": {"wood": {"burn_s": 3600}}, "cell_m": 1, "reach_m": 1, "limits": {"nodes": 4096, "burning": 4096, "work": 524288}}"#;
+    let run_in = |json: &str, offset: f32| {
+        let mut e = sim(json, 1);
+        let wood = mat(&e, "wood");
+        let d: Vec<NodeDesc> = (0..100u64)
+            .map(|i| {
+                let p = Vec3::new((i % 5) as f32, (i / 5 % 5) as f32, (i / 25) as f32) * 3.0 + Vec3::new(0.5, 0.5, 0.5);
+                NodeDesc::new(i, wood, p + Vec3::new(offset, offset, offset), Vec3::new(0.5, 0.5, 0.5)).heat(1.0)
+            })
+            .collect();
+        e.add_many(&d).unwrap();
+        settle(&mut e); // they catch
+        let r = loop {
+            let r = *e.step();
+            if r.spread {
+                break r;
+            }
+        };
+        assert_eq!((r.processed, r.truncated, r.deferred), (100, 0, 0));
+        let most = e.config().worst_case().query_lookups;
+        (r.cells / r.processed, r.work / r.processed, most)
+    };
+    let run = |offset: f32| run_in(json, offset);
+    let (cells, work, most) = run(0.0);
+    let (cells_off, work_off, _) = run(0.5);
+    println!("whole coordinates: {cells} cells and {work} work a query; offset by half a cell: {cells_off} and {work_off}; at most {most}");
+    assert_eq!(cells, 125, "the margin takes in one more cell on each low side");
+    assert_eq!(cells_off, 64, "half a cell of offset: the boxes are clear of the boundaries");
+    assert!(work > work_off * 3 / 2);
+    assert!(u64::from(cells) <= most && most == specula_elementa::config::query_lookups(1.0, 1.0));
+    // The default cell and reach: the figure before the margin.
+    assert_eq!(specula_elementa::config::query_lookups(2.0, 0.5), 594);
+    // A reach under the cell by more than the margin keeps the boxes clear as well.
+    let (cells_under, _, _) = run_in(&json.replace("\"reach_m\": 1", "\"reach_m\": 0.9"), 0.0);
+    assert_eq!(cells_under, 27);
+}

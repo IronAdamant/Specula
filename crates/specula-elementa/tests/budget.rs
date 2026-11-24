@@ -710,3 +710,140 @@ fn whatever_ends_a_cut_pass_the_state_it_leaves_saves_and_loads() {
         ticks(&mut e, "after a batch", 12);
     }
 }
+
+/// The sinks world and one more sink, `X` (id 999,999, above every sink: ahead of every cut in
+/// the sinks' cell), at `x`.
+fn sinks_and_x(x: Vec3) -> Elementa {
+    let mut e = sinks(1024, 2000);
+    let sink = mat(&e, "sink");
+    e.add(NodeDesc::new(X, sink, x, Vec3::new(0.01, 0.01, 0.01))).unwrap();
+    e
+}
+
+const X: u64 = 999_999;
+
+#[test]
+fn a_cut_node_that_moves_never_lets_a_node_it_heated_be_heated_again() {
+    // The fifth reviewer's `zz_moved`: X sits in a cell the query walks early, within the torch's
+    // reach, and is heated there. After each cut the torch moves within its query's cells (to x
+    // 0.95), so that X's old place is out of its new reach, and X moves ahead of the cut within
+    // that reach; both go back after the pass. X was given its heat in the pass: it must not be
+    // given it again. `cut_moved` is what says so (without it, the reviewer's mutant M8, X had
+    // 0.0108 against 0.0012 over 100 rounds: heated twice in every such pass).
+    let h = Vec3::new(0.01, 0.01, 0.01);
+    let (home, ahead) = (Vec3::new(-0.4, 0.5, 0.5), Vec3::new(1.0, 0.5, 0.5));
+    let mut e = sinks_and_x(home);
+    let (mut rounds, mut back) = (0, false);
+    for _ in 0..6 * 300 {
+        let r = *e.step();
+        if r.spread && e.cursor().is_mid() && !back {
+            e.move_node(0, Vec3::new(0.95, 0.5, 0.5), h).unwrap();
+            assert!(e.cursor().is_mid(), "a move within its query's cells keeps the query");
+            e.move_node(X, ahead, h).unwrap();
+            rounds += 1;
+            back = true;
+        } else if r.spread && !e.cursor().is_mid() && back {
+            e.move_node(0, Vec3::new(0.5, 0.5, 0.5), h).unwrap();
+            e.move_node(X, home, h).unwrap();
+            back = false;
+        }
+    }
+    let (x, sink) = (e.node(X).unwrap().heat, e.node(10).unwrap().heat);
+    assert!(rounds > 50, "{rounds} rounds");
+    assert!(x > 0.0 && x <= sink, "X was given {x}, against {sink} for a sink that stayed: heated twice in a pass");
+}
+
+#[test]
+fn a_node_out_of_the_reach_where_the_pass_has_been_is_heated_when_it_comes_ahead() {
+    // X sits in a cell the query walks early but beyond the torch's reach (x -1.5), so the pass
+    // gives it nothing there. After each cut it moves ahead of the cut, within the reach, and back
+    // after the pass: it is given its heat in each such pass, as a sink that stayed is. (Counting
+    // every node in a passed cell as given, the reviewer's mutant M7, gave it nothing.)
+    let h = Vec3::new(0.01, 0.01, 0.01);
+    let (home, ahead) = (Vec3::new(-1.5, 0.5, 0.5), Vec3::new(1.0, 0.5, 0.5));
+    let mut e = sinks_and_x(home);
+    let mut rounds = 0;
+    for _ in 0..6 * 300 {
+        let r = *e.step();
+        let at = e.node(X).unwrap().center;
+        if r.spread && e.cursor().is_mid() && at == home {
+            e.move_node(X, ahead, h).unwrap();
+            rounds += 1;
+        } else if r.spread && !e.cursor().is_mid() && at == ahead {
+            e.move_node(X, home, h).unwrap();
+        }
+    }
+    let (x, sink) = (e.node(X).unwrap().heat, e.node(20_000).unwrap().heat);
+    assert!(rounds > 50, "{rounds} rounds");
+    assert!(x > 0.0 && x <= sink, "X {x} against a sink that stayed {sink}");
+    // Every pass it came ahead in, it was given one step's heat; it came ahead in every pass the
+    // budget cut but the first steps' (it was home then, and out of the reach).
+    assert!(x >= sink * 0.9, "X {x} lost passes it came ahead in (a sink that stayed {sink})");
+}
+
+#[test]
+fn whether_the_cut_node_moved_is_part_of_the_hash_and_the_save() {
+    // The torch moves within its query's cells and straight back: every node is where it was,
+    // but the pass now counts every place it has looked as given. Two states that differ only in
+    // that hash apart and save apart, and each loads to itself (the reviewer's mutant M11 left it
+    // out of the hash).
+    let h = Vec3::new(0.01, 0.01, 0.01);
+    let mut a = sinks(1024, 2000);
+    loop {
+        let r = *a.step();
+        if r.spread && a.cursor().is_mid() {
+            break;
+        }
+    }
+    let mut b = Elementa::load(&a.save()).unwrap();
+    let c = b.node(0).unwrap().center;
+    b.move_node(0, c + Vec3::new(1.0e-3, 0.0, 0.0), h).unwrap();
+    b.move_node(0, c, h).unwrap();
+    assert!(b.cursor().is_mid() && b.cursor() == a.cursor());
+    assert_eq!(a.nodes(), b.nodes());
+    assert_ne!(a.hash(), b.hash(), "the moved flag is in the hash");
+    assert_ne!(a.save(), b.save(), "and in the save");
+    assert_eq!(Elementa::load(&b.save()).unwrap().hash(), b.hash());
+    assert_eq!(Elementa::load(&a.save()).unwrap().hash(), a.hash());
+}
+
+#[test]
+fn the_order_of_the_change_feed_matters_when_the_cut_node_moves() {
+    // The fifth reviewer's `cutorder`, held as what happens (EFFECTUS.md: the engine feeds its
+    // changes in one fixed order). Between two steps the cut torch moves within its cells and X,
+    // beyond its reach in a cell the pass has walked, moves ahead of the cut within it. X first:
+    // X was not given (it was out of the reach and the torch had not moved), and is heated in the
+    // pass. The torch first: the pass now counts every place it has looked as given, X with them,
+    // and X goes on the skip list. Both err toward less heat; the worlds differ.
+    let h = Vec3::new(0.01, 0.01, 0.01);
+    let (home, ahead, moved) = (Vec3::new(-1.5, 0.5, 0.5), Vec3::new(1.2, 0.5, 0.5), Vec3::new(0.6, 0.5, 0.5));
+    let run = |x_first: bool| {
+        let mut e = sinks_and_x(home);
+        let mut rounds = 0;
+        for _ in 0..6 * 300 {
+            let r = *e.step();
+            let at = e.node(X).unwrap().center;
+            if r.spread && e.cursor().is_mid() && at == home {
+                let c = e.node(0).unwrap().center;
+                let t = if c == moved { Vec3::new(0.5, 0.5, 0.5) } else { moved };
+                if x_first {
+                    e.move_node(X, ahead, h).unwrap();
+                    e.move_node(0, t, h).unwrap();
+                } else {
+                    e.move_node(0, t, h).unwrap();
+                    e.move_node(X, ahead, h).unwrap();
+                }
+                rounds += 1;
+            } else if r.spread && !e.cursor().is_mid() && at == ahead {
+                e.move_node(X, home, h).unwrap();
+            }
+        }
+        (e.node(X).unwrap().heat, e.node(10).unwrap().heat, e.hash(), rounds)
+    };
+    let (x_first, sink, a, rounds) = run(true);
+    let (torch_first, _, b, _) = run(false);
+    assert!(rounds > 50);
+    assert!(x_first > 0.0 && x_first <= sink, "X first: heated, once a pass ({x_first} against {sink})");
+    assert_eq!(torch_first, 0.0, "the torch first: X counts as given and is skipped");
+    assert_ne!(a, b, "the order of the calls changed the world");
+}

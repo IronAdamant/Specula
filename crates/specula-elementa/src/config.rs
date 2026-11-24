@@ -536,6 +536,7 @@ impl Config {
             ops_per_step: step_ops(n, self.limits.work),
             grid_ops: crate::grid::update_ops(n, n, n.max(1024), entries, entries, entries),
             act_ops: act_ops(n),
+            query_lookups: query_lookups(self.cell_m, self.reach_m),
             call_ops: crate::sim::Elementa::call_ops(n),
             steps_per_second: self.spread_hz,
             grid_entries: entries,
@@ -569,6 +570,7 @@ impl Config {
                     ("ops_per_step", Json::from(w.ops_per_step)),
                     ("grid_ops", Json::from(w.grid_ops)),
                     ("act_ops", Json::from(w.act_ops)),
+                    ("query_lookups", Json::from(w.query_lookups)),
                     ("call_ops", Json::from(w.call_ops)),
                     ("steps_per_second", Json::from(w.steps_per_second)),
                     ("grid_entries", Json::from(w.grid_entries)),
@@ -603,6 +605,9 @@ pub struct WorstCase {
     pub grid_ops: u64,
     /// One act ([`act_ops`]); at most [`crate::sim::MAX_ACTS_PER_TICK`] a tick.
     pub act_ops: u64,
+    /// The most cells one burning node's neighbour query looks up ([`query_lookups`]): what the
+    /// work budget pays for them is in the budget; this is the count.
+    pub query_lookups: u64,
     /// One add, remove or move ([`crate::sim::Elementa::call_ops`]).
     pub call_ops: u64,
     pub steps_per_second: u32,
@@ -634,4 +639,27 @@ impl WorstCase {
         let fresh = crossing.min(n) * u64::from(crate::grid::MAX_NODE_CELLS);
         crate::grid::update_ops(n, n, crossing, self.grid_entries, self.grid_entries, fresh)
     }
+}
+
+/// The most cells one neighbour query looks up at this cell size and reach, anywhere a node may
+/// be: on each axis a node covering `a` cells has a query of at most `a + 2k` cells, where `k`
+/// cells hold the reach, the rounding margin at its largest ([`crate::grid::reach_pad`] at
+/// `MAX_COORD` for a box of 64 cells) and the two roundings that subtract them (each at most
+/// `2^-24` of a value under `2^21`, so under 0.13 m together); `k = ⌊d / cell⌋ + 1`. Then the
+/// most over `a × b × c ≤ 64`. At the default cell 2 m and reach 0.5 m `k = 1`: 594, the figure
+/// before the margin. With the reach equal to the cell, `k = 2` (1,700 for a node 64 cells long),
+/// and at a 0.25 m cell the margin far out takes `k` to 4.
+pub fn query_lookups(cell: f32, reach: f32) -> u64 {
+    let (cell, reach) = (f64::from(cell), f64::from(reach));
+    let margin = (f64::from(crate::grid::MAX_COORD) + 64.0 * cell + 2.0 * reach + f64::from(crate::sim::MAX_HALF)) / 2_097_152.0;
+    let rounding = 2.0 * (f64::from(crate::grid::MAX_COORD) + 64.0 * cell + 2.0 * reach + 1.0) / 16_777_216.0;
+    let k = ((reach + margin + rounding) / cell) as u64 + 1;
+    let mut most = 0;
+    for a in 1..=64u64 {
+        for b in 1..=64 / a {
+            let c = 64 / (a * b);
+            most = most.max((a + 2 * k) * (b + 2 * k) * (c + 2 * k));
+        }
+    }
+    most
 }
