@@ -5618,12 +5618,21 @@ mod tests {
         let cut = |cutter: SdfNode| SdfNode { kind: Kind::Group { op: Combine::Difference, kids: vec![prim(Prim::Box { half: [1.0; 3], round: 0.0 }), cutter], smooth: 0.0 }, m: Modifiers::default() };
         let chain = |depth: usize| (0..depth).fold(cube(), |t, _| union(vec![t]));
         let specks = (0..60).fold(cube(), |t, i| union(vec![t, SdfNode { kind: Kind::Prim(Prim::Sphere { radius: 0.01 }), m: Modifiers { at: [0.0, 0.0, 0.001 * i as f32], ..Modifiers::default() } }]));
-        // Weights evaluated against the work charged; powers and rounded samples a unit.
+        // Weights evaluated against the work charged; powers and rounded samples a unit. And
+        // what the ranges did besides their primitives (their frames, modifiers, joins and
+        // walks: [`did_shares`], the reach's and the search's steps too), on top of every
+        // primitive evaluated: since the mesher lane's prunes take each loose child's range
+        // once, the primitives alone no longer show ranges charged nothing (the merge with the
+        // box lane, 2026-11-24: with the mesher's range charges set to nothing this still
+        // passed).
         let take = |tree: &SdfNode| -> (f64, f64) {
             PRIM_WEIGHED.with(|w| w.set(0));
+            Did::taken();
             let (_, s) = mesh(tree, &MeshOptions { max_work: u64::MAX, ..opts(32) }).unwrap();
             let weighed = PRIM_WEIGHED.with(|w| w.get());
+            let besides: u64 = did_shares(&Did::taken(), 0).iter().filter(|(name, _)| *name != "primitives' ranges").map(|s| s.1).sum();
             assert!(weighed <= s.work, "primitives weighing {weighed} were evaluated for {} work", s.work);
+            assert!(weighed + besides <= s.work, "primitives weighing {weighed} were evaluated, and ranges did {besides} besides, for {} work", s.work);
             (s.rounded_powers as f64 / s.work as f64, s.rounded_samples as f64 / s.work as f64)
         };
         let calibrated = take(&cut(cube()));
