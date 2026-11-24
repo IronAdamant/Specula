@@ -371,9 +371,24 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     chain of all its children (leaving a child out of a chain never lowers it) nor above its
     least child; then the scale, a swelling, a shell (`|d| - t` over the range) and noise
     (its amount each way). A box whose middle is solid ends the search; so does a budget of
-    16,384 evaluations of the tree a box (`CLEAR_ASKS`; the search is charged to the build's
-    work at the tree's cost, `SdfStats::box_asks`). A side not shown clear moves out to the
-    reach, as before: the search only ever keeps a side the field shows nothing past.
+    16,384 evaluations of the tree a box (`CLEAR_ASKS`, counted as since the second round: a
+    column's range as nine primitives, `SdfStats::box_asks`). A side not shown clear moves out
+    to the reach, as before: the search only ever keeps a side the field shows nothing past.
+    **The search is charged what it does, as it does it** (`SdfStats::box_work`; second review
+    of the search, 2026-11-24, which found a smooth union of 127 eight-section columns
+    searching for two minutes while charged under half a second, the columns' box and ratio
+    walked again at every ball and the charge made only after the search): each column's
+    walk of its curve once, before the search, at its supports' and pieces' weight; each
+    ball's range through the tree before it is taken, at every node's evaluation weight and
+    a frame's, a group's list and joins, a column's exponential, a rounded shape's slack
+    (the weights set against evaluations timed at the same points); each evaluation at a
+    box's middle at the tree's cost; rounded shapes' powers past their weight on the build's
+    bill. A cancel is looked for before every ball and every walk, and the build's limit at
+    every charge: either ends the build at once with its error (past the limit nothing could
+    be meshed in any box). The same 127 columns now search in about 1.4 s for 164 million
+    units (about 146 s for 704 million before), and the time a unit no longer moves with the
+    squareness (`the_search_spends_no_more_than_it_is_charged`,
+    `a_cancel_or_the_limit_stops_the_search_within_a_ball`, `a_rounded_shapes_search_is_billed`).
     **What still grows, by count** (the same 1,200 boxes): of the reviewer's 600, **none**
     (the five balls, the turned ellipsoid and the empty meeting keep the old box); of the
     crate's own 600, **14**: the 4 where the old box cuts the solid off (a flat ellipsoid
@@ -388,7 +403,9 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     (drawn trees with every primitive and modifier, stretch, twist, bend, repetition, noise
     and near-unions among them; every sampled point of every ball within its range) and
     `the_search_of_the_box_is_bounded_and_charged`. No repository sculpt's search asks
-    anything (no reach passes their boxes), so their meshes, work and hashes do not move.
+    anything (no reach passes their boxes), so their meshes, work and hashes do not move
+    (`the_repositorys_sculpts_keep_their_boxes` holds every mesh of every such build to no
+    asks and no search work).
 - **A part thinner than a cell meshes with edges that four triangles share** (looked into on
   2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
   It is not the join and not the box: **one crescent** (`{"op": "difference", "of": [{"op":
