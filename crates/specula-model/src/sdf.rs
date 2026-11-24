@@ -238,6 +238,16 @@ impl SdfError {
     fn limit(m: impl Into<String>, measured: f64, max: f64) -> SdfError {
         SdfError { limit: true, message: m.into(), measured: Some(measured), max: Some(max) }
     }
+    /// The one error a cancelled sculpt gives, wherever the cancel is seen (the build's charge,
+    /// the reach, the box's search, a walk of the columns): a limit with no measure and no
+    /// limit. A cancel is not a measure passing a limit, and the work done when it is seen
+    /// depends on when it came (a timing, not a fact of the recipe), so it carries neither, as
+    /// a recipe's own cancel does (`recipe::charge`). (Review 4 of the box lane found three
+    /// different made-up pairs: "0 of 0" from the reach, the search's work against 0, the
+    /// build's work against its limit.)
+    fn cancelled() -> SdfError {
+        SdfError { limit: true, message: crate::work::CANCELLED.into(), measured: None, max: None }
+    }
 }
 
 /// What meshing did.
@@ -2066,7 +2076,7 @@ fn outline_columns(n: &mut Prepared, spend: &mut Spend) -> Result<(), SdfError> 
         PKind::Prim(Prim::Column { a, b, side, sections, count, square }) => {
             let used = &sections[..(*count as usize).clamp(1, MAX_SECTIONS)];
             if crate::work::cancelled() {
-                return Err(SdfError::limit(crate::work::CANCELLED, 0.0, 0.0));
+                return Err(SdfError::cancelled());
             }
             spend(column_walk_cost(used.len(), *square))?;
             n.outline = Some(column_outline(*a, *b, *side, used, *square));
@@ -2101,9 +2111,9 @@ struct Did {
     /// twisted, bent, displaced; and the displacements' octaves.
     mods: [u64; 6],
     octaves: u64,
-    /// The weight of every primitive a range asked ([`prim_cost`], the mesher's own), and of
-    /// those, columns and rounded shapes.
-    range_prims: u64,
+    /// The primitives a range asked, by the kinds [`prim_cost`] weighs apart ([`prim_kind`]),
+    /// and of those, columns and rounded shapes.
+    range_prims: [u64; PRIM_KINDS],
     column_ranges: u64,
     rounded_ranges: u64,
     /// Groups a range passed through, and their children joined smoothly and sharply.
@@ -2122,11 +2132,41 @@ struct Did {
     reach_kids: u64,
     reach_pairs: u64,
     table_places: u64,
+    /// Levels asked of columns' tables (each charged its table's most places before it is
+    /// asked: what the reach's charge may pass what it did by).
+    table_asks: u64,
+}
+
+/// (Tests only) the kinds of primitive [`prim_cost`] weighs apart.
+#[cfg(test)]
+const PRIM_KINDS: usize = 13;
+
+/// (Tests only) which of [`PRIM_KINDS`] a primitive is, in the order of `prim_cost`'s arms:
+/// a half space; a ball or a capsule; a round cone; a column at squareness 2 or 4, at 3, at
+/// any other; a box, a torus, an ellipsoid; a rounded shape at power 2, at any other; a
+/// straight cylinder; a tapered one.
+#[cfg(test)]
+fn prim_kind(p: &Prim) -> usize {
+    match *p {
+        Prim::HalfSpace { .. } => 0,
+        Prim::Sphere { .. } | Prim::Capsule { .. } => 1,
+        Prim::RoundCone { .. } => 2,
+        Prim::Column { square: 2.0 | 4.0, .. } => 3,
+        Prim::Column { square: 3.0, .. } => 4,
+        Prim::Column { .. } => 5,
+        Prim::Box { .. } => 6,
+        Prim::Torus { .. } => 7,
+        Prim::Ellipsoid { .. } => 8,
+        Prim::Rounded { power: 2.0, .. } => 9,
+        Prim::Rounded { .. } => 10,
+        Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 11,
+        Prim::Cylinder { .. } => 12,
+    }
 }
 
 #[cfg(test)]
 impl Did {
-    const NONE: Did = Did { range_nodes: 0, mods: [0; 6], octaves: 0, range_prims: 0, column_ranges: 0, rounded_ranges: 0, groups: 0, kids_smooth: 0, kids_sharp: 0, supports_root: 0, supports_pow: 0, pieces: 0, mid_evals: 0, reach_nodes: 0, reach_kids: 0, reach_pairs: 0, table_places: 0 };
+    const NONE: Did = Did { range_nodes: 0, mods: [0; 6], octaves: 0, range_prims: [0; PRIM_KINDS], column_ranges: 0, rounded_ranges: 0, groups: 0, kids_smooth: 0, kids_sharp: 0, supports_root: 0, supports_pow: 0, pieces: 0, mid_evals: 0, reach_nodes: 0, reach_kids: 0, reach_pairs: 0, table_places: 0, table_asks: 0 };
 
     /// What it did since the last call, and starts again.
     fn taken() -> Did {
@@ -2291,7 +2331,7 @@ fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, spent: &mut Spent,
         let mut d = d.borrow_mut();
         match &n.kind {
             PKind::Prim(p) => {
-                d.range_prims += prim_cost(p);
+                d.range_prims[prim_kind(p)] += 1;
                 d.column_ranges += u64::from(matches!(p, Prim::Column { .. }));
                 d.rounded_ranges += u64::from(matches!(p, Prim::Rounded { .. }));
             }
@@ -2575,7 +2615,7 @@ const CLEAR_ASKS: u64 = 1 << 14;
 /// the tree (tests).
 #[cfg(test)]
 fn mesh_box_seeded(tree: &SdfNode, resolution: u32, seed: u64) -> Option<((V3, V3), u64)> {
-    let mut spend = |_: u64| if crate::work::cancelled() { Err(SdfError::limit(crate::work::CANCELLED, 0.0, 0.0)) } else { Ok(()) };
+    let mut spend = |_: u64| if crate::work::cancelled() { Err(SdfError::cancelled()) } else { Ok(()) };
     mesh_box_charged(tree, resolution, seed, &mut spend).ok().flatten().map(|(b, s)| (b, s.asks))
 }
 
@@ -2716,7 +2756,7 @@ fn clear_of_solid(tree: &Prepared, lo: V3, hi: V3, prims: u64, budget: u64, whol
             return Ok(false);
         }
         if crate::work::cancelled() {
-            return Err(SdfError::limit(crate::work::CANCELLED, spent.work as f64, 0.0));
+            return Err(SdfError::cancelled());
         }
         let mid = [0, 1, 2].map(|k| 0.5 * (lo[k] + hi[k]));
         let half = [0, 1, 2].map(|k| 0.5 * (hi[k] - lo[k]));
@@ -2850,7 +2890,7 @@ impl ReachCx<'_, '_> {
             return false;
         }
         if crate::work::cancelled() {
-            self.failed = Some(SdfError::limit(crate::work::CANCELLED, 0.0, 0.0));
+            self.failed = Some(SdfError::cancelled());
             return false;
         }
         match (self.spend)(n) {
@@ -2877,6 +2917,8 @@ impl ReachCx<'_, '_> {
         if !self.pay(column_places(used.len()) * REACH_PLACE) {
             return None;
         }
+        #[cfg(test)]
+        DID.with(|d| d.borrow_mut().table_asks += 1);
         self.tables.get(&key).map(|t| column_reach(t, level))
     }
 }
@@ -2955,15 +2997,6 @@ const REACH_ASKS: u32 = 1 << 14;
 
 fn reach_within(n: &SdfNode, need: f32, full: bool, cx: &mut ReachCx) -> Option<Reach> {
     cx.asks = cx.asks.saturating_sub(1);
-    #[cfg(test)]
-    DID.with(|d| {
-        let mut d = d.borrow_mut();
-        d.reach_nodes += 1;
-        d.reach_kids += match &n.kind {
-            Kind::Group { kids, .. } => kids.len() as u64,
-            Kind::Prim(_) => 0,
-        };
-    });
     let kids = match &n.kind {
         Kind::Group { kids, .. } => kids.len() as u64,
         Kind::Prim(_) => 0,
@@ -2971,6 +3004,13 @@ fn reach_within(n: &SdfNode, need: f32, full: bool, cx: &mut ReachCx) -> Option<
     if !cx.pay(REACH_NODE + kids * REACH_KID) {
         return None;
     }
+    // (Counted once it is paid for, where the asking is done: what the charge was for.)
+    #[cfg(test)]
+    DID.with(|d| {
+        let mut d = d.borrow_mut();
+        d.reach_nodes += 1;
+        d.reach_kids += kids;
+    });
     let m = &n.m;
     let least = m.stretch[0].min(m.stretch[1]).min(m.stretch[2]);
     let shrink = m.scale * least;
@@ -3168,8 +3208,6 @@ fn union_reach(kids: &[SdfNode], k: f32, level: f32, full: bool, cx: &mut ReachC
     let paired_level = level + if n == 2 { k } else { 2.25 * k };
     let plain = kids.iter().map(|kid| reach_within(kid, level, false, cx)).collect::<Option<Vec<_>>>()?;
     let paired = kids.iter().map(|kid| reach_within(kid, paired_level, false, cx)).collect::<Option<Vec<_>>>()?;
-    #[cfg(test)]
-    DID.with(|d| d.borrow_mut().reach_pairs += (n * n) as u64);
     if !cx.pay((n * n) as u64 * REACH_PAIR) {
         return None;
     }
@@ -3178,6 +3216,8 @@ fn union_reach(kids: &[SdfNode], k: f32, level: f32, full: bool, cx: &mut ReachC
     let mut parts: Vec<(V3, V3)> = plain.iter().filter(|b| !b.is_nothing()).map(|b| b.within).collect();
     for (i, d) in dipped.iter().enumerate() {
         for (j, p) in paired.iter().enumerate() {
+            #[cfg(test)]
+            DID.with(|d| d.borrow_mut().reach_pairs += 1);
             let (ml, mh) = (math3::vmax(d.within.0, p.within.0), math3::vmin(d.within.1, p.within.1));
             if i != j && (0..3).all(|a| ml[a] <= mh[a]) {
                 parts.push((ml, mh));
@@ -3758,12 +3798,16 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     // search found them never charged.)
     let bill = std::cell::RefCell::new(RoundedBill::start());
     let charge = |work: &mut u64, n: u64| -> Result<(), SdfError> {
+        #[cfg(test)]
+        cancel_hook(true);
         *work += n + bill.borrow_mut().due();
+        #[cfg(test)]
+        let _after = Defer(|| cancel_hook(false));
         if *work > opt.max_work {
             return Err(SdfError::limit(format!("the sdf needs more than {} work units ({cost} per sample: noise octaves and twists weigh most); lower the resolution or simplify the tree", opt.max_work), *work as f64, opt.max_work as f64));
         }
         if crate::work::cancelled() {
-            return Err(SdfError::limit(crate::work::CANCELLED, *work as f64, opt.max_work as f64));
+            return Err(SdfError::cancelled());
         }
         Ok(())
     };
@@ -4466,6 +4510,9 @@ thread_local! {
     /// meshing it did: how a build's sculpts are reached (a build meshes each at its detail
     /// and, where it needs one, coarsely).
     static MESHED: std::cell::RefCell<Option<Vec<(Shape, SdfStats)>>> = const { std::cell::RefCell::new(None) };
+    /// (Tests only) a cancel raised at a build's `n`-th charge (counted down), before that
+    /// charge looks for one (`true`) or after (`false`): [`cancel_hook`].
+    static CANCEL_AT: std::cell::Cell<Option<(u64, bool)>> = const { std::cell::Cell::new(None) };
     /// (Tests only) leave what keeping sheets apart costs out of the work.
     static FREE_SHEETS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// (Tests only) skip no block: every sample is evaluated, so a mesh made so is what the
@@ -4476,6 +4523,31 @@ thread_local! {
     /// (Tests only) skip and prune by the tree's factors alone, as before 2026-11-24: what
     /// lost surface beside flat ellipsoids.
     static OLD_FACTORS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// (Tests only) at a build's charge, before it looks for a cancel (`before`) or after: counts
+/// [`CANCEL_AT`] down and raises the thread's cancel flag at its charge, in its phase.
+#[cfg(test)]
+fn cancel_hook(before: bool) {
+    let Some((left, at_before)) = CANCEL_AT.with(|c| c.get()) else { return };
+    let left = if before { left.saturating_sub(1) } else { left };
+    CANCEL_AT.with(|c| c.set(Some((left, at_before))));
+    if left == 0 && at_before == before {
+        if let Some(flag) = crate::work::current_flag() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// (Tests only) runs its closure when dropped.
+#[cfg(test)]
+struct Defer<F: FnMut()>(F);
+
+#[cfg(test)]
+impl<F: FnMut()> Drop for Defer<F> {
+    fn drop(&mut self) {
+        (self.0)();
+    }
 }
 
 /// (Tests only) every byte of a mesh, as one hash: its positions, triangles and colours.
@@ -7265,13 +7337,21 @@ mod tests {
         t
     }
 
-    /// What the box's search and [`reach`] did ([`Did`], counted where each step is done), at
-    /// the weights the charge is meant to pay, each written out here and not taken from the
-    /// charging code: the search's (`tree` the cost of one evaluation of the whole tree, for
-    /// each at a box's middle) and the reach's. Each kind with its share, by name.
+    /// What the box's search, [`reach`] and the mesher's ranges did ([`Did`], counted where
+    /// each step is done), at the weights the charge is meant to pay, **each written out here
+    /// as a number and not taken from the charging code**, so that a weight changed there (at
+    /// its site or its constant) is changed here too, on purpose, or a test fails (review 4 of
+    /// the box lane: eleven of these were the charging code's own constants, and halving one
+    /// failed nothing). `tree` is the cost of one evaluation of the whole tree, for each at a
+    /// box's middle. Each kind with its share, by name.
     fn did_shares(d: &Did, tree: u64) -> Vec<(&'static str, u64)> {
+        // A primitive's evaluation, by `prim_kind` (as `prim_cost` and `ROUNDED_COST` have
+        // them): a half space, a ball or capsule, a round cone, columns at squareness 2 or 4,
+        // 3 and any other, a box, a torus, an ellipsoid, rounded shapes at power 2 and any
+        // other, straight and tapered cylinders.
+        const PRIM: [u64; PRIM_KINDS] = [48, 54, 74, 86, 170, 318, 60, 60, 60, 348, 1498, 60, 83];
         vec![
-            ("range frames", d.range_nodes * RANGE_FRAME),
+            ("range frames", d.range_nodes * 160),
             ("turned copies", d.mods[0] * 6),
             ("stretched copies", d.mods[1] * 3),
             ("repeated copies", d.mods[2] * 38),
@@ -7279,20 +7359,20 @@ mod tests {
             ("bent copies", d.mods[4] * 23),
             ("displaced copies", d.mods[5] * 15),
             ("noise octaves", d.octaves * 45),
-            ("primitives' ranges", d.range_prims),
-            ("columns' ranges", d.column_ranges * COLUMN_RANGE),
-            ("rounded shapes' ranges", d.rounded_ranges * ROUNDED_RANGE),
-            ("groups' ranges", d.groups * (2 * 8 + RANGE_GROUP)),
+            ("primitives' ranges", d.range_prims.iter().zip(PRIM).map(|(n, w)| n * w).sum()),
+            ("columns' ranges", d.column_ranges * 96),
+            ("rounded shapes' ranges", d.rounded_ranges * 200),
+            ("groups' ranges", d.groups * (2 * 8 + 200)),
             ("smooth joins", d.kids_smooth * 2 * 20),
             ("sharp joins", d.kids_sharp * 2 * 3),
-            ("supports by a root", d.supports_root * SUPPORT_WORK[0]),
-            ("supports by powers", d.supports_pow * SUPPORT_WORK[1]),
-            ("pieces of curves", d.pieces * PIECE_WORK),
+            ("supports by a root", d.supports_root * 24),
+            ("supports by powers", d.supports_pow * 260),
+            ("pieces of curves", d.pieces * 600),
             ("evaluations at a middle", d.mid_evals * tree),
-            ("nodes the reach asked", d.reach_nodes * REACH_NODE),
-            ("children the reach gathered", d.reach_kids * REACH_KID),
-            ("pairs the reach met", d.reach_pairs * REACH_PAIR),
-            ("places of columns' tables", d.table_places * REACH_PLACE),
+            ("nodes the reach asked", d.reach_nodes * 1200),
+            ("children the reach gathered", d.reach_kids * 60),
+            ("pairs the reach met", d.reach_pairs * 20),
+            ("places of columns' tables", d.table_places * 6),
         ]
     }
 
@@ -7401,6 +7481,13 @@ mod tests {
             let did: u64 = did_shares(&d, 0).iter().map(|s| s.1).sum();
             assert!(paid >= did, "tree {i}: charged {paid}, did {did}: {d:?}");
             let columns = column_count(tree) as u64;
+            // (And no more than that, past what a walk and a level of a table are charged
+            // before they are known: a walk its most supports and pieces, at most 297,240
+            // units for eight sections at a squareness that takes powers; a level its table's
+            // most places, at most 2,052. A tree with no column is charged exactly what it did.)
+            let ahead = columns * 297_240 + d.table_asks * 2_052;
+            assert!(paid <= did + ahead, "tree {i}: charged {paid}, did {did}, at most {ahead} ahead: {d:?}");
+            assert!(columns > 0 || paid == did, "tree {i}: no column, charged {paid}, did {did}");
             assert!(d.pieces <= columns * (MAX_SECTIONS as u64 - 1) * COLUMN_PIECES as u64, "tree {i}: {} pieces for {columns} columns", d.pieces);
             if i == trees.len() - 1 {
                 assert_eq!(d.pieces, 64 * 7 * COLUMN_PIECES as u64, "each column walked once");
@@ -7486,6 +7573,127 @@ mod tests {
         assert!(e.limit && e.message.contains("work units"), "{e:?}");
         let measured = e.measured.unwrap() as u64;
         assert!(measured > limit && measured <= limit + most, "{measured} (one charge at most {most})");
+    }
+
+    /// What [`Did`] holds so far on this thread, weighed ([`did_shares`]), without starting it
+    /// again.
+    fn did_so_far(tree: u64) -> u64 {
+        let d = DID.with(|d| *d.borrow());
+        did_shares(&d, tree).iter().map(|s| s.1).sum()
+    }
+
+    /// **Every step is charged before it is done** (review 4 of the box lane, finding 3: a
+    /// walk or a union's pairs charged after them passed every test). At every charge of the
+    /// reach, of the walk of a tree's columns ([`outline_columns`]) and of the box's search,
+    /// what has been done so far ([`did_shares`]) is no more than what was charged before
+    /// that charge: so nothing is done ahead of its charge. (The search is held so on trees
+    /// with no repetition: a ball that meets more than one copy is charged the rest after its
+    /// walk, by design: [`clear_of_solid`].) And **a charge refused stops the work it was
+    /// for**: refused at any of the reach's charges, nothing more is done after it.
+    #[test]
+    fn every_step_is_charged_before_it_is_done() {
+        let mut trees = charged_trees();
+        trees.push(column_chain(16, 5.0));
+        let mut searched = 0;
+        for (i, tree) in trees.iter().enumerate() {
+            let cost = prepared_cost(&prepare(tree, 1, &mut 0));
+            let check = |what: &'static str| {
+                let mut paid = 0u64;
+                let mut calls = 0u64;
+                Did::taken();
+                move |u: u64| -> Result<(), SdfError> {
+                    let did = did_so_far(cost);
+                    assert!(did <= paid, "tree {i}, {what}: {did} done before charge {calls}, {paid} charged");
+                    paid += u;
+                    calls += 1;
+                    Ok(())
+                }
+            };
+            reach_charged(tree, 0.0, &mut check("the reach")).unwrap();
+            let mut p = prepare(tree, 1, &mut 0);
+            outline_columns(&mut p, &mut check("the walk")).unwrap();
+            if !has_repeat(tree) {
+                let got = mesh_box_charged(tree, 24, 1, &mut check("the search")).unwrap();
+                searched += usize::from(got.is_some_and(|(_, s)| s.asks > 0));
+            }
+            // Refused at its k-th charge (a limit), the reach does nothing more.
+            let mut calls = 0u64;
+            reach_charged(tree, 0.0, &mut |_| {
+                calls += 1;
+                Ok(())
+            })
+            .unwrap();
+            let mut ats = vec![1, 2, calls / 2, calls];
+            ats.retain(|at| (1..=calls).contains(at));
+            ats.dedup();
+            for at in ats {
+                Did::taken();
+                let mut n = 0u64;
+                let mut at_refusal = None;
+                let e = reach_charged(tree, 0.0, &mut |_| {
+                    n += 1;
+                    if n == at {
+                        at_refusal = Some(DID.with(|d| *d.borrow()));
+                        return Err(SdfError::limit("refused", 0.0, 0.0));
+                    }
+                    Ok(())
+                });
+                assert_eq!(e.map(|_| ()).unwrap_err().message, "refused", "tree {i}: refused at charge {at} of {calls}");
+                assert_eq!(Some(DID.with(|d| *d.borrow())), at_refusal, "tree {i}: work done after charge {at} of {calls} was refused");
+            }
+        }
+        assert!(searched >= 5, "{searched} searches ran");
+    }
+
+    /// **A cancelled sculpt gives one error, wherever the cancel is seen** (review 4 of the box
+    /// lane, finding 1: the reach said "0 of a limit of 0", the search its work against 0, the
+    /// build its work against its limit). A mesh of columns of changing proportions, whose
+    /// reach, box's search, walk of its columns for the mesher's ranges and mesher all charge,
+    /// is cancelled at forty of its charges and at the first and last of each part, the cancel
+    /// raised before the charge looks for it and after (so that the reach, the search and the
+    /// walk see it themselves): every one ends with [`SdfError::cancelled`], no measure and no
+    /// limit.
+    #[test]
+    fn a_cancel_gives_one_error_wherever_it_is_seen() {
+        let tree = wedges(4, 5.0);
+        let o = MeshOptions { max_work: u64::MAX, ..opts(32) };
+        let charges = |at: Option<(u64, bool)>| -> (Result<(), SdfError>, u64) {
+            let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let _guard = crate::work::cancel_on(flag);
+            CANCEL_AT.with(|c| c.set(Some(at.unwrap_or((u64::MAX, true)))));
+            let got = mesh(&tree, &o).map(|_| ());
+            let left = CANCEL_AT.with(|c| c.replace(None)).unwrap().0;
+            (got, u64::MAX - left)
+        };
+        let (whole, n) = charges(None);
+        whole.unwrap();
+        // Where each part's charges end: the reach's, the search's (its walks and balls), then
+        // the mesher's walk of its columns, then the mesher's own.
+        let mut reach = 0u64;
+        reach_charged(&tree, 0.0, &mut |_| {
+            reach += 1;
+            Ok(())
+        })
+        .unwrap();
+        let mut search = 0u64;
+        let (_, spent) = mesh_box_charged(&tree, 32, 1, &mut |_| {
+            search += 1;
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+        let p = prepare(&tree, 1, &mut 0);
+        assert!(spent.asks > 0 && p.wander > 0.0, "the search runs and the mesher asks ranges");
+        let walks = column_count(&tree) as u64;
+        assert!(n > search + walks + 40, "{n} charges, {search} before the mesher");
+        let mut points: Vec<u64> = (1..=40).map(|k| 1 + k * (n - 2) / 41).collect();
+        points.extend([1, reach, reach + 1, search, search + 1, search + walks, search + walks + 1, n - 1]);
+        for at in points {
+            for before in [true, false] {
+                let (got, _) = charges(Some((at, before)));
+                assert_eq!(got, Err(SdfError::cancelled()), "cancelled at charge {at} of {n} ({}; the reach's end at {reach}, the search's at {search})", if before { "before its check" } else { "after it" });
+            }
+        }
     }
 
     /// **A cancel stops the search within a ball**, and **a build's work limit within one
