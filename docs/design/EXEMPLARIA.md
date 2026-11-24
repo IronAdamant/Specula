@@ -125,7 +125,12 @@ so an agent can see exactly what it would build and take the recipe itself if it
   variant is. The kind is a `<name>.kind.json` in the recipe's folder (the modeller knows no kinds: the
   engine hands it `specula_model::Specimens`, `exemplar_tools::FolderKinds`).
 - **Each number has its own stream**, `stream_seed(seed, "<kind>/<number>")` (the modeller's own
-  `StableHasher` scheme), so adding a number to a kind never moves the draws of the others.
+  `StableHasher` scheme, `specula_core::hash::stream_seed` since review 1 of S0, seeding PCG32), so
+  adding a number to a kind never moves the draws of the others, and no two streams, nor two
+  consecutive seeds, are related (measured: "For the plans' lanes", Streams). `<kind>` is a
+  project copy's `taken.streams`, the library kind it came from, so a renamed copy draws as the
+  library does. A kind whose draws could leave what its plan can write is refused when it is
+  resolved (Reach, same section).
 - **What is drawn, in order:** size first (one draw, normal, from the size row's spread, or from its range
   read as plus and minus two spreads where only a range is printed: the engine's assumption, said in the
   kind's answer); every length then follows size by the plan's exponents; then each **trait** of the plan
@@ -261,8 +266,8 @@ materials a model).
   "exemplaria/<plan>/<name>@<hash of the kind file>"`, so a later answer can say "the library's wolf has
   changed since you took it", and `"taken": {"library": <the library's version, 16 hex digits>, "base":
   <the base written into it>, "checked": <what was checked at the take>, "own": <how many of its numbers
-  are the engine's own>}`. At the take the kind is written at its mean and at seeds 1, 2 and 3, each
-  recipe parsed and its clips generated on its rig, and `checked` says so. The checks of form and motion
+  are the engine's own>, "streams": <the library kind's name, which its draws are keyed on>}`. At
+  the take the kind is written at its mean and at seeds 1, 2 and 3, each recipe parsed and its clips generated on its rig, and `checked` says so. The checks of form and motion
   at the library's seeds (B, stages Q on) are added to `taken` by the stages that make them; a
   `<name>.record.json` beside the kind file is not made (a test may not write into the checkout, and the
   folder holds kinds only). A contact sheet per entry (thumbnail tracked under
@@ -438,7 +443,10 @@ beyond the code's own notes:
    `'static` arrays (`size`, `numbers`, `traits`, `roles`, `options`, `motions`), then `write`,
    which turns a `Specimen` into bones, parts and clips through `write::Writing` (`bone`,
    `part`, `block`, `clip`, `gait`, `fact`; `material(role)` resolves a role).
-   `plans/box_creature.rs` is the pattern, at about 150 lines.
+   `plans/box_creature.rs` is the pattern, at about 150 lines. Each number has the `range` its
+   `write` makes a whole body for (on its unit's step), as the size has one: a kind is held
+   inside them (Reach, below). The size's, traits' and numbers' names are unique across the
+   three tables.
 2. **Two single lines** in `crates/specula-exemplaria/src/plans/mod.rs`: `pub mod <plan>;` at
    the end of the modules, and `&<plan>::PLAN,` at the end of `PLANS`.
 3. Nothing else registers it: `resolve` checks a kind against the plan's tables, and the test
@@ -497,12 +505,42 @@ after the others, its name at the end of the `use {...}` line, its arm in the di
   store now mirrors `.json` files whose folder is `models` as recipes too (`project::kind_for`);
   `.glb` and `.gltf` there are still models, and `models/exports/` holds no recipes (as with
   `recipes/`, the file's own folder must be named so: `models/props/x.json` is not mirrored).
-- **A take into a new project is refused until its style names the kind's roles** (a new
-  project's `style.json` has four presets and no `roles`; A.7 says a role is never guessed).
-  Seen in the cold job: the refusal named one role at a time. The refusal now carries `fix`: the
-  one `project_patch` of the style (its path and version) that names every unresolved role to
-  the preset nearest its hint colour; the agent makes it (or chooses other presets) and takes
-  again. Two calls, not one a role.
+- **A new project's style names the plans' roles** (`specula new`): its `style.json` carries
+  `"roles"` mapping every role word of A.7 (`coat`, `underside`, `eye`, `claw`, `bark`, `leaf`,
+  `hull`, `panel`, `glass`) onto its four presets, a visible line of the project's own file
+  (not a guess at take time), so a first take needs no patch. A take whose roles the style does
+  not resolve (a role outside that table, or a style without it) is refused with `fix`: the one
+  `project_patch` of the style the copy is checked against (its path and version) that names
+  every unresolved role to the preset nearest its hint colour, for every role the specimen is
+  written in (the kind's own, its base's and the plan's defaults). Under the engine's `--style
+  FILE` no patch is offered (the project's `style.json` is not what the copy is checked
+  against): the answer names the roles to add to that file.
+- **Reach** (A.2, review 1 of S0): a plan gives each number the range it can write
+  (`NumberDef::range`), as it gives its size one. When a kind is resolved (at a load, a write,
+  a spawn, a take) the least and most each drawn number can be over every seed is worked out,
+  and a kind that could leave its plan's range is refused, `outside_plan`, at the kind's own
+  field (`size.shoulder_height.sd`, `vary.build.spread`, `numbers.leg_length.mean`, `.share`,
+  `.exponent`, `.range`), with the number, the worst value and the bound (`reach` in the error;
+  through the engine, the recipe error's numbers). The parser's own limits: a size's spread at
+  most 0.4 of its mean (2.5 spreads never pass zero), a spread of a trait or a number at most
+  0.36, a number's mean and any range above zero. A size with no range of the kind's keeps the
+  plan's, and its 2.5 spreads must lie inside it. As a backstop a draw holds every value inside
+  the plan's range whatever the kind says. Every accepted kind builds at every seed: a test
+  builds 32 seeds of every library kind and of fifteen accepted hostile kinds, each closed.
+- **Streams** (A.2): `specula_core::hash::stream_seed(seed, "<key>/<number>")`, the function
+  the modeller uses for its parts and ops (moved into the core so there is one scheme), seeds
+  a PCG32 generator for each number. `<key>` is the kind's name, or a copy's `taken.streams`
+  (the library kind it was taken from), so a copy renamed with `exemplar_take {"as"}` draws the
+  specimens `exemplar_get` showed; a copy's numbers edited keep their streams (a change of one
+  number moves only what depends on it), and a copy whose `taken.streams` is set to its own
+  name is a kind of its own that draws anew. A test measures the streams of every library kind
+  over 40,000 consecutive seeds from 0 and 40,000 up to the largest: no pair at one seed, or at
+  consecutive seeds, correlates past 0.025 (five sampling errors), where the scheme it replaced
+  (`Rng::named`) is shown to fail. A plan's size, traits and numbers have names unique across
+  the three tables (a test), so no two share a stream.
+- **Levels**: only `near` (the specimen's triangle budget) is built; `mid`, `crowd` and `far`
+  are refused (`not_built`) until the plans whose surfaces the modeller can reduce (S1 on)
+  write them as the recipe's LODs.
 - **A scatter item by kind** (A.2): `{"kind": NAME, "variants": N}`, at most 32 variants, each
   its own specimen; the kind is read from the recipe's folder (`<NAME>.kind.json`, its base
   beside it) and counts as an include for hot reload. The variant's seed is folded into a
@@ -519,7 +557,12 @@ after the others, its name at the end of the `use {...}` line, its arm in the di
   agent is given unasked (lane `m6-formae`) names every catalogue.
 - **The tools are in the kit `make_asset`** (`toolkits.rs`): `exemplar_list`, `exemplar_get`
   and `exemplar_take` in its `more`, and its steps name `exemplar_list` beside `formae_list`.
-- **A specimen's seed** is the model library's, 0 to 1,000,000; `exemplar_get` takes the same.
+- **A specimen's seed**: a spawn's or a build's is the model library's, 0 to 1,000,000;
+  `exemplar_get` takes any seed a specimen is written with, 0 to 2^53 - 1, so a scatter's
+  variant seeds (folded to 53 bits) can be previewed. `expand` refuses a larger seed: a recipe's
+  JSON cannot hold it exactly.
+- **The catalogue's rows** carry each number's value at the kind's mean, its range over seeds
+  (the reach) and its unit on one line, and the scatter snippet beside the spawn and build ones.
 - **Not in S0**: the `footfalls` and `stride` checks (stage Q), and the checks of form and motion
   a copy's `taken` will carry (the stages that make them).
 
