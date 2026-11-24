@@ -283,3 +283,12 @@ fn a_project_write_of_an_impossible_kind_names_the_kinds_field() {
     let p = crate::project_kinds::validate("assets/models/bad.kind.json", crate::project::FileKind::Recipe, bad, None, &ctx);
     assert!(p.iter().any(|p| p.message.contains("size.shoulder_height.sd") || format!("{p:?}").contains("size.shoulder_height.sd")), "{p:?}");
 }
+
+/// Through the engine a kind refused for its reach carries the worst value and the bound it
+/// passes as the recipe error's numbers (AGENTS rule 5: agents debug from data).
+#[test]
+fn a_kind_refused_for_its_reach_carries_its_numbers_as_a_recipe_error() {
+    let bad = r#"{"kind": 1, "name": "bad", "plan": "box_creature", "about": "a probe", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.2, "unit": "m", "own": "x"}}}"#;
+    let e = check_kind(bad, &|_| None, &Style::parse(crate::scaffold::STYLE).unwrap(), "t").unwrap_err();
+    assert_eq!((e.path.as_str(), e.measured, e.limit), ("size.shoulder_height.sd", Some(0.1), Some(0.3)), "{e:?}");
+}

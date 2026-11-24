@@ -627,7 +627,12 @@ fn recipe_error(e: &specula_exemplaria::Error) -> RecipeError {
         _ => ErrorCode::OutOfRange,
     };
     let near = if e.near.is_empty() { String::new() } else { format!(" (nearest: {})", e.near.join(", ")) };
-    RecipeError::new(e.path.as_str(), code, format!("[{}] {}{near}", e.code, e.message))
+    let out = RecipeError::new(e.path.as_str(), code, format!("[{}] {}{near}", e.code, e.message));
+    // (A kind refused for its reach: the worst value a seed could give, and the bound it passes.)
+    match &e.reach {
+        Some(r) => out.with_numbers(r.worst, if r.worst < r.bound[0] { r.bound[0] } else { r.bound[1] }),
+        None => out,
+    }
 }
 
 /// Whether a recipe path or file stem is a kind (`x.kind.json`, stem `x.kind`).
