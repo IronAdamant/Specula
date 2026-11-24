@@ -26,6 +26,17 @@
 //! < 50)`), and an assertion inside a helper that takes the bound as an argument. Reviews look
 //! for those.
 //!
+//! **Nor an outcome a clock in the code decides.** A test that checks which way the code went
+//! (`stopped == "frame_cap"`), where the code chose by its own time budget, bounds a speed
+//! with no time in the check: `ui_engine::engine_tests::ui_act_stops_at_its_time_budget_
+//! and_hands_back_the_rest` held that 160 fast frames fit `ui_act`'s 20 ms budget, and failed
+//! once in a busy run (109 frames in 20.1 ms, 2026-11-24). Such a test holds the code's clock
+//! (`ui_engine::hold_act_clock`, `models`' `NOW`), or checks only the outcome no machine's
+//! speed can change. **Nor a wait for a worker against a deadline** (`Instant::now() <
+//! deadline`, or `elapsed()` under a bound of minutes): a minute is legal here and still ran
+//! out beside a release build (`specula-gpu`'s `wait_variants`, the same day). A wait for a
+//! worker ends on its event (a join: `Gpu::wait_for_pipelines`), not on a time.
+//!
 //! **Nor the other way round:** a test that needs the machine to be slow ("still running after
 //! a pump of 1 ms": the cause of CI's red on 2026-11-21, where a faster machine had finished),
 //! and a test that sleeps a few milliseconds and expects a file's time to have moved (a file

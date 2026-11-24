@@ -317,6 +317,42 @@ impl Driver for ScreenDriver<'_> {
     }
 }
 
+/// The clock `ui_act`'s time budget reads: the machine's, except in a test that holds it
+/// ([`ACT_NOW`]). Whether a call stops at its frame cap or at its time budget is decided by
+/// this clock, so a test that asserts which one names the clock's times itself; on the
+/// machine's clock "160 frames fit in 20 ms" is a fact about how busy the machine was (a
+/// `cargo test` of 16 threads beside other builds ran 109 of them in 20.1 ms, 2026-11-24).
+fn act_now() -> Instant {
+    #[cfg(test)]
+    if let Some(now) = ACT_NOW.get() {
+        return now;
+    }
+    Instant::now()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: what [`act_now`] answers on this thread (the engine thread is the test's own:
+    /// `ui_act`'s frames run on the calling thread). `None`: the machine's clock. A test sets
+    /// it and moves it by what each frame is to cost ([`advance_act_clock`]).
+    static ACT_NOW: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Tests: holds [`act_now`] still on this thread from now (`true`), or gives it back to the
+/// machine (`false`).
+#[cfg(test)]
+pub(crate) fn hold_act_clock(held: bool) {
+    ACT_NOW.set(held.then(Instant::now));
+}
+
+/// Tests: moves a held [`act_now`] on by `by` (nothing when it is not held).
+#[cfg(test)]
+pub(crate) fn advance_act_clock(by: Duration) {
+    if let Some(now) = ACT_NOW.get() {
+        ACT_NOW.set(Some(now + by));
+    }
+}
+
 /// Why the step runner stopped before the end.
 #[derive(Debug)]
 enum Halt {
@@ -363,7 +399,7 @@ impl Runner<'_> {
         if self.frames + n > MAX_FRAMES {
             return Err(Halt::Stop("frame_cap"));
         }
-        let spent = self.started.elapsed();
+        let spent = act_now().saturating_duration_since(self.started);
         let per = spent.as_secs_f64() / self.frames as f64;
         if spent.as_secs_f64() + per * n as f64 > self.budget.as_secs_f64() {
             return Err(Halt::Stop("time_budget"));
@@ -669,7 +705,7 @@ struct Ran {
 /// Runs every step within the budget (see [`Runner`]).
 fn run_steps(d: &mut dyn Driver, args: &ActArgs, first_settle: bool, budget: Duration) -> Ran {
     let gamepad = args.steps.iter().any(|s| matches!(s, Step::Press { device: Device::Gamepad, .. } | Step::Focus { device: Device::Gamepad, .. } | Step::Activate { device: Device::Gamepad, .. } | Step::Scroll { device: Device::Gamepad, .. }));
-    let mut r = Runner { d, gamepad, frames: 0, pad_now: pad(0, 0.0), started: Instant::now(), budget, wait_left: None, stepped: false };
+    let mut r = Runner { d, gamepad, frames: 0, pad_now: pad(0, 0.0), started: act_now(), budget, wait_left: None, stepped: false };
     let mut ran = Ran { steps: Vec::new(), failed: None, stopped: None, rest: Vec::new(), wait_left: 0, frames: 0 };
     if first_settle {
         let mut acc = Acc::default();
@@ -1173,7 +1209,7 @@ impl Engine {
     }
 
     fn ui_act(&mut self, a: ActArgs, w: Writer, tick: u64, session: &SessionInfo) -> Result<ToolOutput, WorldError> {
-        let started = Instant::now();
+        let started = act_now();
         let s = self.ui_surface_of(a.surface);
         let owner = authority::authority(&self.swarm, &session.id) == Authority::Owner;
         // No surface named while an engine screen is open (the owner pressed F8 or F9, a reviewer
@@ -1251,7 +1287,7 @@ impl Engine {
             ("surface", Json::from(s.name())),
             ("display", display_json(&display, by.as_deref())),
             ("frames", Json::from(ran.frames)),
-            ("ms", Json::from((started.elapsed().as_secs_f64() * 1e4).round() / 10.0)),
+            ("ms", Json::from((act_now().saturating_duration_since(started).as_secs_f64() * 1e4).round() / 10.0)),
             ("steps", Json::Arr(ran.steps)),
             ("focused", focused),
             ("screens", screens),
@@ -1308,7 +1344,7 @@ impl Engine {
         // A first frame lays the interface out for this display when the last one didn't.
         let laid = self.with_ui(s, display, |ui, _, scale, _, d| ui.last_view() == Some(d.viewport(ui.theme(), scale)))?;
         // What the budget leaves after the checks above.
-        let budget = Duration::from_secs_f64(crate::ui_tools::BUDGET_MS / 1000.0).saturating_sub(started.elapsed());
+        let budget = Duration::from_secs_f64(crate::ui_tools::BUDGET_MS / 1000.0).saturating_sub(act_now().saturating_duration_since(started));
         match s {
             Surface::Game => {
                 let Some(game) = self.game.as_mut() else { return Err(WorldError::new("no_ui", "no game is running")) };
