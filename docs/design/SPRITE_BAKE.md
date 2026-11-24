@@ -29,8 +29,9 @@ Two project files, written in **one journal entry** (claims on `/project/<path>`
   `(first + k) / columns`, packed or not), and its time is the strip's (`frame_times`), so the
   reader derives them; version 1 listed each cell (its rectangle, clip, direction, frame,
   time, duration, pivot in the atlas) and still reads. The shambler's walk at eight directions
-  (64 cells) was 29,194 bytes in version 1 and is SIZE_WALK; the cold try's wraith (every clip,
-  264 cells) was 106,322 and is SIZE_WRAITH.
+  (64 cells) was 29,194 bytes in version 1 and is 5,723 in version 2, written a strip a line;
+  the cold try's wraith (every clip,
+  264 cells) was 106,322 and is 17,696.
 
 A game plays a strip with `world_spawn {shape: "sprite", sprite: <strips[i].sprite>}`: the
 `sheet` + `anim {first, count, fps, playback}` reader that already existed (`two_d.rs`) reads
