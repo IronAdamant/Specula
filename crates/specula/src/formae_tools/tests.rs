@@ -23,7 +23,7 @@ fn the_catalogue_lists_every_form_and_the_figure() {
     assert!(text.len() <= MAX_INDEX_BYTES, "the first answer is {} bytes", text.len());
     assert!(first.get("forms").is_none() && first.get("figures").is_none(), "{text}");
     // (Every form is named, or counted on its family's line: see `index_holds_any_table`.)
-    let rows: Vec<(Kind, &str, &str)> = formae::forms().iter().map(|f| (f.kind, f.family.name(), f.name)).collect();
+    let rows = commonest_first(formae::forms());
     check_index(&first, &rows);
     assert!(text.contains("figure") && text.contains("formae_get"), "{text}");
     // Rows, every one, page by page under their ceiling, each with what pastes.
@@ -291,7 +291,7 @@ fn check_index(answer: &Json, rows: &[(Kind, &str, &str)]) {
 /// of its forms (it fitted whole until stage 4 added 24 forms).
 #[test]
 fn index_holds_any_table() {
-    let real: Vec<(Kind, &str, &str)> = formae::forms().iter().map(|f| (f.kind, f.family.name(), f.name)).collect();
+    let real = commonest_first(formae::forms());
     let names: Vec<String> = real.iter().map(|r| format!("{}_twin", r.2)).collect();
     let families: Vec<String> = real.iter().map(|r| format!("{}_twin", r.1)).collect();
     let mut longer = real.clone();
@@ -320,4 +320,44 @@ fn index_holds_any_table() {
     // (The three larger tables are cut, the last to a line a kind.)
     assert!(index_of(&longer, 79).to_string().contains(" more"));
     assert!(index_of(&huge, 79).to_string().contains("forms in"));
+}
+
+/// The names a cold agent sees first are the commonest of each family, set by hand: every name
+/// in the hand-set order is a form of the library, and the first answer names every one of them
+/// that is among its family's first six (review 1 of stage 4, finding 4: the cut kept `lune` and
+/// `bicone` and hid `stadium`, `rounded_rectangle`, `capsule` and the new `rounded_cylinder`).
+#[test]
+fn the_first_answer_names_each_familys_commonest() {
+    for n in COMMONEST {
+        assert!(formae::forms().iter().any(|f| f.name == *n), "{n} is not a form");
+    }
+    let text = ok("formae_list", "{}").to_string();
+    for word in ["stadium", "rounded_rectangle", "capsule", "rounded_cylinder", "cone", "tube", "hemisphere", "icosphere", "truncated_icosahedron", "heart", "arrow", "shield", "sine_band"] {
+        assert!(text.contains(&format!(" {word}")), "the first answer does not name {word}: {text}");
+    }
+    let rows = commonest_first(formae::forms());
+    let mut family = ("", 0usize);
+    for (_, fam, name) in &rows {
+        if *fam != family.0 {
+            family = (fam, 0);
+        }
+        family.1 += 1;
+        if family.1 <= 6 && COMMONEST.contains(name) {
+            assert!(text.contains(&format!(" {name}")), "{name}, among {fam}'s first six, is not named: {text}");
+        }
+    }
+}
+
+/// A row's parameters say their units: metres, degrees and ratios (review 1 of stage 4, finding
+/// 3: none did, as `param_short` compared `m` with `metres`).
+#[test]
+fn rows_say_their_units() {
+    let bell = ok("formae_get", r#"{"name": "bell"}"#).to_string();
+    let row = ok("formae_list", r#"{"word": "bell"}"#).to_string();
+    for text in [&bell, &row] {
+        assert!(text.contains("radius=0.5 m"), "{text}");
+        assert!(text.contains("height_ratio=1.5 ratio"), "{text}");
+    }
+    let sector = ok("formae_list", r#"{"word": "sector"}"#).to_string();
+    assert!(sector.contains("angle=") && sector.contains(" deg"), "{sector}");
 }
