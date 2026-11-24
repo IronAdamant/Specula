@@ -1,0 +1,15 @@
+[package]
+name = "specula-elementa"
+description = "Specula Elementa: fire that spreads, cold that freezes, wet and wind, as deterministic simulation (docs/design/EFFECTUS.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+
+[lints]
+workspace = true
