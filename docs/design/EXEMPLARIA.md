@@ -117,7 +117,13 @@ so an agent can see exactly what it would build and take the recipe itself if it
 ### 2. How a seed varies a kind, and the same on every machine
 
 - **The seed comes from where seeds already come from**: an entity's model seed (`ModelSpec::with_seed`),
-  a scatter item's variant seed, or a recipe's `seed`. A kind with no seed given builds its mean.
+  a scatter item's variant seed, or a recipe's `seed`. A kind with no seed given builds its mean. A
+  scatter item names a kind as `{"kind": "box_creature", "variants": 32}` (exactly one of `shape`,
+  `include` and `kind`; no `params`, since the seed draws the numbers): each variant is the specimen of
+  its variant seed, so 32 variants are 32 different bodies, at most `MAX_KIND_VARIANTS` (32) an item
+  where other items take 8, each built once as a template inside the build's work budget as any
+  variant is. The kind is a `<name>.kind.json` in the recipe's folder (the modeller knows no kinds: the
+  engine hands it `specula_model::Specimens`, `exemplar_tools::FolderKinds`).
 - **Each number has its own stream**, `stream_seed(seed, "<kind>/<number>")` (the modeller's own
   `StableHasher` scheme), so adding a number to a kind never moves the draws of the others.
 - **What is drawn, in order:** size first (one draw, normal, from the size row's spread, or from its range
@@ -232,20 +238,36 @@ materials a model).
 
 ### 8. Its own place
 
-- **`exemplaria/` at the repository's root**, by plan: `exemplaria/quadruped/grey_wolf.kind.json`, with
-  its record beside it. Not under `games/`, and nothing of Sepulcra's: Sepulcra is a user, its mobs of
-  maps 2 and 3 made from it in its own folder and style. It ships beside the executable (ROADMAP part 8's
-  export takes the folder), and the engine reads it from there.
-- **A project takes a copy**: `exemplar_take {name, as?}` writes the kind (and its base, if any) into the
-  project's `recipes/` through the project's write path (rule 13: a write with its rule), with a line
-  saying where it came from and the library's hash of it then (`"from": "exemplaria/quadruped/grey_wolf@<hash>"`),
-  so a later answer can say "the library's wolf has changed since you took it". Never a reference to the
-  library's file: a project's assets do not change when the engine does.
+- **`exemplaria/` at the repository's root**, by plan: `exemplaria/quadruped/grey_wolf.kind.json`. Not
+  under `games/`, and nothing of Sepulcra's: Sepulcra is a user, its mobs of maps 2 and 3 made from it in
+  its own folder and style. **The folder is the source and the library is built into the engine**
+  (`include_str!` of each file, `specula-exemplaria/src/library.rs`): what the engine answers and what the
+  table of hashes holds are the same bytes, and nothing beside the executable is read, so nothing there
+  can be swapped (decided by the lead on 2026-11-24; reading the folder from beside the executable, as
+  this note first said, is not built). A test holds the folder and the table together: every file under
+  `exemplaria/`, at any depth, is a kind with its line in the table and the same bytes, and the folder
+  holds nothing else.
+- **A project takes a copy**: `exemplar_take {name, as?}` writes the kind into
+  **`assets/models/NAME.kind.json`**, where a new project keeps its models (`specula new`,
+  `notes/models.md`), through `project_write` (rule 13: the project tools' rule; one tool call, one
+  commit). So `model_build_all` (whose folder is `models` unless told) builds it with the project's own
+  models, and it is listed with them. Its base, if any, is **written into the copy** (one file says
+  everything; one call makes one commit), so a project's copy never has a base, and deleting the
+  library kind's base in a project is moot. Never a reference to the library's file: a project's assets do
+  not change when the engine does.
 - **What every entry carries**: its licence (the engine's, MIT OR Apache-2.0, in a field); what it is in
-  one line; its numbers with units, ranges and sources; the checks it passed at the library's seeds, with
-  the numbers (a `<name>.record.json` written by the library's test, not by hand); a contact sheet
-  (thumbnail tracked under `docs/gallery/exemplaria/`, the full size in `gallery-full/`, as the gallery's
-  rule has it).
+  one line; its numbers with units, ranges and sources. **A project's copy also records its taking, in
+  the copy itself** (no second file, which would be a second commit): `"from":
+  "exemplaria/<plan>/<name>@<hash of the kind file>"`, so a later answer can say "the library's wolf has
+  changed since you took it", and `"taken": {"library": <the library's version, 16 hex digits>, "base":
+  <the base written into it>, "checked": <what was checked at the take>, "own": <how many of its numbers
+  are the engine's own>}`. At the take the kind is written at its mean and at seeds 1, 2 and 3, each
+  recipe parsed and its clips generated on its rig, and `checked` says so. The checks of form and motion
+  at the library's seeds (B, stages Q on) are added to `taken` by the stages that make them; a
+  `<name>.record.json` beside the kind file is not made (a test may not write into the checkout, and the
+  folder holds kinds only). A contact sheet per entry (thumbnail tracked under
+  `docs/gallery/exemplaria/`, the full size in `gallery-full/`, as the gallery's rule has it) comes with
+  the first real kinds.
 
 ### 9. The catalogue: one path, not three
 
@@ -401,8 +423,13 @@ engine, looked at by the builder and then by a model that did not take them.
 
 ### For the plans' lanes (what S0 built, and how a stage adds to it)
 
-S0 is built in `crates/specula-exemplaria` and four files of the engine. What a later stage
-needs to know, beyond the code's own notes:
+S0 is built in `crates/specula-exemplaria`, the folder `exemplaria/`, a hook in the modeller
+(`specula_model::Specimens`, for a scatter item by kind) and these files of the engine:
+`exemplar_tools.rs` (the three tools, a kind read as a recipe, `FolderKinds`),
+`catalog_names.rs` (the name index), and single lines in `models.rs`, `project.rs`,
+`project_kinds.rs`, `procgen_tools.rs`, `formae_tools.rs`, `tools.rs`, `authority.rs`,
+`toolscope.rs`, `toolkits.rs` and `write_policy/tests.rs`. What a later stage needs to know,
+beyond the code's own notes:
 
 **Adding a plan** (a stage's plan, `quadruped`, `wheeled`...):
 
@@ -411,11 +438,12 @@ needs to know, beyond the code's own notes:
    `'static` arrays (`size`, `numbers`, `traits`, `roles`, `options`, `motions`), then `write`,
    which turns a `Specimen` into bones, parts and clips through `write::Writing` (`bone`,
    `part`, `block`, `clip`, `gait`, `fact`; `material(role)` resolves a role).
-   `plans/box_creature.rs` is the pattern, at about 200 lines.
-2. **One line** in `plans/mod.rs`: `pub mod <plan>;` and `&<plan>::PLAN,` in `PLANS`.
+   `plans/box_creature.rs` is the pattern, at about 150 lines.
+2. **Two single lines** in `crates/specula-exemplaria/src/plans/mod.rs`: `pub mod <plan>;` at
+   the end of the modules, and `&<plan>::PLAN,` at the end of `PLANS`.
 3. Nothing else registers it: `resolve` checks a kind against the plan's tables, and the test
    `the_plans_tables_are_sound` holds every plan's tables (names valid and unique, a number's
-   traits known, at most four roles, every motion's generator one of `specula-anim`'s kinds,
+   traits known, at most four roles, every motion's generator in `specula_anim::gen::KINDS`,
    every pattern in `gaits::PATTERNS`).
 
 A plan's defaults are the engine's own numbers: a kind that leaves a number out takes the plan's
@@ -425,52 +453,74 @@ touches no part of the modeller: a new shape it needs (S1's `body`) is the model
 **Adding a kind**:
 
 1. Its file at `exemplaria/<plan>/<name>.kind.json` (the format: `kind.rs`'s notes; every
-   number with `source` or `own`, never both).
-2. **One line** in `crates/specula-exemplaria/src/library.rs`, `ENTRIES`: its path and
-   `include_str!` of it. The test `every_kind_file_has_its_line_and_every_line_its_file` fails
-   until both are there.
+   number with `source` or `own`, never both). The folder holds kind files only.
+2. **One line** at the end of `ENTRIES` in `crates/specula-exemplaria/src/library.rs`: its
+   path and `include_str!` of it. The test
+   `every_file_of_the_folder_is_built_in_and_nothing_built_in_is_missing` fails until both are
+   there, and fails on any other file under the folder.
 3. Rows in the table of `tests/library.rs` for the seeds worth holding (at least the mean and
    two seeds): the test prints the rows as they are, to paste once their specimens have been
    looked at. A change that moves a specimen changes those rows in the same commit, saying why.
+   (A kind file's own hash is in its specimens' text, through `from`: any edit to the file moves
+   every row, on purpose.)
 4. A base is another kind of the same plan, by name, one level: in the library it is looked up
-   in `ENTRIES`; in a project, beside the kind's file (`<base>.kind.json`). A project's copy
-   (`exemplar_take`) has its base written into it, so it is one file.
+   in `ENTRIES`; in a project, beside the kind's file (`<base>.kind.json`, in the same folder).
+   A project's copy (`exemplar_take`) has its base written into it, so it is one file.
 
 **Adding a generator** (`mechanism`, `undulate`, `flap`) after the split: each kind is a file of
 its own under `crates/specula-anim/src/gen/`. A new one is `gen/<kind>.rs` with
 `use super::*;` and `pub(super) fn <kind>(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32],
 duration: f32) -> Result<Out, AnimError>` (the shared `Body`, `Frame`, `Out`, `solve_all` and the
-pose helpers stay in `gen/mod.rs`, visible to its files), then three single lines in
-`gen/mod.rs`: `mod <kind>;`, its name in the `use {...}` line, and its arm in the dispatch
-(`"<kind>" => <kind>(&mut o, skel, &body, &times, duration)?,`), with its name in `KINDS`. A
-plan's `MotionDef.generator` names it, and the plans' test checks the name against its own copy
-of `KINDS` (`specula_anim_kinds` in `src/tests.rs`: add the name there too).
+pose helpers stay in `gen/mod.rs`, visible to its files), then, in `gen/mod.rs`: `mod <kind>;`
+after the others, its name at the end of the `use {...}` line, its arm in the dispatch
+(`"<kind>" => <kind>(&mut o, skel, &body, &times, duration)?,`) and its name at the end of
+`KINDS`. A plan's `MotionDef.generator` names it; the plans' test reads `KINDS` itself.
 
 **What S0 decided that the note did not say:**
 
-- **The library is built into the engine** (`include_str!` of each kind file), so what the
-  engine answers and what the table of hashes holds are the same bytes. The folder
-  `exemplaria/` is the source; reading it from beside the executable instead (A.8) is not built.
+- **The library is built into the engine** (A.8): the folder is the source, held to the
+  built-in table by a test; nothing is read from beside the executable.
 - **A kind is read as a recipe** where its path ends in `.kind.json`: the model library checks
   it at a spawn by writing its mean in the recipe's style (every role resolved), and its build
   worker writes the recipe and clips at the spec's seed; a project's `project_write` checks it
   the same way. A kind's clips are written by the plan: no `anims/<name>.json` is read for it.
+  The anim set an entity's graph writes settle against (`Library::write_set`) is the specimen's
+  at the entity's seed, rig and clips, not its mean's.
 - **Roles** resolve through `specula_model::Style::role`: a preset of the role's name, else the
   style's `"roles"` table, else refused with the three presets nearest in colour to the kind's
   hint. A kind's first part written in an unresolved role is the one named.
-- **The copy goes to `assets/recipes/`**, which the project store mirrors as recipes (a new
-  project keeps its own models in `assets/models/`, which it does not mirror: `project_write`
-  could not write there).
+- **The copy goes to `assets/models/`** (A.8). Found on the way, and mended: the project store
+  mirrored a project's recipes only from folders named `recipes`, while `specula new` puts a
+  project's models in `assets/models/`, its guide tells an agent to write them there and
+  `model_build_all` builds that folder; so `project_write` (and every tool that writes through
+  it) refused `assets/models/x.json`, and a project's models were not in `project_list`. The
+  store now mirrors `.json` files whose folder is `models` as recipes too (`project::kind_for`);
+  `.glb` and `.gltf` there are still models, and `models/exports/` holds no recipes.
+- **A take into a new project is refused until its style names the kind's roles** (a new
+  project's `style.json` has four presets and no `roles`; A.7 says a role is never guessed).
+  Seen in the cold job: the refusal named one role at a time. The refusal now carries `fix`: the
+  one `project_patch` of the style (its path and version) that names every unresolved role to
+  the preset nearest its hint colour; the agent makes it (or chooses other presets) and takes
+  again. Two calls, not one a role.
+- **A scatter item by kind** (A.2): `{"kind": NAME, "variants": N}`, at most 32 variants, each
+  its own specimen; the kind is read from the recipe's folder (`<NAME>.kind.json`, its base
+  beside it) and counts as an include for hot reload. The variant's seed is folded into a
+  recipe's range (below 2^53: found by its test, a full 64-bit seed was refused by the written
+  recipe); a build writes each variant once a pass over its parts (twice with its coarse pass),
+  the same text each time.
 - **The name index** is `crates/specula/src/catalog_names.rs`: a `Source` per list (`Shapes`,
   `Kinds`); the project's catalogue (lane `m6-formae`) plugs in as a third `Source` in
   `sources()` when it merges. `formae_get`'s refusal names the nearest kinds, and `exemplar_*`
-  refusals the nearest shapes; `exemplar_list`'s first answer counts the shapes. `formae_list`'s
-  first answer does **not** name the kinds yet: one more line puts it over its 3 KB and cuts the
-  shape names it shows today (its test `index_holds_any_table` says so).
+  refusals the nearest names of both lists with the call that shows each. `exemplar_list`'s
+  first answer names the shape library's call and count on its second line. `formae_list`'s
+  first answer does **not** name the kinds: one more line puts it over its 3 KB and cuts the
+  shape names it shows today (its test `index_holds_any_table` says so); the orientation an
+  agent is given unasked (lane `m6-formae`) names every catalogue.
+- **The tools are in the kit `make_asset`** (`toolkits.rs`): `exemplar_list`, `exemplar_get`
+  and `exemplar_take` in its `more`, and its steps name `exemplar_list` beside `formae_list`.
 - **A specimen's seed** is the model library's, 0 to 1,000,000; `exemplar_get` takes the same.
-- **Not in S0**: a scatter item by kind (a scatter's `include` reads recipes only), the record
-  file of A.8 (a test may not write into the checkout), a deleted base refused by
-  `project_delete`, and the `footfalls` and `stride` checks (stage Q).
+- **Not in S0**: the `footfalls` and `stride` checks (stage Q), and the checks of form and motion
+  a copy's `taken` will carry (the stages that make them).
 
 ### The size
 
