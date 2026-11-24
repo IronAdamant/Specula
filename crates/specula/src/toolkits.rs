@@ -69,8 +69,8 @@ pub const KITS: &[Kit] = &[
         name: "make_asset",
         about: "a prop or building from a recipe (a model as code)",
         tools: &["model_schema", "project_write", "model_build", "studio_sheet", "studio_check", "review_submit"],
-        more: &["model_build_all", "project_read", "project_patch", "project_list", "project_delete", "project_upload", "model_reload", "model_collider", "model_paint", "model_path", "model_export", "studio_stage", "studio_lineup", "studio_compare", "style_check", "procgen_texture", "formae_list", "formae_get"],
-        steps: "model_schema for how a recipe is written (with an example that builds); formae_list and formae_get for a named shape to start from (the snippet to paste); project_write the recipe; model_build it; studio_sheet to see it from every side; studio_check and style_check; review_submit it with the sheet",
+        more: &["model_build_all", "project_read", "project_patch", "project_list", "project_delete", "project_upload", "model_reload", "model_collider", "model_paint", "model_path", "model_export", "studio_stage", "studio_lineup", "studio_compare", "style_check", "procgen_texture", "formae_list", "formae_get", "exemplar_list", "exemplar_get", "exemplar_take"],
+        steps: "model_schema for how a recipe is written; formae_list and formae_get for a named shape, exemplar_list for a creature or machine to start from (the snippet to paste); project_write the recipe; model_build it; studio_sheet to see it from every side; studio_check and style_check; review_submit it with the sheet",
         done: "studio_check and style_check report no errors, and review_submit put it in the owner's queue",
     },
     Kit {
