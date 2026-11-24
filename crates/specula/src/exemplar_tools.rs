@@ -85,30 +85,48 @@ fn look_up(word: &str) -> Result<&'static Entry, String> {
     })
 }
 
-/// The snippets that use a kind once it is in the project.
+/// The snippets that use a kind once it is in the project, for the specimen of `seed`. A spawn's
+/// or a build's seed is the model library's (0..=[`crate::world::MAX_MODEL_SEED`]): for a larger
+/// seed (a scatter variant's) the answer says so and offers what does build that specimen, never
+/// a snippet for another one.
 fn after_take(name: &str, seed: u64) -> Json {
     let recipe = format!("models/{name}.kind.json");
-    // (A spawn's or a build's seed is the model library's; a larger one is a scatter's.)
-    let seed = if seed > crate::world::MAX_MODEL_SEED { 1 } else { seed };
-    Json::obj([
-        ("take", Json::from(format!("exemplar_take {{\"name\": \"{name}\"}}: a copy into {TAKE_FOLDER}/{name}.kind.json"))),
-        ("build", Json::obj([("recipe", Json::from(recipe.as_str())), ("seed", Json::from(seed))])),
-        ("spawn", Json::obj([("shape", Json::from("model")), ("recipe", Json::from(recipe.as_str())), ("seed", Json::from(seed))])),
-        (
-            "scatter",
+    let mut o = vec![("take", Json::from(format!("exemplar_take {{\"name\": \"{name}\"}}: a copy into {TAKE_FOLDER}/{name}.kind.json")))];
+    if seed <= crate::world::MAX_MODEL_SEED {
+        o.push(("build", Json::obj([("recipe", Json::from(recipe.as_str())), ("seed", Json::from(seed))])));
+        o.push(("spawn", Json::obj([("shape", Json::from("model")), ("recipe", Json::from(recipe.as_str())), ("seed", Json::from(seed))])));
+    } else {
+        o.push((
+            "seed_too_large",
             Json::from(format!(
-                "a scatter item in a recipe beside the copy ({TAKE_FOLDER}/): {{\"kind\": \"{name}\", \"variants\": {}}}, each variant another specimen",
-                specula_model::recipe::MAX_KIND_VARIANTS
+                "a spawn or a build takes a seed of 0..{} (the model library's), so no spawn or build of the kind makes the specimen of seed {seed} (a scatter's variant seeds are this large). To build that one specimen: exemplar_get {{\"name\": \"{name}\", \"seed\": {seed}, \"full\": true}} gives its recipe, which project_write saves as a recipe of its own (it no longer varies by seed)",
+                crate::world::MAX_MODEL_SEED
             )),
-        ),
-    ])
+        ));
+    }
+    o.push((
+        "scatter",
+        Json::from(format!(
+            "a scatter item in a recipe beside the copy ({TAKE_FOLDER}/): {{\"kind\": \"{name}\", \"variants\": {}}}, each variant another specimen",
+            specula_model::recipe::MAX_KIND_VARIANTS
+        )),
+    ));
+    Json::obj(o)
 }
 
-/// Each number's value at the kind's mean, the least and most a seed gives it, and its unit,
-/// on one line (`body_length 0.72 (0.57..0.87) m`): the rows' numbers.
+/// Each number's value at the kind's mean, the least and most a seed gives it (rounded outward
+/// to its step, so every written value lies inside), and its unit, on one line
+/// (`body_length 0.72 (0.57..0.87) m`): the rows' numbers.
 fn numbers_line(r: &Resolved) -> String {
     match r.reach() {
-        Ok(bounds) => bounds.iter().map(|b| format!("{} {} ({}..{}) {}", b.name, b.mean, b.lo, b.hi, b.unit.name())).collect::<Vec<_>>().join("; "),
+        Ok(bounds) => bounds
+            .iter()
+            .map(|b| {
+                let (lo, hi) = b.printed();
+                format!("{} {} ({lo}..{hi}) {}", b.name, b.mean, b.unit.name())
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
         Err(e) => format!("does not resolve: {e}"),
     }
 }
@@ -212,7 +230,10 @@ fn list_tool(args: &Json) -> Result<Json, String> {
     if let Some(p) = &plan {
         if specula_exemplaria::plan(p).is_none() {
             let names: Vec<&str> = specula_exemplaria::plans::PLANS.iter().map(|x| x.name()).collect();
-            return Err(format!("no plan is called '{p}' (plans: {}; nearest: {})", names.join(", "), specula_exemplaria::words::nearest(p, names.iter().copied(), 3).join(", ")));
+            let near = specula_exemplaria::words::nearest(p, names.iter().copied(), 3);
+            // (The field is the argument's name; with no plan near the word, every plan is named.)
+            let near = if near.is_empty() { format!("none near that word, so every plan: {}", names.join(", ")) } else { near.join(", ") };
+            return Err(format!("'plan' names no plan: no plan is called \"{p}\" (plans: {}; nearest: {near}) [error: not_found]", names.join(", ")));
         }
     }
     let mut matched = Vec::new();
@@ -295,6 +316,11 @@ fn get_tool(args: &Json) -> Result<Json, String> {
     out.push(("vary", Json::from(plan.traits().iter().map(|t| format!("{} {}", t.name, k.vary.get(t.name).map_or(t.spread, |v| v.spread))).collect::<Vec<_>>().join(", "))));
     out.push(("roles", Json::from(k.roles.iter().map(|(n, h)| format!("{n} {h}")).collect::<Vec<_>>().join(", "))));
     out.push(("clips", Json::from(k.motion.keys().cloned().collect::<Vec<_>>().join(", "))));
+    // (How a seed draws, in one line: the window the size is drawn in, without a pile at its ends.)
+    if let Some(b) = r.reach().ok().and_then(|b| b.into_iter().next()) {
+        let (lo, hi) = b.printed();
+        out.push(("draws", Json::from(format!("each residual from a normal truncated to 2.5 spreads (and to a measured range, where one is given), so nothing piles at an end: {} {lo}..{hi} {} over every seed", b.name, b.unit.name()))));
+    }
     out.push(("own", Json::from(if own.is_empty() { "none: every number is measured".to_string() } else { own.iter().map(|o| o.0.as_str()).collect::<Vec<_>>().join(", ") })));
     out.push(("from", Json::from(entry.from())));
     let x = expand(&r, seed, &AsNamed, &entry.from()).map_err(|e| format!("{e}"))?;
@@ -628,10 +654,12 @@ fn recipe_error(e: &specula_exemplaria::Error) -> RecipeError {
     };
     let near = if e.near.is_empty() { String::new() } else { format!(" (nearest: {})", e.near.join(", ")) };
     let out = RecipeError::new(e.path.as_str(), code, format!("[{}] {}{near}", e.code, e.message));
-    // (A kind refused for its reach: the worst value a seed could give, and the bound it passes.)
-    match &e.reach {
-        Some(r) => out.with_numbers(r.worst, if r.worst < r.bound[0] { r.bound[0] } else { r.bound[1] }),
-        None => out,
+    // (A kind refused for its reach: the worst value a seed could give, and the bound it passes; or
+    // for a relation of its plan, the relation's worst sum and the least it may be.)
+    match (&e.reach, &e.relation) {
+        (Some(r), _) => out.with_numbers(r.worst, if r.worst < r.bound[0] { r.bound[0] } else { r.bound[1] }),
+        (None, Some(b)) => out.with_numbers(b.sum, b.margin),
+        (None, None) => out,
     }
 }
 
@@ -640,9 +668,29 @@ pub fn is_kind(path_or_stem: &str) -> bool {
     path_or_stem.ends_with(".kind.json") || path_or_stem.ends_with(".kind")
 }
 
+/// The name a kind's file gives it: `x` for `.../x.kind.json` (`None`: not a kind file's path).
+fn file_stem(file: &str) -> Option<&str> {
+    file.rsplit('/').next()?.strip_suffix(".kind.json")
+}
+
+/// A kind's name is its file's (`x.kind.json` holds the kind `x`): a scatter item, a base and a
+/// project's list find a kind by its file, and its draws are keyed on the name inside, so a file
+/// whose kind is named otherwise is refused, naming both.
+fn named_as_its_file(kind: &Kind, file: Option<&str>) -> Result<(), RecipeError> {
+    match file {
+        Some(stem) if stem != kind.name => Err(RecipeError::new(
+            "name",
+            ErrorCode::WrongType,
+            format!("[name_not_file] the kind in {stem}.kind.json is named '{}': a kind's name is its file's name (a scatter item, a base and the project find it by the file), so rename the file or the kind", kind.name),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// A kind's text with its base found by `base_text` (the base's name → its file's text).
-fn resolved(text: &str, base_text: &dyn Fn(&str) -> Option<String>) -> Result<Resolved, RecipeError> {
+fn resolved(text: &str, base_text: &dyn Fn(&str) -> Option<String>, file: Option<&str>) -> Result<Resolved, RecipeError> {
     let kind = Kind::parse(text).map_err(|e| recipe_error(&e))?;
+    named_as_its_file(&kind, file)?;
     let base = match &kind.base {
         Some(b) => match base_text(b) {
             Some(t) => Some(Kind::parse(&t).map_err(|e| recipe_error(&specula_exemplaria::Error { path: format!("base ({b}).{}", e.path), ..e }))?),
@@ -657,7 +705,7 @@ fn resolved(text: &str, base_text: &dyn Fn(&str) -> Option<String>) -> Result<Re
 /// worker calls this; `library` is the recipe folder's files by stem, where a base is
 /// `<name>.kind`).
 pub fn expand_for_build(text: &str, library: &BTreeMap<String, String>, seed: Option<u64>, style: &Style, from: &str) -> Result<(String, Option<String>), RecipeError> {
-    let r = resolved(text, &|b| library.get(&format!("{b}.kind")).cloned())?;
+    let r = resolved(text, &|b| library.get(&format!("{b}.kind")).cloned(), file_stem(from))?;
     let x = expand(&r, seed, &ByStyle(style), from).map_err(|e| recipe_error(&e))?;
     Ok((x.recipe, x.anims))
 }
@@ -686,14 +734,15 @@ impl specula_model::Specimens for FolderKinds<'_> {
                 ),
             )
         })?;
-        expand_for_build(text, self.library, Some(seed), style, &format!("{} ({name})", self.from)).map(|(recipe, _)| recipe)
+        let r = resolved(text, &|b| self.library.get(&format!("{b}.kind")).cloned(), Some(name))?;
+        expand(&r, Some(seed), &ByStyle(style), &format!("{} ({name})", self.from)).map(|x| x.recipe).map_err(|e| recipe_error(&e))
     }
 }
 
 /// A kind checked as a recipe is at a spawn or a write: parsed, resolved over its base (found by
 /// `base_text`), and written at its mean in `style` (every role resolved). Its mean recipe.
 pub fn check_kind(text: &str, base_text: &dyn Fn(&str) -> Option<String>, style: &Style, from: &str) -> Result<String, RecipeError> {
-    let r = resolved(text, base_text)?;
+    let r = resolved(text, base_text, file_stem(from))?;
     expand(&r, None, &ByStyle(style), from).map(|x| x.recipe).map_err(|e| recipe_error(&e))
 }
 

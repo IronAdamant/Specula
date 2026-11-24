@@ -27,6 +27,7 @@ pub mod error;
 pub mod gaits;
 pub mod kind;
 pub mod library;
+pub mod normalis;
 pub mod plan;
 pub mod plans;
 pub mod words;
@@ -35,8 +36,12 @@ pub mod write;
 pub use draw::Specimen;
 pub use error::Error;
 pub use kind::{Kind, Why};
-pub use plan::{plan, resolve, Plan, Resolved};
+pub use plan::{plan, resolve, resolve_among, Plan, Resolved};
 pub use write::{expand, AsNamed, Expansion, Roles};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_build;
+#[cfg(test)]
+mod tests_table;

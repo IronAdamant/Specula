@@ -2,7 +2,7 @@
 
 use crate::kind::{Kind, MAX_KIND_BYTES};
 use crate::library::{self, ENTRIES};
-use crate::plan::{resolve, Unit};
+use crate::plan::{resolve, Plan, Unit};
 use crate::write::{expand, AsNamed, Roles};
 use crate::{gaits, plans};
 
@@ -286,32 +286,33 @@ fn a_copy_records_its_taking_and_reads_back() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Reach: a kind whose draws could leave what its plan can write is refused (review 1, finding 1)
+// Reach: a kind whose draws could leave what its plan can write, or break one of its relations,
+// is refused (review 1, finding 1; review 2, findings 1 to 3)
 // ---------------------------------------------------------------------------------------------
 
 fn resolve_err(extra: &str) -> crate::Error {
     resolve(&Kind::parse(&small(extra)).unwrap(), None).expect_err(extra)
 }
 
-/// The review's impossible kinds, each refused with the kind's own field, the worst value a seed
-/// would reach and the bound it leaves.
+/// Impossible kinds, each refused with the kind's own field, the worst value a seed would reach
+/// and the bound it leaves.
 #[test]
 fn a_kind_that_could_draw_an_impossible_body_is_refused_with_its_own_field() {
-    // The live case: a size spread as large as its mean, with no range. The parser refuses a
-    // spread whose 2.5 spreads pass zero; one inside that but past the plan's range is refused
-    // when resolved.
+    // A size spread as large as its mean: the parser refuses a spread whose 2.5 spreads pass
+    // zero; one inside that but past the plan's range is refused when resolved.
     let e = parse_err(&small(r#", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.6, "unit": "m", "own": "x"}}"#));
     assert_eq!((e.code, e.path.as_str()), ("out_of_range", "size.shoulder_height.sd"), "{e}");
-    let e = resolve_err(r#", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.2, "unit": "m", "own": "x"}}"#);
+    let e = resolve_err(r#", "size": {"shoulder_height": {"mean": 0.06, "sd": 0.02, "unit": "m", "own": "x"}}"#);
     assert_eq!((e.code, e.path.as_str()), ("outside_plan", "size.shoulder_height.sd"), "{e}");
     let r = e.reach.as_ref().unwrap();
-    assert_eq!((r.number.as_str(), r.worst, r.bound), ("shoulder_height", 0.1, [0.3, 1.2]), "{e}");
-    assert!(e.to_json().get("worst").is_some() && e.message.contains("0.3..1.2 m"), "{e}");
+    assert_eq!(r.number, "shoulder_height");
+    assert!((r.worst - 0.01).abs() < 1e-12 && r.bound == [0.039, 50.0], "{e}");
+    assert!(e.to_json().get("worst").is_some() && e.message.contains("0.039..50 m"), "{e}");
     // A size outside the plan, by its mean or its range.
-    assert_eq!(resolve_err(r#", "size": {"shoulder_height": {"mean": 2.0, "unit": "m", "own": "x"}}"#).path, "size.shoulder_height.mean");
-    assert_eq!(resolve_err(r#", "size": {"shoulder_height": {"mean": 0.6, "range": [0.1, 0.9], "unit": "m", "own": "x"}}"#).path, "size.shoulder_height.range");
-    // A trait's spread that takes a girth below what the plan can write.
-    let e = resolve_err(r#", "vary": {"build": {"spread": 0.36, "own": "x"}}"#);
+    assert_eq!(resolve_err(r#", "size": {"shoulder_height": {"mean": 60.0, "unit": "m", "own": "x"}}"#).path, "size.shoulder_height.mean");
+    assert_eq!(resolve_err(r#", "size": {"shoulder_height": {"mean": 0.6, "range": [0.01, 0.9], "unit": "m", "own": "x"}}"#).path, "size.shoulder_height.range");
+    // A trait's spread that takes a girth below what the plan can write (a small creature).
+    let e = resolve_err(r#", "size": {"shoulder_height": {"mean": 0.06, "unit": "m", "own": "x"}}, "vary": {"build": {"spread": 0.36, "own": "x"}}"#);
     assert_eq!((e.code, e.path.as_str()), ("outside_plan", "vary.build.spread"), "{e}");
     assert!(e.reach.as_ref().unwrap().worst < e.reach.as_ref().unwrap().bound[0]);
     // Past the parser's own limit: a spread above 0.36 (a factor at 2.5 spreads below a tenth).
@@ -319,79 +320,278 @@ fn a_kind_that_could_draw_an_impossible_body_is_refused_with_its_own_field() {
     assert_eq!(parse_err(&small(r#", "numbers": {"head_length": {"share": 0.36, "spread": 0.5, "own": "x"}}"#)).path, "numbers.head_length.spread");
     // A negative mean is no length (the parser); a mean past the plan's range (resolve).
     assert_eq!(parse_err(&small(r#", "numbers": {"leg_length": {"mean": -1, "own": "x"}}"#)).path, "numbers.leg_length.mean");
-    let e = resolve_err(r#", "numbers": {"leg_length": {"mean": 5, "own": "x"}}"#);
+    let e = resolve_err(r#", "numbers": {"leg_length": {"mean": 70, "own": "x"}}"#);
     assert_eq!((e.code, e.path.as_str()), ("outside_plan", "numbers.leg_length.mean"), "{e}");
-    assert_eq!(resolve_err(r#", "numbers": {"leg_length": {"share": 4, "own": "x"}}"#).path, "numbers.leg_length.share");
+    assert_eq!(resolve_err(r#", "size": {"shoulder_height": {"mean": 1.0, "unit": "m", "own": "x"}}, "numbers": {"leg_length": {"share": 61, "own": "x"}}"#).path, "numbers.leg_length.share");
     // An exponent that, over the size's spread, leaves the plan's range.
-    let e = resolve_err(r#", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.2, "range": [0.3, 1.2], "unit": "m", "own": "x"}}, "numbers": {"tail_length": {"share": 0.5, "exponent": -3, "own": "x"}}"#);
+    let e = resolve_err(r#", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.2, "range": [0.1, 1.2], "unit": "m", "own": "x"}}, "numbers": {"tail_length": {"share": 0.5, "exponent": -3, "own": "x"}}"#);
     assert_eq!((e.code, e.path.as_str()), ("outside_plan", "numbers.tail_length.exponent"), "{e}");
     // A range from zero (the review's infinities with an exponent of -1): refused by the parser.
     assert_eq!(parse_err(&small(r#", "size": {"shoulder_height": {"mean": 0.6, "range": [0, 0.9], "unit": "m", "own": "x"}}"#)).path, "size.shoulder_height.range[0]");
     // A number's own range outside the plan's, or not holding its mean.
-    assert_eq!(resolve_err(r#", "numbers": {"leg_length": {"share": 0.62, "range": [0.01, 0.5], "own": "x"}}"#).path, "numbers.leg_length.range");
+    assert_eq!(resolve_err(r#", "numbers": {"leg_length": {"share": 0.62, "range": [0.001, 0.5], "own": "x"}}"#).path, "numbers.leg_length.range");
     assert_eq!(resolve_err(r#", "numbers": {"leg_length": {"share": 0.62, "range": [0.1, 0.2], "own": "x"}}"#).code, "out_of_range");
+    // A measured range its size and traits could leave, with no own spread to bring it back.
+    let e = resolve_err(r#", "numbers": {"leg_length": {"share": 0.62, "range": [0.36, 0.38], "own": "x"}}"#);
+    assert_eq!((e.code, e.path.as_str()), ("out_of_range", "numbers.leg_length.range"), "{e}");
     // A field the base sets is named, and said to be the base's.
-    let base = Kind::parse(&small(r#", "vary": {"build": {"spread": 0.36, "own": "x"}}"#)).unwrap();
+    let base = Kind::parse(&small(r#", "size": {"shoulder_height": {"mean": 0.06, "unit": "m", "own": "x"}}, "vary": {"build": {"spread": 0.36, "own": "x"}}"#)).unwrap();
     let child = Kind::parse(&small("").replace(r#""name": "probe""#, r#""name": "child", "base": "probe""#)).unwrap();
     let e = resolve(&child, Some(&base)).unwrap_err();
     assert!(e.path == "vary.build.spread" && e.message.contains("its base 'probe'"), "{e}");
 }
 
-/// A family of hostile kinds of the test plan: wide spreads, sizes at the edges, exponents at
-/// their limits, a number's own spread at the parser's most. Some resolve and some do not.
-pub(crate) fn hostile_kinds() -> Vec<String> {
-    let mut out = Vec::new();
-    for (sd, mean) in [("0.11", "0.6"), ("0.0", "0.3"), ("0.0", "1.2"), ("0.05", "0.45"), ("0.12", "0.9")] {
-        for spread in ["0.0", "0.1", "0.2", "0.3", "0.36"] {
-            for exponent in ["-3", "0.5", "1", "3"] {
-                for head in ["0.36", "0.0"] {
-                    out.push(small(&format!(
-                        r#", "size": {{"shoulder_height": {{"mean": {mean}, "sd": {sd}, "unit": "m", "own": "x"}}}},
-                        "vary": {{"build": {{"spread": {spread}, "own": "x"}}, "legs": {{"spread": {spread}, "own": "x"}}, "tail": {{"spread": {spread}, "own": "x"}}}},
-                        "numbers": {{"leg_length": {{"share": 0.62, "exponent": {exponent}, "own": "x"}}, "head_length": {{"share": 0.36, "spread": {head}, "own": "x"}}}}"#
-                    )));
-                }
+/// Review 2, finding 1: each number inside its own range, but a leg's girth three times the
+/// trunk's width. Refused by the relation that puts each leg under its own side, naming it, its
+/// numbers and their worst values.
+#[test]
+fn a_kind_that_could_cross_its_legs_is_refused_by_the_relation() {
+    let e = resolve_err(
+        r#", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.02, "unit": "m", "own": "x"}}, "vary": {"build": {"spread": 0.0, "own": "x"}},
+        "numbers": {"leg_girth": {"mean": 0.15, "own": "x"}, "body_width": {"mean": 0.05, "own": "x"}, "body_length": {"mean": 0.2, "own": "x"}}"#,
+    );
+    assert_eq!((e.code, e.path.as_str()), ("outside_plan", "numbers.body_width"), "{e}");
+    let b = e.relation.as_ref().expect("the relation");
+    assert_eq!(b.relation, "legs_apart_sideways");
+    assert_eq!(b.values.iter().map(|v| v.0.as_str()).collect::<Vec<_>>(), ["body_width", "leg_girth"]);
+    assert!(b.sum < b.margin && b.margin == 0.0003, "{e}");
+    assert!(e.message.contains("legs_apart_sideways") && e.message.contains("body_width") && e.message.contains("leg_girth"), "{e}");
+    let j = e.to_json();
+    assert_eq!(j.get("relation").and_then(|v| v.as_str()), Some("legs_apart_sideways"));
+    assert!(j.get("values").and_then(|v| v.get("leg_girth")).is_some() && j.get("worst").is_some() && j.get("least").is_some(), "{j}");
+    // The same girth on a trunk wide enough: accepted. And lengthways: a short trunk.
+    assert!(resolve(&Kind::parse(&small(r#", "numbers": {"leg_girth": {"mean": 0.05, "own": "x"}, "body_width": {"mean": 0.2, "own": "x"}}"#)).unwrap(), None).is_ok());
+    let e = resolve_err(r#", "numbers": {"leg_girth": {"mean": 0.05, "own": "x"}, "body_width": {"mean": 0.2, "own": "x"}, "body_length": {"mean": 0.15, "own": "x"}}"#);
+    assert_eq!(e.relation.as_ref().map(|b| b.relation.as_str()), Some("legs_apart_lengthways"), "{e}");
+    // A relation of three numbers: a neck too short for its head over its back.
+    let e = resolve_err(r#", "numbers": {"neck_length": {"share": 0.1, "own": "x"}}"#);
+    assert_eq!((e.relation.as_ref().map(|b| b.relation.as_str()), e.path.as_str()), (Some("head_above_back"), "numbers.neck_length"), "{e}");
+    // A trait both numbers follow cancels: a wide build spread on a kind whose girth is near the
+    // trunk's limit is still accepted (girth and width move together).
+    assert!(resolve(&Kind::parse(&small(r#", "vary": {"build": {"spread": 0.2, "own": "x"}}, "numbers": {"leg_girth": {"share": 0.13, "own": "x"}}"#)).unwrap(), None).is_ok());
+}
+
+/// A random kind of the test plan: anything the parser takes, from a mouse's size to an
+/// elephant's and past it, with spreads, ranges, exponents and shares far from the defaults, and
+/// a fifth of them over a base. Most are refused; those accepted are what the tests hold.
+pub(crate) fn random_kind(seed: u64) -> (String, Option<String>) {
+    let mut g = specula_core::rng::Rng::new(seed, 0x6b69_6e64);
+    let mut u = || (g.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+    let body = |u: &mut dyn FnMut() -> f64, name: &str, base: Option<&str>| -> String {
+        let mut f = vec![format!(r#""kind": 1, "name": "{name}", "plan": "box_creature", "about": "a random kind""#)];
+        if let Some(b) = base {
+            f.push(format!(r#""base": "{b}""#));
+        }
+        let mut size_mean = 0.6;
+        if u() < 0.75 {
+            size_mean = dmath_exp(dmath_ln(0.03) + u() * (dmath_ln(20.0) - dmath_ln(0.03)));
+            let mut row = vec![format!(r#""mean": {size_mean}"#)];
+            if u() < 0.8 {
+                row.push(format!(r#""sd": {}"#, size_mean * 0.15 * u()));
             }
+            if u() < 0.4 {
+                row.push(format!(r#""range": [{}, {}]"#, size_mean * (1.0 - 0.4 * u()), size_mean * (1.0 + 0.4 * u())));
+            }
+            row.push(r#""unit": "m", "own": "x""#.into());
+            f.push(format!(r#""size": {{"shoulder_height": {{{}}}}}"#, row.join(", ")));
+        }
+        let mut numbers = Vec::new();
+        for n in crate::plans::box_creature::PLAN.numbers() {
+            if u() >= 0.5 {
+                continue;
+            }
+            let share = n.share * dmath_exp((u() * 2.0 - 1.0) * dmath_ln(3.0));
+            let mut row = vec![if u() < 0.15 { format!(r#""mean": {}"#, share * size_mean) } else { format!(r#""share": {share}"#) }];
+            if u() < 0.2 {
+                row.push(format!(r#""exponent": {}"#, -1.0 + 3.5 * u()));
+            }
+            if u() < 0.3 {
+                row.push(format!(r#""spread": {}"#, 0.36 * u() * u()));
+            }
+            if u() < 0.15 {
+                let at = share * size_mean;
+                row.push(format!(r#""range": [{}, {}]"#, at * (1.0 - 0.5 * u()), at * (1.0 + 0.5 * u())));
+            }
+            row.push(r#""own": "x""#.into());
+            numbers.push(format!(r#""{}": {{{}}}"#, n.name, row.join(", ")));
+        }
+        if !numbers.is_empty() {
+            f.push(format!(r#""numbers": {{{}}}"#, numbers.join(", ")));
+        }
+        let mut vary = Vec::new();
+        for t in ["build", "legs", "tail"] {
+            if u() < 0.6 {
+                vary.push(format!(r#""{t}": {{"spread": {}, "own": "x"}}"#, 0.36 * u() * u()));
+            }
+        }
+        if !vary.is_empty() {
+            f.push(format!(r#""vary": {{{}}}"#, vary.join(", ")));
+        }
+        if u() < 0.5 {
+            f.push(format!(r#""tail_carriage": "{}""#, if u() < 0.5 { "high" } else { "low" }));
+        }
+        format!("{{{}}}", f.join(", "))
+    };
+    if u() < 0.2 {
+        let base = body(&mut u, "base", None);
+        (body(&mut u, "child", Some("base")), Some(base))
+    } else {
+        (body(&mut u, "random", None), None)
+    }
+}
+
+fn dmath_exp(x: f64) -> f64 {
+    specula_core::dmath::exp_f64(x)
+}
+fn dmath_ln(x: f64) -> f64 {
+    specula_core::dmath::ln_f64(x)
+}
+
+/// The random kinds the parser and the resolve accept, from `seed` on, until `n` are found.
+pub(crate) fn accepted_random_kinds(n: usize, seed: u64) -> Vec<crate::Resolved> {
+    let mut out = Vec::new();
+    let mut tried = 0u64;
+    while out.len() < n {
+        assert!(tried < 200 * n as u64, "{} of {tried} random kinds accepted", out.len());
+        let (text, base) = random_kind(seed + tried);
+        tried += 1;
+        let kind = Kind::parse(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        let base = base.map(|b| Kind::parse(&b).unwrap());
+        if let Ok(r) = resolve(&kind, base.as_ref()) {
+            out.push(r);
         }
     }
     out
 }
 
-/// The backstop: over 100,000 seeds of the hostile kinds that resolve, no drawn number leaves
-/// its plan's range or the kind's own reach, and every one is a finite positive number.
-#[test]
-fn no_seed_of_an_accepted_kind_leaves_its_reach() {
-    let all = hostile_kinds();
-    let accepted: Vec<_> = all.iter().filter_map(|t| resolve(&Kind::parse(t).unwrap(), None).ok()).collect();
-    assert!(accepted.len() >= 20 && accepted.len() < all.len(), "{} of {} hostile kinds accepted: the family holds both", accepted.len(), all.len());
-    let reaches: Vec<_> = accepted.iter().map(|r| r.reach().unwrap()).collect();
-    let plan = accepted[0].plan;
-    for seed in 0..100_000u64 {
-        let i = (seed % accepted.len() as u64) as usize;
-        let s = accepted[i].draw(Some(seed));
-        for (v, b) in std::iter::once(&s.size).chain(&s.numbers).zip(&reaches[i]) {
-            assert_eq!(v.name, b.name);
-            assert!(v.value.is_finite() && v.value > 0.0 && v.value >= b.lo && v.value <= b.hi, "seed {seed}, kind {i}: {} {} outside {}..{}", v.name, v.value, b.lo, b.hi);
-            let range = plan.numbers().iter().find(|n| n.name == v.name).map_or(plan.size().range, |n| n.range);
-            assert!(v.value >= range[0] && v.value <= range[1], "seed {seed}: {} {} outside the plan's {range:?}", v.name, v.value);
+/// Every relation of every plan, on a specimen's written numbers.
+pub(crate) fn relations_hold(r: &crate::Resolved, s: &crate::Specimen) -> Result<(), String> {
+    for rel in r.plan.relations() {
+        let sum: f64 = rel.terms.iter().map(|(n, c)| c * s.get(n)).sum();
+        if sum < rel.margin {
+            return Err(format!("{}: {sum} < {}", rel.name, rel.margin));
         }
     }
+    Ok(())
 }
 
-/// A draw holds a value inside the plan's range even for a kind no resolve would accept (made by
-/// hand around the checks): the backstop.
+/// Review 2, findings 2 and 3: over thousands of random accepted kinds and random seeds, every
+/// drawn number lies inside the reach the catalogue prints and inside its plan's range, every
+/// relation holds on the written numbers, and **neither backstop ever acts** (the clamp into the
+/// plan's range and the relations' keeper are counted): an accepted kind's draws are inside its
+/// reach by the reach's own arithmetic, not because a clamp put them there.
+#[test]
+fn no_seed_of_an_accepted_kind_leaves_its_reach_and_no_backstop_acts() {
+    let kinds = accepted_random_kinds(3_000, 1);
+    assert!(kinds.iter().any(|k| k.base.is_some()), "children over a base among them");
+    let mut g = specula_core::rng::Rng::new(77, 0);
+    let before = crate::draw::backstops::counts();
+    let mut draws = 0u64;
+    for r in &kinds {
+        let reach = r.reach().unwrap();
+        let plan = r.plan;
+        for k in 0..100 {
+            let seed = match k {
+                0 => 0,
+                1 => crate::draw::MAX_SEED,
+                _ => g.next_u64() >> 11,
+            };
+            let s = r.draw(Some(seed));
+            draws += 1;
+            for (v, b) in std::iter::once(&s.size).chain(&s.numbers).zip(&reach) {
+                assert_eq!(v.name, b.name);
+                let (lo, hi) = b.printed();
+                assert!(v.value.is_finite() && v.value > 0.0 && v.value >= lo && v.value <= hi, "{} seed {seed}: {} {} outside its printed reach {lo}..{hi}", r.kind.name, v.name, v.value);
+                let range = plan.numbers().iter().find(|n| n.name == v.name).map_or(plan.size().range, |n| n.range);
+                assert!(v.value >= range[0] && v.value <= range[1], "seed {seed}: {} {} outside the plan's {range:?}", v.name, v.value);
+            }
+            relations_hold(r, &s).unwrap_or_else(|m| panic!("{} seed {seed}: {m}", r.kind.name));
+        }
+    }
+    let after = crate::draw::backstops::counts();
+    assert_eq!((after.0 - before.0, after.1 - before.1), (0, 0), "the backstops acted (held, kept) over {draws} draws of {} accepted kinds", kinds.len());
+}
+
+/// The backstops do act on a kind no resolve would accept (made by hand around the checks):
+/// every value is held inside its plan's range and every relation is kept, so even such a kind
+/// writes a body the plan's geometry holds; and the counters see them act.
 #[test]
 fn a_kind_made_around_the_checks_still_draws_inside_the_plan() {
     let mut r = library::entry("box_creature").unwrap().resolved().unwrap();
     r.kind.vary.get_mut("build").unwrap().spread = 3.0;
     r.kind.numbers.get_mut("head_length").unwrap().spread = Some(5.0);
+    r.kind.numbers.insert("leg_girth".into(), crate::kind::Number { share: None, mean: Some(0.4), exponent: None, spread: None, range: None, why: crate::Why::Own("x".into()) });
     assert!(r.reach().is_err());
+    let before = crate::draw::backstops::counts();
     for seed in 0..2_000 {
         let s = r.draw(Some(seed));
         for (v, n) in s.numbers.iter().zip(r.plan.numbers()) {
             assert!(v.value >= n.range[0] && v.value <= n.range[1], "seed {seed}: {} {}", v.name, v.value);
         }
+        relations_hold(&r, &s).unwrap_or_else(|m| panic!("seed {seed}: {m}"));
     }
+    let after = crate::draw::backstops::counts();
+    assert!(after.0 > before.0 && after.1 > before.1, "both backstops acted: {before:?} to {after:?}");
+}
+
+/// Review 2, finding 2's constructed kind: a number whose least over every seed is a hair under
+/// the plan's bound (0.14996 against 0.15 then; the bound is the plan's least now) is refused,
+/// though it rounds to the bound: the reach compares unrounded values, as the draw holds them.
+#[test]
+fn the_reach_compares_unrounded_values() {
+    let lo = crate::plans::box_creature::PLAN.numbers().iter().find(|n| n.name == "body_length").unwrap().range[0];
+    // The kind's least body length: its mean times (1 - 2.5 x 0.3) = a quarter of it.
+    // (A small creature with a fixed girth, so that the trunk at its least is still long enough for four legs.)
+    let at = |least: f64| small(&format!(r#", "size": {{"shoulder_height": {{"mean": 0.06, "unit": "m", "own": "x"}}}}, "vary": {{"build": {{"spread": 0.0, "own": "x"}}}}, "numbers": {{"leg_girth": {{"mean": 0.003, "own": "x"}}, "body_length": {{"mean": {}, "spread": 0.3, "own": "x"}}}}"#, least * 4.0));
+    let refused = resolve(&Kind::parse(&at(lo - 0.000_04)).unwrap(), None).unwrap_err();
+    assert_eq!((refused.code, refused.path.as_str()), ("outside_plan", "numbers.body_length.spread"), "{refused}");
+    assert!(crate::draw::round(lo - 0.000_04, Unit::Metre) == lo, "it rounds to the bound");
+    let r = resolve(&Kind::parse(&at(lo + 0.000_04)).unwrap(), None).unwrap();
+    let b = r.reach().unwrap().into_iter().find(|b| b.name == "body_length").unwrap();
+    assert!(b.lo >= lo && b.printed().0 <= b.lo && b.printed().1 >= b.hi, "{b:?}");
+}
+
+/// The lead's decision (review 2, finding 4): a ranged number is drawn from a normal truncated to
+/// its range, so nothing piles at the range's ends. The design's own wolf (mean 0.629, sd 0.03,
+/// range 0.579 to 0.672; Gatta et al. 2016 in research C1) over 100,000 seeds: its mean and spread
+/// are the truncated normal's, the share below each of nine points is its distribution's, and
+/// no more specimens stand at exactly either end than the density there puts in one 0.1 mm step.
+#[test]
+fn a_ranged_size_is_drawn_from_a_normal_truncated_to_its_range() {
+    use crate::normalis::{cdf, pdf};
+    let wolf = small(r#", "size": {"shoulder_height": {"mean": 0.629, "sd": 0.03, "range": [0.579, 0.672], "unit": "m", "own": "x"}}"#);
+    let r = resolve(&Kind::parse(&wolf).unwrap(), None).unwrap();
+    let (mu, sd, lo, hi) = (0.629, 0.03, 0.579, 0.672);
+    let n = 100_000u32;
+    let xs: Vec<f64> = (0..u64::from(n)).map(|s| r.draw(Some(s)).size.value).collect();
+    let (a, b) = ((lo - mu) / sd, (hi - mu) / sd);
+    let z = cdf(b) - cdf(a);
+    let mean_t = mu + sd * (pdf(a) - pdf(b)) / z;
+    let m = (pdf(a) - pdf(b)) / z;
+    let sd_t = sd * (1.0 + (a * pdf(a) - b * pdf(b)) / z - m * m).sqrt();
+    let mean = xs.iter().sum::<f64>() / f64::from(n);
+    let spread = (xs.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / f64::from(n)).sqrt();
+    assert!((mean - mean_t).abs() < 3.0 * sd_t / f64::from(n).sqrt() + 5e-5, "mean {mean} against the truncated normal's {mean_t}");
+    assert!((spread - sd_t).abs() < 0.01 * sd_t + 5e-5, "spread {spread} against {sd_t} (the untruncated {sd})");
+    for k in 1..10 {
+        let x = lo + (hi - lo) * f64::from(k) / 10.0;
+        let want = (cdf((x - mu) / sd) - cdf(a)) / z;
+        let got = xs.iter().filter(|v| **v < x).count() as f64 / f64::from(n);
+        assert!((got - want).abs() < 0.006, "share below {x}: {got} against {want}");
+    }
+    // The tails: the lowest and highest tenth of the range hold what the distribution puts there.
+    for (x0, x1) in [(lo, lo + 0.0093), (hi - 0.0093, hi)] {
+        let want = (cdf((x1 - mu) / sd) - cdf((x0 - mu) / sd)) / z;
+        let got = xs.iter().filter(|v| **v >= x0 && **v <= x1).count() as f64 / f64::from(n);
+        assert!((got - want).abs() < 0.004, "{x0}..{x1}: {got} against {want}");
+    }
+    // At exactly an end: about the density there times one step (under 25 of 100,000; a clip put 4,722 and 7,491 there).
+    for (end, zz) in [(lo, a), (hi, b)] {
+        let at = xs.iter().filter(|v| **v == end).count();
+        let expected = pdf(zz) / (sd * z) * 0.000_05 * f64::from(n);
+        assert!((at as f64) < 3.0 * expected + 10.0, "{at} specimens at exactly {end} (the density gives about {expected:.0})");
+    }
+    assert!(xs.iter().all(|x| *x >= lo && *x <= hi));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -504,6 +704,39 @@ fn a_plans_names_are_unique_across_its_tables_and_its_defaults_resolve() {
         }
         let bare = Kind::parse(&format!(r#"{{"kind": 1, "name": "bare", "plan": "{}", "about": "the plan's defaults"}}"#, p.name())).unwrap();
         resolve(&bare, None).unwrap_or_else(|e| panic!("{}: its own defaults: {e}", p.name()));
+    }
+}
+
+/// Every plan's relations, as a kind file is held to them: two or three of its own numbers of one
+/// unit, a margin of at least two of that unit's steps, a yielding term among them, few enough
+/// corners for the reach, held by the plan's defaults; and each can be kept inside the ranges:
+/// with every other term at the end of its range worst for the relation, the yielding number's
+/// value that keeps it lies inside its own range (so the keeper never needs a value the plan
+/// cannot write).
+#[test]
+fn a_plans_relations_are_sound_and_can_always_be_kept() {
+    for p in plans::PLANS {
+        let def = |n: &str| p.numbers().iter().find(|d| d.name == n).unwrap_or_else(|| panic!("{}: a relation names '{n}', not a number of the plan", p.name()));
+        let mut seen = std::collections::BTreeSet::new();
+        for rel in p.relations() {
+            assert!(crate::words::valid_name(rel.name) && seen.insert(rel.name), "{}: {}", p.name(), rel.name);
+            assert!((2..=3).contains(&rel.terms.len()), "{}: {} has {} terms", p.name(), rel.name, rel.terms.len());
+            let unit = def(rel.terms[0].0).unit;
+            assert!(rel.terms.iter().all(|(n, c)| def(n).unit == unit && *c != 0.0 && c.is_finite()), "{}: {}: one unit, no zero term", p.name(), rel.name);
+            assert!(rel.margin >= 2.0 * unit.step(), "{}: {}'s margin {} is under two steps", p.name(), rel.name, rel.margin);
+            assert!(rel.terms.iter().any(|(n, _)| *n == rel.yields), "{}: {} yields {}, not one of its terms", p.name(), rel.name, rel.yields);
+            let traits: std::collections::BTreeSet<&str> = rel.terms.iter().flat_map(|(n, _)| def(n).traits.iter().map(|t| t.0)).collect();
+            assert!(1usize << (traits.len() + rel.terms.len()) <= crate::draw::MAX_RELATION_CORNERS, "{}: {} has too many corners", p.name(), rel.name);
+            // Kept inside the ranges.
+            let (_, cy) = rel.terms.iter().find(|(n, _)| *n == rel.yields).unwrap();
+            let others: f64 = rel.terms.iter().filter(|(n, _)| *n != rel.yields).map(|(n, c)| c * if *c > 0.0 { def(n).range[0] } else { def(n).range[1] }).sum();
+            let need = (rel.margin - others) / cy;
+            let [lo, hi] = def(rel.yields).range;
+            assert!(if *cy < 0.0 { need >= lo } else { need <= hi }, "{}: {} needs {} at {need}, outside its range {lo}..{hi}", p.name(), rel.name, rel.yields);
+        }
+        // The plan's defaults hold every relation at the mean.
+        let bare = resolve(&Kind::parse(&format!(r#"{{"kind": 1, "name": "bare", "plan": "{}", "about": "the plan's defaults"}}"#, p.name())).unwrap(), None).unwrap();
+        relations_hold(&bare, &bare.draw(None)).unwrap_or_else(|m| panic!("{}: {m}", p.name()));
     }
 }
 

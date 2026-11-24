@@ -9,18 +9,20 @@ use specula_core::hash::StableHasher;
 use specula_exemplaria::{expand, library, AsNamed};
 use std::path::Path;
 
-/// Moved on 2026-11-24 (review 1 of S0): every number's stream is seeded by
-/// `stream_seed(seed, "<kind>/<number>")` (A.2's scheme) instead of `Rng::named`, whose streams
-/// of one seed were related; and the kind file lost its `far` level (not built: refused now), so
-/// its hash in every description moved. Nothing had shipped.
+/// Moved on 2026-11-25 (review 2 of S0), on purpose: every residual is now drawn from a normal
+/// truncated to its window by the inverse of the distribution (one uniform a stream) instead of
+/// Box–Muller clipped at 2.5 spreads, so every seed's numbers moved; and the box creature's write
+/// changed so that no two parts share a face (shins into thigh and foot, the tail into the trunk,
+/// the head behind and above the neck), so the mean's text moved too. Nothing had shipped.
+/// (Before: moved on 2026-11-24 for review 1's streams.)
 const TABLE: &[(&str, Option<u64>, u64)] = &[
-    ("box_creature", None, 0x8459ff76aee86804),
-    ("box_creature", Some(0), 0xdab6a382dca1e26d),
-    ("box_creature", Some(1), 0x5d8b14cd05786ee3),
-    ("box_creature", Some(7), 0x73840d4d41b98e35),
-    ("box_creature", Some(42), 0x60ce7c934a224e82),
-    ("box_creature", Some(123_456_789), 0x0d5efea26d1fb4d2),
-    ("box_creature", Some(9_007_199_254_740_991), 0x93eb2b75420c98e7),
+    ("box_creature", None, 0x0a1027edc258978b),
+    ("box_creature", Some(0), 0x3f639edfc4ea243e),
+    ("box_creature", Some(1), 0x734b8c97fb9ba479),
+    ("box_creature", Some(7), 0xbd4923aba48555e1),
+    ("box_creature", Some(42), 0x9c62f0dd481a002e),
+    ("box_creature", Some(123_456_789), 0x984671fd77be4ee5),
+    ("box_creature", Some(9_007_199_254_740_991), 0x23ac80452470e66e),
 ];
 
 fn written(name: &str, seed: Option<u64>) -> u64 {

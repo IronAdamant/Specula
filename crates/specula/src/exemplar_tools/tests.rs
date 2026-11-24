@@ -68,7 +68,7 @@ fn every_name_and_alias_answers_short_at_any_seed_and_full_under_the_ceiling() {
     assert!(err("exemplar_get", r#"{"name": "box_creature", "seed": 9007199254740992}"#).contains("seed"));
     // Any seed a scatter writes can be previewed (its variant seeds are folded to 53 bits).
     let top = ok("exemplar_get", r#"{"name": "box_creature", "seed": 9007199254740991}"#);
-    assert!(top.get("specimen").is_some() && top.get("use").and_then(|u| u.get("spawn")).and_then(|s| s.get("seed")).and_then(Json::as_u64) == Some(1), "{top}");
+    assert!(top.get("specimen").is_some(), "{top}");
     assert!(err("exemplar_get", "{}").contains("required"));
     let long = format!(r#"{{"name": "{}"}}"#, "x".repeat(65));
     assert!(err("exemplar_get", &long).contains("at most 64"));
@@ -278,7 +278,7 @@ fn a_row_says_each_numbers_mean_range_and_unit_and_the_scatter_snippet() {
 /// naming the kind's field (the review's live case, offline).
 #[test]
 fn a_project_write_of_an_impossible_kind_names_the_kinds_field() {
-    let bad = r#"{"kind": 1, "name": "bad", "plan": "box_creature", "about": "a probe", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.2, "unit": "m", "own": "x"}}}"#;
+    let bad = r#"{"kind": 1, "name": "bad", "plan": "box_creature", "about": "a probe", "size": {"shoulder_height": {"mean": 0.06, "sd": 0.02, "unit": "m", "own": "x"}}}"#;
     let ctx = vec![("assets/style.json".to_string(), crate::project::FileKind::Style, std::sync::Arc::from(crate::scaffold::STYLE))];
     let p = crate::project_kinds::validate("assets/models/bad.kind.json", crate::project::FileKind::Recipe, bad, None, &ctx);
     assert!(p.iter().any(|p| p.message.contains("size.shoulder_height.sd") || format!("{p:?}").contains("size.shoulder_height.sd")), "{p:?}");
@@ -288,7 +288,80 @@ fn a_project_write_of_an_impossible_kind_names_the_kinds_field() {
 /// passes as the recipe error's numbers (AGENTS rule 5: agents debug from data).
 #[test]
 fn a_kind_refused_for_its_reach_carries_its_numbers_as_a_recipe_error() {
-    let bad = r#"{"kind": 1, "name": "bad", "plan": "box_creature", "about": "a probe", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.2, "unit": "m", "own": "x"}}}"#;
+    let bad = r#"{"kind": 1, "name": "bad", "plan": "box_creature", "about": "a probe", "size": {"shoulder_height": {"mean": 0.06, "sd": 0.02, "unit": "m", "own": "x"}}}"#;
     let e = check_kind(bad, &|_| None, &Style::parse(crate::scaffold::STYLE).unwrap(), "t").unwrap_err();
-    assert_eq!((e.path.as_str(), e.measured, e.limit), ("size.shoulder_height.sd", Some(0.1), Some(0.3)), "{e:?}");
+    assert_eq!((e.path.as_str(), e.limit), ("size.shoulder_height.sd", Some(0.039)), "{e:?}");
+    assert!(e.measured.is_some_and(|m| (m - 0.01).abs() < 1e-12), "{e:?}");
+}
+
+/// Review 2, finding 7: what a tool's answer offers does what it says. A preview at a seed a
+/// spawn or a build cannot take offers no snippet for another specimen: it says so and names
+/// what does build that one; at the model library's largest seed the snippet is that seed's.
+#[test]
+fn a_preview_past_the_spawns_seeds_offers_no_snippet_for_another_specimen() {
+    let top = ok("exemplar_get", r#"{"name": "box_creature", "seed": 9007199254740991}"#);
+    let u = top.get("use").unwrap();
+    assert!(u.get("spawn").is_none() && u.get("build").is_none(), "{u}");
+    let why = u.get("seed_too_large").and_then(Json::as_str).unwrap();
+    assert!(why.contains("0..1000000") && why.contains("9007199254740991") && why.contains("\"full\": true") && why.contains("project_write"), "{why}");
+    assert!(u.get("scatter").is_some() && u.get("take").is_some());
+    for seed in [0u64, 7, crate::world::MAX_MODEL_SEED] {
+        let a = ok("exemplar_get", &format!(r#"{{"name": "box_creature", "seed": {seed}}}"#));
+        let u = a.get("use").unwrap();
+        for key in ["spawn", "build"] {
+            assert_eq!(u.get(key).and_then(|s| s.get("seed")).and_then(Json::as_u64), Some(seed), "{key} at seed {seed}: {u}");
+        }
+    }
+    let over = ok("exemplar_get", &format!(r#"{{"name": "box_creature", "seed": {}}}"#, crate::world::MAX_MODEL_SEED + 1));
+    assert!(over.get("use").and_then(|u| u.get("seed_too_large")).is_some(), "{over}");
+}
+
+/// Review 2, finding 7: a plan that does not exist is refused with the argument's name as the
+/// field, and the nearest plans named (every plan, when none is near the word).
+#[test]
+fn an_unknown_plan_names_the_argument_and_the_plans() {
+    let e = argument_error(&err("exemplar_list", r#"{"plan": "quadruped"}"#));
+    assert_eq!(e.get("field").and_then(Json::as_str), Some("plan"), "{e}");
+    assert_eq!(e.get("error").and_then(Json::as_str), Some("not_found"), "{e}");
+    let m = e.get("message").and_then(Json::as_str).unwrap();
+    assert!(m.contains("\"quadruped\"") && m.contains("nearest: none near that word, so every plan: box_creature"), "{m}");
+    let e = argument_error(&err("exemplar_list", r#"{"plan": "box_creatur"}"#));
+    assert_eq!(e.get("field").and_then(Json::as_str), Some("plan"));
+    assert!(e.get("message").and_then(Json::as_str).unwrap().contains("nearest: box_creature"), "{e}");
+}
+
+/// Review 2, finding 7: a project's kind whose base is itself is a ring (`base_cycle`), not a
+/// base not found; and a kind whose name is not its file's is refused, naming both.
+#[test]
+fn a_kind_that_is_its_own_base_or_named_otherwise_than_its_file_is_refused() {
+    let ctx = vec![("assets/style.json".to_string(), crate::project::FileKind::Style, std::sync::Arc::from(crate::scaffold::STYLE))];
+    let validate = |path: &str, text: &str| crate::project_kinds::validate(path, crate::project::FileKind::Recipe, text, None, &ctx);
+    let selfbase = r#"{"kind": 1, "name": "selfbase", "plan": "box_creature", "about": "a probe", "base": "selfbase"}"#;
+    let p = validate("assets/models/selfbase.kind.json", selfbase);
+    assert!(p.iter().any(|p| p.message.contains("base_cycle") && p.message.contains("its own base")), "{p:?}");
+    let other = r#"{"kind": 1, "name": "other", "plan": "box_creature", "about": "a probe"}"#;
+    let p = validate("assets/models/namemismatch.kind.json", other);
+    assert!(p.iter().any(|p| p.message.contains("name_not_file") && p.message.contains("namemismatch.kind.json") && p.message.contains("'other'")), "{p:?}");
+    assert!(validate("assets/models/other.kind.json", other).is_empty(), "named as its file: accepted");
+    // The build worker and a scatter item hold the same rule.
+    let style = Style::parse(STYLE).unwrap();
+    let e = expand_for_build(other, &BTreeMap::new(), None, &style, "models/namemismatch.kind.json").unwrap_err();
+    assert!(e.message.contains("name_not_file"), "{e:?}");
+    use specula_model::Specimens;
+    let mut files = BTreeMap::new();
+    files.insert("namemismatch.kind".to_string(), other.to_string());
+    let e = FolderKinds { library: &files, from: "t" }.specimen("namemismatch", 3, &style).unwrap_err();
+    assert!(e.message.contains("name_not_file"), "{e:?}");
+}
+
+/// Review 2, finding 1, through the engine: a kind whose seeds could break a relation of its
+/// plan is refused by the project's checks, the relation's worst sum and its least as the recipe
+/// error's numbers, the relation named in its message.
+#[test]
+fn a_kind_that_could_cross_its_legs_is_refused_with_the_relations_numbers() {
+    let bad = r#"{"kind": 1, "name": "bad", "plan": "box_creature", "about": "a probe", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.02, "unit": "m", "own": "x"}}, "vary": {"build": {"spread": 0.0, "own": "x"}},
+        "numbers": {"leg_girth": {"mean": 0.15, "own": "x"}, "body_width": {"mean": 0.05, "own": "x"}, "body_length": {"mean": 0.2, "own": "x"}}}"#;
+    let e = check_kind(bad, &|_| None, &Style::parse(crate::scaffold::STYLE).unwrap(), "t").unwrap_err();
+    assert_eq!((e.path.as_str(), e.limit), ("numbers.body_width", Some(0.0003)), "{e:?}");
+    assert!(e.measured.is_some_and(|m| m < 0.0) && e.message.contains("legs_apart_sideways"), "{e:?}");
 }

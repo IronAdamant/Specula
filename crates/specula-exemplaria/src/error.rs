@@ -21,6 +21,19 @@ pub struct Error {
     /// For `outside_plan`: the number, the worst value a draw could reach, and the bounds it
     /// leaves (in the number's unit).
     pub reach: Option<Box<Reach>>,
+    /// For `outside_plan` by a relation between numbers: which, and the worst values.
+    pub relation: Option<Box<Broken>>,
+}
+
+/// A relation of a plan's numbers ([`crate::plan::RelationDef`]) a kind's seeds could break.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Broken {
+    pub relation: String,
+    /// Each of its numbers at the worst seed the reach found, in the plan's order of its terms.
+    pub values: Vec<(String, f64)>,
+    /// The relation's sum there (after the allowance for rounding), and the least it may be.
+    pub sum: f64,
+    pub margin: f64,
 }
 
 /// How far a kind's draws would go past what its plan allows.
@@ -36,7 +49,12 @@ pub struct Reach {
 
 impl Error {
     pub fn new(code: &'static str, path: impl Into<String>, message: impl Into<String>) -> Error {
-        Error { code, path: path.into(), message: message.into(), near: Vec::new(), reach: None }
+        Error { code, path: path.into(), message: message.into(), near: Vec::new(), reach: None, relation: None }
+    }
+
+    pub fn with_relation(mut self, broken: Broken) -> Error {
+        self.relation = Some(Box::new(broken));
+        self
     }
 
     pub fn with_near(mut self, near: Vec<String>) -> Error {
@@ -58,6 +76,12 @@ impl Error {
             o.push(("number", Json::from(r.number.as_str())));
             o.push(("worst", Json::from(r.worst)));
             o.push(("bound", Json::arr(r.bound.map(Json::from))));
+        }
+        if let Some(b) = &self.relation {
+            o.push(("relation", Json::from(b.relation.as_str())));
+            o.push(("values", Json::obj(b.values.iter().map(|(n, v)| (n.as_str(), Json::from(*v))))));
+            o.push(("worst", Json::from(b.sum)));
+            o.push(("least", Json::from(b.margin)));
         }
         Json::obj(o)
     }

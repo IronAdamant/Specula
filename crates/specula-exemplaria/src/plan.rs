@@ -63,10 +63,35 @@ pub struct NumberDef {
     pub exponent: f64,
     /// The traits that move it, each with a weight: `value × (1 + weight × trait)`.
     pub traits: &'static [(&'static str, f64)],
-    /// What the plan can write for it, low and high, in its unit (on the unit's step): a body
-    /// the plan's `write` makes whole for any value inside. A kind whose draws could leave it is
-    /// refused when it is resolved ([`crate::draw`], "Reach"), and a draw never leaves it.
+    /// Where the plan's geometry breaks, low and high, in its unit (on the unit's step), found by
+    /// building at them: never a typical size. Below the least a part of the body is thinner
+    /// than the recipe's rounding can keep apart from its neighbour; above the most a position
+    /// no longer holds the recipe's step. What one number may be against another is a
+    /// [`RelationDef`]. A kind whose draws could leave the range is refused when it is resolved
+    /// ([`crate::draw`], "Reach"), and a draw never leaves it.
     pub range: [f64; 2],
+    pub about: &'static str,
+}
+
+/// A relation between numbers that a plan's geometry needs, as data: `Σ coefficient × number ≥
+/// margin` over two or three numbers of its table, all in one unit. The plan's `write` places
+/// parts from these numbers; a relation is what keeps two parts from crossing or sharing a face
+/// whatever each number is inside its range (left legs on the left: a leg's girth against the
+/// trunk's width). The reach holds every relation over every seed (a kind that could break one
+/// is refused, `outside_plan`, naming the relation, its numbers and their worst values), and the
+/// draw keeps it too, so a body is whole even if the reach were wrong.
+#[derive(Debug)]
+pub struct RelationDef {
+    pub name: &'static str,
+    /// `(number, coefficient)`, two or three of the plan's numbers (not the size).
+    pub terms: &'static [(&'static str, f64)],
+    /// The least the sum may be, in the terms' unit: at least two of the unit's steps, so that the
+    /// two faces it keeps apart are apart after every number and position is rounded to its step.
+    pub margin: f64,
+    /// The term the draw moves (down for a negative coefficient, up for a positive one) if the
+    /// sum would fall below the margin: a backstop that never acts on an accepted kind. A plan
+    /// lists its relations so that a yield only ever helps the relations after it.
+    pub yields: &'static str,
     pub about: &'static str,
 }
 
@@ -122,6 +147,10 @@ pub trait Plan: Sync {
     fn roles(&self) -> &'static [RoleDef];
     fn options(&self) -> &'static [OptionDef];
     fn motions(&self) -> &'static [MotionDef];
+    /// The relations between its numbers its geometry needs (none by default).
+    fn relations(&self) -> &'static [RelationDef] {
+        &[]
+    }
     /// Writes a specimen: its recipe (rig and parts) and its clips, through `w`.
     fn write(&self, s: &Specimen, w: &mut Writing) -> Result<(), Error>;
 }
@@ -154,15 +183,21 @@ fn unknown(code: &'static str, path: String, what: &str, word: &str, names: &[&s
 /// option, motion and pattern a name the plan knows, its roles at most four. `base` is the kind
 /// `kind.base` names, found by the caller (in the library, or in the project's folder).
 pub fn resolve(kind: &Kind, base: Option<&Kind>) -> Result<Resolved, Error> {
+    resolve_among(kind, base, crate::plans::PLANS)
+}
+
+/// [`resolve`] against the plans `plans` rather than the library's: how a plan is tested before
+/// it is listed in [`crate::plans::PLANS`] (a plan of a test's own, never a library entry).
+pub fn resolve_among(kind: &Kind, base: Option<&Kind>, plans: &[&'static dyn Plan]) -> Result<Resolved, Error> {
     let merged = match (&kind.base, base) {
         (None, _) => kind.clone(),
+        // (Before looking for it: a project's folder does not offer the kind's own file as its
+        // base, so a kind naming itself would otherwise read as a base not found.)
+        (Some(b), _) if *b == kind.name => return Err(Error::new("base_cycle", "base", format!("'{b}' names itself as its base: a kind cannot be its own base"))),
         (Some(b), None) => return Err(Error::new("base_not_found", "base", format!("the base '{b}' was not found beside this kind"))),
         (Some(b), Some(base)) => {
             if base.name != *b {
                 return Err(Error::new("base_not_found", "base", format!("the base given is '{}', not '{b}'", base.name)));
-            }
-            if *b == kind.name {
-                return Err(Error::new("base_cycle", "base", "a kind cannot be its own base"));
             }
             if let Some(bb) = &base.base {
                 if *bb == kind.name {
@@ -176,8 +211,8 @@ pub fn resolve(kind: &Kind, base: Option<&Kind>) -> Result<Resolved, Error> {
             kind.over(base)
         }
     };
-    let plan = plan(&merged.plan).ok_or_else(|| {
-        let all: Vec<&str> = crate::plans::PLANS.iter().map(|p| p.name()).collect();
+    let plan = plans.iter().copied().find(|p| p.name() == merged.plan).ok_or_else(|| {
+        let all: Vec<&str> = plans.iter().map(|p| p.name()).collect();
         unknown("unknown_plan", "plan".into(), "a plan", &merged.plan, &all)
     })?;
     if let Some(s) = &merged.size {
