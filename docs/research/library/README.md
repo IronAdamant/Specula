@@ -344,7 +344,36 @@ R7-5b do not.
   a guard reads that phrase as a list of decisions for the owner. Nothing else was changed, so the checkers' line references hold.
 - **The sources themselves are not in the repository** (about 600 MB of papers, data files and
   saved pages; several are all-rights-reserved): they are cited by address in each file.
-- **Checked here: under way.** Two checkers that had no part in the research are holding the
-  delivered numbers against the packed data files and papers, re-deriving what was computed, and
-  listing which corrected numbers the engine already uses. Until their reports are recorded
-  here, nothing of round seven is typed into the engine as checked.
+- **Checked here** (2026-11-24), by two models that had no part in the research, against the
+  source files packed with the delivery: [the animal half](R7-CHECK-animals.md) and
+  [the rest](R7-CHECK-rest.md). **The delivery is careful.** About 470 numbers recomputed from
+  its raw data files and about 260 read in its papers reproduced on the animal side; about 485
+  were confirmed on the other. **No number this round corrects was found in the engine or the
+  sample library** (searched by name and by value), so nothing already typed in has to change.
+  - *Errors a builder would type in if not told:* a sea snake labelled *Aipysurus eydouxii* is
+    the paper's *A. mosaicus*; a monitor-lizard table has 27 specimens, not 30, and its copied
+    row repeats the first *V. tristis* row; a column headed "central cervical vertebra" is that
+    vertebra's length in millimetres, not a count; a foot-posture file has 102 rows; the dogs'
+    motion capture has 30 to 98 markers a file, not 98, and each standing trial is one or two
+    frames; a pterosaur model's span is 11.2 m, not 13; a robot's thigh is 0.337 m by its own
+    model file, not 0.332, and its "arm span 0.45 m" is its width.
+  - *Corrections that are really disagreements:* the M1A1's maker sheet contradicts itself (67.6
+    tons against a power-to-weight line that gives 63); the Leopard's figures are the A6M
+    variant's; PET's 1.569 is one sample, a second value and not a correction; the Universal
+    Robots masses are the current sheets'; the two *Tyrannosaurus* masses come from different
+    methods.
+  - *Left out by the delivery and in its own pack:* the caps that go with the wave-growth
+    formulas (without them a long fetch gives waves taller than a fully developed sea); Scots
+    pine's 9.4 branches a whorl; fish depth and width along the body for 44 species.
+  - *On the earlier rounds:* F2 gives a 30 degree talus angle to Musgrave, whose paper prints
+    none (it is Cordonnier's); the sample library's note of a bird's neck as "8 to 14" is wrong
+    if it means vertebrae (the counts run from 10 to 26); measured walk phases in C2 are to be
+    preferred to the idealised ones here.
+  - *The second checker's files* are sound on transcription and weak on what a number means
+    (frames, units, variants, a source that contradicts itself); seven of them give no verdict
+    row by row.
+  - **Each check ends with a table for builders**: which quantities can be typed in as measured
+    and from which table, which are thin, and which are the engine's own estimate and what to
+    anchor it to. That table, not the delivery's summary, is where a lane starts.
+  - *Not checkable from the pack* (read online by the researcher and not saved, or packed as a
+    refusal page): listed in each check. Those are not typed in as checked.
