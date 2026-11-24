@@ -625,7 +625,7 @@ fn read_by(to: &Obj, attack: Attack) -> Result<(), DataError> {
     for (key, by) in READ_BY {
         if to.get(key).is_some() && !by.contains(&attack) {
             let names: Vec<&str> = by.iter().map(|&a| attack_name(a)).collect();
-            return Err(to.err(key, ErrorCode::Invalid, format!("a {} does not read {key} (only {} do)", attack_name(attack), names.join(" and "))));
+            return Err(to.err(key, ErrorCode::Invalid, format!("a {} does not read {key} (it is read by: {})", attack_name(attack), names.join(", "))));
         }
     }
     Ok(())
