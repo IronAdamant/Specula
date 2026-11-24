@@ -12,7 +12,10 @@ use super::*;
 use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
 /// Bumped when the layout changes; older layouts get a migration in [`State::from_bytes`].
-pub const STATE_VERSION: u32 = 1;
+pub const STATE_VERSION: u32 = 2;
+/// The layout of content without the elements (the shipped maps), still written for it: a save of
+/// the shipped game is byte for byte what it was before the elements existed.
+pub const STATE_VERSION_PLAIN: u32 = 1;
 /// Most enemies, projectiles or pending spawns a save may hold (far above any real run).
 const MAX_ITEMS: usize = 1 << 20;
 
@@ -101,6 +104,93 @@ fn r_rng(r: &mut ByteReader<'_>) -> Result<Rng, StateError> {
     Ok(Rng::from_parts(r.u64("rng").map_err(decode)?, r.u64("rng").map_err(decode)?))
 }
 
+fn w_enemy_el(w: &mut ByteWriter, x: &EnemyEl) {
+    for v in [x.burn, x.chill, x.shatter, x.shove, x.shove_rate] {
+        w.i32(v);
+    }
+    for v in [x.burn_until, x.frozen_until, x.wet_until, x.stagger_until, x.fuse_at] {
+        w.u32(v);
+    }
+}
+
+fn r_enemy_el(r: &mut ByteReader<'_>) -> Result<EnemyEl, StateError> {
+    Ok(EnemyEl {
+        burn: amount(r, "burn", 0)?,
+        chill: amount(r, "chill", 0)?,
+        shatter: amount(r, "shatter", 0)?,
+        shove: amount(r, "shove", 0)?,
+        shove_rate: amount(r, "shove_rate", 0)?,
+        burn_until: counter(r, "burn_until")?,
+        frozen_until: counter(r, "frozen_until")?,
+        wet_until: counter(r, "wet_until")?,
+        stagger_until: counter(r, "stagger_until")?,
+        fuse_at: counter(r, "fuse_at")?,
+    })
+}
+
+fn w_elements(w: &mut ByteWriter, w0: &World) {
+    w.len_u32(w0.rubble.len());
+    for (c, t) in &w0.rubble {
+        w.u16(c.0);
+        w.u32(*t);
+    }
+    let b = &w0.blaze;
+    w.len_u32(b.cells.len());
+    for c in &b.cells {
+        w.i32(c.heat);
+        w.u32(c.left);
+        w.u8(c.phase as u8);
+        w.u32(c.since);
+        w.u32(c.covered_until);
+    }
+    w.len_u32(b.zones.len());
+    for z in &b.zones {
+        w_pos(w, z.at);
+        w.i32(z.radius);
+        w.i32(z.dir.0);
+        w.i32(z.dir.1);
+        w.u32(z.until);
+    }
+}
+
+fn r_elements(r: &mut ByteReader<'_>, content: &Content, b: &Bounds) -> Result<(BTreeMap<CellId, u32>, Blaze), StateError> {
+    use crate::blaze::{FireCell, Phase, Zone, MAX_ZONES};
+    let d = decode;
+    let n = r.count("rubble", b.cells, 6).map_err(d)?;
+    let mut rubble = BTreeMap::new();
+    for _ in 0..n {
+        let cell = b.cell(r)?;
+        rubble.insert(cell, counter(r, "rubble.until")?);
+    }
+    let mut blaze = Blaze::new(content);
+    let n = r.count("fire cells", MAX_ITEMS, 17).map_err(d)?;
+    if n != blaze.cells.len() {
+        return Err(invalid(r, format!("{n} fire cells for content with {} fuel cells", blaze.cells.len())));
+    }
+    for c in blaze.cells.iter_mut() {
+        let heat = amount(r, "heat", 0)?;
+        let left = counter(r, "fuel left")?;
+        let phase = match r.u8("phase").map_err(d)? {
+            0 => Phase::Fuel,
+            1 => Phase::Burning,
+            2 => Phase::Burnt,
+            v => return Err(invalid(r, format!("fire phase {v}"))),
+        };
+        *c = FireCell { heat, left, phase, since: counter(r, "since")?, covered_until: counter(r, "covered_until")? };
+    }
+    let n = r.count("zones", MAX_ZONES, 28).map_err(d)?;
+    for _ in 0..n {
+        let at = r_pos(r)?;
+        let radius = amount(r, "zone.radius", 0)?;
+        let (dx, dz) = (amount(r, "zone.dir", -1000)?, amount(r, "zone.dir", -1000)?);
+        if dx > 1000 || dz > 1000 {
+            return Err(invalid(r, "a zone's direction is out of range".into()));
+        }
+        blaze.zones.push(Zone { at, radius, dir: (dx, dz), until: counter(r, "zone.until")? });
+    }
+    Ok((rubble, blaze))
+}
+
 /// Bounds checks against the content.
 struct Bounds {
     cells: usize,
@@ -164,7 +254,8 @@ impl State {
     pub fn to_bytes(&self) -> Vec<u8> {
         let w0 = &self.w;
         let mut w = ByteWriter::with_capacity(512 + w0.enemies.len() * 80);
-        w.u32(STATE_VERSION);
+        let el = self.content.elemental();
+        w.u32(if el { STATE_VERSION } else { STATE_VERSION_PLAIN });
         w.u64(self.content.hash);
         w.u64(w0.seed);
         w.u32(w0.tick);
@@ -242,6 +333,9 @@ impl State {
             w.i64(e.carry);
             w.u32(e.next_summon);
             w.u32(e.stuck);
+            if el {
+                w_enemy_el(&mut w, &e.el);
+            }
         }
         w.len_u32(w0.stones.len());
         for (c, s) in &w0.stones {
@@ -282,6 +376,12 @@ impl State {
             w.i32(s.dust_from_kills);
             w.u32(s.pending);
             w.u32(s.alive);
+            if el {
+                w.u32(s.detonated);
+            }
+        }
+        if el {
+            w_elements(&mut w, w0);
         }
         w.into_bytes()
     }
@@ -291,10 +391,10 @@ impl State {
     pub fn from_bytes(content: Arc<Content>, bytes: &[u8]) -> Result<State, StateError> {
         let mut r = ByteReader::new(bytes);
         let version = r.u32("version").map_err(decode)?;
-        if version != STATE_VERSION {
+        if version != STATE_VERSION && version != STATE_VERSION_PLAIN {
             return Err(StateError {
                 code: "unsupported_version",
-                message: format!("game state version {version}; this build reads {STATE_VERSION}"),
+                message: format!("game state version {version}; this build reads {STATE_VERSION_PLAIN} and {STATE_VERSION}"),
                 offset: Some(0),
             });
         }
@@ -311,6 +411,15 @@ impl State {
                     content.hash
                 ),
                 offset: Some(4),
+            });
+        }
+        // Version 2 is the layout with the elements, written exactly for content that has them.
+        let el = version == STATE_VERSION;
+        if el != content.elemental() {
+            return Err(StateError {
+                code: "bad_state",
+                message: format!("game state version {version} does not fit this content (elements {})", content.elemental()),
+                offset: Some(0),
             });
         }
         let b = Bounds::of(&content);
@@ -394,10 +503,11 @@ impl State {
             }
             let next_summon = counter(&mut r, "next_summon")?;
             let stuck = counter(&mut r, "stuck")?;
+            let enemy_el = if el { r_enemy_el(&mut r)? } else { EnemyEl::default() };
             if enemies.last().is_some_and(|e: &Enemy| e.id >= id) {
                 return Err(invalid(&r, "enemy ids must increase".into()));
             }
-            enemies.push(Enemy { id, kind, wave, hp, max_hp, pos, motion, slow, slow_until, attacking, remaining, alive, carry, next_summon, stuck });
+            enemies.push(Enemy { id, kind, wave, hp, max_hp, pos, motion, slow, slow_until, attacking, remaining, alive, carry, next_summon, stuck, el: enemy_el });
         }
         let n = r.count("stones", b.cells, 12).map_err(d)?;
         let mut stones = BTreeMap::new();
@@ -442,8 +552,10 @@ impl State {
                 dust_from_kills: amount(&mut r, "dust_from_kills", -MAX_AMOUNT)?,
                 pending: r.u32("pending").map_err(d)?,
                 alive: r.u32("alive").map_err(d)?,
+                detonated: if el { counter(&mut r, "detonated")? } else { 0 },
             });
         }
+        let (rubble, blaze) = if el { r_elements(&mut r, &content, &b)? } else { (BTreeMap::new(), Blaze::new(&content)) };
         r.finish().map_err(d)?;
         // Cross-checks: ids below the next ids, and every counter the tick counts down agrees with
         // the lists it counts (the tick subtracts from them).
@@ -488,6 +600,9 @@ impl State {
             walls,
             projectiles,
             wave_stats,
+            blaze,
+            rubble,
+            bursts: Vec::new(),
             blocked,
             fields,
             rooted: vec![false; cells],

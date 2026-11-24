@@ -9,7 +9,9 @@
 //!
 //! Flags: `--seed N` (default 1; the first seed of a sweep), `--layout NAME|FILE` (built-ins:
 //! centre, no_air, full_block, none, or `all` for each built-in in turn; default centre), `--waves N` (stop before wave N+1),
-//! `--sweep N` (N seeds, outcome stats), `--data DIR` (custom content files), `--map` (print
+//! `--sweep N` (N seeds, outcome stats), `--data DIR` (custom content files), `--ground proving` (the
+//! proving ground of the elemental stones, with its own layouts: baseline, fire, lightning, frost, wind,
+//! earth and their ten pairs such as fire_wind; DESIGN.md, "Elemental stones"), `--map` (print
 //! the slab), `--ascii` (print the final state), `--journal FILE` (write a self-checking replay
 //! recording), `--replay FILE` (replay a recording and verify its final tick and hash).
 
@@ -31,12 +33,33 @@ const LAYOUTS: [(&str, &str); 4] = [
     ("none", include_str!("../data/layouts/none.json")),
 ];
 
+/// The proving ground's layouts (`--ground proving`; DESIGN.md, "Elemental stones").
+const PROVING: [(&str, &str); 16] = [
+    ("baseline", include_str!("../data/proving/layouts/baseline.json")),
+    ("fire", include_str!("../data/proving/layouts/fire.json")),
+    ("lightning", include_str!("../data/proving/layouts/lightning.json")),
+    ("frost", include_str!("../data/proving/layouts/frost.json")),
+    ("wind", include_str!("../data/proving/layouts/wind.json")),
+    ("earth", include_str!("../data/proving/layouts/earth.json")),
+    ("fire_lightning", include_str!("../data/proving/layouts/fire_lightning.json")),
+    ("fire_frost", include_str!("../data/proving/layouts/fire_frost.json")),
+    ("fire_wind", include_str!("../data/proving/layouts/fire_wind.json")),
+    ("fire_earth", include_str!("../data/proving/layouts/fire_earth.json")),
+    ("lightning_frost", include_str!("../data/proving/layouts/lightning_frost.json")),
+    ("lightning_wind", include_str!("../data/proving/layouts/lightning_wind.json")),
+    ("lightning_earth", include_str!("../data/proving/layouts/lightning_earth.json")),
+    ("frost_wind", include_str!("../data/proving/layouts/frost_wind.json")),
+    ("frost_earth", include_str!("../data/proving/layouts/frost_earth.json")),
+    ("wind_earth", include_str!("../data/proving/layouts/wind_earth.json")),
+];
+
 struct Args {
     seed: u64,
     layout: String,
     waves: Option<u16>,
     sweep: Option<u64>,
     data: Option<String>,
+    proving: bool,
     map: bool,
     ascii: bool,
     journal: Option<String>,
@@ -44,7 +67,7 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut a = Args { seed: 1, layout: "centre".into(), waves: None, sweep: None, data: None, map: false, ascii: false, journal: None, replay: None };
+    let mut a = Args { seed: 1, layout: "centre".into(), waves: None, sweep: None, data: None, proving: false, map: false, ascii: false, journal: None, replay: None };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let mut val = |name: &str| it.next().ok_or(format!("{name} needs a value"));
@@ -54,6 +77,11 @@ fn parse_args() -> Result<Args, String> {
             "--waves" => a.waves = Some(val("--waves")?.parse().map_err(|e| format!("--waves: {e}"))?),
             "--sweep" => a.sweep = Some(val("--sweep")?.parse().map_err(|e| format!("--sweep: {e}"))?),
             "--data" => a.data = Some(val("--data")?),
+            "--ground" => match val("--ground")?.as_str() {
+                "proving" => a.proving = true,
+                "slab_01" | "map1" => a.proving = false,
+                other => return Err(format!("--ground: {other:?} (proving or slab_01)")),
+            },
             "--journal" => a.journal = Some(val("--journal")?),
             "--replay" => a.replay = Some(val("--replay")?),
             "--map" => a.map = true,
@@ -83,8 +111,12 @@ fn real_main() -> Result<(), String> {
     let args = parse_args()?;
     let content = Arc::new(match &args.data {
         Some(dir) => Content::load_dir(std::path::Path::new(dir)).map_err(|e| e.to_string())?,
+        None if args.proving => Content::proving(),
         None => Content::builtin(),
     });
+    let layout = if args.proving && args.layout == "centre" { "baseline".to_owned() } else { args.layout.clone() };
+    let layouts: &[(&str, &str)] = if args.proving { &PROVING } else { &LAYOUTS };
+    let dir = if args.proving { "proving/layouts" } else { "layouts" };
     if args.map {
         println!("{}", content.map.ascii());
     }
@@ -108,11 +140,11 @@ fn real_main() -> Result<(), String> {
         );
         return Ok(());
     }
-    let names: Vec<&str> = if args.layout == "all" { LAYOUTS.iter().map(|(n, _)| *n).collect() } else { vec![args.layout.as_str()] };
+    let names: Vec<&str> = if layout == "all" { layouts.iter().map(|(n, _)| *n).collect() } else { vec![layout.as_str()] };
     let mut stranded_runs = 0;
     for name in names {
-        let (layout_text, layout_file) = match LAYOUTS.iter().find(|(n, _)| *n == name) {
-            Some((n, t)) => (t.to_string(), format!("layouts/{n}.json")),
+        let (layout_text, layout_file) = match layouts.iter().find(|(n, _)| *n == name) {
+            Some((n, t)) => (t.to_string(), format!("{dir}/{n}.json")),
             None => (std::fs::read_to_string(name).map_err(|e| format!("{name}: {e}"))?, name.to_owned()),
         };
         let script = Script::parse(&layout_text, &content, &layout_file).map_err(|e| e.to_string())?;
@@ -133,6 +165,8 @@ fn single(content: &Arc<Content>, script: &Script, args: &Args) -> Result<(), St
     let mut starts: Vec<(u32, i32, i32)> = Vec::new();
     let mut jumps = 0u32;
     let mut walls_broken = 0u32;
+    // The elements (proving ground): ignited, frozen, shattered, struck, gusts, heaves, detonated, fuel cells caught.
+    let mut el = [0u32; 8];
     let mut last_ascii = String::new();
     let t0 = Instant::now();
     let report = run(Arc::clone(content), args.seed, script, args.waves, |s, ev| {
@@ -141,6 +175,14 @@ fn single(content: &Arc<Content>, script: &Script, args: &Args) -> Result<(), St
                 Event::WaveStarted { .. } => starts.push((s.tick() - 1, s.dust(), s.tombstones())),
                 Event::Jumped { .. } => jumps += 1,
                 Event::WallBroken { .. } => walls_broken += 1,
+                Event::Ignited { .. } => el[0] += 1,
+                Event::Frozen { .. } => el[1] += 1,
+                Event::Shattered { .. } => el[2] += 1,
+                Event::Struck { .. } => el[3] += 1,
+                Event::Gusted { .. } => el[4] += 1,
+                Event::Heaved { .. } => el[5] += 1,
+                Event::Detonated { .. } => el[6] += 1,
+                Event::CellCaught { .. } => el[7] += 1,
                 _ => {}
             }
         }
@@ -181,6 +223,12 @@ fn single(content: &Arc<Content>, script: &Script, args: &Args) -> Result<(), St
         jumps,
         walls_broken
     );
+    if content.elemental() {
+        println!(
+            "elements: ignited {}, frozen {}, shattered {}, strikes {}, gusts {}, heaves {}, detonated {}, fuel cells caught {}",
+            el[0], el[1], el[2], el[3], el[4], el[5], el[6], el[7]
+        );
+    }
     for (i, r) in &report.skipped {
         println!("skipped layout entry {i}: {r}");
     }
@@ -244,6 +292,15 @@ fn sweep(content: &Arc<Content>, script: &Script, first: u64, n: u64, waves: Opt
         let hist: Vec<String> = by_wave.iter().enumerate().filter(|(_, &c)| c > 0).map(|(w, c)| format!("w{w}:{c}")).collect();
         println!("losses by wave: {}", hist.join(" "));
     }
+    let all = |f: &dyn Fn(&RunReport) -> f64| mean(&reports.iter().map(f).collect::<Vec<_>>());
+    println!(
+        "all runs: tombstones left mean {:.2}, kills mean {:.1}, leaks mean {:.1}, detonated mean {:.1}, game time mean {}",
+        all(&|r| f64::from(r.tombstones)),
+        all(&|r| f64::from(r.waves.iter().map(|w| w.killed).sum::<u32>())),
+        all(&|r| f64::from(r.leaks())),
+        all(&|r| f64::from(r.waves.iter().map(|w| w.detonated).sum::<u32>())),
+        clock(all(&|r| f64::from(r.ticks)) as u32)
+    );
     let leaks_by_wave: Vec<String> = (0..content.waves.len())
         .map(|w| format!("{:.1}", mean(&reports.iter().filter_map(|r| r.waves.get(w)).map(|s| f64::from(s.leaked)).collect::<Vec<_>>())))
         .collect();

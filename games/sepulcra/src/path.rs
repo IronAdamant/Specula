@@ -114,6 +114,19 @@ impl Fields {
         }
         Route::Stuck
     }
+
+    /// A sapper's next move (the exploding dead): downhill on the breach field even while an
+    /// open route exists, so it walks to the wall on its cheapest way through (a wall costs its
+    /// length plus the breach penalty) and attacks it; where breaching is no cheaper than the
+    /// open route, that is the open route. Stuck only where [`Fields::route`] is.
+    pub fn sapper_route(&self, map: &Map, class: Class, walls: &[bool], at: CellId) -> Route {
+        if self.breach(class)[at.index()] != UNREACHABLE {
+            if let Some((n, _)) = downhill(map, class, self.breach(class), false, at, |_| Some(0)) {
+                return if walls[n.index()] { Route::Attack(n) } else { Route::Step(n) };
+            }
+        }
+        self.route(map, class, false, walls, at)
+    }
 }
 
 /// The neighbour (or, with `leaps`, ledge partner) minimising `dist[n] + cost + extra(n)`,

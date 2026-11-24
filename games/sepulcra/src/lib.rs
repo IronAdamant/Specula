@@ -24,9 +24,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod blaze;
 pub mod content;
 pub mod error;
 pub mod fixed;
+pub mod fuel;
 pub mod lex;
 pub mod map;
 pub mod path;

@@ -1,0 +1,34 @@
+{
+  "notes": "The shipped four as they are, with a mass for the elements (runners are light, the colossus heavy), and the exploding dead. mass divides a gust's shove and a frost's chill. explode: the blast (radius_m: walls and rubble within it are destroyed, ground dead within it hurt and shoved; fuse_s: from catching fire to bursting). sapper: it seeks walls along the breach field even while an open route exists.",
+  "enemies": [
+    {
+      "id": "shambler", "name": "Shambler", "glyph": "s",
+      "hp": 55, "speed_mps": 0.8, "movement": "climber", "climb_speed": 0.6,
+      "dust": [3, 5], "tombstones": 1, "wall_dps": 12
+    },
+    {
+      "id": "runner", "name": "Skeleton runner", "glyph": "r",
+      "hp": 26, "speed_mps": 2.2, "movement": "walker", "mass": 0.6,
+      "jump": { "chance": 0.4, "max_detour_m": 4.0 },
+      "dust": [2, 4], "tombstones": 1, "wall_dps": 6
+    },
+    {
+      "id": "wraith", "name": "Wraith", "glyph": "w",
+      "hp": 40, "speed_mps": 2.4, "movement": "flyer", "circle_points": [6, 14],
+      "dust": [5, 7], "tombstones": 1
+    },
+    {
+      "id": "colossus", "name": "Bone colossus", "glyph": "C",
+      "hp": 1250, "speed_mps": 0.4, "movement": "walker", "mass": 8,
+      "dust": [150, 150], "tombstones": 5, "wall_dps": 150,
+      "summon": { "enemy": "shambler", "every_s": 7, "count": 2 }
+    },
+    {
+      "id": "tumidus", "name": "Tumidus, the bloated dead", "glyph": "b",
+      "notes": "It walks to the player's walls and bursts on them: every wall within 3 m goes, and the dead around it are hurt. Killed, it bursts where it falls; struck by lightning, it bursts at once; set alight, it bursts when its fuse burns down; frozen, it cannot burst, and if it dies frozen it dies whole.",
+      "hp": 40, "speed_mps": 0.9, "movement": "walker", "mass": 1.5, "sapper": true,
+      "explode": { "radius_m": 3.0, "damage": 25, "push_m": 1.0, "fuse_s": 1.5 },
+      "dust": [4, 6], "tombstones": 2, "wall_dps": 12
+    }
+  ]
+}

@@ -18,6 +18,10 @@ pub const SLAB_01_JSON: &str = include_str!("../data/slab_01.json");
 pub const STONES_JSON: &str = include_str!("../data/stones.json");
 pub const ENEMIES_JSON: &str = include_str!("../data/enemies.json");
 pub const WAVES_JSON: &str = include_str!("../data/waves.json");
+/// The proving ground's content (map 1's slab; `data/proving/`).
+pub const PROVING_STONES_JSON: &str = include_str!("../data/proving/stones.json");
+pub const PROVING_ENEMIES_JSON: &str = include_str!("../data/proving/enemies.json");
+pub const PROVING_WAVES_JSON: &str = include_str!("../data/proving/waves.json");
 
 /// Index into [`Content::stones`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -66,6 +70,59 @@ pub enum Attack {
     Lob,
     /// An instant pulse on every eligible enemy in range (no projectile).
     Pulse,
+    /// Lightning (elemental stones): an instant strike on the target that chains to the nearest
+    /// others (`chain`, `chain_m`), stronger on the wet, ended by the grounded.
+    Strike,
+    /// Wind (elemental stones): deals nothing; every eligible enemy in range is shoved back
+    /// along its path (`push_m` over `push_s`), and the stone must recharge (`cooldown_s`).
+    Gust,
+    /// Earth (elemental stones): stone spikes erupt along the target's lane (`line` cells):
+    /// damage and a stagger, fire smothered; at higher tiers a rubble barrier that crumbles.
+    Heave,
+}
+
+impl Attack {
+    /// The elemental attacks (proving ground only, until the owner says otherwise).
+    pub fn is_elemental(self) -> bool {
+        matches!(self, Attack::Strike | Attack::Gust | Attack::Heave)
+    }
+}
+
+/// A tier's elemental numbers (all zero on the shipped stones, so the content hash and every
+/// run of the shipped maps are as they were).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TierEl {
+    /// Fire: milli-HP per tick while burning, and for how long.
+    pub burn: i32,
+    pub burn_ticks: u32,
+    /// Lightning: further enemies the strike jumps to, how far (mm), permille of the damage
+    /// each jump keeps, and the extra damage on the wet (permille).
+    pub chain: u8,
+    pub chain_range: i32,
+    pub chain_keep: i32,
+    pub wet_bonus: i32,
+    /// Frost: chill added per hit (permille; 1000 freezes at once, divided by the enemy's mass),
+    /// how long a freeze lasts, and the extra damage of the hit that shatters it (permille).
+    pub chill: i32,
+    pub freeze_ticks: u32,
+    pub shatter: i32,
+    /// Wind: how far a gust shoves an enemy of mass 1 back along its path (mm), over how many
+    /// ticks, and how many enemies must be in range before it spends its charge.
+    pub push: i32,
+    pub push_ticks: u32,
+    pub min_targets: u16,
+    /// Earth: lane cells the spikes erupt along, how long they stagger, and the rubble barrier
+    /// they leave (milli-HP, ticks; 0 = none).
+    pub line: u8,
+    pub stagger_ticks: u32,
+    pub rubble_hp: i32,
+    pub rubble_ticks: u32,
+}
+
+impl TierEl {
+    pub fn is_zero(&self) -> bool {
+        *self == TierEl::default()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +139,8 @@ pub struct Tier {
     /// Speed reduction in permille.
     pub slow: i32,
     pub slow_ticks: u32,
+    /// The elemental numbers (zero unless the stone is elemental).
+    pub el: TierEl,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,6 +198,29 @@ pub struct EnemyDef {
     /// Milli-HP of wall damage per tick.
     pub wall_damage: i32,
     pub summon: Option<Summon>,
+    /// How heavy it is to the elements, permille (1000 unless given): a gust's shove and a
+    /// frost's chill are divided by it.
+    pub mass: i32,
+    /// Seeks the player's walls: it follows the breach field even while an open route exists,
+    /// so a wall on its cheapest way through is where it goes (the exploding dead).
+    pub sapper: bool,
+    /// It bursts: on reaching a wall it is breaking, when killed (unless frozen), when struck
+    /// by lightning, and when its fuse burns down after it catches fire.
+    pub burst: Option<Burst>,
+}
+
+/// An exploding enemy's blast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Burst {
+    /// Every wall (and rubble) whose cell centre is within this of the blast is destroyed, and
+    /// every ground enemy within it is hurt and shoved.
+    pub radius: i32,
+    /// Milli-HP to every ground enemy in the radius.
+    pub damage: i32,
+    /// mm each enemy in the radius is shoved back along its path (mass 1).
+    pub push: i32,
+    /// Ticks from catching fire to bursting.
+    pub fuse: u32,
 }
 
 impl EnemyDef {
@@ -214,6 +296,39 @@ pub struct Rules {
     pub refund_percent: i32,
     pub wall: WallDef,
     pub nature: Nature,
+    /// The elements' own numbers (`stones.json` `elements`; off on the shipped maps).
+    pub elements: Elements,
+}
+
+/// The elements' rules (`stones.json` `elements`): how fire moves between enemies and over the
+/// slab's fuel, how long the wet stay wet, how a gust leans a fire. `on` is false (and every
+/// number 0) when the key is absent, which is the shipped maps' case.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Elements {
+    pub on: bool,
+    /// Ticks between spread steps (fire's heat moves only on these).
+    pub spread_ticks: u32,
+    /// A burning enemy sets alight any other within this (mm) at a spread step.
+    pub mob_reach: i32,
+    /// Heat crosses from a burning fuel cell to fuel cells whose centres are within this (mm).
+    pub cell_reach: i32,
+    /// Heat (permille of what ignites) a burning cell gives a neighbour per spread step, before
+    /// the wind's lean.
+    pub cell_heat: i32,
+    /// Ticks a fuel cell burns before it is spent (burnt: char that burns no more).
+    pub cell_burn_ticks: u32,
+    /// The burn a ground enemy catches from a fire (a burning cell within `cell_reach` of it, or
+    /// a burning enemy within `mob_reach`): milli-HP per tick, for `catch_ticks`.
+    pub cell_burn: i32,
+    pub catch_ticks: u32,
+    /// Ticks an enemy stays wet after it thaws, and a cell after frost or earth covers it.
+    pub wet_ticks: u32,
+    /// How a gust leans a fire: heat downwind × (1 + lean), upwind × (1 − lean), permille.
+    pub lean: i32,
+    /// Ticks a gust's wind lingers over its area.
+    pub gust_ticks: u32,
+    /// Chill an enemy loses per tick (permille).
+    pub chill_fade: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -223,6 +338,10 @@ pub struct Content {
     pub enemies: Vec<EnemyDef>,
     pub waves: Vec<WaveDef>,
     pub rules: Rules,
+    /// The cells that burn (`elements.fuel`), in cell order; empty without elements.
+    pub fuel: Vec<CellId>,
+    /// Whether anything uses the elements (see [`Content::elemental`]), worked out once.
+    pub uses_elements: bool,
     /// Stable hash of the parsed content (see [`content_hash`]): part of every state hash, so a
     /// replay can tell when it is run against different content.
     pub hash: u64,
@@ -237,21 +356,50 @@ impl Content {
 
     pub fn from_texts(map: &str, stones: &str, enemies: &str, waves: &str) -> Result<Content, DataError> {
         let map_v = Map::parse(map, "slab_01.json")?;
-        let (stone_defs, mut rules) = parse_stones(stones)?;
+        let (stone_defs, mut rules, fuel) = parse_stones(stones, &map_v)?;
         let enemy_defs = parse_enemies(enemies)?;
         check_summons(&map_v, &enemy_defs)?;
         let wave_defs = parse_waves(waves, &map_v, &enemy_defs, &mut rules)?;
-        let mut c = Content { map: map_v, stones: stone_defs, enemies: enemy_defs, waves: wave_defs, rules, hash: 0 };
+        let mut c = Content { map: map_v, stones: stone_defs, enemies: enemy_defs, waves: wave_defs, rules, fuel, uses_elements: false, hash: 0 };
+        c.uses_elements = c.compute_elemental();
+        check_elements(&c)?;
         c.hash = content_hash(&c);
         Ok(c)
     }
 
-    /// Reads `slab_01.json`, `stones.json`, `enemies.json` and `waves.json` from `dir`.
+    /// The proving ground (DESIGN.md, "Elemental stones"): map 1's slab with the four shipped
+    /// stones, the five elemental ones and the exploding dead, and waves chosen to exercise each
+    /// element and each combination. The shipped game ([`Content::builtin`]) is untouched by it.
+    pub fn proving() -> Content {
+        Content::from_texts(SLAB_01_JSON, PROVING_STONES_JSON, PROVING_ENEMIES_JSON, PROVING_WAVES_JSON).expect("the proving ground's content is valid")
+    }
+
+    /// Does anything in this content use the elements? (False for the shipped maps: then the
+    /// state's hash and saves are exactly as they were before the elements.)
+    pub fn elemental(&self) -> bool {
+        self.uses_elements
+    }
+
+    fn compute_elemental(&self) -> bool {
+        self.rules.elements.on
+            || self.stones.iter().any(|s| s.attack.is_elemental() || s.tiers.iter().any(|t| !t.el.is_zero()))
+            || self.enemies.iter().any(|e| e.mass != 1000 || e.sapper || e.burst.is_some())
+    }
+
+    /// Is `cell` fuel?
+    pub fn is_fuel(&self, cell: CellId) -> bool {
+        self.fuel.binary_search(&cell).is_ok()
+    }
+
+    /// Reads `slab_01.json`, `stones.json`, `enemies.json` and `waves.json` from `dir`. A folder
+    /// with no `slab_01.json` of its own plays on map 1's slab (the proving ground's case:
+    /// `data/proving` holds only its stones, enemies and waves).
     pub fn load_dir(dir: &Path) -> Result<Content, DataError> {
         let read = |name: &str| {
             std::fs::read_to_string(dir.join(name)).map_err(|e| DataError::new(name, "", ErrorCode::Io, format!("cannot read {}: {e}", dir.join(name).display())))
         };
-        Content::from_texts(&read("slab_01.json")?, &read("stones.json")?, &read("enemies.json")?, &read("waves.json")?)
+        let map = if dir.join("slab_01.json").is_file() || !dir.join("stones.json").is_file() { read("slab_01.json")? } else { SLAB_01_JSON.to_owned() };
+        Content::from_texts(&map, &read("stones.json")?, &read("enemies.json")?, &read("waves.json")?)
     }
 
     pub fn stone_kind(&self, id: &str) -> Option<StoneKind> {
@@ -293,11 +441,15 @@ fn glyph(o: &Obj, key: &str) -> Result<char, DataError> {
     }
 }
 
-fn parse_stones(text: &str) -> Result<(Vec<StoneDef>, Rules), DataError> {
+fn parse_stones(text: &str, map: &Map) -> Result<(Vec<StoneDef>, Rules, Vec<CellId>), DataError> {
     const F: &str = "stones.json";
     let json = parse_json(text, F)?;
     let root = parse_root(&json, F)?;
-    root.only(&["notes", "edge_reach_m", "sell_refund", "wall", "nature", "stones"])?;
+    root.only(&["notes", "edge_reach_m", "sell_refund", "wall", "nature", "elements", "stones"])?;
+    let (elements, fuel) = match root.get("elements") {
+        None => (Elements::default(), Vec::new()),
+        Some(_) => parse_elements(&root.obj("elements")?, map)?,
+    };
     let wall = root.obj("wall")?;
     wall.only(&["cost", "hp", "breach_penalty_m"])?;
     let nature = root.obj("nature")?;
@@ -320,6 +472,7 @@ fn parse_stones(text: &str) -> Result<(Vec<StoneDef>, Rules), DataError> {
             radius: mm(nature.num("radius_m", 0.0, 100.0)?),
             slow: permille(nature.num("slow", 0.0, 0.9)?),
         },
+        elements,
     };
     let mut stones: Vec<StoneDef> = Vec::new();
     for (i, s) in root.arr("stones")?.iter().enumerate() {
@@ -350,8 +503,14 @@ fn parse_stones(text: &str) -> Result<(Vec<StoneDef>, Rules), DataError> {
             "bolt" => Attack::Bolt,
             "lob" => Attack::Lob,
             "pulse" => Attack::Pulse,
-            _ => return Err(o.err("attack", ErrorCode::BadChoice, "expected \"bolt\", \"lob\" or \"pulse\"")),
+            "strike" => Attack::Strike,
+            "gust" => Attack::Gust,
+            "heave" => Attack::Heave,
+            _ => return Err(o.err("attack", ErrorCode::BadChoice, "expected \"bolt\", \"lob\", \"pulse\", \"strike\", \"gust\" or \"heave\"")),
         };
+        if attack.is_elemental() && !elements.on {
+            return Err(o.err("attack", ErrorCode::Invalid, "an elemental attack needs the file's \"elements\" rules"));
+        }
         let mut tiers = Vec::new();
         let tiers_json = o.arr("tiers")?;
         if !(1..=5).contains(&tiers_json.len()) {
@@ -359,7 +518,16 @@ fn parse_stones(text: &str) -> Result<(Vec<StoneDef>, Rules), DataError> {
         }
         for (t, tj) in tiers_json.iter().enumerate() {
             let to = Obj::new(tj, F, o.path(&format!("tiers[{t}]")))?;
-            to.only(&["cost", "range_m", "cooldown_s", "damage", "projectile_mps", "splash_m", "slow", "slow_s"])?;
+            const EL_KEYS: [&str; 15] = [
+                "burn_dps", "burn_s", "chain", "chain_m", "chain_keep", "wet_bonus", "chill", "freeze_s", "shatter", "push_m", "push_s", "min_targets", "line", "stagger_s",
+                "rubble",
+            ];
+            let mut keys = vec!["cost", "range_m", "cooldown_s", "damage", "projectile_mps", "splash_m", "slow", "slow_s"];
+            if elements.on {
+                keys.extend(EL_KEYS);
+            }
+            to.only(&keys)?;
+            let el = if elements.on { parse_tier_el(&to)? } else { TierEl::default() };
             let tier = Tier {
                 cost: to.int("cost", 0, 100_000)? as i32,
                 range: mm(to.num("range_m", 0.5, 100.0)?),
@@ -369,16 +537,9 @@ fn parse_stones(text: &str) -> Result<(Vec<StoneDef>, Rules), DataError> {
                 splash: mm(to.num_or("splash_m", 0.0, 0.0, 100.0)?),
                 slow: permille(to.num_or("slow", 0.0, 0.0, 0.9)?),
                 slow_ticks: ticks(to.num_or("slow_s", 0.0, 0.0, 600.0)?),
+                el,
             };
-            if attack != Attack::Pulse && tier.projectile_speed <= 0 {
-                return Err(to.err("projectile_mps", ErrorCode::Invalid, "bolts and lobs need a projectile speed of at least 0.03 m/s"));
-            }
-            if attack == Attack::Lob && tier.splash <= 0 {
-                return Err(to.err("splash_m", ErrorCode::Invalid, "a lob needs a splash radius"));
-            }
-            if tier.damage == 0 && tier.slow == 0 {
-                return Err(to.err("damage", ErrorCode::Invalid, "a tier must deal damage or slow"));
-            }
+            check_tier(&to, attack, &tier)?;
             tiers.push(tier);
         }
         stones.push(StoneDef { id, name: o.str("name")?.to_owned(), glyph: g, targets, policy, attack, tiers });
@@ -386,7 +547,155 @@ fn parse_stones(text: &str) -> Result<(Vec<StoneDef>, Rules), DataError> {
     if stones.is_empty() || stones.len() > 64 {
         return Err(root.err("stones", ErrorCode::OutOfRange, "needs 1..=64 stones"));
     }
-    Ok((stones, rules))
+    Ok((stones, rules, fuel))
+}
+
+/// The shortest time between two strikes of one storm stone: lightning never flashes more than
+/// three times a second (VFX.md, EFFECTUS.md question 5), and the rules hold it for one stone;
+/// several stones together are the presentation's flash governor.
+pub const MIN_STRIKE_TICKS: u32 = 11;
+
+fn check_tier(to: &Obj, attack: Attack, tier: &Tier) -> Result<(), DataError> {
+    let el = &tier.el;
+    let needs_projectile = matches!(attack, Attack::Bolt | Attack::Lob);
+    if needs_projectile && tier.projectile_speed <= 0 {
+        return Err(to.err("projectile_mps", ErrorCode::Invalid, "bolts and lobs need a projectile speed of at least 0.03 m/s"));
+    }
+    if attack == Attack::Lob && tier.splash <= 0 {
+        return Err(to.err("splash_m", ErrorCode::Invalid, "a lob needs a splash radius"));
+    }
+    match attack {
+        Attack::Gust => {
+            // The owner (2026-11-24): the wind does no damage; it works by pushing.
+            if tier.damage != 0 || tier.slow != 0 || el.burn != 0 || el.chill != 0 {
+                return Err(to.err("damage", ErrorCode::Invalid, "a gust deals nothing: no damage, slow, burn or chill (it pushes)"));
+            }
+            if el.push <= 0 || el.push_ticks == 0 {
+                return Err(to.err("push_m", ErrorCode::Invalid, "a gust needs push_m and push_s"));
+            }
+        }
+        Attack::Strike => {
+            if tier.damage <= 0 {
+                return Err(to.err("damage", ErrorCode::Invalid, "a strike needs damage"));
+            }
+            if tier.cooldown < MIN_STRIKE_TICKS {
+                return Err(to.err("cooldown_s", ErrorCode::OutOfRange, "a strike's cooldown is at least 0.367 s: lightning never flashes more than three times a second"));
+            }
+            if el.chain > 0 && el.chain_range <= 0 {
+                return Err(to.err("chain_m", ErrorCode::Invalid, "a chain needs chain_m"));
+            }
+        }
+        Attack::Heave => {
+            if el.line == 0 {
+                return Err(to.err("line", ErrorCode::Invalid, "a heave needs line (lane cells, 1..=8)"));
+            }
+            if (el.rubble_hp > 0) != (el.rubble_ticks > 0) {
+                return Err(to.err("rubble", ErrorCode::Invalid, "rubble needs both hp and s"));
+            }
+        }
+        _ => {
+            if tier.damage == 0 && tier.slow == 0 && el.chill == 0 && el.burn == 0 {
+                return Err(to.err("damage", ErrorCode::Invalid, "a tier must deal damage or slow"));
+            }
+        }
+    }
+    if el.chill > 0 && el.freeze_ticks == 0 {
+        return Err(to.err("freeze_s", ErrorCode::Invalid, "chill needs freeze_s (how long a freeze lasts)"));
+    }
+    if (el.burn > 0) != (el.burn_ticks > 0) {
+        return Err(to.err("burn_s", ErrorCode::Invalid, "a burn needs both burn_dps and burn_s"));
+    }
+    if el.push > 0 && attack != Attack::Gust {
+        return Err(to.err("push_m", ErrorCode::Invalid, "only a gust pushes"));
+    }
+    Ok(())
+}
+
+fn parse_tier_el(to: &Obj) -> Result<TierEl, DataError> {
+    let rubble = match to.get("rubble") {
+        None => (0, 0),
+        Some(_) => {
+            let r = to.obj("rubble")?;
+            r.only(&["hp", "s"])?;
+            (milli(r.num("hp", 1.0, 100_000.0)?), ticks(r.num("s", 0.1, 120.0)?))
+        }
+    };
+    Ok(TierEl {
+        burn: milli(to.num_or("burn_dps", 0.0, 0.0, 10_000.0)?) / TICK_HZ as i32,
+        burn_ticks: ticks(to.num_or("burn_s", 0.0, 0.0, 60.0)?),
+        chain: to.int_or("chain", 0, 0, 8)? as u8,
+        chain_range: mm(to.num_or("chain_m", 0.0, 0.0, 20.0)?),
+        chain_keep: permille(to.num_or("chain_keep", 1.0, 0.0, 1.0)?),
+        wet_bonus: permille(to.num_or("wet_bonus", 0.0, 0.0, 5.0)?),
+        chill: permille(to.num_or("chill", 0.0, 0.0, 1.0)?),
+        freeze_ticks: ticks(to.num_or("freeze_s", 0.0, 0.0, 30.0)?),
+        shatter: permille(to.num_or("shatter", 0.0, 0.0, 5.0)?),
+        push: mm(to.num_or("push_m", 0.0, 0.0, 30.0)?),
+        push_ticks: ticks(to.num_or("push_s", 0.0, 0.0, 5.0)?),
+        min_targets: to.int_or("min_targets", 1, 1, 100)? as u16,
+        line: to.int_or("line", 0, 0, 8)? as u8,
+        stagger_ticks: ticks(to.num_or("stagger_s", 0.0, 0.0, 10.0)?),
+        rubble_hp: rubble.0,
+        rubble_ticks: rubble.1,
+    })
+}
+
+/// `stones.json` `elements`: the elements' rules and the cells that burn.
+fn parse_elements(o: &Obj, map: &Map) -> Result<(Elements, Vec<CellId>), DataError> {
+    o.only(&["notes", "spread_s", "mob_reach_m", "cell_reach_m", "cell_heat", "cell_burn_s", "catch_dps", "catch_s", "wet_s", "lean", "gust_s", "chill_fade_s", "fuel"])?;
+    let spread_ticks = ticks(o.num("spread_s", 0.1, 10.0)?).max(1);
+    let fade = ticks(o.num("chill_fade_s", 0.5, 60.0)?).max(1);
+    let el = Elements {
+        on: true,
+        spread_ticks,
+        mob_reach: mm(o.num("mob_reach_m", 0.0, 10.0)?),
+        cell_reach: mm(o.num("cell_reach_m", 0.0, 10.0)?),
+        cell_heat: permille(o.num("cell_heat", 0.0, 1.0)?),
+        cell_burn_ticks: ticks(o.num("cell_burn_s", 0.1, 600.0)?),
+        cell_burn: milli(o.num("catch_dps", 0.0, 10_000.0)?) / TICK_HZ as i32,
+        catch_ticks: ticks(o.num("catch_s", 0.1, 60.0)?),
+        wet_ticks: ticks(o.num("wet_s", 0.0, 120.0)?),
+        lean: permille(o.num("lean", 0.0, 0.95)?),
+        gust_ticks: ticks(o.num("gust_s", 0.0, 60.0)?),
+        chill_fade: (1000 / fade as i32).max(1),
+    };
+    let mut fuel = Vec::new();
+    for (i, f) in o.arr("fuel")?.iter().enumerate() {
+        let s = f.as_str().ok_or_else(|| o.err("fuel", ErrorCode::BadType, "expected names: \"grass\", a cell (\"top:9,15\") or a straight run (\"top:9,13..top:9,17\")"))?;
+        let bad = |why: String| DataError::new("stones.json", format!("elements.fuel[{i}]"), ErrorCode::UnknownRef, why);
+        if s == "grass" {
+            fuel.extend(crate::fuel::grass_cells(map));
+        } else if let Some((a, b)) = s.split_once("..") {
+            let (a, b) = (map.cell_ref(a).ok_or_else(|| bad(format!("no cell {a:?}")))?, map.cell_ref(b).ok_or_else(|| bad(format!("no cell {b:?}")))?);
+            let (ca, cb) = (map.cell(a), map.cell(b));
+            if ca.face != cb.face || (ca.col != cb.col && ca.row != cb.row) {
+                return Err(bad(format!("{s:?} is not a straight run on one face")));
+            }
+            for c in map.cells() {
+                if c.face == ca.face && c.col >= ca.col.min(cb.col) && c.col <= ca.col.max(cb.col) && c.row >= ca.row.min(cb.row) && c.row <= ca.row.max(cb.row) {
+                    fuel.push(c.id);
+                }
+            }
+        } else {
+            fuel.push(map.cell_ref(s).ok_or_else(|| bad(format!("no cell {s:?}")))?);
+        }
+    }
+    fuel.sort();
+    fuel.dedup();
+    Ok((el, fuel))
+}
+
+/// Cross-file checks of the elements: an exploder must be able to break walls (it seeks them).
+fn check_elements(c: &Content) -> Result<(), DataError> {
+    for (i, e) in c.enemies.iter().enumerate() {
+        if (e.sapper || e.burst.is_some()) && !c.rules.elements.on {
+            return Err(DataError::new("enemies.json", format!("enemies[{i}]"), ErrorCode::Invalid, "sappers and bursts need stones.json's \"elements\" rules"));
+        }
+        if e.sapper && e.flies() {
+            return Err(DataError::new("enemies.json", format!("enemies[{i}].sapper"), ErrorCode::Invalid, "a flyer never meets a wall"));
+        }
+    }
+    Ok(())
 }
 
 fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
@@ -404,8 +713,21 @@ fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
         let o = Obj::new(e, F, format!("enemies[{i}]"))?;
         o.only(&[
             "id", "name", "glyph", "hp", "speed_mps", "movement", "climb_speed", "jump", "circle_points", "dust", "tombstones", "wall_dps",
-            "summon", "notes",
+            "summon", "notes", "mass", "sapper", "explode",
         ])?;
+        let burst = match o.get("explode") {
+            None => None,
+            Some(_) => {
+                let b = o.obj("explode")?;
+                b.only(&["radius_m", "damage", "push_m", "fuse_s"])?;
+                Some(Burst {
+                    radius: mm(b.num("radius_m", 0.5, 10.0)?),
+                    damage: milli(b.num_or("damage", 0.0, 0.0, 10_000.0)?),
+                    push: mm(b.num_or("push_m", 0.0, 0.0, 10.0)?),
+                    fuse: ticks(b.num("fuse_s", 0.0, 30.0)?),
+                })
+            }
+        };
         let id = o.str("id")?.to_owned();
         if out.iter().any(|d| d.id == id) {
             return Err(o.err("id", ErrorCode::Duplicate, format!("duplicate enemy id {id:?}")));
@@ -486,6 +808,12 @@ fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
             tombstones: o.int("tombstones", 0, 1000)? as i32,
             wall_damage,
             summon,
+            mass: permille(o.num_or("mass", 1.0, 0.1, 100.0)?),
+            sapper: match o.get("sapper") {
+                None => false,
+                Some(v) => v.as_bool().ok_or_else(|| o.err("sapper", ErrorCode::BadType, "expected true or false"))?,
+            },
+            burst,
         });
     }
     // Summons appear on the summoner's cell, so they must be able to stand and route there: a
@@ -711,6 +1039,47 @@ fn hash_of(c: &Content, props: bool) -> u64 {
     h.write_u32(r.build_ticks);
     h.write_u32(u32::from(r.nature.from_wave));
     h.write_u8(r.nature.min_tier);
+    // The elements, only when the content has any: the shipped maps hash as before them.
+    if c.elemental() {
+        h.write_str("elements");
+        let e = &r.elements;
+        h.write_bool(e.on);
+        for v in [e.spread_ticks, e.cell_burn_ticks, e.catch_ticks, e.wet_ticks, e.gust_ticks] {
+            h.write_u32(v);
+        }
+        for v in [e.mob_reach, e.cell_reach, e.cell_heat, e.cell_burn, e.lean, e.chill_fade] {
+            i(&mut h, i64::from(v));
+        }
+        h.write_u64(c.fuel.len() as u64);
+        for f in &c.fuel {
+            h.write_u32(u32::from(f.0));
+        }
+        for s in &c.stones {
+            for t in &s.tiers {
+                let el = &t.el;
+                for v in [el.burn, el.chain_range, el.chain_keep, el.wet_bonus, el.chill, el.shatter, el.push, el.rubble_hp] {
+                    i(&mut h, i64::from(v));
+                }
+                for v in [el.burn_ticks, el.freeze_ticks, el.push_ticks, el.stagger_ticks, el.rubble_ticks] {
+                    h.write_u32(v);
+                }
+                h.write_u8(el.chain);
+                h.write_u8(el.line);
+                h.write_u32(u32::from(el.min_targets));
+            }
+        }
+        for e in &c.enemies {
+            i(&mut h, i64::from(e.mass));
+            h.write_bool(e.sapper);
+            h.write_bool(e.burst.is_some());
+            if let Some(b) = e.burst {
+                for v in [b.radius, b.damage, b.push] {
+                    i(&mut h, i64::from(v));
+                }
+                h.write_u32(b.fuse);
+            }
+        }
+    }
     h.finish()
 }
 

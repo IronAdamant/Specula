@@ -1,0 +1,110 @@
+{
+  "notes": "The proving ground (DESIGN.md, Elemental stones): map 1's slab, the four shipped stones as they are, and the five elemental stones. Not a shipped map: nothing here changes the shipped balance. Units: metres, seconds, HP; chill, chain_keep, wet_bonus, shatter and lean are ratios.",
+  "edge_reach_m": 3.0,
+  "sell_refund": 0.7,
+  "wall": { "cost": 15, "hp": 300, "breach_penalty_m": 8.0 },
+  "nature": { "from_wave": 5, "min_tier": 2, "radius_m": 2.9, "slow": 0.15 },
+  "elements": {
+    "notes": "Fire moves on spread steps (spread_s). A burning enemy sets alight others within mob_reach_m and heats fuel within cell_reach_m; a burning fuel cell heats fuel within cell_reach_m (cell_heat a step, times 1 + lean along a gust's wind and 1 - lean against it) and sets alight ground enemies within cell_reach_m. What catches burns catch_dps for catch_s. Thawed enemies, and cells under frost or earth, stay wet wet_s. fuel: grass is the grass the app draws at the rock's edges; the rest is dry grass laid along lanes for the proving ground.",
+    "spread_s": 0.5,
+    "mob_reach_m": 1.2,
+    "cell_reach_m": 2.9,
+    "cell_heat": 0.35,
+    "cell_burn_s": 8,
+    "catch_dps": 3,
+    "catch_s": 2.5,
+    "wet_s": 4,
+    "lean": 0.6,
+    "gust_s": 4,
+    "chill_fade_s": 4,
+    "fuel": ["grass", "top:9,14..top:9,16", "top:5,17..top:8,17"]
+  },
+  "stones": [
+    {
+      "id": "warding", "name": "Warding stone", "glyph": "W",
+      "targets": "ground", "policy": "first", "attack": "bolt",
+      "tiers": [
+        { "cost": 50, "range_m": 7.0, "cooldown_s": 0.8, "damage": 10, "projectile_mps": 20 },
+        { "cost": 60, "range_m": 7.5, "cooldown_s": 0.7, "damage": 18, "projectile_mps": 22 },
+        { "cost": 90, "range_m": 8.0, "cooldown_s": 0.6, "damage": 30, "projectile_mps": 24 }
+      ]
+    },
+    {
+      "id": "rune_pillar", "name": "Rune pillar", "glyph": "P",
+      "targets": "ground", "policy": "first", "attack": "pulse",
+      "tiers": [
+        { "cost": 60, "range_m": 5.0, "cooldown_s": 1.0, "damage": 2, "slow": 0.35, "slow_s": 1.5 },
+        { "cost": 60, "range_m": 5.5, "cooldown_s": 1.0, "damage": 4, "slow": 0.45, "slow_s": 1.5 },
+        { "cost": 90, "range_m": 6.0, "cooldown_s": 1.0, "damage": 6, "slow": 0.55, "slow_s": 1.5 }
+      ]
+    },
+    {
+      "id": "brazier", "name": "Brazier cairn", "glyph": "F",
+      "targets": "ground", "policy": "first", "attack": "lob",
+      "tiers": [
+        { "cost": 80, "range_m": 6.0, "cooldown_s": 1.6, "damage": 16, "projectile_mps": 10, "splash_m": 1.8 },
+        { "cost": 80, "range_m": 6.5, "cooldown_s": 1.5, "damage": 28, "projectile_mps": 11, "splash_m": 2.0 },
+        { "cost": 110, "range_m": 7.0, "cooldown_s": 1.4, "damage": 45, "projectile_mps": 12, "splash_m": 2.3 }
+      ]
+    },
+    {
+      "id": "sky_obelisk", "name": "Sky obelisk", "glyph": "O",
+      "targets": "air", "policy": "first", "attack": "bolt",
+      "tiers": [
+        { "cost": 70, "range_m": 9.0, "cooldown_s": 0.9, "damage": 22, "projectile_mps": 30 },
+        { "cost": 70, "range_m": 9.5, "cooldown_s": 0.8, "damage": 40, "projectile_mps": 32 },
+        { "cost": 100, "range_m": 10.0, "cooldown_s": 0.7, "damage": 65, "projectile_mps": 34 }
+      ]
+    },
+    {
+      "id": "rogus", "name": "Rogus, the pyre stone", "glyph": "R",
+      "notes": "Fire. A lob that sets what it splashes alight; the fire spreads to packed dead and to the grass. Good against columns and on grassed lanes; useless against the wet and the frozen (it thaws them), and on bare stone it burns only what it hits.",
+      "targets": "ground", "policy": "first", "attack": "lob",
+      "tiers": [
+        { "cost": 85, "range_m": 6.0, "cooldown_s": 1.8, "damage": 8, "projectile_mps": 10, "splash_m": 1.8, "burn_dps": 4, "burn_s": 3 },
+        { "cost": 80, "range_m": 6.5, "cooldown_s": 1.7, "damage": 12, "projectile_mps": 11, "splash_m": 2.0, "burn_dps": 6, "burn_s": 3.5 },
+        { "cost": 110, "range_m": 7.0, "cooldown_s": 1.6, "damage": 18, "projectile_mps": 12, "splash_m": 2.3, "burn_dps": 9, "burn_s": 4 }
+      ]
+    },
+    {
+      "id": "fulmen", "name": "Fulmen, the storm menhir", "glyph": "L",
+      "notes": "Lightning. An instant strike that jumps to the nearest dead; the wet take half again. Good against strings of runners and the thawed; weak against one tough target alone; a staggered (grounded) enemy ends its chain. Never faster than one strike in 0.367 s (photosensitivity).",
+      "targets": "ground", "policy": "first", "attack": "strike",
+      "tiers": [
+        { "cost": 90, "range_m": 7.0, "cooldown_s": 1.5, "damage": 14, "chain": 2, "chain_m": 2.5, "chain_keep": 0.7, "wet_bonus": 0.5 },
+        { "cost": 80, "range_m": 7.5, "cooldown_s": 1.4, "damage": 22, "chain": 3, "chain_m": 3.0, "chain_keep": 0.7, "wet_bonus": 0.5 },
+        { "cost": 120, "range_m": 8.0, "cooldown_s": 1.3, "damage": 34, "chain": 4, "chain_m": 3.5, "chain_keep": 0.75, "wet_bonus": 0.6 }
+      ]
+    },
+    {
+      "id": "gelu", "name": "Gelu, the rime stone", "glyph": "I",
+      "notes": "Frost. A bolt that chills (divided by the target's mass) and freezes at full chill: the frozen stand, break no wall and cannot burst; the next hit shatters the ice for double damage or more. Lays rime on the cell, which fire does not cross while it lasts. Puts burning dead out. Good against exploders and the colossus's escort; weak alone against crowds.",
+      "targets": "ground", "policy": "first", "attack": "bolt",
+      "tiers": [
+        { "cost": 75, "range_m": 6.5, "cooldown_s": 1.0, "damage": 6, "projectile_mps": 18, "slow": 0.25, "slow_s": 1.5, "chill": 0.4, "freeze_s": 2.0, "shatter": 1.0 },
+        { "cost": 70, "range_m": 7.0, "cooldown_s": 1.0, "damage": 9, "projectile_mps": 19, "slow": 0.3, "slow_s": 1.5, "chill": 0.5, "freeze_s": 2.5, "shatter": 1.5 },
+        { "cost": 100, "range_m": 7.5, "cooldown_s": 0.9, "damage": 14, "projectile_mps": 20, "slow": 0.35, "slow_s": 1.5, "chill": 0.6, "freeze_s": 3.0, "shatter": 2.0 }
+      ]
+    },
+    {
+      "id": "ventus", "name": "Ventus, the gale cairn", "glyph": "V",
+      "notes": "Wind. Deals nothing: a gust shoves every dead in range back along its path (divided by its mass), fans their fires and leans the grass fire downwind; then the cairn must recharge (cooldown_s). It waits until min_targets are in range. Good for buying time and for pushing burning dead back into the column; useless against flyers and nearly so against the colossus.",
+      "targets": "ground", "policy": "first", "attack": "gust",
+      "tiers": [
+        { "cost": 70, "range_m": 5.5, "cooldown_s": 6.0, "push_m": 3.0, "push_s": 0.5, "min_targets": 2 },
+        { "cost": 70, "range_m": 6.0, "cooldown_s": 5.0, "push_m": 4.0, "push_s": 0.5, "min_targets": 2 },
+        { "cost": 90, "range_m": 6.5, "cooldown_s": 4.0, "push_m": 5.0, "push_s": 0.6, "min_targets": 2 }
+      ]
+    },
+    {
+      "id": "saxum", "name": "Saxum, the heaving stone", "glyph": "E",
+      "notes": "Earth. Stone spikes erupt along the target's lane: damage and a stagger to every dead on those cells, fire smothered (sand on flames). From tier II rubble rises on the farthest cell: a wall that blocks and re-routes, that the dead break and the exploders blast, and that crumbles by itself. A staggered enemy grounds lightning: the chain stops on it.",
+      "targets": "ground", "policy": "first", "attack": "heave",
+      "tiers": [
+        { "cost": 90, "range_m": 6.0, "cooldown_s": 3.0, "damage": 15, "line": 2, "stagger_s": 0.8 },
+        { "cost": 80, "range_m": 6.5, "cooldown_s": 2.8, "damage": 24, "line": 3, "stagger_s": 1.0, "rubble": { "hp": 120, "s": 6 } },
+        { "cost": 110, "range_m": 7.0, "cooldown_s": 2.6, "damage": 36, "line": 4, "stagger_s": 1.2, "rubble": { "hp": 200, "s": 8 } }
+      ]
+    }
+  ]
+}
