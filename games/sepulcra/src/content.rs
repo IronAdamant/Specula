@@ -329,6 +329,9 @@ pub struct Elements {
     pub gust_ticks: u32,
     /// Chill an enemy loses per tick (permille).
     pub chill_fade: i32,
+    /// The dead lean into the wind: the n-th shove an enemy takes is divided by 1 + n x this
+    /// (permille), so repeated gusts cannot hold one back for ever (the sweep found such a stall).
+    pub shove_fade: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -642,7 +645,7 @@ fn parse_tier_el(to: &Obj) -> Result<TierEl, DataError> {
 
 /// `stones.json` `elements`: the elements' rules and the cells that burn.
 fn parse_elements(o: &Obj, map: &Map) -> Result<(Elements, Vec<CellId>), DataError> {
-    o.only(&["notes", "spread_s", "mob_reach_m", "cell_reach_m", "cell_heat", "cell_burn_s", "catch_dps", "catch_s", "wet_s", "lean", "gust_s", "chill_fade_s", "fuel"])?;
+    o.only(&["notes", "spread_s", "mob_reach_m", "cell_reach_m", "cell_heat", "cell_burn_s", "catch_dps", "catch_s", "wet_s", "lean", "gust_s", "chill_fade_s", "shove_fade", "fuel"])?;
     let spread_ticks = ticks(o.num("spread_s", 0.1, 10.0)?).max(1);
     let fade = ticks(o.num("chill_fade_s", 0.5, 60.0)?).max(1);
     let el = Elements {
@@ -658,6 +661,7 @@ fn parse_elements(o: &Obj, map: &Map) -> Result<(Elements, Vec<CellId>), DataErr
         lean: permille(o.num("lean", 0.0, 0.95)?),
         gust_ticks: ticks(o.num("gust_s", 0.0, 60.0)?),
         chill_fade: (1000 / fade as i32).max(1),
+        shove_fade: permille(o.num_or("shove_fade", 0.0, 0.0, 10.0)?),
     };
     let mut fuel = Vec::new();
     for (i, f) in o.arr("fuel")?.iter().enumerate() {
@@ -1047,7 +1051,7 @@ fn hash_of(c: &Content, props: bool) -> u64 {
         for v in [e.spread_ticks, e.cell_burn_ticks, e.catch_ticks, e.wet_ticks, e.gust_ticks] {
             h.write_u32(v);
         }
-        for v in [e.mob_reach, e.cell_reach, e.cell_heat, e.cell_burn, e.lean, e.chill_fade] {
+        for v in [e.mob_reach, e.cell_reach, e.cell_heat, e.cell_burn, e.lean, e.chill_fade, e.shove_fade] {
             i(&mut h, i64::from(v));
         }
         h.write_u64(c.fuel.len() as u64);

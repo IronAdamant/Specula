@@ -182,6 +182,23 @@ fn the_light_are_pushed_farther_than_the_heavy() {
     assert!(runner > shambler && shambler > colossus && colossus > 0, "{runner} {shambler} {colossus}");
 }
 
+#[test]
+fn each_later_shove_is_weaker() {
+    let c = with_fuel("");
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "shambler", "top:9,15");
+    let i = idx(&s, id);
+    let fade = c.rules.elements.shove_fade;
+    assert!(fade > 0);
+    let mut got = Vec::new();
+    for _ in 0..3 {
+        s.w.enemies[i].el.shove = 0;
+        s.w.shove(&c, i, 3_000, 15);
+        got.push(s.w.enemies[i].el.shove);
+    }
+    assert_eq!(got, vec![3_000, (3_000_000 / (1000 + fade)) as i32, (3_000_000 / (1000 + 2 * fade)) as i32]);
+}
+
 /// Nothing but the shove moves them (a speed of zero): slows them to a stop.
 fn hold_still_but_shove(s: &mut State) {
     for e in &mut s.w.enemies {

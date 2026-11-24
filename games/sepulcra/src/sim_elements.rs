@@ -33,6 +33,8 @@ pub struct EnemyEl {
     /// mm still to be shoved back along its path, at `shove_rate` mm a tick.
     pub shove: i32,
     pub shove_rate: i32,
+    /// Shoves taken so far (each later one is weaker: `elements.shove_fade`).
+    pub shoves: u16,
     /// Staggered by earth while `tick < stagger_until`: it stands, and it grounds a lightning chain.
     pub stagger_until: u32,
     /// An exploding enemy alight: it bursts at this tick (0: no fuse burning).
@@ -131,7 +133,9 @@ impl World {
     fn shove(&mut self, content: &Content, i: usize, push: i32, ticks: u32) {
         let e = &mut self.enemies[i];
         let mass = content.enemy(e.kind).mass.max(1);
-        let s = (i64::from(push) * 1000 / i64::from(mass)) as i32;
+        let fade = 1000 + i64::from(content.rules.elements.shove_fade) * i64::from(e.el.shoves);
+        let s = (i64::from(push) * 1000 / i64::from(mass) * 1000 / fade) as i32;
+        e.el.shoves = e.el.shoves.saturating_add(1);
         if s <= 0 {
             return;
         }
@@ -511,6 +515,7 @@ impl World {
             for v in [x.burn_until, x.frozen_until, x.wet_until, x.stagger_until, x.fuse_at] {
                 h.write_u32(v);
             }
+            h.write_u32(u32::from(x.shoves));
         }
         h.write_u64(self.rubble.len() as u64);
         for (c, t) in &self.rubble {

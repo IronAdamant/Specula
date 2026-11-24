@@ -41,6 +41,21 @@ fn every_proving_layout_parses_places_everything_and_strands_nobody() {
     }
 }
 
+/// The first proving sweep found runs that never ended: a gust every few seconds pushed the last
+/// shamblers of a wave back as far as they walked between gusts. The dead lean into the wind
+/// (`shove_fade`): every run of every layout ends, won or lost.
+#[test]
+fn the_wind_cannot_hold_a_wave_for_ever() {
+    let c = content();
+    for (name, text) in LAYOUTS.iter().filter(|(n, _)| n.contains("wind")) {
+        let s = Script::parse(text, &c, name).unwrap();
+        for seed in 1..=12 {
+            let r = run(Arc::clone(&c), seed, &s, None, |_, _| {});
+            assert_ne!(r.outcome, sepulcra::Outcome::Running, "{name} seed {seed}: unfinished at tick {}", r.ticks);
+        }
+    }
+}
+
 #[test]
 fn the_same_seed_gives_the_same_run_tick_by_tick() {
     let c = content();

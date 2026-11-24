@@ -111,6 +111,7 @@ fn w_enemy_el(w: &mut ByteWriter, x: &EnemyEl) {
     for v in [x.burn_until, x.frozen_until, x.wet_until, x.stagger_until, x.fuse_at] {
         w.u32(v);
     }
+    w.u16(x.shoves);
 }
 
 fn r_enemy_el(r: &mut ByteReader<'_>) -> Result<EnemyEl, StateError> {
@@ -125,6 +126,7 @@ fn r_enemy_el(r: &mut ByteReader<'_>) -> Result<EnemyEl, StateError> {
         wet_until: counter(r, "wet_until")?,
         stagger_until: counter(r, "stagger_until")?,
         fuse_at: counter(r, "fuse_at")?,
+        shoves: r.u16("shoves").map_err(decode)?,
     })
 }
 
