@@ -137,15 +137,18 @@ fn cup_anchors(a: &Args) -> Vec<Anchor> {
     v
 }
 
-const P_BELL: &[Param] = &[len("radius", "the lip's radius", 0.5), len("crown", "the flat top's radius, under the lip's", 0.2), len("height", "the height", 0.6), len("wall", "the wall's thickness", 0.03), ratio("curve", "the flare's radius as a share of its chord (from the crown's edge to the lip)", 1.5, 0.55, 4.0)];
+const P_BELL: &[Param] = &[len("radius", "the lip's radius", 0.5), ratio("crown", "the flat top's radius, as a share of the lip's", 0.4, 0.1, 0.9), ratio("height", "the height, as a share of the lip's radius", 1.2, 0.3, 3.0), ratio("wall", "the wall's thickness, as a share of the lip's radius", 0.06, 0.005, 0.3), ratio("curve", "the flare's radius as a share of its chord (from the crown's edge to the lip)", 1.5, 0.55, 4.0)];
 /// A bell: the outside's flare an arc of radius `ρ` about `c` from the lip `(R, 0)` up to the
 /// crown's edge `(rc, H)`, bowed in toward the axis; the inside the concentric arc `ρ + t` (a wall
 /// of one thickness) from under the crown (`y = H − t`) to the floor. Returns the centre, `ρ`,
 /// and the inside's radii at the crown and at the lip.
 #[allow(clippy::type_complexity, reason = "a bell's numbers, read by its geometry and its anchors")]
 fn bell_parts(a: &Args) -> Result<(f64, f64, f64, f64, Pt, f64, f64, f64), Refusal> {
-    let (big, rc, h, t, k) = (a.f("radius"), a.f("crown"), a.f("height"), a.f("wall"), a.f("curve"));
-    let nums = [("radius", big), ("crown", rc), ("height", h), ("wall", t), ("curve", k)];
+    // (Its proportions are shares of the lip's radius, so that a bell drawn at random is mostly a
+    // bell: four lengths drawn apart over eight decades almost never are.)
+    let big = a.f("radius");
+    let (rc, h, t, k) = (a.f("crown") * big, a.f("height") * big, a.f("wall") * big, a.f("curve"));
+    let nums = [("radius", big), ("crown", a.f("crown")), ("height", a.f("height")), ("wall", a.f("wall")), ("curve", k)];
     if rc >= big {
         return Err(refuse("crown_over_the_lip", "the crown must be narrower than the lip", &nums));
     }
@@ -197,7 +200,8 @@ fn bell_geom(a: &Args) -> Result<Geom, Refusal> {
     ])
 }
 fn bell_anchors(a: &Args) -> Vec<Anchor> {
-    let (big, h, t) = (a.f("radius"), a.f("height"), a.f("wall"));
+    let big = a.f("radius");
+    let (h, t) = (a.f("height") * big, a.f("wall") * big);
     vec![
         at3("mouth", [0.0; 3], On::Free),
         out3("top", [0.0, h, 0.0], [0.0, 1.0, 0.0], On::Boundary),
@@ -263,20 +267,19 @@ fn goblet_anchors(a: &Args) -> Vec<Anchor> {
 
 const P_BOTTLE: &[Param] = &[
     len("radius", "the body's radius", 0.038),
-    len("height", "the height", 0.3),
-    len("neck", "the neck's radius", 0.0145),
-    len("neck_length", "the neck's length", 0.09),
-    len("shoulder", "the shoulder's height, at least the body's radius less the neck's", 0.04),
+    ratio("height", "the height, as a share of the body's radius", 8.0, 2.0, 30.0),
+    ratio("neck", "the neck's radius, as a share of the body's", 0.38, 0.05, 0.95),
+    ratio("neck_length", "the neck's length, as a share of the height", 0.3, 0.02, 0.8),
+    ratio("shoulder", "the shoulder's height over the body's radius less the neck's (at least 1: an arc of at most a quarter turn)", 1.7, 1.0, 20.0),
 ];
+/// A bottle's radius, height, neck radius, shoulder height, the body's height and the shoulder arc's
+/// radius. (Its proportions are shares of its radius, so that a bottle drawn at random is mostly a
+/// bottle: five lengths drawn apart over eight decades almost never were.)
 fn bottle_parts(a: &Args) -> Result<(f64, f64, f64, f64, f64, f64), Refusal> {
-    let (r, h, n, ln, s) = (a.f("radius"), a.f("height"), a.f("neck"), a.f("neck_length"), a.f("shoulder"));
-    let nums = [("radius", r), ("height", h), ("neck", n), ("neck_length", ln), ("shoulder", s)];
-    if n >= r {
-        return Err(refuse("neck_wider_than_the_body", "the neck must be narrower than the body", &nums));
-    }
-    if s < r - n {
-        return Err(refuse("shoulder_lower_than_its_step", "the shoulder is an arc upright at the body, of at most a quarter turn: its height at least the body's radius less the neck's", &nums));
-    }
+    let r = a.f("radius");
+    let (h, n) = (a.f("height") * r, a.f("neck") * r);
+    let (ln, s) = (a.f("neck_length") * h, a.f("shoulder") * (r - n));
+    let nums = [("radius", r), ("height", a.f("height")), ("neck", a.f("neck")), ("neck_length", a.f("neck_length")), ("shoulder", a.f("shoulder"))];
     let ys = h - ln - s;
     if ys <= 0.0 {
         return Err(refuse("neck_and_shoulder_over_the_height", "the neck and the shoulder must leave some body", &nums));
@@ -298,8 +301,9 @@ fn bottle_geom(a: &Args) -> Result<Geom, Refusal> {
     ])
 }
 fn bottle_anchors(a: &Args) -> Vec<Anchor> {
-    let (r, h, n) = (a.f("radius"), a.f("height"), a.f("neck"));
-    let mut v = round_anchors(On::Boundary, (h, On::Boundary), 0.25 * h, r);
+    let Ok((r, h, n, _, ys, _)) = bottle_parts(a) else { return Vec::new() };
+    // (Round the body at half its height: on the cylinder whatever the shoulder takes.)
+    let mut v = round_anchors(On::Boundary, (h, On::Boundary), 0.5 * ys, r);
     v.push(at3("neck_top", [n, h, 0.0], On::Boundary));
     v
 }

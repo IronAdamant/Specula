@@ -161,14 +161,19 @@ entered once with its parameters, measures, anchors, count and field by the rule
   of at most a quarter turn, point-symmetric about its middle, so its area is a polygon's; an S
   flatter than fifty to one is refused, as its arcs' centres would be too far off to keep the
   measures' digits); `arch_portal` (the wall round an arched opening); `stair_profile`; `grate`
-  and `truss` (figures with holes, raised by a slab); `banner`; `leaf` (its width a share of its
+  and `truss` (figures with holes, raised by a slab; a bar under a ten-millionth of the figure's
+  longer side is refused, as the raise's cap cutter was seen not to make the cap between holes
+  that close: a fault of `cap.rs` that only these figures reach, not mended here); `banner`; `leaf` (its width a share of its
   length, which bounds how shallow its arcs are); `koch_snowflake` (depth 0 to 7) and
   `sierpinski_carpet` (depth 1 to 5). New words for old shapes: `ovolo` and `quarter_round` (the
   sector at 90 degrees), `bead` and `astragal` (the semicircle).
 - **Solids**: turned (a profile of lines and arcs from the axis to the axis: exact measures, a
   bounded error, an exact field): `rounded_cylinder`, the hollow vessels `cup`, `bell` and
   `goblet` (the cavity is part of the one profile: in from the floor's middle, round the rim, down
-  the outside), and the props `bottle`, `vase`, `baluster`, `mushroom`. Flat: `chamfered_box`
+  the outside), and the props `bottle`, `vase`, `baluster`, `mushroom` (the bell's and the
+  bottle's proportions are shares of their radius, a bottle's shoulder a multiple of its step
+  from body to neck: drawn as free lengths over the parameters' eight decades, neither built
+  once in 300 draws, which the random-arguments probe refuses). Flat: `chamfered_box`
   (every edge cut at 45 degrees and a triangle at each corner: 24 points, 26 faces), `stairs`,
   `crystal`, `gem` (a crown of triangles between the girdle and a table turned half a side; the
   table's corners must lie inside the girdle's sides). And `chain_link`: a round wire along a
@@ -851,14 +856,14 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 | Form | What it is | Parameters |
 |---|---|---|
 | `cup` | a hollow vessel: a floor and a wall of one thickness, straight or tapered (a cup, a bucket, a pot) | `radius` m 0.4 (0.0001..10000), `top` m 0.45 (0.0001..10000), `height` m 0.5 (0.0001..10000), `wall` m 0.03 (0.0001..10000), `floor` m 0.04 (0.0001..10000) |
-| `bell` | a hollow bell: a flat crown and a flare bowed in, its wall one thickness (two concentric arcs) | `radius` m 0.5 (0.0001..10000), `crown` m 0.2 (0.0001..10000), `height` m 0.6 (0.0001..10000), `wall` m 0.03 (0.0001..10000), `curve` ratio 1.5 (0.55..4) |
+| `bell` | a hollow bell: a flat crown and a flare bowed in, its wall one thickness (two concentric arcs) | `radius` m 0.5 (0.0001..10000), `crown` ratio 0.4 (0.1..0.9), `height` ratio 1.2 (0.3..3), `wall` ratio 0.06 (0.005..0.3), `curve` ratio 1.5 (0.55..4) |
 | `goblet` | a goblet: a hollow half-ball cup on a stem and a round foot | `radius` m 0.04 (0.0001..10000), `wall` m 0.003 (0.0001..10000), `stem` m 0.005 (0.0001..10000), `length` m 0.08 (0.0001..10000), `foot` m 0.035 (0.0001..10000), `base` m 0.004 (0.0001..10000) |
 
 #### solid forms, lathe
 
 | Form | What it is | Parameters |
 |---|---|---|
-| `bottle` | a bottle: a body, a shoulder (an arc upright at the body) and a neck | `radius` m 0.038 (0.0001..10000), `height` m 0.3 (0.0001..10000), `neck` m 0.0145 (0.0001..10000), `neck_length` m 0.09 (0.0001..10000), `shoulder` m 0.04 (0.0001..10000) |
+| `bottle` | a bottle: a body, a shoulder (an arc upright at the body) and a neck | `radius` m 0.038 (0.0001..10000), `height` ratio 8 (2..30), `neck` ratio 0.38 (0.05..0.95), `neck_length` ratio 0.3 (0.02..0.8), `shoulder` ratio 1.7 (1..20) |
 | `vase` | a vase: a ball belly on a foot, a neck flaring to the mouth (solid: no cavity) | `radius` m 0.12 (0.0001..10000), `foot` m 0.06 (0.0001..10000), `neck` m 0.05 (0.0001..10000), `mouth` m 0.07 (0.0001..10000), `neck_length` m 0.08 (0.0001..10000) |
 | `baluster` | a baluster: a ball on a plinth, a neck and a cap (a railing's post, a table's leg) | `radius` m 0.06 (0.0001..10000), `base` m 0.05 (0.0001..10000), `thickness` m 0.03 (0.0001..10000), `neck` m 0.025 (0.0001..10000), `neck_length` m 0.25 (0.0001..10000) |
 | `mushroom` | a mushroom: a stem under a spherical cap | `stem` m 0.02 (0.0001..10000), `stem_height` m 0.06 (0.0001..10000), `cap` m 0.06 (0.0001..10000), `cap_height` m 0.04 (0.0001..10000) |

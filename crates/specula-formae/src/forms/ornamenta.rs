@@ -254,6 +254,10 @@ fn steps_anchors(a: &Args) -> Vec<Anchor> {
 
 // ---------------------------------------------------------------- a grate and a truss
 
+/// The thinnest bar between holes, as a share of the figure's longer side. The raise's cap
+/// cutter (cap.rs) was seen to fail (`CapNotCut`, so `not_well_made`) on a grate 1 by 10,000 m
+/// with bars of 3e-4 m (3e-8 of it), and to hold at 5e-4.
+const THIN_BAR: f64 = 1e-7;
 const P_GRATE: &[Param] = &[len("width", "along x", 1.0), len("height", "along y", 1.0), count("columns", "the holes across", 4.0, 1.0, 8.0), count("rows", "the holes up", 4.0, 1.0, 8.0), len("bar", "each bar's width, the border's too", 0.05)];
 /// A grate's width, height, columns, rows, bar, and its holes' width and height.
 type GrateParts = (f64, f64, usize, usize, f64, f64, f64);
@@ -263,6 +267,9 @@ fn grate_parts(a: &Args) -> Result<GrateParts, Refusal> {
     let hh = (h - (r as f64 + 1.0) * b) / r as f64;
     if hw <= 0.0 || hh <= 0.0 {
         return Err(refuse("bars_fill_the_grate", "the bars leave no hole: (count + 1) bars must be narrower than the side", &[("width", w), ("height", h), ("columns", c as f64), ("rows", r as f64), ("bar", b)]));
+    }
+    if b < THIN_BAR * w.max(h) {
+        return Err(refuse("bar_too_thin_for_its_size", "a bar must be at least a ten-millionth of the grate's longer side (thinner, the cap that a raise cuts between holes so close is not made)", &[("width", w), ("height", h), ("bar", b)]));
     }
     Ok((w, h, c, r, b, hw, hh))
 }
@@ -362,6 +369,9 @@ fn truss_parts(a: &Args) -> Result<(f64, f64, Vec<[Pt; 3]>), Refusal> {
     let nums = [("length", l), ("height", h), ("bays", n as f64), ("bar", b)];
     if 2.0 * b >= l.min(h) {
         return Err(refuse("bars_fill_the_truss", "two bars must be narrower than the length and the height", &nums));
+    }
+    if b < THIN_BAR * l.max(h) {
+        return Err(refuse("bar_too_thin_for_its_size", "a bar must be at least a ten-millionth of the truss's longer side (thinner, the cap that a raise cuts between holes so close is not made)", &nums));
     }
     match truss_holes(l, h, n, b) {
         Ok(v) => Ok((l, h, v)),

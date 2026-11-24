@@ -42,15 +42,12 @@ fn every_new_rule_is_refused_with_its_numbers() {
     refused("rounded_cylinder", Solid, &[("height", 0.2), ("fillet", 0.1)], "fillet_past_the_flats");
     refused("cup", Solid, &[("height", 0.5), ("floor", 0.5)], "floor_over_the_rim");
     refused("cup", Solid, &[("radius", 0.4), ("top", 0.45), ("wall", 0.45)], "wall_fills_the_cup");
-    refused("bell", Solid, &[("radius", 0.5), ("crown", 0.5)], "crown_over_the_lip");
-    refused("bell", Solid, &[("height", 0.6), ("wall", 0.6)], "wall_over_the_height");
+    refused("bell", Solid, &[("height", 0.3), ("wall", 0.3)], "wall_over_the_height");
     refused("bell", Solid, &[("curve", 0.55)], "flare_too_deep");
-    refused("bell", Solid, &[("wall", 0.3)], "wall_too_thick_for_the_flare");
+    refused("bell", Solid, &[("crown", 0.1), ("wall", 0.3)], "wall_too_thick_for_the_flare");
     refused("goblet", Solid, &[("radius", 0.04), ("stem", 0.04)], "stem_wider_than_cup_or_foot");
     refused("goblet", Solid, &[("wall", 0.0001), ("stem", 0.01)], "wall_too_thin_over_the_stem");
-    refused("bottle", Solid, &[("radius", 0.038), ("neck", 0.04)], "neck_wider_than_the_body");
-    refused("bottle", Solid, &[("shoulder", 0.01)], "shoulder_lower_than_its_step");
-    refused("bottle", Solid, &[("height", 0.12), ("neck_length", 0.09), ("shoulder", 0.04)], "neck_and_shoulder_over_the_height");
+    refused("bottle", Solid, &[("height", 2.0), ("neck_length", 0.8), ("shoulder", 20.0)], "neck_and_shoulder_over_the_height");
     refused("vase", Solid, &[("radius", 0.12), ("foot", 0.12)], "foot_or_neck_past_the_belly");
     refused("baluster", Solid, &[("base", 0.05), ("neck", 0.05)], "neck_past_the_ball_or_plinth");
     refused("mushroom", Solid, &[("stem", 0.06), ("cap", 0.06)], "stem_wider_than_the_cap");
@@ -194,4 +191,27 @@ fn the_chain_links_field_by_hand() {
     near([0.0, t + 0.2, r], 0.2 - t);
     // Inside the bend: from its centre the middle line is r away.
     near([0.5 * l, t, 0.0], r - t);
+}
+
+
+/// A grate whose bars are under a ten-millionth of its size is refused before it is raised: the
+/// raise's cap cutter was seen not to make the cap of a 1 by 10,000 m grate with bars of 3e-4 m
+/// (`not_well_made`), and a raise of every grate it accepts at a corner of its ranges is made or
+/// refused soundly.
+#[test]
+fn a_grates_bars_are_not_thinner_than_its_cap_can_be_cut() {
+    refused("grate", Kind::Plane, &[("width", 1.0), ("height", 10000.0), ("bar", 0.0003)], "bar_too_thin_for_its_size");
+    refused("truss", Kind::Plane, &[("length", 10000.0), ("bar", 0.0003)], "bar_too_thin_for_its_size");
+    for (w, h) in [(1.0, 10000.0), (10000.0, 1.0), (1.0, 1000.0)] {
+        for bar in [1e-3, 2e-3] {
+            let s = Spec::new("grate", None, &[("width", w), ("height", h), ("columns", 5.0), ("rows", 5.0), ("bar", bar)]).unwrap();
+            for d in [8, 9] {
+                match crate::raise::slab(&s, 1.0).and_then(|x| x.build(d).map(|_| ())) {
+                    Ok(()) => {}
+                    Err(Error::Constraint { rule, .. }) => assert_ne!(rule, "not_well_made", "{w} x {h}, bar {bar}, detail {d}"),
+                    Err(e) => panic!("{e}"),
+                }
+            }
+        }
+    }
 }
