@@ -658,7 +658,11 @@ spent every step; two runs of five steps each, the range of all ten, with other 
 So the work limit's maximum is now 524,288 (`MAX_WORK`; it was 1,048,576 counted the old way,
 which measured 400 to 500 ms a step in a still world at the node limit and 1.6 s in a churned
 tick): no setting the crate accepts means much more than a frame's worth of one core on this
-laptop, with a spread step every 6 ticks. The default rose from 32,768 to 262,144, because the
+laptop for the spread step itself, with a spread step every 6 ticks. A whole tick can still cost far
+more where the world asks for it: the third reviewer's churned tick at the node limit (cell
+0.25 m, 64 acts each after an add, a remove or a move, so each act looks at all 32,768 nodes;
+its busiest tick also made the grid's 1.2 million entries) counted 29.8 million operations, and
+the slowest such tick took 445 ms here, about 15 ns an operation; `tick_ops` says that count before it runs. The default rose from 32,768 to 262,144, because the
 same work counted honestly is about eight times the number: at 32,768 the forest's work limit
 alone let 2,750 catch in two minutes, at 262,144 it lets 9,563, against 9,761 at the old
 default counted the old way. The times are not in `worst_case()`, which holds counts only, the
