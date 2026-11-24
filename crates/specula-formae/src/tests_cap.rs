@@ -157,7 +157,7 @@ fn trusses(scale: f64, bays: &[usize]) -> Vec<Case> {
     let mut v = Vec::new();
     for &n in bays {
         for hi in 0..8 {
-            let h = 0.05 * 2f64.powi(hi);
+            let h = 0.05 * pow(2.0, hi);
             for bi in 1..=6 {
                 let b = h * 0.03 * bi as f64;
                 v.extend(case("truss", vec![("length", 4.0 * scale), ("height", h * scale), ("bays", n as f64), ("bar", b * scale)], (4.0f64).max(h) * scale));
@@ -216,7 +216,7 @@ fn grates(scale: f64) -> Vec<Case> {
         for r in 1..=8 {
             for hi in 0..10 {
                 for bi in 1..=6 {
-                    let h = 0.01 * 3f64.powi(hi);
+                    let h = 0.01 * pow(3.0, hi);
                     let b = 0.02 * bi as f64 / (c.max(r) as f64 + 1.0);
                     v.extend(case("grate", vec![("width", scale), ("height", h * scale), ("columns", c as f64), ("rows", r as f64), ("bar", b * scale)], h.max(1.0) * scale));
                 }
@@ -272,7 +272,7 @@ fn arches(scale: f64) -> Vec<Case> {
         for hi in 0..9 {
             for oi in 0..9 {
                 for si in 0..5 {
-                    let (w, h) = (0.01 * 4f64.powi(wi), 0.01 * 4f64.powi(hi));
+                    let (w, h) = (0.01 * pow(4.0, wi), 0.01 * pow(4.0, hi));
                     let o = w * [1e-8, 1e-6, 1e-4, 0.01, 0.1, 0.3, 0.6, 0.9, 0.999][oi];
                     let sp = (h - 0.5 * o) * [1e-6, 0.01, 0.3, 0.7, 0.999][si];
                     v.extend(case("arch_portal", vec![("width", w * scale), ("height", h * scale), ("opening", o * scale), ("spring", sp * scale)], w.max(h) * scale));
@@ -307,4 +307,9 @@ fn every_arch_of_the_grid_is_raised() {
         }
     }
     assert!(faults.is_empty(), "{faults:#?}");
+}
+
+/// `b` to a whole power, by products (the crate's lints keep platform maths out).
+fn pow(b: f64, n: i32) -> f64 {
+    (0..n).fold(1.0, |x, _| x * b)
 }

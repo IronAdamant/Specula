@@ -211,7 +211,7 @@ const P_CUP: &[Param] = &[len("radius", "the outside's radius at the bottom", 0.
 /// outside's line moved `wall` across it (along its normal), so the wall is `wall` thick
 /// measured across, however the cup flares; level, it is `wall · L / h` (`L` the side's slant
 /// length): review 1 of stage 4 found a level offset, 0.0033 m across where 0.03 was asked.
-fn cup_parts(a: &Args) -> Result<(f64, f64, f64, f64, f64, f64, f64), Refusal> {
+fn cup_parts(a: &Args) -> Result<Seven, Refusal> {
     let (r, t, h, w, f) = (a.f("radius"), a.f("top"), a.f("height"), a.f("wall"), a.f("floor"));
     if f >= h {
         return Err(refuse("floor_over_the_rim", "the floor must be thinner than the cup is tall", &[("height", h), ("floor", f)]));
