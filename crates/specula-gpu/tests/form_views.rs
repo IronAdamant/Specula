@@ -85,16 +85,9 @@ fn on_adapter(adapter: AdapterPreference, label: &str) {
     assert_eq!(pixel(&rgba, SIZE, mid, mid), pixel(&rgba, SIZE, 2, 2), "{test}: no mesh is drawn before the form set exists");
     assert_eq!((early.pipelines.created, early.pipelines.created_after_warm), (made, 0), "{test}: the frame compiled nothing");
     gpu.request_form_pipelines();
-    let asked = std::time::Instant::now();
-    loop {
-        let v = gpu.pipeline_variants();
-        assert!(v.failed.is_none(), "{test}: {:?}", v.failed);
-        if v.form {
-            break;
-        }
-        assert!(asked.elapsed() < std::time::Duration::from_secs(120), "{test}: the form set was not built in two minutes");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    // (Until the worker ends: a join, not a deadline.)
+    let v = gpu.wait_for_pipelines();
+    assert!(v.form && v.failed.is_none(), "{test}: the form set is built: {v:?}");
     gpu.request_form_pipelines(); // (again: nothing to do)
 
     // Normals: the facing as colour, exactly. A wall facing the camera is (0, 0, 1); the ball's

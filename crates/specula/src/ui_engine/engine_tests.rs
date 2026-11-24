@@ -61,10 +61,13 @@ impl Game for TestGame {
     }
 
     fn frame(&mut self, ctx: &mut Ctx, f: &mut Frame) {
+        // Busy for its cost on the machine's clock, and its cost on ui_act's clock when a test
+        // holds that (then the budget reads exactly the cost, whatever the machine did).
         let spin = Instant::now();
         while spin.elapsed() < self.cost {
             std::hint::spin_loop();
         }
+        super::advance_act_clock(self.cost);
         self.t += 1.0 / 60.0;
         self.input.update(self.t, f.input, f.pads);
         if self.input.pressed("open") {
@@ -279,11 +282,18 @@ fn claims_check_what_the_callers_input_causes_and_only_that() {
 /// Finding 5: frames are budgeted by time. A call that would run past it stops between units
 /// and says what is left; sending `rest` back finishes the work. The 160-frame cap stops the
 /// same way.
+///
+/// Which of the two stops a call is decided by a clock. On the machine's clock only one
+/// direction is the design's: frames that each cost at least 0.5 ms can never reach the cap
+/// inside 20 ms, however busy the machine. That fast frames reach the cap inside 20 ms is
+/// not (it failed once with 109 frames in 20.1 ms, sixteen test threads beside other builds,
+/// 2026-11-24), so the cap, and the exact count the budget allows, are asserted on a clock
+/// the test holds (`hold_act_clock`), where a frame costs what the game says and nothing else.
 #[test]
 fn ui_act_stops_at_its_time_budget_and_hands_back_the_rest() {
     let Some(mut e) = engine("budget") else { return };
     let m = hello(&mut e, "malo01", "mallory", "builder");
-    // 0.5 ms a frame: 160 frames would be 80 ms.
+    // 0.5 ms a frame (at least, on the machine's clock): 160 frames would be 80 ms.
     set_cost(&mut e, Duration::from_micros(500));
     let started = Instant::now();
     let (r, err) = call(&mut e, &m, "mallory", "ui_act", r#"{"steps": [{"wait": 120}, {"press": "open"}, {"wait": 40}], "settle": 0}"#);
@@ -306,16 +316,43 @@ fn ui_act_stops_at_its_time_budget_and_hands_back_the_rest() {
             Some(more) => rest = more.to_vec(),
             None => {
                 assert_eq!(r.get("screens").and_then(Json::as_array).and_then(|s| s.first()).and_then(Json::as_str), Some("menu"), "the press ran: {r}");
-                set_cost(&mut e, Duration::ZERO);
-                // Fast frames: the cap stops it.
-                let (r, _) = call(&mut e, &m, "mallory", "ui_act", r#"{"steps": [{"wait": 120}, {"wait": 120}], "settle": 0}"#);
-                assert_eq!(r.get("stopped").and_then(Json::as_str), Some("frame_cap"), "{r}");
-                assert_eq!(r.get("frames").and_then(Json::as_u64), Some(crate::ui_tools::MAX_FRAMES as u64));
+                held_clock(&mut e, &m);
                 return;
             }
         }
     }
     panic!("the rest never finished");
+}
+
+/// The budget on a held clock: exactly as many frames as fit 20 ms at their cost, and the cap
+/// when frames cost nothing.
+fn held_clock(e: &mut Engine, m: &SessionInfo) {
+    struct Release;
+    impl Drop for Release {
+        fn drop(&mut self) {
+            super::hold_act_clock(false);
+        }
+    }
+    super::hold_act_clock(true);
+    let _release = Release;
+    // 0.6 ms a frame on the held clock, a fresh game (so the call lays out first: one settle
+    // frame). The settle frame and the wait's first always run; then a frame runs while the
+    // time so far and one more frame's cost stay within 20 ms: 33 frames (19.8 ms), and the
+    // 34th would end at 20.4 ms. Clear of the boundary, so no rounding decides it.
+    set_cost(e, Duration::from_micros(600));
+    let (r, err) = call(e, m, "mallory", "ui_act", r#"{"steps": [{"wait": 120}, {"press": "open"}, {"wait": 40}], "settle": 0}"#);
+    assert!(!err, "{r}");
+    assert_eq!(r.get("stopped").and_then(Json::as_str), Some("time_budget"), "{r}");
+    assert_eq!((r.get("frames").and_then(Json::as_u64), r.get("frames_left").and_then(Json::as_u64)), (Some(33), Some(88)), "{r}");
+    assert_eq!(r.get("ms").and_then(Json::as_f64), Some(19.8), "the call's time is the held clock's: {r}");
+    // Frames that cost nothing: the held clock never moves, and the cap stops the call.
+    set_cost(e, Duration::ZERO);
+    let (r, err) = call(e, m, "mallory", "ui_act", r#"{"steps": [{"wait": 120}, {"wait": 120}], "settle": 0}"#);
+    assert!(!err, "{r}");
+    assert_eq!(r.get("stopped").and_then(Json::as_str), Some("frame_cap"), "{r}");
+    assert_eq!(r.get("frames").and_then(Json::as_u64), Some(crate::ui_tools::MAX_FRAMES as u64), "{r}");
+    // (The settle frame, the first wait's 120 and 39 of the second's: 81 of it left.)
+    assert_eq!((r.get("frames_left").and_then(Json::as_u64), r.get("steps_left").and_then(Json::as_u64)), (Some(81), Some(1)), "{r}");
 }
 
 fn set_cost(e: &mut Engine, cost: Duration) {

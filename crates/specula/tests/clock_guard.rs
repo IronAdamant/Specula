@@ -26,6 +26,24 @@
 //! < 50)`), and an assertion inside a helper that takes the bound as an argument. Reviews look
 //! for those.
 //!
+//! **Nor an outcome a clock in the code decides.** A test that checks which way the code went
+//! (`stopped == "frame_cap"`), where the code chose by its own time budget, bounds a speed
+//! with no time in the check: `ui_engine::engine_tests::ui_act_stops_at_its_time_budget_
+//! and_hands_back_the_rest` held that 160 fast frames fit `ui_act`'s 20 ms budget, and failed
+//! once in a busy run (109 frames in 20.1 ms, 2026-11-24). Such a test holds the code's clock
+//! (`ui_engine::hold_act_clock`, `models`' `NOW`), or checks only the outcome no machine's
+//! speed can change. **Nor a wait for a worker against a deadline** (`Instant::now() <
+//! deadline`, or `elapsed()` under a bound of minutes): a minute is legal here and still ran
+//! out beside a release build (`specula-gpu`'s `wait_variants`, the same day). A wait for a
+//! worker ends on its event (a join: `Gpu::wait_for_pipelines`), not on a time.
+//!
+//! **A fixed sleep as synchronisation** is read by a second check here
+//! (`no_test_synchronises_by_sleeping`): a `thread::sleep` in test code that no loop encloses
+//! (a sleep in a loop is a poll's interval; what ends that wait is the condition it checks).
+//! Each one left is listed with why it decides nothing ([`SLEEPS_NOT_SYNC`]) or as found and
+//! not yet mended ([`SLEEPS_TO_MEND`]). It can't see a sleep in a helper a test calls from
+//! another file, nor tell a loop that only runs once.
+//!
 //! **Nor the other way round:** a test that needs the machine to be slow ("still running after
 //! a pump of 1 ms": the cause of CI's red on 2026-11-21, where a faster machine had finished),
 //! and a test that sleeps a few milliseconds and expects a file's time to have moved (a file
@@ -351,6 +369,273 @@ fn every_copy_of_speed_budget_is_the_same() {
         }
     }
     assert!(copies.iter().any(|c| c == "crates/specula-core/src/lib.rs"), "specula_core::speed_budget is gone: {copies:?}");
+}
+
+/// Sleeps in test code that are not inside a loop and are not synchronisation, each with why:
+/// (file, a piece of the sleep's line, why the time it sleeps decides nothing). A sleep that
+/// stands in for "the other thread has got there by now" is never listed here: it waits on
+/// the event instead (a channel, a join, a hook the code under test calls).
+const SLEEPS_NOT_SYNC: &[(&str, &str, &str)] = &[
+    ("crates/specula/src/capture.rs", "from_millis(30)", "a worker made late on purpose; the test waits on its condition variable for the result"),
+    ("crates/specula/src/lex_live.rs", "from_millis(self.0)", "a native hook's cost, inside the code under test: a busy machine only lengthens it"),
+    ("crates/specula/src/steps.rs", "from_millis(1)", "a job's slice made to cost time: a lower bound, which load only lengthens"),
+    ("crates/specula/src/ui_engine.rs", "sleep(self.cost)", "the Slow driver's frame cost: frames past the budget, which load only makes later"),
+    ("crates/specula/src/text_window.rs", "KEY_GUARD_GAP", "sleeps past the key guard's own window: a longer sleep is the same outcome"),
+    ("crates/specula/src/trace_engine.rs", "from_millis(60)", "makes a stall, or holds a lock, of at least 60 ms on purpose; the holder is waited for by a channel"),
+    ("crates/specula/src/workers.rs", "from_millis(30)", "a slow task; the order asserted is the serial lane's, which the design guarantees however long it sleeps"),
+    ("crates/specula-core/src/profile.rs", "from_millis(2)", "a zone's cost: a lower bound"),
+    ("crates/specula-gpu/src/heap.rs", "from_millis(400)", "a driver's slow allocation simulated, inside the code under test"),
+    ("crates/specula-sys/src/lib.rs", "from_millis(40)", "the subject: time asleep must not read as a thread's running time"),
+    ("crates/specula-sys/src/lib.rs", "from_millis(100)", "a signaller made late; the console close waits for its event"),
+    // File times: two writes kept apart so the second has a later time (the other way round:
+    // a file system that keeps times by the second needs more; this guard's header).
+    ("crates/specula/src/disk.rs", "from_millis(30)", "file times apart (not synchronisation; see the header on file times)"),
+    ("crates/specula/src/models.rs", "from_millis(20)", "file times apart (not synchronisation; see the header on file times)"),
+    ("crates/specula/src/project.rs", "from_millis(20)", "file times apart (not synchronisation; see the header on file times)"),
+    ("crates/specula/tests/two_d_gpu.rs", "from_millis(30)", "file times apart (not synchronisation; see the header on file times)"),
+    ("crates/specula-logic/src/digest.rs", "from_millis(30)", "file times apart (not synchronisation; see the header on file times)"),
+];
+
+/// Sleeps found by this guard on 2026-11-24 that do stand in for an event, not yet mended:
+/// (file, a piece of the line, what is wrong). Each passes on a quiet machine; the list only
+/// keeps new ones out. Mend one and take it off (the guard says when an entry matches nothing).
+const SLEEPS_TO_MEND: &[(&str, &str, &str)] = &[
+    ("crates/specula/src/inputguard/tests.rs", "from_millis(50)", "the waiter is meant to be asleep before the event: if it is not yet, the wake-up path is not what was tested"),
+    ("crates/specula/src/inputguard/tests.rs", "from_millis(250)", "'the waits did not end': a loaded machine that had not run the waiters passes it without testing"),
+    ("crates/specula-audio/tests/backends.rs", "from_millis(100)", "'a 200 ms sound can't be over after 100 ms': a sleep that overruns by 100 ms on a busy machine fails it"),
+    ("crates/specula-audio/tests/backends.rs", "from_millis(400)", "frames consumed in real time, read after a fixed sleep"),
+    ("crates/specula-audio/tests/backends.rs", "from_millis(50)", "the backend's state read after a fixed time"),
+    ("crates/specula-audio/tests/backends.rs", "from_millis(600)", "the device's stats read after a fixed time"),
+    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(100)", "the server is meant to hold the silent and half-sent connections before it stops"),
+    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(300)", "'the server waits for the call' after 300 ms (passes without testing when slow), and the accept thread meant to have handed every connection to a worker"),
+    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(500)", "the call meant to have returned and begun its write"),
+    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(200)", "the queued connections meant to be queued"),
+];
+
+/// Whether the `r` at `i` begins a raw string's prefix: nothing of a name before it, or only
+/// the `b` of `br".."`.
+fn starts_word(c: &[char], i: usize) -> bool {
+    let ident = |k: usize| c[k].is_alphanumeric() || c[k] == '_';
+    i == 0 || !ident(i - 1) || (c[i - 1] == 'b' && (i == 1 || !ident(i - 2)))
+}
+
+/// `text` with what is not code blanked, every line kept: string literals (raw ones with their
+/// `#`s too), character literals, `//` and `/* */` comments. A brace in any of them is not a
+/// block's.
+fn code_only(text: &str) -> String {
+    let c: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let blank = |out: &mut String, ch: char| out.push(if ch == '\n' { '\n' } else { ' ' });
+    let mut i = 0;
+    while i < c.len() {
+        let at = |k: usize| c.get(k).copied().unwrap_or('\0');
+        if at(i) == '/' && at(i + 1) == '/' {
+            while i < c.len() && c[i] != '\n' {
+                blank(&mut out, c[i]);
+                i += 1;
+            }
+        } else if at(i) == '/' && at(i + 1) == '*' {
+            let mut depth = 0;
+            while i < c.len() {
+                if at(i) == '/' && at(i + 1) == '*' {
+                    depth += 1;
+                    out.push_str("  ");
+                    i += 2;
+                } else if at(i) == '*' && at(i + 1) == '/' {
+                    depth -= 1;
+                    out.push_str("  ");
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    blank(&mut out, c[i]);
+                    i += 1;
+                }
+            }
+        } else if at(i) == 'r' && (at(i + 1) == '"' || at(i + 1) == '#') && starts_word(&c, i) {
+            // A raw string: r"..", r#".."#, ..
+            let mut k = i + 1;
+            while at(k) == '#' {
+                k += 1;
+            }
+            if at(k) != '"' {
+                out.push(c[i]);
+                i += 1;
+                continue;
+            }
+            let hashes = k - i - 1;
+            for ch in &c[i..=k] {
+                blank(&mut out, *ch);
+            }
+            i = k + 1;
+            while i < c.len() {
+                if c[i] == '"' && (0..hashes).all(|h| at(i + 1 + h) == '#') {
+                    for _ in 0..=hashes {
+                        out.push(' ');
+                    }
+                    i += hashes + 1;
+                    break;
+                }
+                blank(&mut out, c[i]);
+                i += 1;
+            }
+        } else if at(i) == '"' {
+            out.push(' ');
+            i += 1;
+            while i < c.len() {
+                if c[i] == '\\' {
+                    blank(&mut out, c[i]);
+                    if i + 1 < c.len() {
+                        blank(&mut out, c[i + 1]);
+                    }
+                    i += 2;
+                    continue;
+                }
+                let end = c[i] == '"';
+                blank(&mut out, c[i]);
+                i += 1;
+                if end {
+                    break;
+                }
+            }
+        } else if at(i) == '\'' && (at(i + 2) == '\'' || (at(i + 1) == '\\' && (at(i + 3) == '\'' || at(i + 2) == 'u'))) {
+            // A character literal ('{', '\'', '\n', '\u{..}'); a lifetime has no closing quote.
+            out.push(' ');
+            i += 1;
+            while i < c.len() && c[i] != '\'' {
+                let step = if c[i] == '\\' { 2 } else { 1 };
+                for ch in &c[i..(i + step).min(c.len())] {
+                    blank(&mut out, *ch);
+                }
+                i += step;
+            }
+            out.push(' ');
+            i += 1;
+        } else {
+            out.push(c[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Whether `header` (the code before a `{`, back to the last `;`, `{` or `}`) opens a loop's
+/// body: `loop`, `while`, `for` as words (not `impl X for Y`).
+fn opens_loop(header: &str) -> bool {
+    let words: Vec<&str> = header.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).collect();
+    !words.contains(&"impl") && words.iter().any(|w| matches!(*w, "loop" | "while" | "for"))
+}
+
+/// The lines (1-based) of `thread::sleep(` calls in test code that no loop encloses. Test code
+/// is a whole file when `whole` (a `tests/` file, a `tests.rs` or `*_tests.rs` module), else
+/// the items after a `#[cfg(test)]`. A sleep in a loop is a poll's interval (what ends the
+/// wait is the condition the loop checks); one outside every loop waits a fixed time, which
+/// is synchronisation by the machine's speed when an assertion after it reads what another
+/// thread or process did meanwhile.
+fn lone_sleeps(text: &str, whole: bool) -> Vec<usize> {
+    let code = code_only(text);
+    let lines: Vec<&str> = code.split('\n').collect();
+    let mut found = Vec::new();
+    // Per open brace: whether it opened a loop, and whether it opened a test region.
+    let mut stack: Vec<(bool, bool)> = Vec::new();
+    let mut header = String::new();
+    let mut pending_test = false;
+    for (n, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t.starts_with("#[cfg(") && t.contains("test") && !t.contains("not(test") {
+            pending_test = true;
+        }
+        for (i, c) in line.char_indices() {
+            if line[i..].starts_with("thread::sleep(") {
+                let in_test = whole || stack.iter().any(|&(_, test)| test);
+                if in_test && !stack.iter().any(|&(lp, _)| lp) && found.last() != Some(&(n + 1)) {
+                    found.push(n + 1);
+                }
+            }
+            match c {
+                '{' => {
+                    let test = pending_test;
+                    stack.push((opens_loop(&header), test));
+                    if test {
+                        pending_test = false;
+                    }
+                    header.clear();
+                }
+                '}' => {
+                    stack.pop();
+                    header.clear();
+                }
+                ';' => {
+                    header.clear();
+                    // `#[cfg(test)] use ..;` or `mod x;`: the attribute is spent.
+                    pending_test = false;
+                }
+                _ => header.push(c),
+            }
+        }
+        header.push(' ');
+    }
+    found
+}
+
+#[test]
+fn the_scanner_finds_sleeps_outside_loops() {
+    let text = "fn real() {\n    std::thread::sleep(d);\n}\n#[cfg(test)]\nmod tests {\n    fn t() {\n        loop {\n            std::thread::sleep(d);\n        }\n        while x {\n            if y { std::thread::sleep(d); }\n        }\n        let s = \"{\";\n        std::thread::sleep(d);\n        for _ in 0..3 { std::thread::sleep(d) }\n    }\n    impl A for B {\n        fn f() { std::thread::sleep(d); }\n    }\n}\n";
+    assert_eq!(lone_sleeps(text, false), [14, 18], "the sleep after the loops and the one in an impl: not the engine's, not a poll's");
+    assert_eq!(lone_sleeps(text, true), [2, 14, 18], "a whole test file");
+    // Braces in raw strings, character literals and comments are not blocks.
+    let text = "#[cfg(all(test, windows))]\nmod t {\n    fn f() {\n        let j = r#\"{\"a\": [{\"b\": 1}]}\"#; let c = '{'; let q = '\\''; // }\n        /* } */ std::thread::sleep(d);\n        loop { let s = br\"}\"; std::thread::sleep(d); }\n    }\n}\n";
+    assert_eq!(lone_sleeps(text, false), [5]);
+    assert!(opens_loop("let status = loop ") && opens_loop(" 'outer: for (i, x) in xs.iter().enumerate() ") && !opens_loop("impl Driver for Slow ") && !opens_loop("fn format_for(x: u32) "));
+}
+
+/// No test waits a fixed time for another thread or process to have done something: it waits
+/// on the event. (`launch_run`'s test slept 300 ms and then dropped a lock "while the command
+/// waits"; on a loaded machine the command had not reached the wait, found the folder free and
+/// started an engine: `not_started` where `in_use` was meant, 2026-11-24.)
+#[test]
+fn no_test_synchronises_by_sleeping() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    rust_files(&root.join("crates"), &mut files);
+    rust_files(&root.join("games"), &mut files);
+    let mut bad = Vec::new();
+    let mut used = vec![false; SLEEPS_NOT_SYNC.len()];
+    let mut to_mend_used = vec![false; SLEEPS_TO_MEND.len()];
+    for path in &files {
+        let rel = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+        if rel.ends_with("tests/clock_guard.rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        let name = rel.rsplit('/').next().unwrap_or("");
+        let whole = rel.contains("/tests/") || rel.contains("/benches/") || name == "tests.rs" || name.ends_with("_tests.rs");
+        let lines: Vec<&str> = text.lines().collect();
+        for n in lone_sleeps(&text, whole) {
+            let line = lines[n - 1];
+            let listed = |list: &[(&str, &str, &str)]| list.iter().position(|(f, piece, _)| rel.ends_with(f) && line.contains(piece));
+            match (listed(SLEEPS_NOT_SYNC), listed(SLEEPS_TO_MEND)) {
+                (Some(i), _) => used[i] = true,
+                (None, Some(i)) => to_mend_used[i] = true,
+                (None, None) => bad.push(format!("{rel}:{n}: {}", line.trim())),
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} sleeps in test code outside any loop: a fixed wait for another thread or process passes on a quiet machine and fails on a busy one.\n\
+         Wait on the event (a channel, a join, a hook the code calls); if the sleep decides nothing, list it in SLEEPS_NOT_SYNC with why:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+    for (i, u) in used.iter().enumerate() {
+        assert!(u, "SLEEPS_NOT_SYNC lists '{}' in {}, which is no longer a sleep outside a loop", SLEEPS_NOT_SYNC[i].1, SLEEPS_NOT_SYNC[i].0);
+    }
+    for (i, u) in to_mend_used.iter().enumerate() {
+        assert!(u, "SLEEPS_TO_MEND lists '{}' in {}, which is no longer a sleep outside a loop: mended? take it off", SLEEPS_TO_MEND[i].1, SLEEPS_TO_MEND[i].0);
+    }
+    eprintln!("clock_guard: {} sleeps outside loops are listed as still to mend", SLEEPS_TO_MEND.len());
 }
 
 #[test]

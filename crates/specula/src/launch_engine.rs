@@ -187,6 +187,10 @@ pub struct Announced {
     project: Option<PathBuf>,
     /// Ends the stop watcher.
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Tests: the stop watcher's turns so far (a test that says the watcher left something
+    /// alone waits for a turn that began after it, never for a time).
+    #[cfg(test)]
+    turns: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// What an engine that shows the start screen shares with its watcher thread: `specula open`
@@ -258,6 +262,10 @@ pub fn announce(store: Store, s: &Serving<'_>) -> (Announced, Vec<String>) {
     // once, looks a few times a second (never the engine thread).
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (dir, ended, handover, stop) = (store.dir.clone(), std::sync::Arc::clone(&done), s.launcher.clone(), s.stop);
+    #[cfg(test)]
+    let turns = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    #[cfg(test)]
+    let turned = std::sync::Arc::clone(&turns);
     let watcher = std::thread::Builder::new().name("specula-launch-stop".into()).spawn(move || {
         while !ended.load(std::sync::atomic::Ordering::Relaxed) {
             if instances::take_stop(&dir, pid) {
@@ -287,13 +295,25 @@ pub fn announce(store: Store, s: &Serving<'_>) -> (Announced, Vec<String>) {
                     instances::refuse_open(&dir, pid);
                 }
             }
+            #[cfg(test)]
+            turned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             std::thread::sleep(STOP_POLL);
         }
     });
     if let Err(e) = watcher {
         problems.push(format!("'specula stop' will not reach this engine (no thread for its watcher: {e})"));
     }
-    (Announced { store, pid, project: s.project.map(|p| p.path.clone()), done }, problems)
+    (
+        Announced {
+            store,
+            pid,
+            project: s.project.map(|p| p.path.clone()),
+            done,
+            #[cfg(test)]
+            turns,
+        },
+        problems,
+    )
 }
 
 impl Announced {
@@ -444,6 +464,16 @@ mod tests {
         }
     }
 
+    /// Waits until the watcher has begun a whole turn since now, so what it leaves alone it
+    /// has looked at. (A fixed wait of three polls said "left alone" of a watcher a loaded
+    /// machine had not yet run: a check that could pass without looking.)
+    fn looked(a: &Announced) {
+        let seq = std::sync::atomic::Ordering::SeqCst;
+        let now = a.turns.load(seq);
+        // (The turn running now may have looked before the request: the one after it did not.)
+        wait_for("look again", || a.turns.load(seq) >= now + 2);
+    }
+
     #[test]
     fn a_start_screen_takes_a_project_handed_to_it_only_while_it_is_nothing_else() {
         let dir = scratch("handover");
@@ -460,7 +490,7 @@ mod tests {
         // waits, neither taken nor refused (review R1-6: it was refused, and whether "open the
         // .exe, then ask the agent" worked depended on which came first, a frame or the command).
         assert!(instances::request_open(&st.dir, pid, &made, false).unwrap());
-        std::thread::sleep(STOP_POLL * 3);
+        looked(&announced);
         assert!(instances::open_waits(&st.dir, pid) && !instances::refused_file(&st.dir, pid).exists() && h.handed.lock().unwrap().is_none());
         // Its first frame says it is busy (its screen was closed, or something is in its
         // world): the hand-over that waited is refused, said so.
@@ -496,7 +526,7 @@ mod tests {
         let plain = Store::new(dir.join("plain"));
         let (announced, _) = announce(plain.clone(), &Serving { port: 7472, project: None, world: None, window: true, game: None, exe: None, now: 9, launcher: None, stop: no_stop });
         assert!(instances::request_open(&plain.dir, pid, &dir, false).unwrap());
-        std::thread::sleep(STOP_POLL * 3);
+        looked(&announced);
         assert!(instances::open_waits(&plain.dir, pid) && !instances::refused_file(&plain.dir, pid).exists());
         announced.finish(None);
         let _ = std::fs::remove_dir_all(&dir);
