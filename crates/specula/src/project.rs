@@ -1345,6 +1345,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A new project keeps its models in `assets/models/` (scaffold.rs): they are mirrored as
+    /// recipes, kinds of the sample assets among them, as `recipes/` is; a model file there stays
+    /// a model; hundreds of them are read within the scan's bounds and the store's limits hold
+    /// what is imported (`room_for`, as for any folder); Sepulcra's assets mirror as before
+    /// (it has no `models` folder, so nothing of it moves).
+    #[test]
+    fn a_projects_models_folder_is_mirrored_as_recipes() {
+        let root = scratch("models");
+        std::fs::create_dir_all(root.join("models/exports")).unwrap();
+        std::fs::write(root.join("models/gear.json"), "{}").unwrap();
+        std::fs::write(root.join("models/box_creature.kind.json"), "{}").unwrap();
+        std::fs::write(root.join("models/exports/gear.json"), "{}").unwrap();
+        // (Run once with 2,000 and with 4,106 files, both held; 250 here, since each file written
+        // costs this machine tens of milliseconds.)
+        const MANY: usize = 250;
+        for i in 0..MANY {
+            std::fs::write(root.join(format!("models/m{i:05}.json")), "{}").unwrap();
+        }
+        let mut disk = Disk::default();
+        let files = disk.mount(Mount { name: ASSETS.into(), root: root.clone(), kind: MountKind::Assets });
+        let get = |p: &str| files.iter().find(|f| f.0 == p).map(|f| f.1);
+        assert_eq!(get("assets/models/gear.json"), Some(FileKind::Recipe));
+        assert_eq!(get("assets/models/box_creature.kind.json"), Some(FileKind::Recipe));
+        assert_eq!(get("assets/models/exports/gear.json"), None, "exports are not recipes");
+        assert_eq!(files.len(), MANY + 2, "every model is read (the scan's bound is {SCAN_ENTRIES} entries)");
+        // What is imported is held to the store's limit, as any folder's files are (a store
+        // already near it here).
+        let mut store: BTreeMap<String, ProjectFile> = (0..MAX_FILES - 100).map(|i| (format!("assets/ui/s{i:05}.json"), ProjectFile::new(FileKind::UiScreen, Arc::from("{}"), 1, Arc::from("disk")))).collect();
+        for (p, k, t, _) in files {
+            if room_for(&store, &p, t.len()).is_ok() {
+                store.insert(p, ProjectFile::new(k, t, 1, Arc::from("disk")));
+            }
+        }
+        assert_eq!(store.len(), MAX_FILES);
+        let _ = std::fs::remove_dir_all(&root);
+        // Sepulcra's assets: no models folder, so the same files mirror as before this change.
+        let sepulcra = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+        assert!(!sepulcra.join("models").exists(), "Sepulcra has no assets/models: this test's claim about it needs looking at again");
+    }
+
     /// Review R2 of m5-gmods: an agent swapped a module's sources through project_write while
     /// the lead's approved build ran, and put them back before the build's second digest. A
     /// folder held for a build is left alone: the write waits and lands when the build ends.

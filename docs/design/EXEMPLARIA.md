@@ -100,7 +100,7 @@ A kind is a file, `<name>.kind.json`. Its shape (the fields are the plan's; this
   `withers_height` and `build` set). One level of `base` only, so what a kind is can be read from two
   files at most.
 - **A project changes a copy**, never the library: the copy is the same file in the project's
-  `recipes/`, and a change is a number in it.
+  `assets/models/`, and a change is a number in it.
 
 **Why a kind is not a recipe with `params`.** A recipe's parameters are given from outside; they are not
 drawn, they carry no source, and they do not move together. A wolf's legs, trunk and skull grow with its
@@ -495,7 +495,8 @@ after the others, its name at the end of the `use {...}` line, its arm in the di
   `model_build_all` builds that folder; so `project_write` (and every tool that writes through
   it) refused `assets/models/x.json`, and a project's models were not in `project_list`. The
   store now mirrors `.json` files whose folder is `models` as recipes too (`project::kind_for`);
-  `.glb` and `.gltf` there are still models, and `models/exports/` holds no recipes.
+  `.glb` and `.gltf` there are still models, and `models/exports/` holds no recipes (as with
+  `recipes/`, the file's own folder must be named so: `models/props/x.json` is not mirrored).
 - **A take into a new project is refused until its style names the kind's roles** (a new
   project's `style.json` has four presets and no `roles`; A.7 says a role is never guessed).
   Seen in the cold job: the refusal named one role at a time. The refusal now carries `fix`: the

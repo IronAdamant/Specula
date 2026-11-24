@@ -558,7 +558,7 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
             Err(out) => return Ok(out),
         };
         let Some(kind) = snap.kind else {
-            return Ok(err("not_mirrored", format!("{path} isn't a project file: project files are recipes, ui screens and themes, sounds, anim sets and style files under assets/, and module sources under modules/<name>/ (project_list shows the mounts)")));
+            return Ok(err("not_mirrored", format!("{path} isn't a project file: project files are recipes (a .json whose folder is recipes or models), ui screens and themes, sounds, anim sets and style files under assets/, and module sources under modules/<name>/ (project_list shows the mounts)")));
         };
         if kind.is_binary() && tool != "project_delete" {
             return Ok(err("binary_file", format!("{path} is a binary {} file: write it with project_upload (project_read shows it; project_delete removes it)", kind.name())));
