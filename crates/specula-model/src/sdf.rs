@@ -7760,7 +7760,7 @@ mod tests {
         }
         let nodes = count_nodes(&t) as u64;
         let p = prepare(&t, 1, &mut 0);
-        let mut r = Review(0x7e57_0f_0e5e_1234);
+        let mut r = Review(0x007e_570f_0e5e_1234);
         let mut asked = 0;
         for _ in 0..200 {
             let c = [r.range(-0.1, 1.0), r.range(-0.05, 0.06), r.range(-0.08, 0.08)];
