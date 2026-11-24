@@ -564,12 +564,22 @@ fn the_shapes_recorded_while_building_are_bounded() {
 /// before the record asked its triangles anything, and was refused by the second version for
 /// work) builds. Asking which primitive made each triangle spends a limit of its own, 120
 /// million units, and never passes it (within one question's work of it); the triangles not asked
-/// within it are no record's, the rest.
+/// within it are no record's, the rest. (The ellipsoids are round since 2026-11-24, when the
+/// sculpt's box and mesher lanes were merged: an ellipsoid whose radii differ is pruned by its
+/// range, now charged what that costs, about three evaluations where the mesher lane had
+/// charged one, and the 52 sculpts of the recipe as it was then needed 1.59 thousand million
+/// units of the model's 1.5 (1.47 before). Round, they are meshed as before the mesher lane,
+/// and a question of the record costs what it did: what this holds is the record's limit.)
 #[test]
 fn the_record_never_refuses_a_build() {
     let mut ps = Vec::new();
     for i in 0..52 {
-        let kids: Vec<String> = (0..32).map(|j| format!(r#"{{"op":"ellipsoid","radii":[{},{},{}],"at":[{},0,0]}}"#, 0.05 + 0.001 * j as f32, 0.05 + 0.0013 * (i * 32 + j) as f32 / 64.0, 0.06 + 0.0007 * j as f32, 0.06 * j as f32)).collect();
+        let kids: Vec<String> = (0..32)
+            .map(|j| {
+                let r = 0.05 + 0.0013 * (i * 32 + j) as f32 / 64.0;
+                format!(r#"{{"op":"ellipsoid","radii":[{r},{r},{r}],"at":[{},0,0]}}"#, 0.06 * j as f32)
+            })
+            .collect();
         ps.push(part(&format!("s{i}"), &format!(r#"{{"op":"sdf","resolution":48,"tree":{{"op":"union","of":[{}]}}}}"#, kids.join(",")), &format!(r#"{{"op":"move","by":[0,{},0]}}"#, i as f32 * 0.3)));
     }
     let m = parts(&ps);
