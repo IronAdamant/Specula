@@ -457,16 +457,10 @@ fn variant_requests_queue_behind_a_running_build() {
     }
 }
 
-/// Waits (up to a minute) for the running background build to finish, whatever its outcome.
+/// Waits for the running background build to end, whatever its outcome (a join, never a
+/// deadline: a minute's deadline returned a build still running as if it had ended).
 fn settle(gpu: &mut Gpu) -> specula_gpu::PipelineVariants {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        let v = gpu.pipeline_variants();
-        if !gpu.last_frame_stats().pipelines.background_pending || std::time::Instant::now() > deadline {
-            return v;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    gpu.wait_for_pipelines()
 }
 
 /// A background build that fails (a pipeline error, or its worker panicking part way) reports
