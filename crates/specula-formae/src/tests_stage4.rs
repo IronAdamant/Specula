@@ -41,17 +41,16 @@ fn every_new_rule_is_refused_with_its_numbers() {
     refused("rounded_cylinder", Solid, &[("height", 0.2), ("fillet", 0.1)], "fillet_past_the_flats");
     refused("cup", Solid, &[("height", 0.5), ("floor", 0.5)], "floor_over_the_rim");
     refused("cup", Solid, &[("radius", 0.4), ("top", 0.45), ("wall", 0.45)], "wall_fills_the_cup");
-    refused("bell", Solid, &[("height_ratio", 0.6), ("flare_ratio", 0.05), ("wall", 0.025)], "flare_under_the_lip");
+    refused("bell", Solid, &[("waist_ratio", 0.95), ("flare_ratio", 0.05 / 0.75), ("wall", 0.05)], "wall_past_the_sound_bow");
     refused("bell", Solid, &[("flare_ratio", 0.9), ("shoulder_ratio", 0.95)], "shoulder_under_the_flare");
     refused("bell", Solid, &[("shoulder_ratio", 0.05), ("wall", 0.025)], "wall_past_the_shoulder");
-    refused("bell", Solid, &[("height_ratio", 0.6)], "flare_too_shallow");
+    refused("bell", Solid, &[("height_ratio", 0.6), ("flare_ratio", 0.5)], "flare_too_shallow");
     refused("goblet", Solid, &[("radius", 0.04), ("stem", 0.04)], "stem_wider_than_cup_or_foot");
     refused("goblet", Solid, &[("wall", 0.0001), ("stem", 0.01)], "wall_too_thin_over_the_stem");
     refused("bottle", Solid, &[("height_ratio", 3.0), ("neck_length_ratio", 0.6), ("shoulder_ratio", 10.0)], "neck_and_shoulder_over_the_height");
     refused("bottle", Solid, &[("wall", 0.02)], "wall_fills_the_neck");
     refused("vase", Solid, &[("wall", 0.05)], "wall_fills_the_vase");
     refused("vase", Solid, &[("height_ratio", 1.5), ("foot_ratio", 0.98), ("waist_ratio", 0.1)], "foot_too_steep");
-    refused("baluster", Solid, &[("height_ratio", 20.0), ("bulb_ratio", 0.5), ("neck_ratio", 0.7)], "neck_too_steep");
     refused("mushroom", Solid, &[("stem", 0.06), ("cap", 0.06)], "stem_wider_than_the_cap");
     refused("mushroom", Solid, &[("cap", 0.06), ("cap_height", 0.07)], "cap_past_a_half_ball");
     refused("chamfered_box", Solid, &[("height", 0.2), ("chamfer", 0.1)], "chamfer_past_the_faces");
@@ -80,8 +79,8 @@ fn volumes_against_their_own_integrals() {
     let (rr, h, f) = (0.5, 0.2, 0.05);
     let round = |y: f64| rr - f + (f * f - (y - f) * (y - f)).max(0.0).sqrt();
     close("rounded_cylinder", vol("rounded_cylinder"), disc(&round, 0.0, f) + PI * rr * rr * (h - 2.0 * f) + disc(&round, 0.0, f));
-    // The cup: radius 0.4, top 0.45, height 0.5, wall 0.03, floor 0.04.
-    let (r, t, hh, w, fl) = (0.4, 0.45, 0.5, 0.03, 0.04);
+    // The cup: radius 0.032, top 0.04, height 0.1, wall 0.003, floor 0.006.
+    let (r, t, hh, w, fl) = (0.032, 0.04, 0.1, 0.003, 0.006);
     let outer = |y: f64| r + (t - r) * y / hh;
     // The inside: the outside's line moved `w` across it, so `w L / h` in, level.
     let inner = |y: f64| outer(y) - w * ((t - r) * (t - r) + hh * hh).sqrt() / hh;
@@ -241,4 +240,29 @@ fn a_grate_at_every_corner_of_its_ranges_is_raised_soundly() {
         }
     }
     assert!(tried >= 80, "{tried}");
+}
+
+/// A parameter name that stage 4's remake replaced is refused with the name that took its place,
+/// or with what to give instead where none did (review 2 of stage 4, finding 3): every row of
+/// `RENAMED` names a form, a name it no longer takes and, where there is one, a name it does.
+#[test]
+fn an_old_parameter_name_is_refused_with_the_new_one() {
+    for r in crate::table::RENAMED {
+        let f = crate::table::form(r.form).unwrap_or_else(|| panic!("{}: no such form", r.form));
+        assert!(f.param(r.old).is_none(), "{} still takes {}", r.form, r.old);
+        if let Some(n) = r.new {
+            assert!(f.param(n).is_some(), "{} takes no {n}", r.form);
+        }
+        let e = Spec::new(r.form, Some(f.kind), &[(r.old, 1.0)]).err().unwrap_or_else(|| panic!("{} {} was taken", r.form, r.old));
+        assert_eq!(e.code(), "unknown_param");
+        assert_eq!(e.renamed(), Some(r));
+        let words = e.to_string();
+        assert!(words.contains(r.new.unwrap_or("is gone")) && words.contains(r.instead), "{words}");
+    }
+    // Through an alias (`bucket` is the cup, which kept its names) nothing is said; a name no
+    // form took before says nothing more than the list.
+    let e = Spec::new("bell", Some(Kind::Solid), &[("colour", 1.0)]).err().unwrap();
+    assert!(e.renamed().is_none() && !e.to_string().contains("is now"), "{e}");
+    let e = Spec::new("petal", Some(Kind::Plane), &[("width", 1.0)]).err().unwrap();
+    assert!(e.to_string().contains("\"width\" is now \"width_ratio\""), "{e}");
 }

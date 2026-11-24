@@ -944,8 +944,10 @@ fn t8_stage_4_builds_are_pinned() {
 }
 /// (Moved in round 2 of stage 4: the grate and the truss have points on their borders, the cup its
 /// wall across, the bell, the bottle, the vase, the baluster and the leaf are remade, the gem has
-/// a girdle band and the bead is a form of its own.)
-const PINNED_4: u64 = 0xcb20_6857_5fdd_cc4c;
+/// a girdle band and the bead is a form of its own. Moved in round 3: the bell's flare is an S
+/// from an upright lip, the baluster is moulded, the cup's defaults are a drinking cup and the
+/// leaf rounds into its stalk.)
+const PINNED_4: u64 = 0xcdae_654a_c9bd_1b63;
 
 // ---------------------------------------------------------------- particular checks
 

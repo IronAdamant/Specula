@@ -502,11 +502,15 @@ struct Leaf {
     l: f64,
     w: f64,
     yw: f64,
-    side: [El; 3],
+    side: Vec<El>,
+    /// How high the stalk's side runs straight, to the round into the blade.
+    yf: f64,
 }
 /// The tip's half-angle as a share of the angle of the straight line from the widest point to
 /// the tip.
 const LEAF_TIP: f64 = 0.4;
+/// The angle, in degrees, at which the round from the stalk crosses the blade's base.
+const LEAF_ROUND_CROSS: f64 = 25.0;
 fn leaf_parts(a: &Args) -> Result<Leaf, Refusal> {
     let (l, st) = (a.f("length"), a.f("stalk"));
     let w = 0.5 * a.f("width_ratio") * l;
@@ -532,8 +536,55 @@ fn leaf_parts(a: &Args) -> Result<Leaf, Refusal> {
     if m[0] <= 0.0 || !(rho.is_finite()) {
         return Err(refuse("too_narrow_for_its_tip", "the blade's curve into the tip would cross the midrib: a wider blade or a lower widest point", &nums));
     }
-    let side = [base, El::Arc { c: c1, r: rho, a: [w, y0 + yw], b: m, ccw: true }, El::Arc { c: c2, r: rho, a: m, b: [0.0, y0 + l], ccw: false }];
-    Ok(Leaf { st, sw, l, w, yw, side })
+    // Where the blade meets the stalk: a concave round from the stalk's side into the base's
+    // arc (review 2's picture check: "a blunt cusp where the stalk joins"). Its circle stands on
+    // the stalk's side, `rf` out from it (tangent to the side), and crosses the base's circle at
+    // LEAF_ROUND_CROSS degrees: tangent there too, the two arcs would make an inflection whose
+    // chords at a coarse detail lie along one line (a triangle of 2.5e-12 m2 in an extrusion's
+    // cap at detail 24, under the modeller's floor). Its radius is a twelfth of the blade's half
+    // width, halved while its foot on the stalk falls below the stalk's upper half.
+    let cb = [w - ra, y0 + yw];
+    let cc = cos(LEAF_ROUND_CROSS * PI / 180.0);
+    let apart = |rf: f64| (ra * ra + rf * rf + 2.0 * ra * rf * cc).sqrt();
+    let foot_of = |rf: f64| {
+        let dx = 0.5 * sw + rf - cb[0];
+        let d = apart(rf);
+        let q = d * d - dx * dx;
+        (q > 0.0).then(|| cb[1] - q.sqrt())
+    };
+    let mut rf = w / 12.0;
+    let mut yf = foot_of(rf);
+    for _ in 0..40 {
+        if yf.is_some_and(|y| y >= 0.5 * st) {
+            break;
+        }
+        rf *= 0.5;
+        yf = foot_of(rf);
+    }
+    let Some(yf) = yf.filter(|y| *y >= 0.5 * st && *y < y0) else {
+        return Err(refuse("stalk_too_short_for_its_round", "the round where the blade meets the stalk does not fit on the stalk: a longer stalk", &nums));
+    };
+    let cf = [0.5 * sw + rf, yf];
+    // The two circles' crossings, `along` from the round's centre toward the base's and `off`
+    // to either side; the round takes the first it meets turning clockwise from the stalk (the
+    // greater angle about its centre).
+    let d = apart(rf);
+    let u = scale(sub(cb, cf), 1.0 / d);
+    // (`(rf² − ra² + d²) / 2d` with `d² = ra² + rf² + 2 ra rf cos`, written without `ra²`, which
+    // is far the larger where the blade is long and the stalk short.)
+    let along = rf * (rf + ra * cc) / d;
+    let off = (rf * rf - along * along).max(0.0).sqrt();
+    let foot = add(cf, scale(u, along));
+    let ends = [add(foot, [-u[1] * off, u[0] * off]), add(foot, [u[1] * off, -u[0] * off])];
+    let ang = |p: Pt| atan2(p[1] - cf[1], p[0] - cf[0]);
+    let touch = if ang(ends[0]) >= ang(ends[1]) { ends[0] } else { ends[1] };
+    let round = El::Arc { c: cf, r: rf, a: [0.5 * sw, yf], b: touch, ccw: false };
+    let base = match base {
+        El::Arc { c, r, b, ccw, .. } => El::Arc { c, r, a: touch, b, ccw },
+        e => e,
+    };
+    let side = vec![round, base, El::Arc { c: c1, r: rho, a: [w, y0 + yw], b: m, ccw: true }, El::Arc { c: c2, r: rho, a: m, b: [0.0, y0 + l], ccw: false }];
+    Ok(Leaf { st, yf, sw, l, w, yw, side })
 }
 fn leaf_geom(a: &Args) -> Result<Geom, Refusal> {
     let f = leaf_parts(a)?;
@@ -543,10 +594,10 @@ fn leaf_geom(a: &Args) -> Result<Geom, Refusal> {
         El::Arc { c, r, a, b, ccw } => El::Arc { c: mirror(c), r, a: mirror(b), b: mirror(a), ccw },
     };
     let h = 0.5 * f.sw;
-    let mut segs = vec![line([-h, 0.0], [h, 0.0]), line([h, 0.0], [h, f.st])];
+    let mut segs = vec![line([-h, 0.0], [h, 0.0]), line([h, 0.0], [h, f.yf])];
     segs.extend(f.side.iter().map(|e| e.seg()));
     segs.extend(f.side.iter().rev().map(|&e| flip(e).seg()));
-    segs.push(line([-h, f.st], [-h, 0.0]));
+    segs.push(line([-h, f.yf], [-h, 0.0]));
     Ok(ring(segs))
 }
 fn leaf_anchors(a: &Args) -> Vec<Anchor> {
@@ -651,7 +702,7 @@ pub(crate) const FORMS: &[Form] = &[
     plane!("cavetto", Moulding, "a cove moulding: a block less a quarter disc at its outer upper corner (back on x = 0, bed on y = 0)", "the back's foot", P_CAVETTO, curved: true, kin: SLAB, cavetto_geom, cavetto_closed, cavetto_anchors),
     plane!("cyma_recta", Moulding, "an ogee moulding: an S of two equal arcs, convex below and concave above, level at its ends (a crown moulding's)", "the back's foot", P_CYMA, curved: true, kin: SLAB, recta_geom, recta_closed, recta_anchors),
     plane!("cyma_reversa", Moulding, "a reverse ogee moulding: an S of two equal arcs, concave below and convex above, upright at its ends", "the back's foot", P_CYMA_REV, curved: true, kin: SLAB, reversa_geom, reversa_closed, reversa_anchors),
-    plane!("bead", Moulding, "a bead moulding: a half disc whose flat side is the back (back on x = 0, bed on y = 0, bulging toward +x)", "the back's foot", P_BEAD, curved: true, kin: SLAB, bead_geom, bead_closed, bead_anchors),
+    plane!("bead", Moulding, "a bead moulding's profile: a half disc whose flat side is the back (back on x = 0, bed on y = 0, bulging toward +x); raised as a slab as long as the run, or swept along a wall, it is the moulding", "the back's foot", P_BEAD, curved: true, kin: SLAB, bead_geom, bead_closed, bead_anchors),
     plane!("arch_portal", Arch, "a wall with a round-arched opening from its floor (a doorway or a gate's wall)", "the middle of the opening's floor", P_PORTAL, curved: true, kin: SLAB, portal_geom, portal_closed, portal_anchors),
     plane!("stair_profile", Stair, "the side of a flight of steps rising along +x, down to the floor", "the middle of its foot", P_STEPS, curved: false, kin: &["stairs", "slab"], steps_geom, steps_closed, steps_anchors),
     plane!("grate", Frame, "a panel with a grid of rectangular holes (a grille, a vent, a window's bars)", "the centre", P_GRATE, curved: false, kin: SLAB, grate_geom, grate_closed, grate_anchors),
