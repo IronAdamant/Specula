@@ -88,7 +88,9 @@ pub fn sprite(cx: &mut Cx) -> Result<String, String> {
     // A long bake of ann's, from a process of its own; bob's cancel is refused naming ann, and
     // ann's cancel from another connection stops it.
     let (exe, p) = (cx.exe.to_string_lossy().into_owned(), port.to_string());
-    let long = r#"{"recipe": "recipes/shambler.json", "clips": ["walk"], "directions": 16, "frames": 32, "cell": 128, "path": "assets/sprites/long.png"}"#;
+    // (The heaviest bake a call takes: 512 cells of 112 at supersample 4. A cell of 128 would be
+    // refused at once, its atlas past 7 Mi pixels: the first run of this check met that.)
+    let long = r#"{"recipe": "recipes/shambler.json", "clips": ["walk"], "directions": 16, "frames": 32, "cell": 112, "supersample": 4, "path": "assets/sprites/long.png"}"#;
     let running = Command::new(&exe)
         .args(["call", "sprite_bake", long, "--port", &p, "--settings", &settings, "--as", "ann", "--role", "builder"])
         .current_dir(&cx.out)
@@ -97,9 +99,18 @@ pub fn sprite(cx: &mut Cx) -> Result<String, String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("the long bake's call could not be started: {e}"))?;
-    let listed = cx.wait_for(port, Some(("lead", "lead")), "engine_info", "the long bake's step job is queued", Duration::from_secs(60), |info| {
-        at(info, "workers.step_jobs").and_then(Json::as_array).is_some_and(|j| j.iter().any(|s| text(s, "kind") == Some("sprite_bake")))
-    })?;
+    // (engine_info lists the step jobs only in its detailed answer.)
+    let began = std::time::Instant::now();
+    let listed = loop {
+        let info = cx.call(port, Some(("lead", "lead")), "engine_info", r#"{"response_format": "detailed"}"#)?;
+        if at(&info, "workers.step_jobs").and_then(Json::as_array).is_some_and(|j| j.iter().any(|s| text(s, "kind") == Some("sprite_bake"))) {
+            break info;
+        }
+        if began.elapsed() > Duration::from_secs(60) {
+            return Err(format!("the long bake's step job was not queued within 60 s; the last answer was: {}", super::short(&info)));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
     cx.say(format!("queued: {}", super::short(at(&listed, "workers.step_jobs").unwrap_or(&Json::Null))));
     let refused = cx.refused(port, bob, "sprite_bake", r#"{"cancel": true}"#, "not_job_owner")?;
     expect(at(&refused, "owners").and_then(Json::as_array).is_some_and(|o| o.iter().any(|n| n.as_str() == Some("ann"))), "bob's refused cancel does not name ann", &refused)?;

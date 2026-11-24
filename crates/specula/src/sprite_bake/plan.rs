@@ -200,6 +200,9 @@ pub struct Plan {
     pub root_drift_m: Vec<(String, f32)>,
     /// The shadow blob's cell, when asked for.
     pub shadow: Option<Shadow>,
+    /// The clip whose reach set the sheet's scale, and how many times coarser that scale is
+    /// than the median clip's alone; only when it is more than 1.5 times.
+    pub scale_set_by: Option<(String, f32)>,
 }
 
 /// The soft shadow blob: one cell of its own after the strips, alpha only, an ellipse centred
@@ -605,7 +608,11 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
     // The footprint (for the shadow blob): the first pose's vertices in its lowest fifth of
     // height, their farthest from the vertical axis.
     let mut footprint = 0.0f32;
+    // Each clip's own extent (which clip sets the sheet's scale is said: a cold try's swoop
+    // made every other clip of the wraith a few pixels tall).
+    let mut own: Vec<[f32; 4]> = vec![[0.0; 4]; wants.len()];
     for (k, skin) in poses.iter().enumerate() {
+        let wi = pose0.iter().rposition(|&p0| p0 <= k).unwrap_or(0);
         posed_points(built, skin, &mut pts);
         if k == 0 && ask.shadow_blob {
             let (lo, hi) = pts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
@@ -618,9 +625,25 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
             for (r, u) in &axes {
                 let (x, y) = (v.dot(*r), v.dot(*u));
                 ext = [ext[0].min(x), ext[1].max(x), ext[2].min(y), ext[3].max(y)];
+                let o = &mut own[wi];
+                *o = [o[0].min(x), o[1].max(x), o[2].min(y), o[3].max(y)];
             }
         }
     }
+    // The scale each clip alone would have had; the one that set the sheet's, when it is much
+    // coarser than the median clip's.
+    let alone: Vec<f32> = own.iter().map(|e| fit(*e, ask.cell, MARGIN_PX).0).collect();
+    let scale_set_by = if wants.len() > 1 {
+        let mut order: Vec<usize> = (0..wants.len()).collect();
+        order.sort_by(|a, b| alone[*b].total_cmp(&alone[*a]));
+        // Against the median clip's (two clips that reach as far, a swoop and its variant, must
+        // not hide each other).
+        let (first, middle) = (order[0], order[order.len() / 2]);
+        let times = alone[first] / alone[middle].max(1e-9);
+        (times > 1.5).then(|| (wants[first].clip.clone().unwrap_or_else(|| "still".into()), times))
+    } else {
+        None
+    };
     if !ext.iter().all(|x| x.is_finite()) {
         return Err(refuse("empty_model", format!("{} has no finite vertices to frame", built.model.name)));
     }
@@ -670,6 +693,7 @@ pub fn plan(built: &Built, set: Option<&AnimSet>, ask: &Ask) -> Result<Plan, Ref
         Shadow { frame, rect: [col * ask.cell[0], row * ask.cell[1], ask.cell[0], ask.cell[1]], pivot: centre, radii_px: [rx, ry] }
     });
     Ok(Plan {
+        scale_set_by,
         shadow,
         cell: ask.cell,
         supersample: ask.supersample,

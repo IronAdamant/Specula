@@ -516,6 +516,16 @@ fn answer(p: &plan::Plan, data: &sheet::SheetData, req: &Request, baked: Option<
         ("strips", Json::from(data.strips.len())),
         ("listed", Json::arr(strips)),
     ]);
+    if let Some((clip, times)) = &p.scale_set_by {
+        a.set(
+            "scale_set_by",
+            Json::obj([
+                ("clip", Json::from(clip.as_str())),
+                ("times_coarser", r3(f64::from(*times))),
+                ("note", Json::from(format!("one scale holds every clip: '{clip}' reaches farthest, so the clips are drawn about {times:.1} times smaller than a middling one of them alone would be; bake it in a sheet of its own for larger frames"))),
+            ]),
+        );
+    }
     let drift: Vec<Json> = p.root_drift_m.iter().filter(|(_, d)| *d > p.metres_per_pixel).map(|(c, d)| Json::obj([("clip", Json::from(c.as_str())), ("metres", r3(f64::from(*d)))])).collect();
     if !drift.is_empty() {
         a.set("root_drift", Json::arr(drift.into_iter().take(MAX_LISTED)));

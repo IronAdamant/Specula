@@ -287,6 +287,18 @@ fn many_short_strips_are_packed_when_a_row_each_is_too_tall() {
     assert_eq!((columns, firsts), (6, vec![0, 6, 12]));
 }
 
+/// One clip that reaches far (the wraith's swoop) sets the whole sheet's scale; the plan names
+/// it, so the agent can bake it apart. A sheet of one clip names none.
+#[test]
+fn the_clip_that_sets_the_scale_is_named() {
+    let wraith = built("wraith");
+    let set = wraith.anims.as_deref();
+    let p = plan(&wraith, set, &ask(Clips::All, 4, Rate::Frames(6), 128, 1)).unwrap();
+    let (clip, times) = p.scale_set_by.clone().expect("a clip sets the scale");
+    assert!(clip.starts_with("swoop") && times > 1.5, "{clip} {times}");
+    assert!(plan(&wraith, set, &ask(Clips::Named(vec!["float".into()]), 4, Rate::Frames(2), 64, 1)).unwrap().scale_set_by.is_none());
+}
+
 /// Which feet are down: the shambler's walk has feet anim_check knows, and over a cycle each
 /// foot is down in some frames and up in others. In place: every frame's root stands over its
 /// rest place sideways (the skinned root head's x and z are the rest's).

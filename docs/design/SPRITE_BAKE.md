@@ -48,6 +48,12 @@ On the caller's connection thread, before the engine renders anything:
    off, a pixel is the same size in every cell, and the pivot is the same whole pixel in every
    cell: played back, the sprite's ground holds still. Two pixels are kept clear round the model
    in every cell.
+   One scale holds every clip, so one clip that reaches far shrinks all the others: the cold
+   try's wraith, every clip at once, was a few pixels tall in a 128 cell because its `swoop`
+   reaches 2.5 times as far as a middling clip (and not sideways from its root, so `in_place`
+   does not help). The answer names such a clip (`scale_set_by`: the clip, and how many times
+   coarser the sheet is than a middling clip alone would be, when more than 1.5) so the agent
+   can bake it in a sheet of its own.
 4. **Every refusal**, before any render, with the numbers: an atlas past 4096 pixels a side or
    7 Mi pixels (`atlas_too_large`, with the width, height and bytes it would have been); past 512
    cells; a clip past 64 frames at the rate asked (`clip_too_long`); an unknown clip; clips on a
