@@ -19,15 +19,15 @@ pub static PLAN: BoxCreature = BoxCreature;
 static SIZE: SizeDef = SizeDef { name: "shoulder_height", unit: Unit::Metre, mean: 0.6, sd: 0.05, range: [0.3, 1.2], about: "ground to the top of the back" };
 
 static NUMBERS: [NumberDef; 9] = [
-    NumberDef { name: "body_length", unit: Unit::Metre, share: 1.2, exponent: 1.0, traits: &[], about: "the trunk, front to back" },
-    NumberDef { name: "body_depth", unit: Unit::Metre, share: 0.42, exponent: 1.0, traits: &[("build", 1.0)], about: "the trunk, top to bottom" },
-    NumberDef { name: "body_width", unit: Unit::Metre, share: 0.32, exponent: 1.0, traits: &[("build", 1.0)], about: "the trunk, side to side" },
-    NumberDef { name: "leg_length", unit: Unit::Metre, share: 0.62, exponent: 1.0, traits: &[("legs", 1.0)], about: "hip to ground" },
-    NumberDef { name: "leg_girth", unit: Unit::Metre, share: 0.09, exponent: 1.0, traits: &[("build", 1.0)], about: "a thigh's width" },
-    NumberDef { name: "neck_length", unit: Unit::Metre, share: 0.3, exponent: 1.0, traits: &[], about: "the neck, upright" },
-    NumberDef { name: "head_length", unit: Unit::Metre, share: 0.36, exponent: 1.0, traits: &[], about: "the head, back to front" },
-    NumberDef { name: "head_depth", unit: Unit::Metre, share: 0.2, exponent: 1.0, traits: &[("build", 0.5)], about: "the head, top to bottom" },
-    NumberDef { name: "tail_length", unit: Unit::Metre, share: 0.5, exponent: 1.0, traits: &[("tail", 1.0)], about: "the tail" },
+    NumberDef { name: "body_length", unit: Unit::Metre, share: 1.2, exponent: 1.0, traits: &[], range: [0.15, 2.4], about: "the trunk, front to back" },
+    NumberDef { name: "body_depth", unit: Unit::Metre, share: 0.42, exponent: 1.0, traits: &[("build", 1.0)], range: [0.05, 0.8], about: "the trunk, top to bottom" },
+    NumberDef { name: "body_width", unit: Unit::Metre, share: 0.32, exponent: 1.0, traits: &[("build", 1.0)], range: [0.04, 0.6], about: "the trunk, side to side" },
+    NumberDef { name: "leg_length", unit: Unit::Metre, share: 0.62, exponent: 1.0, traits: &[("legs", 1.0)], range: [0.08, 1.2], about: "hip to ground" },
+    NumberDef { name: "leg_girth", unit: Unit::Metre, share: 0.09, exponent: 1.0, traits: &[("build", 1.0)], range: [0.012, 0.18], about: "a thigh's width" },
+    NumberDef { name: "neck_length", unit: Unit::Metre, share: 0.3, exponent: 1.0, traits: &[], range: [0.04, 0.6], about: "the neck, upright" },
+    NumberDef { name: "head_length", unit: Unit::Metre, share: 0.36, exponent: 1.0, traits: &[], range: [0.05, 0.7], about: "the head, back to front" },
+    NumberDef { name: "head_depth", unit: Unit::Metre, share: 0.2, exponent: 1.0, traits: &[("build", 0.5)], range: [0.03, 0.4], about: "the head, top to bottom" },
+    NumberDef { name: "tail_length", unit: Unit::Metre, share: 0.5, exponent: 1.0, traits: &[("tail", 1.0)], range: [0.06, 1.0], about: "the tail" },
 ];
 
 static TRAITS: [TraitDef; 3] = [

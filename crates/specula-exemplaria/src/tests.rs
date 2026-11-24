@@ -276,11 +276,276 @@ fn nearest_names_of_the_library() {
 fn a_copy_records_its_taking_and_reads_back() {
     let mut k = ENTRIES[0].kind().unwrap();
     k.from = Some(ENTRIES[0].from());
-    k.taken = Some(crate::kind::Taken { library: format!("{:016x}", library::version()), base: Some("box_creature".into()), checked: "at the take: written at its mean".into(), own: 3 });
+    k.taken = Some(crate::kind::Taken { library: format!("{:016x}", library::version()), base: Some("box_creature".into()), checked: "at the take: written at its mean".into(), own: 3, streams: Some("box_creature".into()) });
     let text = k.to_json().to_pretty();
     assert_eq!(Kind::parse(&text).unwrap(), k);
     let bad = text.replace(&format!("{:016x}", library::version()), "not-a-version");
     assert_eq!((parse_err(&bad).code, parse_err(&bad).path.as_str()), ("wrong_type", "taken.library"));
     let extra = text.replace("\"own\": 3", "\"own\": 3, \"signed\": \"me\"");
     assert_eq!(parse_err(&extra).path, "taken.signed");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reach: a kind whose draws could leave what its plan can write is refused (review 1, finding 1)
+// ---------------------------------------------------------------------------------------------
+
+fn resolve_err(extra: &str) -> crate::Error {
+    resolve(&Kind::parse(&small(extra)).unwrap(), None).expect_err(extra)
+}
+
+/// The review's impossible kinds, each refused with the kind's own field, the worst value a seed
+/// would reach and the bound it leaves.
+#[test]
+fn a_kind_that_could_draw_an_impossible_body_is_refused_with_its_own_field() {
+    // The live case: a size spread as large as its mean, with no range. The parser refuses a
+    // spread whose 2.5 spreads pass zero; one inside that but past the plan's range is refused
+    // when resolved.
+    let e = parse_err(&small(r#", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.6, "unit": "m", "own": "x"}}"#));
+    assert_eq!((e.code, e.path.as_str()), ("out_of_range", "size.shoulder_height.sd"), "{e}");
+    let e = resolve_err(r#", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.2, "unit": "m", "own": "x"}}"#);
+    assert_eq!((e.code, e.path.as_str()), ("outside_plan", "size.shoulder_height.sd"), "{e}");
+    let r = e.reach.as_ref().unwrap();
+    assert_eq!((r.number.as_str(), r.worst, r.bound), ("shoulder_height", 0.1, [0.3, 1.2]), "{e}");
+    assert!(e.to_json().get("worst").is_some() && e.message.contains("0.3..1.2 m"), "{e}");
+    // A size outside the plan, by its mean or its range.
+    assert_eq!(resolve_err(r#", "size": {"shoulder_height": {"mean": 2.0, "unit": "m", "own": "x"}}"#).path, "size.shoulder_height.mean");
+    assert_eq!(resolve_err(r#", "size": {"shoulder_height": {"mean": 0.6, "range": [0.1, 0.9], "unit": "m", "own": "x"}}"#).path, "size.shoulder_height.range");
+    // A trait's spread that takes a girth below what the plan can write.
+    let e = resolve_err(r#", "vary": {"build": {"spread": 0.36, "own": "x"}}"#);
+    assert_eq!((e.code, e.path.as_str()), ("outside_plan", "vary.build.spread"), "{e}");
+    assert!(e.reach.as_ref().unwrap().worst < e.reach.as_ref().unwrap().bound[0]);
+    // Past the parser's own limit: a spread above 0.36 (a factor at 2.5 spreads below a tenth).
+    assert_eq!(parse_err(&small(r#", "vary": {"build": {"spread": 0.5, "own": "x"}}"#)).path, "vary.build.spread");
+    assert_eq!(parse_err(&small(r#", "numbers": {"head_length": {"share": 0.36, "spread": 0.5, "own": "x"}}"#)).path, "numbers.head_length.spread");
+    // A negative mean is no length (the parser); a mean past the plan's range (resolve).
+    assert_eq!(parse_err(&small(r#", "numbers": {"leg_length": {"mean": -1, "own": "x"}}"#)).path, "numbers.leg_length.mean");
+    let e = resolve_err(r#", "numbers": {"leg_length": {"mean": 5, "own": "x"}}"#);
+    assert_eq!((e.code, e.path.as_str()), ("outside_plan", "numbers.leg_length.mean"), "{e}");
+    assert_eq!(resolve_err(r#", "numbers": {"leg_length": {"share": 4, "own": "x"}}"#).path, "numbers.leg_length.share");
+    // An exponent that, over the size's spread, leaves the plan's range.
+    let e = resolve_err(r#", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.2, "range": [0.3, 1.2], "unit": "m", "own": "x"}}, "numbers": {"tail_length": {"share": 0.5, "exponent": -3, "own": "x"}}"#);
+    assert_eq!((e.code, e.path.as_str()), ("outside_plan", "numbers.tail_length.exponent"), "{e}");
+    // A range from zero (the review's infinities with an exponent of -1): refused by the parser.
+    assert_eq!(parse_err(&small(r#", "size": {"shoulder_height": {"mean": 0.6, "range": [0, 0.9], "unit": "m", "own": "x"}}"#)).path, "size.shoulder_height.range[0]");
+    // A number's own range outside the plan's, or not holding its mean.
+    assert_eq!(resolve_err(r#", "numbers": {"leg_length": {"share": 0.62, "range": [0.01, 0.5], "own": "x"}}"#).path, "numbers.leg_length.range");
+    assert_eq!(resolve_err(r#", "numbers": {"leg_length": {"share": 0.62, "range": [0.1, 0.2], "own": "x"}}"#).code, "out_of_range");
+    // A field the base sets is named, and said to be the base's.
+    let base = Kind::parse(&small(r#", "vary": {"build": {"spread": 0.36, "own": "x"}}"#)).unwrap();
+    let child = Kind::parse(&small("").replace(r#""name": "probe""#, r#""name": "child", "base": "probe""#)).unwrap();
+    let e = resolve(&child, Some(&base)).unwrap_err();
+    assert!(e.path == "vary.build.spread" && e.message.contains("its base 'probe'"), "{e}");
+}
+
+/// A family of hostile kinds of the test plan: wide spreads, sizes at the edges, exponents at
+/// their limits, a number's own spread at the parser's most. Some resolve and some do not.
+pub(crate) fn hostile_kinds() -> Vec<String> {
+    let mut out = Vec::new();
+    for (sd, mean) in [("0.11", "0.6"), ("0.0", "0.3"), ("0.0", "1.2"), ("0.05", "0.45"), ("0.12", "0.9")] {
+        for spread in ["0.0", "0.1", "0.2", "0.3", "0.36"] {
+            for exponent in ["-3", "0.5", "1", "3"] {
+                for head in ["0.36", "0.0"] {
+                    out.push(small(&format!(
+                        r#", "size": {{"shoulder_height": {{"mean": {mean}, "sd": {sd}, "unit": "m", "own": "x"}}}},
+                        "vary": {{"build": {{"spread": {spread}, "own": "x"}}, "legs": {{"spread": {spread}, "own": "x"}}, "tail": {{"spread": {spread}, "own": "x"}}}},
+                        "numbers": {{"leg_length": {{"share": 0.62, "exponent": {exponent}, "own": "x"}}, "head_length": {{"share": 0.36, "spread": {head}, "own": "x"}}}}"#
+                    )));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The backstop: over 100,000 seeds of the hostile kinds that resolve, no drawn number leaves
+/// its plan's range or the kind's own reach, and every one is a finite positive number.
+#[test]
+fn no_seed_of_an_accepted_kind_leaves_its_reach() {
+    let all = hostile_kinds();
+    let accepted: Vec<_> = all.iter().filter_map(|t| resolve(&Kind::parse(t).unwrap(), None).ok()).collect();
+    assert!(accepted.len() >= 20 && accepted.len() < all.len(), "{} of {} hostile kinds accepted: the family holds both", accepted.len(), all.len());
+    let reaches: Vec<_> = accepted.iter().map(|r| r.reach().unwrap()).collect();
+    let plan = accepted[0].plan;
+    for seed in 0..100_000u64 {
+        let i = (seed % accepted.len() as u64) as usize;
+        let s = accepted[i].draw(Some(seed));
+        for (v, b) in std::iter::once(&s.size).chain(&s.numbers).zip(&reaches[i]) {
+            assert_eq!(v.name, b.name);
+            assert!(v.value.is_finite() && v.value > 0.0 && v.value >= b.lo && v.value <= b.hi, "seed {seed}, kind {i}: {} {} outside {}..{}", v.name, v.value, b.lo, b.hi);
+            let range = plan.numbers().iter().find(|n| n.name == v.name).map_or(plan.size().range, |n| n.range);
+            assert!(v.value >= range[0] && v.value <= range[1], "seed {seed}: {} {} outside the plan's {range:?}", v.name, v.value);
+        }
+    }
+}
+
+/// A draw holds a value inside the plan's range even for a kind no resolve would accept (made by
+/// hand around the checks): the backstop.
+#[test]
+fn a_kind_made_around_the_checks_still_draws_inside_the_plan() {
+    let mut r = library::entry("box_creature").unwrap().resolved().unwrap();
+    r.kind.vary.get_mut("build").unwrap().spread = 3.0;
+    r.kind.numbers.get_mut("head_length").unwrap().spread = Some(5.0);
+    assert!(r.reach().is_err());
+    for seed in 0..2_000 {
+        let s = r.draw(Some(seed));
+        for (v, n) in s.numbers.iter().zip(r.plan.numbers()) {
+            assert!(v.value >= n.range[0] && v.value <= n.range[1], "seed {seed}: {} {}", v.name, v.value);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Streams (review 1, finding 2): each number's own, unrelated to the others' and to the next seed's
+// ---------------------------------------------------------------------------------------------
+
+/// Pearson's correlation of two equally long series.
+fn corr(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len() as f64;
+    let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+    let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
+    for (x, y) in a.iter().zip(b) {
+        sab += (x - ma) * (y - mb);
+        saa += (x - ma) * (x - ma);
+        sbb += (y - mb) * (y - mb);
+    }
+    sab / (saa * sbb).sqrt()
+}
+
+/// The largest correlation, in absolute value, among every pair of a plan's streams at one seed
+/// and at consecutive seeds (seed n against seed n + 1, every stream with every stream), over
+/// `seeds`; and the pair it is.
+fn worst_correlation(names: &[String], seeds: &[u64], normal: &dyn Fn(u64, &str) -> f64) -> (f64, String) {
+    let z: Vec<Vec<f64>> = names.iter().map(|n| seeds.iter().map(|s| normal(*s, n)).collect()).collect();
+    let mut worst = (0.0f64, String::new());
+    let mut see = |r: f64, what: String| {
+        if r.abs() > worst.0.abs() {
+            worst = (r, what);
+        }
+    };
+    let len = seeds.len() - 1;
+    for i in 0..names.len() {
+        for j in 0..names.len() {
+            if i < j {
+                see(corr(&z[i], &z[j]), format!("{} x {}", names[i], names[j]));
+            }
+            see(corr(&z[i][..len], &z[j][1..]), format!("{} at n x {} at n+1", names[i], names[j]));
+        }
+    }
+    worst
+}
+
+/// Every stream of the library's kinds (the size's, each trait's and each number's, keyed as
+/// the draw keys them), over 40,000 consecutive seeds from 0 and 40,000 up to the largest seed,
+/// correlates with no other at the same seed, or at the next seed, past 0.025.
+///
+/// **The bound**: for independent normals the sampling error of a correlation over n pairs is
+/// 1/sqrt(n): 0.005 at n = 40,000, so 0.025 is five of them (a chance of about 6 in 10 million a
+/// pair, against 247 pairs a kind and block), and a correlation of 0.03 lies six errors above
+/// zero: it is seen. The seeds are fixed, so the test is the same every run. The scheme this
+/// replaced (`Rng::named`: the seed as PCG32's state and the name as its increment) is shown to
+/// fail it over the same seeds, so the test is known to see what it was written for.
+#[test]
+fn the_streams_of_a_kind_are_unrelated_at_one_seed_and_at_the_next() {
+    const N: u64 = 40_000;
+    const BOUND: f64 = 0.025;
+    for e in ENTRIES {
+        let r = e.resolved().unwrap();
+        let key = r.stream_key().to_string();
+        let names: Vec<String> = std::iter::once(r.plan.size().name)
+            .chain(r.plan.traits().iter().map(|t| t.name))
+            .chain(r.plan.numbers().iter().map(|n| n.name))
+            .map(|n| format!("{key}/{n}"))
+            .collect();
+        for seeds in [(0..N).collect::<Vec<u64>>(), (crate::draw::MAX_SEED - N + 1..=crate::draw::MAX_SEED).collect()] {
+            let (r, pair) = worst_correlation(&names, &seeds, &crate::draw::normal);
+            assert!(r.abs() < BOUND, "{}: {pair} correlate at {r:.4} from seed {}", e.name(), seeds[0]);
+        }
+        // The old scheme, over the same seeds: past the bound.
+        let old = |s: u64, n: &str| {
+            let mut g = specula_core::rng::Rng::named(s, n);
+            let unit = |x: u64| (x >> 11) as f64 * (1.0 / (1u64 << 53) as f64);
+            let u1 = unit(g.next_u64()) + 1.0 / (1u64 << 53) as f64;
+            let u2 = unit(g.next_u64());
+            (-2.0 * specula_core::dmath::ln_f64(u1)).sqrt() * specula_core::dmath::cos_f64(2.0 * std::f64::consts::PI * u2)
+        };
+        let (r, pair) = worst_correlation(&names, &(0..N).collect::<Vec<u64>>(), &old);
+        assert!(r.abs() > BOUND, "the old scheme's worst pair {pair} is {r:.4}: the test would not have seen it");
+    }
+    // Seed 0 and the largest seed are seeds like any other: their specimens differ from their
+    // neighbours' and from the mean, and their residuals are not all one value.
+    let r = library::entry("box_creature").unwrap().resolved().unwrap();
+    let mean = r.draw(None);
+    for s in [0, 1, crate::draw::MAX_SEED - 1, crate::draw::MAX_SEED] {
+        let x = r.draw(Some(s));
+        assert_ne!(x.numbers, mean.numbers, "seed {s}");
+        assert!(x.traits.windows(2).any(|w| w[0].1 != w[1].1), "seed {s}: {:?}", x.traits);
+    }
+    assert_ne!(r.draw(Some(0)).numbers, r.draw(Some(1)).numbers);
+    assert_ne!(r.draw(Some(crate::draw::MAX_SEED)).numbers, r.draw(Some(crate::draw::MAX_SEED - 1)).numbers);
+}
+
+/// A trait and a number of one name would draw one normal for both: every name of a plan's
+/// size, traits and numbers is unique across the three tables (review 1, finding 7). And every
+/// plan's own defaults resolve (a kind that sets nothing is a sound kind), its ranges are
+/// positive and lie on their unit's step.
+#[test]
+fn a_plans_names_are_unique_across_its_tables_and_its_defaults_resolve() {
+    for p in plans::PLANS {
+        let mut seen = std::collections::BTreeSet::new();
+        let names = std::iter::once(p.size().name).chain(p.traits().iter().map(|t| t.name)).chain(p.numbers().iter().map(|n| n.name));
+        for n in names {
+            assert!(seen.insert(n), "{}: '{n}' names two of its size, traits and numbers: they would share a stream", p.name());
+        }
+        for n in p.numbers() {
+            assert!(n.range[0] > 0.0 && n.range[0] < n.range[1], "{}: {}", p.name(), n.name);
+            for x in n.range {
+                assert_eq!(crate::draw::round(x, n.unit), x, "{}: {}'s range on its step", p.name(), n.name);
+            }
+        }
+        let bare = Kind::parse(&format!(r#"{{"kind": 1, "name": "bare", "plan": "{}", "about": "the plan's defaults"}}"#, p.name())).unwrap();
+        resolve(&bare, None).unwrap_or_else(|e| panic!("{}: its own defaults: {e}", p.name()));
+    }
+}
+
+#[test]
+fn a_seed_a_recipe_cannot_hold_exactly_is_refused_and_unbuilt_levels_are_said() {
+    let e = library::entry("box_creature").unwrap();
+    let r = e.resolved().unwrap();
+    assert!(expand(&r, Some(crate::draw::MAX_SEED), &AsNamed, "t").unwrap().recipe.contains("\"seed\": 9007199254740991"));
+    let x = expand(&r, Some(crate::draw::MAX_SEED + 1), &AsNamed, "t").unwrap_err();
+    assert_eq!((x.code, x.path.as_str()), ("out_of_range", "seed"));
+    assert_eq!(expand(&r, Some(u64::MAX), &AsNamed, "t").unwrap_err().path, "seed");
+    for level in ["mid", "crowd", "far"] {
+        let e = parse_err(&small(&format!(r#", "levels": {{"near": 600, "{level}": 100}}"#)));
+        assert_eq!((e.code, e.path), ("not_built", format!("levels.{level}")));
+    }
+}
+
+/// A copy keyed on the library's kind (`taken.streams`) draws the library's specimens whatever
+/// it is called; a change to one of its numbers moves only that number; a copy given its own key
+/// draws anew (review 1, finding 3).
+#[test]
+fn a_renamed_copy_draws_the_library_entrys_specimens() {
+    let lib = library::entry("box_creature").unwrap().resolved().unwrap();
+    let mut copy = lib.kind.clone();
+    copy.name = "my_beast".into();
+    copy.taken = Some(crate::kind::Taken { library: "0".repeat(16), base: None, checked: String::new(), own: 0, streams: Some("box_creature".into()) });
+    let text = copy.to_json().to_pretty();
+    let c = resolve(&Kind::parse(&text).unwrap(), None).unwrap();
+    for seed in [0, 7, 42, 123_456] {
+        let (a, b) = (lib.draw(Some(seed)), c.draw(Some(seed)));
+        assert_eq!((a.size, a.numbers, a.traits), (b.size, b.numbers, b.traits), "seed {seed}");
+    }
+    let edited = text.replace(r#""share": 1.2"#, r#""share": 1.3"#);
+    assert_ne!(edited, text);
+    let d = resolve(&Kind::parse(&edited).unwrap(), None).unwrap();
+    for seed in [7, 42] {
+        let (a, b) = (c.draw(Some(seed)), d.draw(Some(seed)));
+        for (x, y) in a.numbers.iter().zip(&b.numbers) {
+            assert_eq!(x == y, x.name != "body_length", "seed {seed}: {}", x.name);
+        }
+    }
+    let own = text.replace(r#""streams": "box_creature""#, r#""streams": "my_beast""#);
+    let o = resolve(&Kind::parse(&own).unwrap(), None).unwrap();
+    assert_ne!(o.draw(Some(7)).numbers, lib.draw(Some(7)).numbers, "its own key: its own specimens");
 }

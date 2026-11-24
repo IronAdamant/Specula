@@ -213,7 +213,12 @@ fn lines(v: &Json, depth: usize, out: &mut String) {
 
 /// Writes the specimen of `seed` (`None`: the mean) of a resolved kind. `from`: where the kind
 /// came from, written into the description (`exemplaria/box_creature/box_creature@<hash>`).
+/// A seed above [`crate::draw::MAX_SEED`] is refused: the recipe's JSON could not hold it
+/// exactly, and the text would name another seed than the one drawn.
 pub fn expand(r: &Resolved, seed: Option<u64>, roles: &dyn Roles, from: &str) -> Result<Expansion, Error> {
+    if let Some(x) = seed.filter(|x| *x > crate::draw::MAX_SEED) {
+        return Err(Error::new("out_of_range", "seed", format!("seed {x} is above {} (2^53 - 1), the largest a recipe's JSON holds exactly", crate::draw::MAX_SEED)));
+    }
     let s = r.draw(seed);
     let mut w = Writing { resolved: r, roles, presets: BTreeMap::new(), bones: Vec::new(), parts: Vec::new(), clips: Vec::new(), facts: Vec::new() };
     r.plan.write(&s, &mut w)?;

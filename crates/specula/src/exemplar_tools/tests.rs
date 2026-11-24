@@ -65,7 +65,10 @@ fn every_name_and_alias_answers_short_at_any_seed_and_full_under_the_ceiling() {
         assert!(recipe.contains("seed 3") && full.get("anims").is_some() && full.get("kind_file").is_some());
         assert_eq!(full.get("number_rows").and_then(Json::as_array).map(<[Json]>::len), Some(9));
     }
-    assert!(err("exemplar_get", r#"{"name": "box_creature", "seed": 1000001}"#).contains("seed"));
+    assert!(err("exemplar_get", r#"{"name": "box_creature", "seed": 9007199254740992}"#).contains("seed"));
+    // Any seed a scatter writes can be previewed (its variant seeds are folded to 53 bits).
+    let top = ok("exemplar_get", r#"{"name": "box_creature", "seed": 9007199254740991}"#);
+    assert!(top.get("specimen").is_some() && top.get("use").and_then(|u| u.get("spawn")).and_then(|s| s.get("seed")).and_then(Json::as_u64) == Some(1), "{top}");
     assert!(err("exemplar_get", "{}").contains("required"));
     let long = format!(r#"{{"name": "{}"}}"#, "x".repeat(65));
     assert!(err("exemplar_get", &long).contains("at most 64"));
@@ -201,4 +204,82 @@ fn a_scatter_of_a_kind_is_a_crowd_of_specimens_and_the_same_twice() {
     assert_eq!(alone.code, ErrorCode::UnknownAsset, "{alone:?}");
     // The recipe names the kind as what it includes, so the model library reads its file.
     assert_eq!(specula_model::Recipe::parse(&text, &style).unwrap().includes(), ["box_creature.kind"]);
+}
+
+/// `exemplar_take {"as"}` copies the kind under another name and records the library kind's
+/// name as what its streams are keyed on, so seed N of the copy is the specimen `exemplar_get`
+/// showed at seed N (review 1, finding 3; the review's case: seed 7 of `box_creature` as
+/// `my_beast`).
+#[test]
+fn a_take_under_another_name_builds_the_specimen_the_library_showed() {
+    let lib = library::entry("box_creature").unwrap().resolved().unwrap();
+    let c = copy_of("box_creature", Some("my_beast")).unwrap();
+    let k = Kind::parse(&c.body).unwrap();
+    assert_eq!((k.name.as_str(), k.streams()), ("my_beast", "box_creature"));
+    let r = specula_exemplaria::resolve(&k, None).unwrap();
+    for seed in [1, 7, 42, 999_999] {
+        let (a, b) = (lib.draw(Some(seed)), r.draw(Some(seed)));
+        assert_eq!((&a.size, &a.numbers, &a.traits), (&b.size, &b.numbers, &b.traits), "seed {seed}");
+    }
+    let shown = ok("exemplar_get", r#"{"name": "box_creature", "seed": 7}"#);
+    let drawn = shown.get("specimen").and_then(|s| s.get("drawn")).and_then(Json::as_str).unwrap().to_string();
+    let mine: Vec<String> = std::iter::once(&r.draw(Some(7)).size).chain(&r.draw(Some(7)).numbers).map(|v| format!("{}={}", v.name, v.value)).collect();
+    assert_eq!(drawn, mine.join(" "), "what exemplar_get showed is what the copy draws");
+}
+
+/// The fix of a refused take names every role the specimen is written in: the kind's own, its
+/// base's and the plan's defaults (review 1, finding 4), each with the hint the write hands the
+/// style.
+#[test]
+fn the_roles_a_take_must_resolve_are_every_role_the_specimen_is_written_in() {
+    let lib = library::entry("box_creature").unwrap().resolved().unwrap();
+    let mut bare = lib.clone();
+    bare.kind.roles.clear();
+    let roles = roles_written(&bare);
+    assert_eq!(roles.keys().map(String::as_str).collect::<Vec<_>>(), ["claw", "coat", "eye"], "the plan's roles, though the kind names none");
+    assert_eq!(roles["claw"], "#2a2420", "the plan's hint");
+    // And the take's own check builds a style of exactly those.
+    assert!(checked_at_take(&bare, "t").is_ok());
+}
+
+/// A new project's style (`specula new`) names every role word of the plans, so a first take
+/// needs no patch; a role outside it is still refused with its fix.
+#[test]
+fn a_new_projects_style_resolves_the_library_kinds_roles() {
+    let style = Style::parse(crate::scaffold::STYLE).unwrap();
+    for e in library::ENTRIES {
+        check_kind(e.text, &|_| None, &style, e.path).unwrap_or_else(|x| panic!("{}: {x}", e.path));
+    }
+    for role in ["coat", "underside", "eye", "claw", "bark", "leaf", "hull", "panel", "glass"] {
+        assert!(style.role(role, Some("#808080")).is_ok(), "{role}");
+    }
+    for p in specula_exemplaria::plans::PLANS {
+        for r in p.roles() {
+            assert!(style.role(r.name, Some(r.hint)).is_ok(), "{}: the role {} is in a new project's style", p.name(), r.name);
+        }
+    }
+}
+
+/// A row of the catalogue carries the scatter snippet and each number's mean, range over seeds
+/// and unit (EXEMPLARIA.md, A.9), within the page's ceiling.
+#[test]
+fn a_row_says_each_numbers_mean_range_and_unit_and_the_scatter_snippet() {
+    let rows = ok("exemplar_list", r#"{"rows": true, "limit": 100}"#);
+    let row = &rows.get("kinds").unwrap().as_array().unwrap()[0];
+    let numbers = row.get("numbers").and_then(Json::as_str).unwrap();
+    assert!(numbers.starts_with("shoulder_height 0.6 (0.475..0.725) m; body_length 0.72 ("), "{numbers}");
+    assert_eq!(numbers.matches(" m").count(), 10, "the size and nine numbers: {numbers}");
+    let scatter = row.get("use").and_then(|u| u.get("scatter")).and_then(Json::as_str).unwrap();
+    assert!(scatter.contains(r#"{"kind": "box_creature", "variants": 32}"#), "{scatter}");
+    assert!(rows.to_string().len() <= MAX_ROWS_BYTES + 512);
+}
+
+/// A kind written into a project with an impossible body is refused by the project's checks,
+/// naming the kind's field (the review's live case, offline).
+#[test]
+fn a_project_write_of_an_impossible_kind_names_the_kinds_field() {
+    let bad = r#"{"kind": 1, "name": "bad", "plan": "box_creature", "about": "a probe", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.2, "unit": "m", "own": "x"}}}"#;
+    let ctx = vec![("assets/style.json".to_string(), crate::project::FileKind::Style, std::sync::Arc::from(crate::scaffold::STYLE))];
+    let p = crate::project_kinds::validate("assets/models/bad.kind.json", crate::project::FileKind::Recipe, bad, None, &ctx);
+    assert!(p.iter().any(|p| p.message.contains("size.shoulder_height.sd") || format!("{p:?}").contains("size.shoulder_height.sd")), "{p:?}");
 }

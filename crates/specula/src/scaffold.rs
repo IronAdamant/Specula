@@ -109,9 +109,9 @@ const HUD: &str = r#"{
 }
 "#;
 
-const STYLE: &str = r##"{
+pub(crate) const STYLE: &str = r##"{
   "style": "plain",
-  "description": "The style a new project starts with: a small neutral palette and four materials, so a model recipe builds on the first try (recipes name these, never raw colours). Make it the game's own: change the colours first.",
+  "description": "The style a new project starts with: a small neutral palette and four materials, so a model recipe builds on the first try (recipes name these, never raw colours). roles: which material each role of a library kind (exemplar_list) is drawn in. Make it the game's own: change the colours first.",
   "palette": {
     "ink": "#1f232a",
     "stone": "#8c96a3",
@@ -125,7 +125,8 @@ const STYLE: &str = r##"{
     "painted": { "color": "#5aa9ff", "roughness": 0.55, "specular": 0.3 },
     "metal": { "color": "#9aa3ad", "roughness": 0.4, "metallic": 0.9, "specular": 0.6 },
     "glow": { "color": "#ffb35a", "roughness": 0.5, "emissive": 2.0, "specular": 0.2 }
-  }
+  },
+  "roles": { "coat": "matte", "underside": "matte", "eye": "glow", "claw": "metal", "bark": "matte", "leaf": "painted", "hull": "painted", "panel": "metal", "glass": "painted" }
 }
 "##;
 

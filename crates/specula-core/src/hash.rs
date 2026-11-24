@@ -145,6 +145,16 @@ pub fn hash_str(s: &str) -> u64 {
     hash_bytes(s.as_bytes())
 }
 
+/// The seed of the stream `stream` of `seed`: the hasher started from `seed`, given the name.
+/// One scheme for every seeded thing that draws by name (the modeller's parts and ops, a kind's
+/// numbers in `specula-exemplaria`): streams of different names, or of neighbouring seeds, are
+/// unrelated, because the whole hash avalanches. Seed a generator with it (`Rng::new(s, 0)`).
+pub fn stream_seed(seed: u64, stream: &str) -> u64 {
+    let mut h = StableHasher::with_seed(seed);
+    h.write_str(stream);
+    h.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

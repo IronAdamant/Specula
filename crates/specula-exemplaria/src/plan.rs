@@ -63,6 +63,10 @@ pub struct NumberDef {
     pub exponent: f64,
     /// The traits that move it, each with a weight: `value × (1 + weight × trait)`.
     pub traits: &'static [(&'static str, f64)],
+    /// What the plan can write for it, low and high, in its unit (on the unit's step): a body
+    /// the plan's `write` makes whole for any value inside. A kind whose draws could leave it is
+    /// refused when it is resolved ([`crate::draw`], "Reach"), and a draw never leaves it.
+    pub range: [f64; 2],
     pub about: &'static str,
 }
 
@@ -233,7 +237,26 @@ pub fn resolve(kind: &Kind, base: Option<&Kind>) -> Result<Resolved, Error> {
             return Err(Error::new("unknown_field", format!("motion.{k}.froude"), format!("'{k}' has no speed")));
         }
     }
-    Ok(Resolved { kind: merged, plan, base: kind.base.clone() })
+    let resolved = Resolved { kind: merged, plan, base: kind.base.clone() };
+    // Every seed's body inside what the plan can write, or the kind is refused here, naming the
+    // kind's own field (a spawn, a write and a take all resolve: none can accept it).
+    resolved.reach().map_err(|e| match &resolved.base {
+        Some(b) if !own_field(kind, &e.path) => Error { message: format!("{} (the field is its base '{b}''s, read under this kind)", e.message), ..e },
+        _ => e,
+    })?;
+    Ok(resolved)
+}
+
+/// Whether the kind file itself (not its base) sets the field at `path` (`vary.build.spread`).
+fn own_field(kind: &Kind, path: &str) -> bool {
+    let mut it = path.split('.');
+    let (table, key) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
+    match table {
+        "size" => kind.size.is_some(),
+        "numbers" => kind.numbers.contains_key(key),
+        "vary" => kind.vary.contains_key(key),
+        _ => true,
+    }
 }
 
 impl Resolved {

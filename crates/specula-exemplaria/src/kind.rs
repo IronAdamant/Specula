@@ -9,7 +9,7 @@
 //!   "vary":    { "build": { "spread": 0.06, "own": "..." } },
 //!   "roles":   { "coat": "#776a5a" },
 //!   "motion":  { "walk": { "pattern": "lateral_walk", "froude": 0.25, "source": "..." }, "idle": {} },
-//!   "levels":  { "near": 6000, "far": 150 },
+//!   "levels":  { "near": 6000 },
 //!   "foot": "digitigrade" }
 //! ```
 //!
@@ -41,7 +41,13 @@ pub const MAX_ROLES: usize = 4;
 /// The most triangles a level may name.
 pub const MAX_LEVEL_TRIANGLES: u32 = 200_000;
 /// The levels a kind may name.
-pub const LEVELS: &[&str] = &["near", "mid", "crowd", "far"];
+pub const LEVELS: &[&str] = &["near"];
+/// Levels the design names that are not built yet: refused (`not_built`) rather than read and
+/// ignored. They come with the plans whose surfaces the modeller can reduce (stage S1 on).
+pub const LEVELS_NOT_BUILT: &[&str] = &["mid", "crowd", "far"];
+/// The most a spread (a trait's or a number's own) may be: at 2.5 spreads a factor of weight
+/// one stays at a tenth of its mean or more.
+pub const MAX_SPREAD: f64 = 0.36;
 /// A kind file's own top-level fields (anything else with a string value is a plan's option).
 pub const FIELDS: &[&str] = &["kind", "name", "plan", "about", "aliases", "base", "licence", "from", "taken", "size", "numbers", "vary", "roles", "motion", "levels"];
 /// The engine's licence, which every entry of the library carries.
@@ -135,6 +141,10 @@ pub struct Taken {
     pub checked: String,
     /// How many of its numbers are the engine's own (the rest are measured).
     pub own: u32,
+    /// The name its draws are keyed on ([`Kind::streams`]): the library kind's, so the copy,
+    /// whatever it is called, gives the specimens the library's entry showed at each seed. Set
+    /// it to the copy's own name to make the copy a kind of its own that draws anew.
+    pub streams: Option<String>,
 }
 
 /// A kind: a plan with its numbers set (parsed, before its base and its plan are applied).
@@ -248,8 +258,8 @@ fn number(v: &Json, path: &str, lo: f64, hi: f64) -> Result<f64, Error> {
 
 fn range(v: &Json, path: &str) -> Result<[f64; 2], Error> {
     let a = v.as_array().filter(|a| a.len() == 2).ok_or_else(|| err("wrong_type", path, "must be [low, high]"))?;
-    let lo = number(&a[0], &format!("{path}[0]"), 0.0, 1e6)?;
-    let hi = number(&a[1], &format!("{path}[1]"), 0.0, 1e6)?;
+    let lo = number(&a[0], &format!("{path}[0]"), 1e-6, 1e6)?;
+    let hi = number(&a[1], &format!("{path}[1]"), 1e-6, 1e6)?;
     if lo > hi {
         return Err(err("out_of_range", path, format!("low {lo} is above high {hi}")));
     }
@@ -327,8 +337,8 @@ impl Kind {
                 "base" => kind.base = Some(name(v, p)?),
                 "from" => kind.from = Some(text(v, p)?),
                 "taken" => {
-                    let r = object(v, p, "{library, base, checked, own}")?;
-                    only(r, p, &["library", "base", "checked", "own"])?;
+                    let r = object(v, p, "{library, base, checked, own, streams}")?;
+                    only(r, p, &["library", "base", "checked", "own", "streams"])?;
                     let library = text(get(r, "library").ok_or_else(|| err("missing_field", &at(p, "library"), "the library's version it was taken from"))?, &at(p, "library"))?;
                     if library.len() != 16 || !library.bytes().all(|b| b.is_ascii_hexdigit()) {
                         return Err(err("wrong_type", &at(p, "library"), "the library's version: 16 hex digits"));
@@ -339,6 +349,7 @@ impl Kind {
                         base: get(r, "base").map(|x| name(x, &at(p, "base"))).transpose()?,
                         checked: get(r, "checked").map(|x| text(x, &at(p, "checked"))).transpose()?.unwrap_or_default(),
                         own: own as u32,
+                        streams: get(r, "streams").map(|x| name(x, &at(p, "streams"))).transpose()?,
                     });
                 }
                 "size" => {
@@ -351,7 +362,8 @@ impl Kind {
                     let r = object(row, &rp, "{mean, sd, range, unit, source | own}")?;
                     only(r, &rp, &["mean", "sd", "range", "unit", "source", "own"])?;
                     let mean = number(get(r, "mean").ok_or_else(|| err("missing_field", &at(&rp, "mean"), "the size's mean"))?, &at(&rp, "mean"), 1e-6, 1e6)?;
-                    let sd = get(r, "sd").map(|x| number(x, &at(&rp, "sd"), 0.0, mean)).transpose()?;
+                    // (2.5 spreads below the mean may not pass zero: no body has a negative size.)
+                    let sd = get(r, "sd").map(|x| number(x, &at(&rp, "sd"), 0.0, mean / 2.5)).transpose()?;
                     let rg = get(r, "range").map(|x| range(x, &at(&rp, "range"))).transpose()?;
                     if let Some([lo, hi]) = rg {
                         if mean < lo || mean > hi {
@@ -368,12 +380,13 @@ impl Kind {
                         let r = object(row, &rp, "{share | mean, exponent, spread, range, source | own}")?;
                         only(r, &rp, &["share", "mean", "exponent", "spread", "range", "source", "own"])?;
                         let share = get(r, "share").map(|x| number(x, &at(&rp, "share"), 1e-6, 100.0)).transpose()?;
-                        let mean = get(r, "mean").map(|x| number(x, &at(&rp, "mean"), -1e6, 1e6)).transpose()?;
+                        // (A number is a magnitude, a length or an angle, never below zero.)
+                        let mean = get(r, "mean").map(|x| number(x, &at(&rp, "mean"), 1e-6, 1e6)).transpose()?;
                         if share.is_some() == mean.is_some() {
                             return Err(err("missing_field", &rp, "a number is a \"share\" of the size or its \"mean\" value at the mean size: one of them"));
                         }
                         let exponent = get(r, "exponent").map(|x| number(x, &at(&rp, "exponent"), -3.0, 3.0)).transpose()?;
-                        let spread = get(r, "spread").map(|x| number(x, &at(&rp, "spread"), 0.0, 0.5)).transpose()?;
+                        let spread = get(r, "spread").map(|x| number(x, &at(&rp, "spread"), 0.0, MAX_SPREAD)).transpose()?;
                         let rg = get(r, "range").map(|x| range(x, &at(&rp, "range"))).transpose()?;
                         let why = why(r, &rp, true)?.expect("required");
                         kind.numbers.insert(n.clone(), Number { share, mean, exponent, spread, range: rg, why });
@@ -384,7 +397,7 @@ impl Kind {
                         let rp = at(p, n);
                         let r = object(row, &rp, "{spread, source | own}")?;
                         only(r, &rp, &["spread", "source", "own"])?;
-                        let spread = number(get(r, "spread").ok_or_else(|| err("missing_field", &at(&rp, "spread"), "how far the trait varies, a fraction"))?, &at(&rp, "spread"), 0.0, 0.5)?;
+                        let spread = number(get(r, "spread").ok_or_else(|| err("missing_field", &at(&rp, "spread"), "how far the trait varies, a fraction"))?, &at(&rp, "spread"), 0.0, MAX_SPREAD)?;
                         kind.vary.insert(n.clone(), Vary { spread, why: why(r, &rp, true)?.expect("required") });
                     }
                 }
@@ -418,7 +431,10 @@ impl Kind {
                     }
                 }
                 "levels" => {
-                    for (n, x) in table(v, p, "{near | mid | crowd | far: triangles}")? {
+                    for (n, x) in table(v, p, "{near: triangles}")? {
+                        if LEVELS_NOT_BUILT.contains(&n.as_str()) {
+                            return Err(err("not_built", &at(p, n), format!("the level {n} is not built yet: only near (the model's triangle budget) is read; the levels of detail at mid, crowd and far budgets come with the plans whose surfaces the modeller reduces (docs/design/EXEMPLARIA.md, A.1)")));
+                        }
                         if !LEVELS.contains(&n.as_str()) {
                             return Err(err("unknown_field", &at(p, n), format!("levels are {}", LEVELS.join(", "))));
                         }
@@ -469,6 +485,9 @@ impl Kind {
             }
             r.push(("checked", Json::from(t.checked.as_str())));
             r.push(("own", Json::from(u64::from(t.own))));
+            if let Some(s) = &t.streams {
+                r.push(("streams", Json::from(s.as_str())));
+            }
             o.push(("taken", Json::obj(r)));
         }
         let mut opts: Vec<(String, Json)> = self.options.iter().map(|(k, v)| (k.clone(), Json::from(v.as_str()))).collect();
@@ -565,6 +584,7 @@ impl Kind {
         k.base = None;
         k.licence = self.licence.clone();
         k.from = self.from.clone();
+        k.taken = self.taken.clone();
         if self.size.is_some() {
             k.size = self.size.clone();
         }

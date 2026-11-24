@@ -88,11 +88,29 @@ fn look_up(word: &str) -> Result<&'static Entry, String> {
 /// The snippets that use a kind once it is in the project.
 fn after_take(name: &str, seed: u64) -> Json {
     let recipe = format!("models/{name}.kind.json");
+    // (A spawn's or a build's seed is the model library's; a larger one is a scatter's.)
+    let seed = if seed > crate::world::MAX_MODEL_SEED { 1 } else { seed };
     Json::obj([
         ("take", Json::from(format!("exemplar_take {{\"name\": \"{name}\"}}: a copy into {TAKE_FOLDER}/{name}.kind.json"))),
         ("build", Json::obj([("recipe", Json::from(recipe.as_str())), ("seed", Json::from(seed))])),
         ("spawn", Json::obj([("shape", Json::from("model")), ("recipe", Json::from(recipe.as_str())), ("seed", Json::from(seed))])),
+        (
+            "scatter",
+            Json::from(format!(
+                "a scatter item in a recipe beside the copy ({TAKE_FOLDER}/): {{\"kind\": \"{name}\", \"variants\": {}}}, each variant another specimen",
+                specula_model::recipe::MAX_KIND_VARIANTS
+            )),
+        ),
     ])
+}
+
+/// Each number's value at the kind's mean, the least and most a seed gives it, and its unit,
+/// on one line (`body_length 0.72 (0.57..0.87) m`): the rows' numbers.
+fn numbers_line(r: &Resolved) -> String {
+    match r.reach() {
+        Ok(bounds) => bounds.iter().map(|b| format!("{} {} ({}..{}) {}", b.name, b.mean, b.lo, b.hi, b.unit.name())).collect::<Vec<_>>().join("; "),
+        Err(e) => format!("does not resolve: {e}"),
+    }
 }
 
 fn why_json(w: &Why) -> (&'static str, Json) {
@@ -118,6 +136,7 @@ fn row(e: &Entry, r: &Resolved) -> Json {
     if !k.aliases.is_empty() {
         o.push(("aliases", Json::from(k.aliases.join(", "))));
     }
+    o.push(("numbers", Json::from(numbers_line(r))));
     o.push(("own_numbers", Json::from(r.own().len())));
     o.push(("from", Json::from(e.from())));
     o.push(("use", after_take(&k.name, 1)));
@@ -233,9 +252,11 @@ fn list_tool(args: &Json) -> Result<Json, String> {
     Ok(Json::obj(out))
 }
 
-/// A seed argument: 0..=the model library's most.
+/// A seed argument of `exemplar_get`: any seed a specimen is written with (0..=2^53 - 1), so
+/// every specimen a scatter makes (its variant seeds are folded to 53 bits) can be previewed.
+/// A spawn's and a build's seed is the model library's, 0..=[`crate::world::MAX_MODEL_SEED`].
 fn seed_arg(args: &Json) -> Result<Option<u64>, String> {
-    int_arg(args, "seed", 0, crate::world::MAX_MODEL_SEED)
+    int_arg(args, "seed", 0, specula_exemplaria::draw::MAX_SEED)
 }
 
 fn get_tool(args: &Json) -> Result<Json, String> {
@@ -367,7 +388,10 @@ fn copy_of(name: &str, as_name: Option<&str>) -> Result<Copy, String> {
     copy.from = Some(entry.from());
     let checked = checked_at_take(&r, &entry.from())?;
     let own = u32::try_from(r.own().len()).unwrap_or(u32::MAX);
-    copy.taken = Some(Taken { library: format!("{:016x}", library::version()), base: r.base.clone(), checked, own });
+    // (Its draws stay keyed on the library kind's name: renamed or not, seed N of the copy is
+    // the specimen `exemplar_get` showed at seed N.)
+    let streams = Some(r.stream_key().to_string());
+    copy.taken = Some(Taken { library: format!("{:016x}", library::version()), base: r.base.clone(), checked, own, streams });
     let body = copy.to_json().to_pretty() + "\n";
     Ok(Copy { entry, path: format!("{TAKE_FOLDER}/{as_name}.kind.json"), as_name, body, based: r.base.is_some() })
 }
@@ -379,7 +403,7 @@ const TAKE_SEEDS: [u64; 3] = [1, 2, 3];
 /// [`TAKE_SEEDS`], each recipe parsed (its roles as materials of their hint colours) and its clips
 /// generated on its rig. A few dozen bones and parts a specimen: bounded by the format.
 fn checked_at_take(r: &Resolved, from: &str) -> Result<String, String> {
-    let materials: Vec<(String, Json)> = r.kind.roles.iter().map(|(n, h)| (n.clone(), Json::obj([("color", Json::from(h.as_str()))]))).collect();
+    let materials: Vec<(String, Json)> = roles_written(r).iter().map(|(n, h)| (n.clone(), Json::obj([("color", Json::from(h.as_str()))]))).collect();
     let style = Style::parse(&Json::obj([("materials", Json::obj(materials))]).to_string()).map_err(|e| format!("the kind's roles as a style: {}", e.message))?;
     for seed in std::iter::once(None).chain(TAKE_SEEDS.map(Some)) {
         let at = seed.map_or("its mean".to_string(), |s| format!("seed {s}"));
@@ -411,6 +435,22 @@ fn with_roles_fix(tools: &Tools, session: &SessionInfo, out: ToolOutput, roles: 
     let Some(mut answer) = answer_json(&out) else { return out };
     if !answer.to_string().contains("role_unresolved") {
         return out;
+    }
+    // Under the engine's --style FILE every recipe is checked against that file, not the
+    // project's style.json: a patch of the project's would change nothing, so none is offered.
+    if let Some(over) = &tools.procgen.style {
+        let file = over.file_name().map_or_else(|| "--style".to_string(), |f| f.to_string_lossy().to_string());
+        answer.set(
+            "fix",
+            Json::obj([(
+                "why",
+                Json::from(format!(
+                    "this engine runs with --style ({file}): every recipe is checked against that file, not the project's style.json. Name these roles there (its \"roles\": {{ROLE: PRESET}}), or start the engine without --style: {}",
+                    roles.keys().cloned().collect::<Vec<_>>().join(", ")
+                )),
+            )]),
+        );
+        return ToolOutput::error(answer.to_string());
     }
     // The style a recipe in the take folder is checked against: the nearest above it.
     let mut found = None;
@@ -448,6 +488,21 @@ fn with_roles_fix(tools: &Tools, session: &SessionInfo, out: ToolOutput, roles: 
     ToolOutput::error(answer.to_string())
 }
 
+/// Every role a kind's specimen is written in, with the hint colour the write hands the style
+/// (the kind's own, its base's, or the plan's default): what a style must resolve.
+fn roles_written(r: &Resolved) -> BTreeMap<String, String> {
+    struct Seen(std::cell::RefCell<BTreeMap<String, String>>);
+    impl Roles for Seen {
+        fn preset(&self, role: &str, hint: &str) -> Result<String, String> {
+            self.0.borrow_mut().insert(role.to_string(), hint.to_string());
+            Ok(role.to_string())
+        }
+    }
+    let seen = Seen(std::cell::RefCell::new(BTreeMap::new()));
+    let _ = expand(r, None, &seen, "");
+    seen.0.into_inner()
+}
+
 /// `exemplar_take`: the copy ([`copy_of`]) through `project_write`.
 fn take_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
     check_keys(args, "exemplar_take", &[&["name", "as", "expect_version"]])?;
@@ -458,7 +513,7 @@ fn take_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOu
     let write = Json::obj([("path", Json::from(path.as_str())), ("text", Json::from(body.as_str())), ("expect_version", Json::from(expect))]);
     let out = crate::project_tools::call(tools, session, "project_write", &write);
     if out.is_error {
-        let roles = entry.kind().map(|k| k.roles).unwrap_or_default();
+        let roles = entry.resolved().map(|r| roles_written(&r)).unwrap_or_default();
         return Ok(with_roles_fix(tools, session, out, &roles));
     }
     let answer = answer_json(&out);
@@ -488,7 +543,7 @@ pub fn definitions() -> Vec<ToolDef> {
             description: format!(
                 "The library of sample assets: kinds (animals, creatures, machines, trees, plants...) made by code from measured numbers, each seed a different specimen \
                  (two seeds of a kind are two individuals). With nothing asked: every kind by plan on a few lines (under {MAX_INDEX_BYTES} bytes), the other \
-                 lists (shapes), and how to ask. With plan, word or role, or rows: true: rows with each kind's size, roles, clips and the calls that use it; \
+                 lists (shapes), and how to ask. With plan, word or role, or rows: true: rows with each kind's size, each number's mean and range over seeds, roles, clips and the calls (spawn, build, scatter) that use it; \
                  at most {} rows and {MAX_ROWS_BYTES} bytes a page, next_cursor for the next. Read-only.",
                 LIMITS.1
             ),
@@ -509,14 +564,15 @@ pub fn definitions() -> Vec<ToolDef> {
             description: format!(
                 "One kind of the library by its name or an alias, short (under {MAX_SHORT_BYTES} bytes): its plan, size, how far it varies, roles, clips, which \
                  numbers are the engine's own, and the calls that take and build it. seed (0..{}): the specimen that seed draws: its numbers, and its bones, \
-                 parts and clips counted before any build. full: true adds every number with its source or reason, the kind file and the recipe and clips \
+                 parts and clips counted before any build (any seed a scatter writes; a spawn or a build takes 0..{}). full: true adds every number with its source or reason, the kind file and the recipe and clips \
                  the seed writes. An unknown name answers with the nearest across the kinds and the shapes. Read-only.",
+                specula_exemplaria::draw::MAX_SEED,
                 crate::world::MAX_MODEL_SEED
             ),
             input_schema: schema(
                 vec![
                     ("name", s(MAX_WORD, "The kind's name or an alias.")),
-                    ("seed", int(0, crate::world::MAX_MODEL_SEED, "A specimen's seed (left out: the kind's mean).")),
+                    ("seed", int(0, specula_exemplaria::draw::MAX_SEED, "A specimen's seed (left out: the kind's mean).")),
                     ("full", boolean("Add the numbers with their sources, the kind file and the written recipe and clips.")),
                 ],
                 &["name"],

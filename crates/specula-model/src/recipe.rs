@@ -2142,11 +2142,8 @@ fn assemble_counted(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Bindin
     (mesh, counts)
 }
 
-fn stream_seed(seed: u64, stream: &str) -> u64 {
-    let mut h = StableHasher::with_seed(seed);
-    h.write_str(stream);
-    h.finish()
-}
+// (One scheme for every stream drawn by name: the core's, which a kind's numbers use too.)
+pub(crate) use specula_core::hash::stream_seed;
 
 /// Resolves parameters and lets, then builds every enabled part (with includes expanded) and
 /// applies `finish`.

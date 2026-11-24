@@ -28,5 +28,5 @@
       "source": "Fr 1.0, above the walk-trot change at Fr about 0.5 (Alexander 1993, as quoted in research C2, Sources disagree 2)" },
     "idle": {}
   },
-  "levels": { "near": 600, "far": 150 }
+  "levels": { "near": 600 }
 }

@@ -9,14 +9,18 @@ use specula_core::hash::StableHasher;
 use specula_exemplaria::{expand, library, AsNamed};
 use std::path::Path;
 
+/// Moved on 2026-11-24 (review 1 of S0): every number's stream is seeded by
+/// `stream_seed(seed, "<kind>/<number>")` (A.2's scheme) instead of `Rng::named`, whose streams
+/// of one seed were related; and the kind file lost its `far` level (not built: refused now), so
+/// its hash in every description moved. Nothing had shipped.
 const TABLE: &[(&str, Option<u64>, u64)] = &[
-    ("box_creature", None, 0xe9b8ff01e1e82ecc),
-    ("box_creature", Some(0), 0x43511e09b65a71e8),
-    ("box_creature", Some(1), 0x940b679efe571e92),
-    ("box_creature", Some(7), 0x461d38e4b1080a1e),
-    ("box_creature", Some(42), 0x6e1e2a1e1a1ed3f1),
-    ("box_creature", Some(123_456_789), 0x31285e8cb1911802),
-    ("box_creature", Some(9_007_199_254_740_991), 0x9fb4b55a581aa034),
+    ("box_creature", None, 0x8459ff76aee86804),
+    ("box_creature", Some(0), 0xdab6a382dca1e26d),
+    ("box_creature", Some(1), 0x5d8b14cd05786ee3),
+    ("box_creature", Some(7), 0x73840d4d41b98e35),
+    ("box_creature", Some(42), 0x60ce7c934a224e82),
+    ("box_creature", Some(123_456_789), 0x0d5efea26d1fb4d2),
+    ("box_creature", Some(9_007_199_254_740_991), 0x93eb2b75420c98e7),
 ];
 
 fn written(name: &str, seed: Option<u64>) -> u64 {

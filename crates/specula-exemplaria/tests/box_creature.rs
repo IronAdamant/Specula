@@ -77,3 +77,54 @@ fn a_style_without_the_roles_refuses_with_the_nearest_presets() {
     assert_eq!((e.code, e.path.as_str()), ("role_unresolved", "roles.coat"));
     assert!(e.message.contains("nearest presets by colour: sand, stone, soot"), "{e}");
 }
+
+/// Hostile kinds of the test plan that still resolve: the widest spreads, sizes at the plan's
+/// edges and exponents at their limits that the reach check lets through.
+fn accepted_hostile_kinds() -> Vec<specula_exemplaria::Resolved> {
+    let mut out = Vec::new();
+    for (sd, mean) in [("0.11", "0.6"), ("0.0", "0.3"), ("0.0", "1.2"), ("0.12", "0.9")] {
+        for spread in ["0.0", "0.2", "0.36"] {
+            for (exponent, head) in [("-1", "0.1"), ("2", "0.25"), ("3", "0.0"), ("-3", "0.0")] {
+                let text = format!(
+                    r#"{{"kind": 1, "name": "probe", "plan": "box_creature", "about": "a hostile probe",
+                    "size": {{"shoulder_height": {{"mean": {mean}, "sd": {sd}, "unit": "m", "own": "x"}}}},
+                    "vary": {{"build": {{"spread": {spread}, "own": "x"}}, "legs": {{"spread": {spread}, "own": "x"}}, "tail": {{"spread": {spread}, "own": "x"}}}},
+                    "numbers": {{"leg_length": {{"share": 0.62, "exponent": {exponent}, "own": "x"}}, "head_length": {{"share": 0.36, "spread": {head}, "own": "x"}}}}}}"#
+                );
+                if let Ok(r) = specula_exemplaria::resolve(&specula_exemplaria::Kind::parse(&text).unwrap(), None) {
+                    out.push(r);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// EXEMPLARIA.md, A.11: "at 32 seeds every specimen builds", and no two hash alike. Every kind
+/// of the library and every accepted hostile kind, at 32 seeds each: built by the modeller in a
+/// project's style, closed (no open edge), within the near level's triangles, standing on the
+/// ground. (16 kinds today, 512 builds of a few dozen boxes: 7 to 27 s in the test profile on
+/// the development laptop while other lanes built.)
+#[test]
+fn every_seed_of_an_accepted_kind_builds_closed() {
+    let style = Style::parse(STYLE).unwrap();
+    let mut kinds: Vec<(String, specula_exemplaria::Resolved)> = library::ENTRIES.iter().map(|e| (e.name().to_string(), e.resolved().unwrap())).collect();
+    let hostile = accepted_hostile_kinds();
+    assert!(hostile.len() >= 8 && hostile.len() < 48, "{} of 48 hostile kinds accepted: the family holds both", hostile.len());
+    kinds.extend(hostile.into_iter().enumerate().map(|(i, r)| (format!("hostile {i}"), r)));
+    for (name, r) in &kinds {
+        let mut hashes = std::collections::BTreeSet::new();
+        for seed in 0..32u64 {
+            let seed = seed * 7_919 + 1;
+            let x = expand(r, Some(seed), &ByStyle(&style), "t").unwrap_or_else(|e| panic!("{name} seed {seed}: {e}"));
+            let model = build(&x.recipe, &BuildParams { seed: Some(seed), ..BuildParams::new(&style) }).unwrap_or_else(|e| panic!("{name} seed {seed}: {e}\n{}", x.recipe));
+            assert_eq!(model.open_edges, 0, "{name} seed {seed}: closed");
+            assert!(model.lods[0].triangle_count() > 0 && f64::from(model.bounds.min[1]).abs() < 1e-3, "{name} seed {seed}");
+            if let Some(near) = r.kind.levels.get("near") {
+                assert!(model.lods[0].triangle_count() as u32 <= *near, "{name} seed {seed}: within its near level");
+            }
+            // (A hostile kind may vary nothing: only the library's entries are held to "no two alike".)
+            assert!(hashes.insert(model.hash) || name.starts_with("hostile"), "{name}: seed {seed} builds a model another seed built");
+        }
+    }
+}
