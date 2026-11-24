@@ -755,9 +755,12 @@ impl World {
         self.summon(content, ev);
         self.move_enemies(content, ev);
         let elemental = content.elemental();
-        if elemental {
+        if elemental && self.outcome == Outcome::Running {
             self.run_bursts(content, ev);
         }
+        // A burst queued by a move before the dead reached the graveyard does not go off after
+        // `Lost` (nothing happens after it this tick); a lost game keeps no queued burst.
+        self.bursts.clear();
         if self.outcome == Outcome::Running {
             self.fire_stones(content, ev);
             if elemental {

@@ -154,14 +154,109 @@ fn a_gust_deals_nothing_pushes_back_and_must_recharge() {
 }
 
 #[test]
-fn a_gust_waits_for_its_minimum_of_targets() {
+fn a_lone_enemy_in_range_is_pushed_back() {
+    // The owner (2026-11-24): the enemy "gets pushed back in their lane". One alone too.
     let c = with_fuel("");
     let mut s = quiet(&c);
-    plant(&mut s, "shambler", "top:9,15");
+    let id = plant(&mut s, "shambler", "top:9,15");
+    hold_still_but_shove(&mut s);
+    steps(&mut s, 1);
+    let r0 = s.enemy(id).unwrap().remaining;
     place(&mut s, "ventus", "top:10,15", 0);
-    let ev = steps(&mut s, 60);
-    assert!(!ev.iter().any(|e| matches!(e, Event::Gusted { .. })), "one enemy is not worth the charge");
-    assert_eq!(s.charge(at(&c, "top:10,15")), Some(1000));
+    let ev = steps(&mut s, 1);
+    assert!(ev.iter().any(|e| matches!(e, Event::Gusted { affected: 1, .. })), "{ev:?}");
+    steps(&mut s, 20);
+    let e = s.enemy(id).unwrap();
+    assert!(e.remaining > r0, "pushed back: {} > {r0}", e.remaining);
+    assert_eq!(e.hp, e.max_hp, "and unhurt");
+}
+
+#[test]
+fn a_lone_enemy_held_by_gusts_still_gets_through() {
+    // The hardest case the wind can make: one of the dead alone in range of three cairns at
+    // tier III, every gust it takes weaker by shove_fade. It reaches the graveyard all the same.
+    let c = with_fuel("");
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "shambler", "top:9,19");
+    for cell in ["top:10,15", "top:8,15", "top:8,12"] {
+        place(&mut s, "ventus", cell, 2);
+    }
+    let mut ev = Vec::new();
+    let mut gusts = 0;
+    for _ in 0..(10 * 60 * TICK_HZ) {
+        ev.clear();
+        s.step_into(&[], &mut ev);
+        gusts += ev.iter().filter(|e| matches!(e, Event::Gusted { .. })).count();
+        if s.enemy(id).is_none() {
+            break;
+        }
+    }
+    assert!(gusts > 3, "the cairns gusted at it: {gusts}");
+    assert!(s.enemy(id).is_none(), "held for ten minutes by {gusts} gusts: the fade must let it through");
+    assert_eq!(s.wave_stats()[0].leaked, 1, "it walked into the graveyard");
+}
+
+#[test]
+fn a_shove_reaches_nobody_after_its_last() {
+    let c = with_fuel("");
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "shambler", "top:9,15");
+    let i = idx(&s, id);
+    s.w.enemies[i].el.shoves = MAX_SHOVES - 1;
+    // A push far past what content allows (30 km), so the fade alone does not bring it to 0.
+    s.w.shove(&c, i, 30_000_000, 15);
+    assert!(s.w.enemies[i].el.shove > 0, "the last shove still moves it");
+    s.w.enemies[i].el.shove = 0;
+    s.w.shove(&c, i, 30_000_000, 15);
+    assert_eq!((s.w.enemies[i].el.shove, s.w.enemies[i].el.shoves), (0, MAX_SHOVES), "after it, nothing");
+}
+
+#[test]
+fn content_without_a_shove_fade_gets_one_and_the_wind_layouts_end() {
+    let stones = PROVING_STONES_JSON.replace("\r\n", "\n");
+    let without = stones.replace("    \"shove_fade\": 0.5,\n", "");
+    assert_ne!(without, stones, "test fixture");
+    let c = Arc::new(Content::from_texts(SLAB_01_JSON, &without, PROVING_ENEMIES_JSON, PROVING_WAVES_JSON).expect("content"));
+    assert_eq!(c.rules.elements.shove_fade, 500, "the default is the proving ground's 0.5");
+    let zero = stones.replace("\"shove_fade\": 0.5", "\"shove_fade\": 0");
+    let err = Content::from_texts(SLAB_01_JSON, &zero, PROVING_ENEMIES_JSON, PROVING_WAVES_JSON).unwrap_err();
+    assert!(err.to_string().contains("shove_fade"), "a fade of 0 brings the stall back: refused ({err})");
+    let text = include_str!("../data/proving/layouts/fire_wind.json");
+    let script = crate::script::Script::parse(text, &c, "fire_wind").expect("layout");
+    for seed in 1..=8 {
+        let r = crate::script::run(Arc::clone(&c), seed, &script, None, |_, _| {});
+        assert_ne!(r.outcome, Outcome::Running, "seed {seed} ended");
+    }
+}
+
+#[test]
+fn a_gust_on_a_leaper_in_mid_air_waits_for_it_to_land() {
+    let c = with_fuel("");
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "runner", "top:9,17");
+    let i = idx(&s, id);
+    let (a, b) = (at(&c, "top:9,17"), at(&c, "top:9,16"));
+    s.w.enemies[i].motion = Motion::Ground { from: a, to: b, progress: 500, len: 4000, leap: true };
+    s.w.enemies[i].el.shove = 3000;
+    s.w.enemies[i].el.shove_rate = 200;
+    steps(&mut s, 1);
+    let e = s.enemy(id).unwrap();
+    let Motion::Ground { progress, leap, .. } = e.motion else { panic!("{:?}", e.motion) };
+    assert!(leap && progress > 500, "it flies on, not held in the air: {:?}", e.motion);
+    assert_eq!(e.el.shove, 3000, "the shove is not spent in the air");
+    // It lands, then the shove takes it back.
+    let mut landed = false;
+    for _ in 0..(10 * TICK_HZ) {
+        steps(&mut s, 1);
+        let e = s.enemy(id).unwrap();
+        if !matches!(e.motion, Motion::Ground { leap: true, progress, len, .. } if len > 0 && progress > 0 && progress < len) {
+            landed = true;
+        }
+        if landed && e.el.shove == 0 {
+            return;
+        }
+    }
+    panic!("the shove never took it after it landed: {:?}", s.enemy(id).unwrap());
 }
 
 #[test]
@@ -525,6 +620,292 @@ fn a_frozen_exploder_dies_whole_and_lightning_sets_one_off() {
     place(&mut s, "fulmen", "top:10,15", 0);
     let ev = steps(&mut s, 1);
     assert!(ev.iter().any(|e| matches!(e, Event::Detonated { enemy, .. } if *enemy == bomb)), "struck, it bursts at once: {ev:?}");
+}
+
+/// A Tumidus frozen solid by Gelu tier I (frozen for a long time, so no thaw interferes).
+fn frozen_bomb(s: &mut State, cell: &str) -> EnemyId {
+    let c = Arc::clone(&s.content);
+    let gelu = c.stone(c.stone_kind("gelu").unwrap()).tiers[0].el;
+    let bomb = plant(s, "tumidus", cell);
+    let i = idx(s, bomb);
+    let mut ev = Vec::new();
+    while !s.w.enemies[i].el.frozen(s.tick()) {
+        s.w.chill(&c, i, &gelu, &mut ev);
+    }
+    s.w.enemies[i].el.frozen_until = 100_000;
+    bomb
+}
+
+fn detonated(ev: &[Event], id: EnemyId) -> bool {
+    ev.iter().any(|e| matches!(e, Event::Detonated { enemy, .. } if *enemy == id))
+}
+
+#[test]
+fn a_frozen_exploder_struck_by_lightning_and_surviving_does_not_burst() {
+    // The review's path: the strike's hurt shatters the ice first; the enemy lives through the
+    // shatter (40 HP, 28 of it); it was frozen when struck, so it cannot burst.
+    let c = with_fuel("");
+    let mut s = quiet(&c);
+    let bomb = frozen_bomb(&mut s, "top:9,16");
+    hold_still_but_shove(&mut s);
+    place(&mut s, "fulmen", "top:10,15", 0);
+    let ev = steps(&mut s, 1);
+    assert!(ev.iter().any(|e| matches!(e, Event::Shattered { enemy, .. } if *enemy == bomb)), "{ev:?}");
+    let e = s.enemy(bomb).expect("it lived through the shatter");
+    assert!(e.hp > 0 && !e.el.frozen(s.tick()), "the ice is gone");
+    assert!(!detonated(&ev, bomb), "frozen when struck, it does not burst: {ev:?}");
+    assert_eq!(s.wave_stats()[0].killed, 0);
+    // The ice gone, it is an exploder like any other: the next strike sets it off.
+    let cd = c.stone(c.stone_kind("fulmen").unwrap()).tiers[0].cooldown;
+    let ev = steps(&mut s, cd);
+    assert!(detonated(&ev, bomb), "thawed by the shatter, the next strike bursts it: {ev:?}");
+}
+
+#[test]
+fn a_frozen_exploder_killed_by_a_strike_or_a_bolt_dies_whole() {
+    let c = with_fuel("");
+    // Killed outright by the strike's shatter.
+    let mut s = quiet(&c);
+    let bomb = frozen_bomb(&mut s, "top:9,16");
+    let i = idx(&s, bomb);
+    s.w.enemies[i].hp = 1;
+    hold_still_but_shove(&mut s);
+    place(&mut s, "fulmen", "top:10,15", 0);
+    let ev = steps(&mut s, 1);
+    assert!(ev.iter().any(|e| matches!(e, Event::Died { enemy, .. } if *enemy == bomb)) && !detonated(&ev, bomb), "{ev:?}");
+    // Killed by another stone's bolt.
+    let mut s = quiet(&c);
+    let bomb = frozen_bomb(&mut s, "top:9,16");
+    let i = idx(&s, bomb);
+    s.w.enemies[i].hp = 1;
+    place(&mut s, "warding", "top:10,15", 0);
+    let mut all = Vec::new();
+    for _ in 0..(5 * TICK_HZ) {
+        all.extend(steps(&mut s, 1));
+        if s.enemy(bomb).is_none() {
+            break;
+        }
+    }
+    assert!(all.iter().any(|e| matches!(e, Event::Died { enemy, .. } if *enemy == bomb)), "the bolt killed it");
+    assert!(!detonated(&all, bomb), "frozen, it died whole: {all:?}");
+}
+
+#[test]
+fn a_frozen_exploder_in_another_ones_blast_does_not_burst() {
+    let c = with_fuel("");
+    for hp in [1, 1_000_000] {
+        let mut s = quiet(&c);
+        let lit = plant(&mut s, "tumidus", "top:9,16");
+        let cold = frozen_bomb(&mut s, "top:9,16");
+        let i = idx(&s, cold);
+        s.w.enemies[i].hp = hp;
+        hold_still(&mut s);
+        let i = idx(&s, lit);
+        let mut ev = Vec::new();
+        s.w.kill(&c, i, true, &mut ev);
+        s.w.run_bursts(&c, &mut ev);
+        assert!(detonated(&ev, lit), "{ev:?}");
+        assert!(!detonated(&ev, cold), "hp {hp}: frozen in the blast, no second burst: {ev:?}");
+        assert!(ev.iter().any(|e| matches!(e, Event::Shattered { enemy, .. } if *enemy == cold)), "the blast shattered it");
+        assert_eq!(s.enemy(cold).is_some_and(|e| e.alive), hp > 1, "hp {hp}");
+        // Alive and the ice gone: nothing is left lit in it.
+        if let Some(e) = s.enemy(cold).filter(|e| e.alive) {
+            assert_eq!(e.el.fuse_at, 0);
+            assert!(!detonated(&steps(&mut s, 3 * TICK_HZ), cold));
+        }
+    }
+}
+
+#[test]
+fn a_fuse_does_not_burn_in_ice() {
+    let c = with_fuel("");
+    let gelu = c.stone(c.stone_kind("gelu").unwrap()).tiers[0].el;
+    let fuse = c.enemy(c.enemy_kind("tumidus").unwrap()).burst.unwrap().fuse;
+    // Lit, then frozen before the fuse ends: frost puts the fire out, and the fuse with it.
+    let mut s = quiet(&c);
+    let bomb = plant(&mut s, "tumidus", "top:9,18");
+    hold_still(&mut s);
+    let (i, mut ev) = (idx(&s, bomb), Vec::new());
+    s.w.ignite(&c, i, 1, 300, &mut ev);
+    steps(&mut s, fuse / 2);
+    let i = idx(&s, bomb);
+    while !s.w.enemies[i].el.frozen(s.tick()) {
+        s.w.chill(&c, i, &gelu, &mut ev);
+    }
+    assert!(until_burst(&mut s, bomb, 10 * TICK_HZ).is_none(), "frozen, its fuse is out");
+    // However a fuse came to be set on a frozen one, the ice puts it out on the tick it would end.
+    let mut s = quiet(&c);
+    let bomb = frozen_bomb(&mut s, "top:9,18");
+    let i = idx(&s, bomb);
+    let t = s.tick();
+    s.w.enemies[i].el.fuse_at = t + 2;
+    assert!(until_burst(&mut s, bomb, 10 * TICK_HZ).is_none(), "no burst in ice");
+    assert_eq!(s.enemy(bomb).unwrap().el.fuse_at, 0);
+}
+
+#[test]
+fn a_frozen_exploder_struck_and_set_alight_in_one_tick_bursts_only_by_its_fuse() {
+    // In one tick the stones fire first (the strike shatters the ice and the exploder lives),
+    // then the projectiles land (a fire lob: the ice is gone, so it catches and its fuse burns).
+    let c = with_fuel("");
+    let fuse = c.enemy(c.enemy_kind("tumidus").unwrap()).burst.unwrap().fuse;
+    let mut s = quiet(&c);
+    let bomb = frozen_bomb(&mut s, "top:9,16");
+    // Tough enough that neither the strike nor the burn kills it before the fuse ends.
+    let i = idx(&s, bomb);
+    s.w.enemies[i].hp = 1_000_000;
+    hold_still(&mut s);
+    place(&mut s, "fulmen", "top:10,15", 0);
+    let rogus = c.stone_kind("rogus").unwrap();
+    let aim = s.enemy(bomb).unwrap().pos;
+    let id = s.w.next_projectile;
+    s.w.next_projectile += 1;
+    s.w.projectiles.push(Projectile { id, stone: rogus, tier: 0, origin: aim, pos: aim, aim, target: Some(bomb), homing: false, done: false });
+    let ev = steps(&mut s, 1);
+    let order: Vec<&str> = ev
+        .iter()
+        .filter_map(|e| match e {
+            Event::Shattered { enemy, .. } if *enemy == bomb => Some("shattered"),
+            Event::Ignited { enemy } if *enemy == bomb => Some("ignited"),
+            Event::Thawed { enemy, .. } if *enemy == bomb => Some("thawed"),
+            Event::Detonated { enemy, .. } if *enemy == bomb => Some("detonated"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, ["shattered", "ignited"], "{ev:?}");
+    let lit = s.tick() - 1;
+    // The menhir goes, so only the fuse can set it off.
+    let mut ev = Vec::new();
+    s.apply(&Command::Sell { cell: at(&c, "top:10,15") }, &mut ev).unwrap();
+    let (before, _) = until_burst(&mut s, bomb, 10 * TICK_HZ).expect("its fuse burns down");
+    assert_eq!(before.tick(), lit + fuse, "by its fuse, not by the strike");
+}
+
+#[test]
+fn a_thawed_exploder_struck_by_lightning_bursts() {
+    // Fire on a frozen one thaws it (steam, wet): no longer frozen, a strike sets it off.
+    let c = with_fuel("");
+    let mut s = quiet(&c);
+    let bomb = frozen_bomb(&mut s, "top:9,16");
+    hold_still_but_shove(&mut s);
+    let (i, mut ev) = (idx(&s, bomb), Vec::new());
+    s.w.ignite(&c, i, 100, 60, &mut ev);
+    assert_eq!(ev, vec![Event::Thawed { enemy: bomb, steam: true }]);
+    place(&mut s, "fulmen", "top:10,15", 0);
+    assert!(detonated(&steps(&mut s, 1), bomb));
+}
+
+#[test]
+fn no_burst_goes_off_after_the_game_is_lost() {
+    // The review's probe: an exploder beside a wall (first in the list) bursts on it in the same
+    // move as a runner reaches the graveyard and the last tombstone goes.
+    let c = with_fuel("");
+    let mut s = quiet(&c);
+    let wall = at(&c, "top:9,14");
+    let mut ev = Vec::new();
+    s.w.dust = 1000;
+    s.apply(&Command::PlaceWall { cell: wall }, &mut ev).unwrap();
+    plant(&mut s, "tumidus", "top:9,15");
+    let map = &c.map;
+    let (from, to, cost) = map
+        .cells()
+        .iter()
+        .filter(|cl| cl.kind.walkable(false) && cl.kind != CellKind::Graveyard)
+        .find_map(|cl| map.links(cl.id).iter().find(|l| map.cell(l.to).kind == CellKind::Graveyard).map(|l| (cl.id, l.to, l.cost)))
+        .expect("a cell beside the graveyard");
+    let runner = plant(&mut s, "runner", "top:9,18");
+    let ri = idx(&s, runner);
+    s.w.enemies[ri].motion = Motion::Ground { from, to, progress: cost - 1, len: cost, leap: false };
+    let weak = plant(&mut s, "shambler", "top:9,15");
+    let wi = idx(&s, weak);
+    s.w.enemies[wi].hp = 1;
+    s.w.tombstones = 1;
+    let ev = steps(&mut s, 1);
+    let lost = ev.iter().position(|e| matches!(e, Event::Lost)).expect("lost this tick");
+    assert!(ev[lost + 1..].is_empty(), "nothing after Lost: {:?}", &ev[lost + 1..]);
+    assert!(s.wall(wall).is_some(), "the wall still stands");
+    assert!(s.w.bursts.is_empty(), "no burst is kept");
+}
+
+fn proving_with(from: &str, to: &str) -> Result<Content, crate::error::DataError> {
+    let stones = PROVING_STONES_JSON.replace("\r\n", "\n");
+    assert_eq!(stones.matches(from).count(), 1, "test fixture: {from}");
+    Content::from_texts(SLAB_01_JSON, &stones.replacen(from, to, 1), PROVING_ENEMIES_JSON, PROVING_WAVES_JSON)
+}
+
+#[test]
+fn a_key_an_attack_does_not_read_is_refused_by_name() {
+    let pulse = "{ \"cost\": 60, \"range_m\": 5.0, \"cooldown_s\": 1.0, \"damage\": 2, \"slow\": 0.35, \"slow_s\": 1.5 }";
+    let strike = "\"cooldown_s\": 1.5, \"damage\": 14, \"chain\": 2,";
+    let bolt = "\"damage\": 10, \"projectile_mps\": 20 },";
+    let gust = "\"push_m\": 3.0, \"push_s\": 0.5 }";
+    let heave = "\"damage\": 15, \"line\": 2, \"stagger_s\": 0.8 }";
+    for (label, from, to, key, attack) in [
+        ("a pulse with only chill", pulse, "{ \"cost\": 60, \"range_m\": 5.0, \"cooldown_s\": 1.0, \"chill\": 0.5, \"freeze_s\": 2 }", "chill", "pulse"),
+        ("a pulse that burns", pulse, "{ \"cost\": 60, \"range_m\": 5.0, \"cooldown_s\": 1.0, \"damage\": 2, \"burn_dps\": 4, \"burn_s\": 3 }", "burn_dps", "pulse"),
+        ("a strike that burns", strike, "\"cooldown_s\": 1.5, \"damage\": 14, \"burn_dps\": 50, \"burn_s\": 5, \"chain\": 2,", "burn_dps", "strike"),
+        ("a strike that chills", strike, "\"cooldown_s\": 1.5, \"damage\": 14, \"chill\": 0.5, \"freeze_s\": 2, \"chain\": 2,", "chill", "strike"),
+        ("a strike that slows", strike, "\"cooldown_s\": 1.5, \"damage\": 14, \"slow\": 0.5, \"chain\": 2,", "slow", "strike"),
+        ("a bolt that chains", bolt, "\"damage\": 10, \"projectile_mps\": 20, \"chain\": 8, \"chain_m\": 5 },", "chain", "bolt"),
+        ("a bolt with wet_bonus", bolt, "\"damage\": 10, \"projectile_mps\": 20, \"wet_bonus\": 1 },", "wet_bonus", "bolt"),
+        ("a gust with a line", gust, "\"push_m\": 3.0, \"push_s\": 0.5, \"line\": 2 }", "line", "gust"),
+        ("a gust with a projectile", gust, "\"push_m\": 3.0, \"push_s\": 0.5, \"projectile_mps\": 10 }", "projectile_mps", "gust"),
+        ("a heave that chills", heave, "\"damage\": 15, \"line\": 2, \"stagger_s\": 0.8, \"chill\": 0.5, \"freeze_s\": 1 }", "chill", "heave"),
+        ("a heave that pushes", heave, "\"damage\": 15, \"line\": 2, \"stagger_s\": 0.8, \"push_m\": 2, \"push_s\": 0.5 }", "push_m", "heave"),
+        ("a heave with splash", heave, "\"damage\": 15, \"line\": 2, \"stagger_s\": 0.8, \"splash_m\": 2 }", "splash_m", "heave"),
+    ] {
+        let err = proving_with(from, to).expect_err(label);
+        let text = err.to_string();
+        assert!(text.contains(key) && text.contains(&format!("a {attack} does not read {key}")), "{label}: {text}");
+    }
+    // What each attack reads stays accepted (the proving ground parses).
+    Content::proving();
+}
+
+#[test]
+fn a_strike_three_times_a_second_is_allowed_and_faster_is_refused() {
+    let from = "\"cooldown_s\": 1.5, \"damage\": 14, \"chain\": 2,";
+    let c = proving_with(from, "\"cooldown_s\": 0.3334, \"damage\": 14, \"chain\": 2,").expect("10 ticks: exactly three a second");
+    assert_eq!(c.stone(c.stone_kind("fulmen").unwrap()).tiers[0].cooldown, 10);
+    assert_eq!(crate::content::MIN_STRIKE_TICKS * 3, TICK_HZ);
+    let err = proving_with(from, "\"cooldown_s\": 0.3, \"damage\": 14, \"chain\": 2,").expect_err("9 ticks: more than three a second");
+    assert!(err.to_string().contains("cooldown_s"), "{err}");
+}
+
+#[test]
+fn a_content_folder_plays_map_1_only_when_it_says_so() {
+    let root = std::env::temp_dir().join(format!("sepulcra-slab-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let stones = PROVING_STONES_JSON.replace("\r\n", "\n");
+    let write = |dir: &std::path::Path, stones: &str, slab: bool| {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("stones.json"), stones).unwrap();
+        std::fs::write(dir.join("enemies.json"), PROVING_ENEMIES_JSON).unwrap();
+        std::fs::write(dir.join("waves.json"), PROVING_WAVES_JSON).unwrap();
+        if slab {
+            std::fs::write(dir.join("slab_01.json"), SLAB_01_JSON).unwrap();
+        }
+    };
+    let says = "  \"slab\": \"map_1\",\n";
+    assert!(stones.contains(says), "test fixture");
+    // Saying so, with no slab of its own: map 1's (the proving ground).
+    write(&root.join("says"), &stones, false);
+    let c = Content::load_dir(&root.join("says")).expect("plays on map 1");
+    assert_eq!(c.hash, Content::proving().hash);
+    // Not saying so, with no slab: an error that names the file, as before.
+    write(&root.join("silent"), &stones.replace(says, ""), false);
+    let err = Content::load_dir(&root.join("silent")).unwrap_err();
+    assert!(err.to_string().contains("slab_01.json"), "{err}");
+    // Its own slab and no word: its own. Both: refused.
+    write(&root.join("own"), &stones.replace(says, ""), true);
+    assert!(Content::load_dir(&root.join("own")).is_ok());
+    write(&root.join("both"), &stones, true);
+    let err = Content::load_dir(&root.join("both")).unwrap_err();
+    assert!(err.to_string().contains("slab"), "{err}");
+    // Another name is refused.
+    let err = proving_with(says, "  \"slab\": \"map_2\",\n").unwrap_err();
+    assert!(err.to_string().contains("slab"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

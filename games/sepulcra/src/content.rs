@@ -106,11 +106,10 @@ pub struct TierEl {
     pub chill: i32,
     pub freeze_ticks: u32,
     pub shatter: i32,
-    /// Wind: how far a gust shoves an enemy of mass 1 back along its path (mm), over how many
-    /// ticks, and how many enemies must be in range before it spends its charge.
+    /// Wind: how far a gust shoves an enemy of mass 1 back along its path (mm), and over how
+    /// many ticks.
     pub push: i32,
     pub push_ticks: u32,
-    pub min_targets: u16,
     /// Earth: lane cells the spikes erupt along, how long they stagger, and the rubble barrier
     /// they leave (milli-HP, ticks; 0 = none).
     pub line: u8,
@@ -395,14 +394,25 @@ impl Content {
     }
 
     /// Reads `slab_01.json`, `stones.json`, `enemies.json` and `waves.json` from `dir`. A folder
-    /// with no `slab_01.json` of its own plays on map 1's slab (the proving ground's case:
-    /// `data/proving` holds only its stones, enemies and waves).
+    /// plays on map 1's built-in slab only when its `stones.json` says so by a line of its own,
+    /// `"slab": "map_1"` (the proving ground's case: `data/proving` holds only its stones,
+    /// enemies and waves); otherwise a missing `slab_01.json` is an error naming it, as before,
+    /// and a folder that says both is refused.
     pub fn load_dir(dir: &Path) -> Result<Content, DataError> {
         let read = |name: &str| {
             std::fs::read_to_string(dir.join(name)).map_err(|e| DataError::new(name, "", ErrorCode::Io, format!("cannot read {}: {e}", dir.join(name).display())))
         };
-        let map = if dir.join("slab_01.json").is_file() || !dir.join("stones.json").is_file() { read("slab_01.json")? } else { SLAB_01_JSON.to_owned() };
-        Content::from_texts(&map, &read("stones.json")?, &read("enemies.json")?, &read("waves.json")?)
+        let stones = read("stones.json")?;
+        let says_map_1 = names_map_1(&stones)?;
+        let own = dir.join("slab_01.json").is_file();
+        let map = match (own, says_map_1) {
+            (true, true) => {
+                return Err(DataError::new("stones.json", "slab", ErrorCode::Invalid, format!("says \"{MAP_1}\", but {} has a slab_01.json of its own: keep one", dir.display())));
+            }
+            (false, true) => SLAB_01_JSON.to_owned(),
+            _ => read("slab_01.json")?,
+        };
+        Content::from_texts(&map, &stones, &read("enemies.json")?, &read("waves.json")?)
     }
 
     pub fn stone_kind(&self, id: &str) -> Option<StoneKind> {
@@ -427,6 +437,19 @@ impl Content {
     }
 }
 
+/// The name a `stones.json` gives map 1's built-in slab (`"slab": "map_1"`).
+pub const MAP_1: &str = "map_1";
+
+/// Does this `stones.json` say it plays on map 1's built-in slab?
+fn names_map_1(stones: &str) -> Result<bool, DataError> {
+    let json = parse_json(stones, "stones.json")?;
+    let root = parse_root(&json, "stones.json")?;
+    Ok(match root.get("slab") {
+        None => false,
+        Some(_) => root.str("slab")? == MAP_1,
+    })
+}
+
 fn parse_root<'a>(json: &'a Json, file: &'a str) -> Result<Obj<'a>, DataError> {
     Obj::new(json, file, "")
 }
@@ -448,7 +471,10 @@ fn parse_stones(text: &str, map: &Map) -> Result<(Vec<StoneDef>, Rules, Vec<Cell
     const F: &str = "stones.json";
     let json = parse_json(text, F)?;
     let root = parse_root(&json, F)?;
-    root.only(&["notes", "edge_reach_m", "sell_refund", "wall", "nature", "elements", "stones"])?;
+    root.only(&["notes", "slab", "edge_reach_m", "sell_refund", "wall", "nature", "elements", "stones"])?;
+    if root.get("slab").is_some() && root.str("slab")? != MAP_1 {
+        return Err(root.err("slab", ErrorCode::BadChoice, format!("expected \"{MAP_1}\" (map 1's slab, for a folder with no slab_01.json of its own)")));
+    }
     let (elements, fuel) = match root.get("elements") {
         None => (Elements::default(), Vec::new()),
         Some(_) => parse_elements(&root.obj("elements")?, map)?,
@@ -521,15 +547,14 @@ fn parse_stones(text: &str, map: &Map) -> Result<(Vec<StoneDef>, Rules, Vec<Cell
         }
         for (t, tj) in tiers_json.iter().enumerate() {
             let to = Obj::new(tj, F, o.path(&format!("tiers[{t}]")))?;
-            const EL_KEYS: [&str; 15] = [
-                "burn_dps", "burn_s", "chain", "chain_m", "chain_keep", "wet_bonus", "chill", "freeze_s", "shatter", "push_m", "push_s", "min_targets", "line", "stagger_s",
-                "rubble",
-            ];
+            const EL_KEYS: [&str; 14] =
+                ["burn_dps", "burn_s", "chain", "chain_m", "chain_keep", "wet_bonus", "chill", "freeze_s", "shatter", "push_m", "push_s", "line", "stagger_s", "rubble"];
             let mut keys = vec!["cost", "range_m", "cooldown_s", "damage", "projectile_mps", "splash_m", "slow", "slow_s"];
             if elements.on {
                 keys.extend(EL_KEYS);
             }
             to.only(&keys)?;
+            read_by(&to, attack)?;
             let el = if elements.on { parse_tier_el(&to)? } else { TierEl::default() };
             let tier = Tier {
                 cost: to.int("cost", 0, 100_000)? as i32,
@@ -553,10 +578,58 @@ fn parse_stones(text: &str, map: &Map) -> Result<(Vec<StoneDef>, Rules, Vec<Cell
     Ok((stones, rules, fuel))
 }
 
-/// The shortest time between two strikes of one storm stone: lightning never flashes more than
-/// three times a second (VFX.md, EFFECTUS.md question 5), and the rules hold it for one stone;
-/// several stones together are the presentation's flash governor.
-pub const MIN_STRIKE_TICKS: u32 = 11;
+/// The shortest time between two strikes of one storm stone: 10 ticks, so one stone never
+/// strikes more than three times a second (VFX.md, EFFECTUS.md question 5). The rules hold it for
+/// one stone only: how often several strike together is gameplay, and what a person sees of
+/// it is held by the engine's flash governor (DESIGN.md, "Elemental stones").
+pub const MIN_STRIKE_TICKS: u32 = TICK_HZ / 3;
+
+/// The keys of a tier that only some attacks read: a key given to an attack that never reads
+/// it is refused (it would be silently ignored), naming the key and the attack.
+const READ_BY: [(&str, &[Attack]); 18] = {
+    use Attack::*;
+    [
+        ("projectile_mps", &[Bolt, Lob]),
+        ("splash_m", &[Bolt, Lob]),
+        ("slow", &[Bolt, Lob, Pulse]),
+        ("slow_s", &[Bolt, Lob, Pulse]),
+        ("burn_dps", &[Bolt, Lob]),
+        ("burn_s", &[Bolt, Lob]),
+        ("chill", &[Bolt, Lob]),
+        ("freeze_s", &[Bolt, Lob]),
+        ("shatter", &[Bolt, Lob]),
+        ("chain", &[Strike]),
+        ("chain_m", &[Strike]),
+        ("chain_keep", &[Strike]),
+        ("wet_bonus", &[Strike]),
+        ("push_m", &[Gust]),
+        ("push_s", &[Gust]),
+        ("line", &[Heave]),
+        ("stagger_s", &[Heave]),
+        ("rubble", &[Heave]),
+    ]
+};
+
+fn attack_name(a: Attack) -> &'static str {
+    match a {
+        Attack::Bolt => "bolt",
+        Attack::Lob => "lob",
+        Attack::Pulse => "pulse",
+        Attack::Strike => "strike",
+        Attack::Gust => "gust",
+        Attack::Heave => "heave",
+    }
+}
+
+fn read_by(to: &Obj, attack: Attack) -> Result<(), DataError> {
+    for (key, by) in READ_BY {
+        if to.get(key).is_some() && !by.contains(&attack) {
+            let names: Vec<&str> = by.iter().map(|&a| attack_name(a)).collect();
+            return Err(to.err(key, ErrorCode::Invalid, format!("a {} does not read {key} (only {} do)", attack_name(attack), names.join(" and "))));
+        }
+    }
+    Ok(())
+}
 
 fn check_tier(to: &Obj, attack: Attack, tier: &Tier) -> Result<(), DataError> {
     let el = &tier.el;
@@ -582,7 +655,7 @@ fn check_tier(to: &Obj, attack: Attack, tier: &Tier) -> Result<(), DataError> {
                 return Err(to.err("damage", ErrorCode::Invalid, "a strike needs damage"));
             }
             if tier.cooldown < MIN_STRIKE_TICKS {
-                return Err(to.err("cooldown_s", ErrorCode::OutOfRange, "a strike's cooldown is at least 0.367 s: lightning never flashes more than three times a second"));
+                return Err(to.err("cooldown_s", ErrorCode::OutOfRange, "a strike's cooldown is at least 1/3 s (10 ticks): one stone never strikes more than three times a second"));
             }
             if el.chain > 0 && el.chain_range <= 0 {
                 return Err(to.err("chain_m", ErrorCode::Invalid, "a chain needs chain_m"));
@@ -635,7 +708,6 @@ fn parse_tier_el(to: &Obj) -> Result<TierEl, DataError> {
         shatter: permille(to.num_or("shatter", 0.0, 0.0, 5.0)?),
         push: mm(to.num_or("push_m", 0.0, 0.0, 30.0)?),
         push_ticks: ticks(to.num_or("push_s", 0.0, 0.0, 5.0)?),
-        min_targets: to.int_or("min_targets", 1, 1, 100)? as u16,
         line: to.int_or("line", 0, 0, 8)? as u8,
         stagger_ticks: ticks(to.num_or("stagger_s", 0.0, 0.0, 10.0)?),
         rubble_hp: rubble.0,
@@ -661,7 +733,9 @@ fn parse_elements(o: &Obj, map: &Map) -> Result<(Elements, Vec<CellId>), DataErr
         lean: permille(o.num("lean", 0.0, 0.95)?),
         gust_ticks: ticks(o.num("gust_s", 0.0, 60.0)?),
         chill_fade: (1000 / fade as i32).max(1),
-        shove_fade: permille(o.num_or("shove_fade", 0.0, 0.0, 10.0)?),
+        // Never 0: without it repeated gusts can hold the dead for ever (the first proving
+        // sweep's stall), so a file that leaves it out gets the proving ground's 0.5.
+        shove_fade: permille(o.num_or("shove_fade", 0.5, 0.05, 10.0)?),
     };
     let mut fuel = Vec::new();
     for (i, f) in o.arr("fuel")?.iter().enumerate() {
@@ -1069,7 +1143,6 @@ fn hash_of(c: &Content, props: bool) -> u64 {
                 }
                 h.write_u8(el.chain);
                 h.write_u8(el.line);
-                h.write_u32(u32::from(el.min_targets));
             }
         }
         for e in &c.enemies {

@@ -3,8 +3,9 @@
 //! The slab is stone: fragments, lanes, cliffs and the graveyard's slabs do not burn. What
 //! grows on it does: the grass at the rock's edges (STYLE.md, "carved stone, growing nature")
 //! and, in the proving ground, the dry grass its data lays along a lane. The grass the app draws
-//! (`sepulcra-app/src/grass.rs`) is picked by the rule below; the app's test holds the two
-//! equal on map 1, so the fire burns where grass is seen, and nowhere else.
+//! (`sepulcra-app/src/grass.rs`) is [`grass_shown`]: the rock's-edge rule below and every cell
+//! of the content's fuel. The app's test holds the two equal, on the shipped content and on the
+//! proving ground's, so the fire burns where grass is seen, and nowhere else.
 
 use crate::map::{CellId, CellKind, Face, Map};
 
@@ -49,6 +50,17 @@ pub fn grass_drawn(map: &Map) -> Vec<CellId> {
         out.truncate(MAX_GRASS);
         out.sort_by_key(|id| id.0);
     }
+    out
+}
+
+/// The grass the app draws for content whose fuel is `fuel`: the rock's-edge grass
+/// ([`grass_drawn`]) and every fuel cell (the dry grass laid on a lane is drawn as grass too,
+/// though no rock's edge would give it any), in cell order. Every fuel cell is in it.
+pub fn grass_shown(map: &Map, fuel: &[CellId]) -> Vec<CellId> {
+    let mut out = grass_drawn(map);
+    out.extend_from_slice(fuel);
+    out.sort();
+    out.dedup();
     out
 }
 

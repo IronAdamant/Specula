@@ -292,15 +292,19 @@ fn sweep(content: &Arc<Content>, script: &Script, first: u64, n: u64, waves: Opt
         let hist: Vec<String> = by_wave.iter().enumerate().filter(|(_, &c)| c > 0).map(|(w, c)| format!("w{w}:{c}")).collect();
         println!("losses by wave: {}", hist.join(" "));
     }
-    let all = |f: &dyn Fn(&RunReport) -> f64| mean(&reports.iter().map(f).collect::<Vec<_>>());
-    println!(
-        "all runs: tombstones left mean {:.2}, kills mean {:.1}, leaks mean {:.1}, detonated mean {:.1}, game time mean {}",
-        all(&|r| f64::from(r.tombstones)),
-        all(&|r| f64::from(r.waves.iter().map(|w| w.killed).sum::<u32>())),
-        all(&|r| f64::from(r.leaks())),
-        all(&|r| f64::from(r.waves.iter().map(|w| w.detonated).sum::<u32>())),
-        clock(all(&|r| f64::from(r.ticks)) as u32)
-    );
+    // Elemental content only (the proving ground): the shipped sweep prints, line for line,
+    // what it printed before the elements.
+    if content.elemental() {
+        let all = |f: &dyn Fn(&RunReport) -> f64| mean(&reports.iter().map(f).collect::<Vec<_>>());
+        println!(
+            "all runs: tombstones left mean {:.2}, kills mean {:.1}, leaks mean {:.1}, detonated mean {:.1}, game time mean {}",
+            all(&|r| f64::from(r.tombstones)),
+            all(&|r| f64::from(r.waves.iter().map(|w| w.killed).sum::<u32>())),
+            all(&|r| f64::from(r.leaks())),
+            all(&|r| f64::from(r.waves.iter().map(|w| w.detonated).sum::<u32>())),
+            clock(all(&|r| f64::from(r.ticks)) as u32)
+        );
+    }
     let leaks_by_wave: Vec<String> = (0..content.waves.len())
         .map(|w| format!("{:.1}", mean(&reports.iter().filter_map(|r| r.waves.get(w)).map(|s| f64::from(s.leaked)).collect::<Vec<_>>())))
         .collect();

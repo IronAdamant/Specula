@@ -9,7 +9,10 @@
 //! **Where:** the graveyard's cells, and the fragment cells at the edges of the rock (STYLE.md:
 //! moss and roots at fragment edges), never on a lane (the dead's paths stay readable), at most
 //! [`MAX_PATCHES`]; and on every cell roots take (the flat moss patches of earlier builds), from
-//! wave 5. Picked by a hash of the cell, so every run's slab is the same.
+//! wave 5. Picked by a hash of the cell, so every run's slab is the same. Content with the
+//! elements also has grass on every cell its rules burn (`Content::fuel`: in the proving ground,
+//! dry grass laid on two lane stretches; the same patch stands in for its look), so the fire
+//! burns only where grass is seen (`sepulcra::fuel::grass_shown`, held equal below).
 //!
 //! **Budget (iGPU):** a patch is 12 tufts of three upright quads (72 triangles; 4 mm boxes were
 //! 432, with both broad faces shaded); the far side of the slab thins out by a dithered fade from
@@ -52,8 +55,17 @@ fn hash(c: CellId) -> u32 {
 }
 
 /// The top-face cells that get grass: graveyard cells, and fragment cells at the rock's edge (a
-/// lane or the rim beside them), about two in three of those by hash, at most [`MAX_PATCHES`].
-pub fn cells(map: &Map) -> Vec<CellId> {
+/// lane or the rim beside them), about two in three of those by hash, at most [`MAX_PATCHES`];
+/// then every cell of `fuel` (the content's burning cells; none on the shipped maps).
+pub fn cells(map: &Map, fuel: &[CellId]) -> Vec<CellId> {
+    let mut out = edge_cells(map);
+    out.extend_from_slice(fuel);
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn edge_cells(map: &Map) -> Vec<CellId> {
     let Some(top) = map.face(Face::Top).copied() else { return Vec::new() };
     let kind = |c: i32, r: i32| -> Option<CellKind> {
         if c < 0 || r < 0 || c >= i32::from(top.cols) || r >= i32::from(top.rows) {
@@ -89,9 +101,9 @@ pub fn cells(map: &Map) -> Vec<CellId> {
 }
 
 /// Spawns the slab's grass under `slab` (a group `grass`); returns the group's id.
-pub fn build(world: &mut GameWorld<'_>, agent: &str, map: &Map, geo: &SlabGeo, slab: u64) -> u64 {
+pub fn build(world: &mut GameWorld<'_>, agent: &str, map: &Map, fuel: &[CellId], geo: &SlabGeo, slab: u64) -> u64 {
     let g = ents::group(world, agent, Some(slab), "grass", Vec3::ZERO, Vec3::ZERO, &["grass", "foliage"], Json::Null);
-    for id in cells(map) {
+    for id in cells(map, fuel) {
         let (anchor, _) = geo.anchor(map, id);
         let h = hash(id);
         let yaw = (h % 360) as f32;
@@ -118,25 +130,35 @@ mod tests {
     fn grass_grows_on_graveyard_and_rock_edges_never_on_lanes() {
         let content = sepulcra::content::Content::builtin();
         let map = &content.map;
-        let cells = cells(map);
+        let cells = cells(map, &content.fuel);
         assert!(!cells.is_empty() && cells.len() <= MAX_PATCHES, "{} patches", cells.len());
         for id in &cells {
             let k = map.cell(*id).kind;
             assert!(matches!(k, CellKind::Graveyard | CellKind::Fragment), "grass on a {k:?} cell");
         }
         assert!(cells.iter().any(|id| map.cell(*id).kind == CellKind::Graveyard), "the graveyard has grass");
-        assert_eq!(cells, super::cells(map), "deterministic");
+        assert_eq!(cells, super::cells(map, &content.fuel), "deterministic");
         // A few variants: the GPU instances them.
         let specs: std::collections::BTreeSet<String> = cells.iter().map(|id| format!("{:?}", patch_spec(u64::from(hash(*id) >> 8)))).collect();
         assert!(specs.len() as u64 <= VARIANTS);
     }
 
-    /// The elements' fuel (the rules' `fuel::grass_drawn`) is the grass drawn here, cell for
-    /// cell, so fire burns where grass is seen (DESIGN.md, "What burns on the slab").
+    /// The grass drawn here is the rules' `fuel::grass_shown`, cell for cell, and every cell the
+    /// rules burn is drawn, on the shipped content and on the proving ground's (whose dry grass
+    /// lies on lane cells), so fire burns where grass is seen (DESIGN.md, "What burns on the slab").
     #[test]
     fn the_rules_burn_the_grass_that_is_drawn() {
-        let content = sepulcra::content::Content::builtin();
-        assert_eq!(cells(&content.map), sepulcra::fuel::grass_drawn(&content.map));
+        let shipped = sepulcra::content::Content::builtin();
+        assert!(shipped.fuel.is_empty());
+        assert_eq!(cells(&shipped.map, &shipped.fuel), sepulcra::fuel::grass_drawn(&shipped.map), "the shipped slab's grass is as it was");
         assert_eq!(MAX_PATCHES, sepulcra::fuel::MAX_GRASS);
+        let proving = sepulcra::content::Content::proving();
+        let drawn = cells(&proving.map, &proving.fuel);
+        assert_eq!(drawn, sepulcra::fuel::grass_shown(&proving.map, &proving.fuel));
+        for f in &proving.fuel {
+            assert!(drawn.contains(f), "fuel {} is drawn", proving.map.cell_name(*f));
+        }
+        let lanes: Vec<String> = proving.fuel.iter().filter(|&&f| proving.map.cell(f).kind != CellKind::Fragment).map(|&f| proving.map.cell_name(f)).collect();
+        assert_eq!(lanes.len(), 7, "the dry grass on the two lane stretches is drawn: {lanes:?}");
     }
 }

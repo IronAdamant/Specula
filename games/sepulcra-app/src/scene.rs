@@ -195,7 +195,7 @@ impl Scene {
     pub fn build(world: &mut GameWorld<'_>, agent: &str, state: &State) -> Scene {
         let map = &state.content().map;
         let geo = SlabGeo::new(map);
-        slab::build(world, agent, map, &geo);
+        slab::build(world, agent, map, &state.content().fuel, &geo);
         let props = crate::props::Props::build(world, agent, map, &geo);
         // `fx` and `ui` are where earlier versions kept their pools.
         for name in ["units", "live", "cursor", "fx", "ui"] {

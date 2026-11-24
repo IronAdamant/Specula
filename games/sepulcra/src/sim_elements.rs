@@ -56,6 +56,14 @@ impl EnemyEl {
     }
 }
 
+/// The most shoves one enemy takes: after this many, no gust or blast moves it again.
+pub const MAX_SHOVES: u16 = u16::MAX;
+
+/// In the air between two cells of a leap edge (a climber's jump): no shove reaches it.
+fn mid_leap(e: &Enemy) -> bool {
+    matches!(e.motion, Motion::Ground { progress, len, leap: true, .. } if len > 0 && progress > 0 && progress < len)
+}
+
 fn blaze_event(e: BlazeEvent) -> Event {
     match e {
         BlazeEvent::Caught { cell } => Event::CellCaught { cell },
@@ -73,7 +81,9 @@ impl World {
             e.carry = 0;
             return true;
         }
-        if e.el.shove > 0 {
+        // A leaper in mid-air is not caught by a gust: it lands, and the shove waits for it
+        // there (it is neither spent in the air nor lost).
+        if e.el.shove > 0 && !mid_leap(e) {
             let d = e.el.shove_rate.max(1).min(e.el.shove);
             e.el.shove -= d;
             if e.el.shove == 0 {
@@ -96,10 +106,10 @@ impl World {
         let (open, breach) = (self.fields.open(class), self.fields.breach(class));
         let mut d = d;
         for _ in 0..8 {
-            let Motion::Ground { from, to, progress, len, leap } = e.motion else { return };
-            if leap && len > 0 && progress > 0 && progress < len {
+            if mid_leap(e) {
                 return;
             }
+            let Motion::Ground { from, to, progress, len, leap } = e.motion else { return };
             if progress >= d {
                 e.motion = Motion::Ground { from, to, progress: progress - d, len, leap };
                 return;
@@ -129,9 +139,14 @@ impl World {
         }
     }
 
-    /// Gives enemy `i` a shove of `push` mm (mass 1) over `ticks`.
+    /// Gives enemy `i` a shove of `push` mm (mass 1) over `ticks`. The n-th shove an enemy
+    /// takes is divided by 1 + n x `shove_fade`, and one shoved [`MAX_SHOVES`] times is not
+    /// moved again: no wind holds one of the dead for ever.
     fn shove(&mut self, content: &Content, i: usize, push: i32, ticks: u32) {
         let e = &mut self.enemies[i];
+        if e.el.shoves == MAX_SHOVES {
+            return;
+        }
         let mass = content.enemy(e.kind).mass.max(1);
         let fade = 1000 + i64::from(content.rules.elements.shove_fade) * i64::from(e.el.shoves);
         let s = (i64::from(push) * 1000 / i64::from(mass) * 1000 / fade) as i32;
@@ -266,8 +281,11 @@ impl World {
             let d = if e.el.wet(tick) { (i64::from(dmg) * (1000 + i64::from(el.wet_bonus)) / 1000).min(i64::from(i32::MAX)) as i32 } else { dmg };
             ev.push(Event::Struck { stone: cell, enemy: e.id, from, damage: d, link });
             struck.push(idx);
+            // Frozen when the strike lands, it cannot burst: the hit shatters the ice (and, if
+            // it dies of it, it dies whole), so whether it was frozen is read before the hurt.
+            let was_frozen = e.el.frozen(tick);
             self.hurt(content, idx, d, ev);
-            if self.enemies[idx].alive && content.enemy(e.kind).burst.is_some() && !self.enemies[idx].el.frozen(tick) {
+            if self.enemies[idx].alive && content.enemy(e.kind).burst.is_some() && !was_frozen {
                 self.kill(content, idx, true, ev);
             }
             dmg = (i64::from(dmg) * i64::from(el.chain_keep) / 1000) as i32;
@@ -291,13 +309,14 @@ impl World {
         true
     }
 
-    /// Wind: no damage. When at least `min_targets` enemies are in range, every one of them is
-    /// shoved back along its path (÷ its mass), a burning one is fanned (its fire renewed), the
-    /// wind lingers over the area and leans the slab's fire, and the stone's charge is spent.
+    /// Wind: no damage. When any enemy is in range (one alone too: the owner's words are that
+    /// the enemy "gets pushed back in their lane"), every one in range is shoved back along its
+    /// path (÷ its mass), a burning one is fanned (its fire renewed), the wind lingers over the
+    /// area and leans the slab's fire, and the stone's charge is spent.
     pub(super) fn gust(&mut self, content: &Content, cell: CellId, c: &Cell, def: &StoneDef, t: &Tier, ev: &mut Vec<Event>) -> bool {
         let el = t.el;
         let idx: Vec<usize> = (0..self.enemies.len()).filter(|&i| self.eligible(content, c, def, t, &self.enemies[i])).collect();
-        if idx.len() < usize::from(el.min_targets.max(1)) {
+        if idx.is_empty() {
             return false;
         }
         let Some(first) = self.pick_target(content, c, def, t) else { return false };
@@ -451,6 +470,10 @@ impl World {
                 }
             }
             let e = &mut self.enemies[i];
+            if e.alive && e.el.fuse_at != 0 && e.el.frozen(tick) {
+                // Ice puts a fuse out (a freeze clears it; this holds it whatever set it).
+                e.el.fuse_at = 0;
+            }
             if e.alive && e.el.fuse_at != 0 && tick >= e.el.fuse_at {
                 e.el.fuse_at = 0;
                 self.kill(content, i, true, ev);

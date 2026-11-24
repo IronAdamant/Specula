@@ -1,5 +1,6 @@
 {
-  "notes": "The proving ground (DESIGN.md, Elemental stones): map 1's slab, the four shipped stones as they are, and the five elemental stones. Not a shipped map: nothing here changes the shipped balance. Units: metres, seconds, HP; chill, chain_keep, wet_bonus, shatter and lean are ratios.",
+  "notes": "The proving ground (DESIGN.md, Elemental stones): map 1's slab, the four shipped stones as they are, and the five elemental stones. Not a shipped map: nothing here changes the shipped balance. slab: map_1 says the folder plays on map 1's slab (it has no slab_01.json of its own). Units: metres, seconds, HP; chill, chain_keep, wet_bonus, shatter and lean are ratios.",
+  "slab": "map_1",
   "edge_reach_m": 3.0,
   "sell_refund": 0.7,
   "wall": { "cost": 15, "hp": 300, "breach_penalty_m": 8.0 },
@@ -69,7 +70,7 @@
     },
     {
       "id": "fulmen", "name": "Fulmen, the storm menhir", "glyph": "L",
-      "notes": "Lightning. An instant strike that jumps to the nearest dead; the wet take half again. Good against strings of runners and the thawed; weak against one tough target alone; a staggered (grounded) enemy ends its chain. Never faster than one strike in 0.367 s (photosensitivity).",
+      "notes": "Lightning. An instant strike that jumps to the nearest dead; the wet take half again. Good against strings of runners and the thawed; weak against one tough target alone; a staggered (grounded) enemy ends its chain. One stone never strikes more than three times a second (photosensitivity; several together are the presentation's flash governor).",
       "targets": "ground", "policy": "first", "attack": "strike",
       "tiers": [
         { "cost": 90, "range_m": 7.0, "cooldown_s": 1.5, "damage": 14, "chain": 2, "chain_m": 2.5, "chain_keep": 0.7, "wet_bonus": 0.5 },
@@ -89,12 +90,12 @@
     },
     {
       "id": "ventus", "name": "Ventus, the gale cairn", "glyph": "V",
-      "notes": "Wind. Deals nothing: a gust shoves every dead in range back along its path (divided by its mass), fans their fires and leans the grass fire downwind; then the cairn must recharge (cooldown_s). It waits until min_targets are in range. Good for buying time and for pushing burning dead back into the column; useless against flyers and nearly so against the colossus.",
+      "notes": "Wind. Deals nothing: a gust shoves every dead in range back along its path (divided by its mass), fans their fires and leans the grass fire downwind; then the cairn must recharge (cooldown_s). One of the dead alone in range is shoved too; each later shove an enemy takes is weaker (shove_fade). Good for buying time and for pushing burning dead back into the column; useless against flyers and nearly so against the colossus.",
       "targets": "ground", "policy": "first", "attack": "gust",
       "tiers": [
-        { "cost": 70, "range_m": 5.5, "cooldown_s": 6.0, "push_m": 3.0, "push_s": 0.5, "min_targets": 2 },
-        { "cost": 70, "range_m": 6.0, "cooldown_s": 5.0, "push_m": 4.0, "push_s": 0.5, "min_targets": 2 },
-        { "cost": 90, "range_m": 6.5, "cooldown_s": 4.0, "push_m": 5.0, "push_s": 0.6, "min_targets": 2 }
+        { "cost": 70, "range_m": 5.5, "cooldown_s": 6.0, "push_m": 3.0, "push_s": 0.5 },
+        { "cost": 70, "range_m": 6.0, "cooldown_s": 5.0, "push_m": 4.0, "push_s": 0.5 },
+        { "cost": 90, "range_m": 6.5, "cooldown_s": 4.0, "push_m": 5.0, "push_s": 0.6 }
       ]
     },
     {

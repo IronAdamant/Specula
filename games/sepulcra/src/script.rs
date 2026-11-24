@@ -15,8 +15,8 @@
 //!
 //! `"wave": N` means "once wave N has started" (0 = from the first tick); `"tick": N` means "at
 //! or after tick N". Entries run strictly in order, like a player following a build order: an
-//! entry refused for lack of dust waits (and so does everything after it); an entry refused for
-//! any other reason is skipped and reported.
+//! entry refused for lack of dust, or because one of the dead stands on its cell, waits (and so
+//! does everything after it); an entry refused for any other reason is skipped and reported.
 //!
 //! A **journal** is what actually happened: every applied command with its tick. A
 //! [`Recording`] adds the seed, the content hash and the final tick and state hash, so a replay
@@ -169,6 +169,9 @@ impl Player {
             match state.apply(&e.command, ev) {
                 Ok(()) => applied.push(e.command),
                 Err(Rejection::NotEnoughDust { .. }) => break,
+                // One of the dead on the cell moves on (or dies): a player waits for it, as for
+                // dust. (The wind can hold a straggler where a wall is due.)
+                Err(Rejection::EnemyInTheWay { .. }) => break,
                 Err(Rejection::GameOver) => break,
                 Err(r) => self.skipped.push((self.next, r)),
             }
