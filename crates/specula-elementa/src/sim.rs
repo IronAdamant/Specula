@@ -955,9 +955,9 @@ impl Elementa {
 
     /// Applies an act at once. At most [`MAX_ACTS_PER_TICK`] between two ticks; its sphere at
     /// most [`MAX_ACT_RADIUS`]. Its work is at most twice the node count plus one: the sphere's
-    /// cells are looked up first (only when there are no more of them than nodes), and when
-    /// they hold more entries than there are nodes, or the grid is out of date, every node is
-    /// looked at once instead. An act never updates the grid (only a spread step does), so acts
+    /// cells are looked up first (only when finding them, each lookup at [`lookup_cost`], costs
+    /// no more than the node count), and when that and their entries would cost more than the
+    /// node count, or the grid is out of date, every node is looked at once instead. An act never updates the grid (only a spread step does), so acts
     /// between adds and moves cost no grid work at all ([`ActReport::ops`]).
     pub fn act(&mut self, a: Act) -> Result<ActReport, ElementaError> {
         if self.acts >= MAX_ACTS_PER_TICK {
