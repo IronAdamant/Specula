@@ -264,3 +264,87 @@ citing rightly) and delivered within the hour.
   (the library's are checked so), and by winding numbers otherwise.
 - **Rights.** Formulas are mathematics and are written here in the engine's own code; no code is
   copied from the articles (their snippets are MIT, their text and pictures are not licensed).
+
+## Round seven: what the sample library still lacked, and primary sources (2026-11-24)
+
+Delivered by the owner the same day [LIBRARY_RESEARCH_BRIEF_ROUND7.md](../LIBRARY_RESEARCH_BRIEF_ROUND7.md)
+was written, researched by Grok in several passes, with the owner fetching by hand what refused a
+script: "This is the best I can do, right now, there are some gaps as I couldn't find alternative
+documents, and some remained blocked, so these are what we'll make do with." The brief asked 159
+numbered things: three data sets (DS1 to DS3), 49 requests for the sample library's kinds (Q1 to
+Q49: four-legged animals, sprawling reptiles, birds, bats, snakes and fish, arthropods, machines,
+people, trees, terrain and water), the primary source of 82 numbers the earlier rounds had only
+from Wikipedia (W1 to W82), and 25 rows an earlier checker had marked unverifiable (U1 to U25).
+
+**What came back, by the delivery's own count** ([its own overview](R7-README-as-delivered.md)):
+44 answered or confirmed (11 of them corrected: the primary source was found and the earlier value
+was wrong or mislabelled), 66 partly answered, 48 searched and not found, one not needed. No Q row
+is counted as fully answered, because each file lists what it did not find.
+
+| File | What it answers |
+|---|---|
+| [R7-00](R7-00-dryad-DS1-DS3.md) | The three data sets: access and licences (all three CC0); DS2's bird bones; DS3's swimming amplitude envelopes |
+| [R7-01](R7-01-DS1-serio-values.md) | DS1 (Serio et al. 2024: limb bones and skulls of living and fossil mammals) read from the files, with what is odd in them |
+| [R7-02](R7-02-quadruped-gap-fill.md) | What DS1 lacks: dog, elephant, rabbit and rat bones; body mass |
+| [R7-2A](R7-2A-quadruped-body-bulk-Q1-Q8.md), [Q8](R7-2A-Q8-footfalls.md) | Four-legged animals: girths, neck and tail, vertebral counts, heads, mass, stance angles; footfall timing |
+| [R7-2B](R7-2B-sprawling.md) | Sprawling animals: lizards, tortoises, crocodylians |
+| [R7-2C](R7-2C-birds.md) | Birds: leg and neck bones, wingbeat |
+| [R7-2D](R7-2D-bats-winged.md) | Bats and large flyers: digits, take-off, the limits of size |
+| [R7-2E](R7-2E-chains.md) | Snakes, eels and fish: vertebrae, proportions, swimming |
+| [R7-2F](R7-2F-arthropods.md) | Spiders and insects: leg segments and gaits |
+| [R7-2G](R7-2G-machines.md) | Machines: steering, tracks, suspension, robots' joint tables |
+| [R7-2H](R7-2H-people-biped.md) | People: the spine's curves, shoulder girdle, muscle volumes, girths, proportions by age, turning and stairs |
+| [R7-2I](R7-2I-trees-plants.md) | Trees and plants |
+| [R7-2J](R7-2J-terrain-water.md) | Terrain and water: reflectance, erosion, water colour, waves |
+| [R7-3](R7-3-primary-sources.md), [3b](R7-3b-primary-sources.md), [34](R7-34-primary-checks-W-and-U-rows.md) | The W rows: primary sources for the numbers that had only Wikipedia |
+| [R7-4](R7-4-unverified-rows.md), [4b](R7-4b-unverified-rows.md) | The U rows |
+| [R7-5](R7-5-alt-sources.md) | Numbers from free copies and substitutes found for the blocked sources |
+| [R7-5b](R7-5b-browser-downloads.md) | Numbers from six files fetched in a browser: three erosion papers, a pterosaur mass paper, the stick insect's legs, a bat supplement ([its note](R7-5b-README-as-delivered.md)) |
+| [R7-6](R7-6-free-equivalents.md) | A third pass: a free equivalent for each source that stayed blocked |
+| [blocked, all](R7-blocked-downloads-ALL.md), [alternatives](R7-blocked-downloads-ALTERNATIVES.md) | The 78 sources that refused a script, and what became of each: 20 exact free copies, 7 substitutes, 5 abstracts only, 46 still blocked when that list was made (some were fetched after it: R7-5b and R7-6) |
+
+Each research file has a second checker's file beside it (`.md.verify.md`, or `.verify.md` for
+2F to 2J), by the same researcher. **They are uneven:** the checks of R7-01, R7-02, 2A, 2F to 2J,
+the W and U files and R7-6 give a verdict row by row; those of 2A-Q8, 2B, 2C, 2D, 2E, R7-5 and
+R7-5b do not.
+
+- **Corrections the delivery makes to numbers the earlier rounds hold** (as delivered; being
+  held against the packed sources here, see below). The benchmark bicycle is self-stable between
+  4.29 and 6.02 m/s, not 5.3 and 8 (a different example bicycle). The rolling resistance of
+  0.0385 to 0.0730 is a stage coach at a walk on muddy broken stone (Baker 1918), not a dirt
+  road or snow. The M1A1 Abrams, the Leopard 2A6, Atlas of 2016, the ASW 22, three Universal
+  Robots arms, the C-130 and the F-16C differ from their Wikipedia pages on the makers' or the
+  air force's own sheets. *Tyrannosaurus*: Hutchinson et al. 2011 give the largest specimen about
+  9,500 kg and a peak growth of 1,790 kg a year, against Erickson's 5,650 kg and less than half
+  that growth. The 79 m Secchi depth is Gieskes et al. 1987, not Berman et al. 1985. PET's
+  refractive index is 1.569 measured, not 1.575. A table of "tarsus lengths" of a tarantula held
+  masses. A milk snake's "0.22 body lengths a second" was per undulation, so about 0.11.
+- **Faults it found inside the data it read**, which whoever types a number in must know: DS1
+  files cave-bear papers under the brown bear, mixes Pleistocene wolf tibiae with modern ones,
+  and has two leopard rows 120 mm apart; DS2's column `tarsus` is the tibiotarsus; a gull's mass
+  of 0.08 kg in a bird table is an error; the vertebral counts one source gives for horse, pig
+  and brown bear differ from the usual ones; a sea-snake file's lengths are in millimetres where
+  its own note says centimetres; one bat table prints a digit's length equal to the forearm's.
+- **What stayed without a source** (the delivery's lists; the sample library marks these as its
+  own estimates, `own`, never as measured): joint ranges of the limbs and neck of four-legged
+  animals (Q7); body girth, breadth and depth of any bird (Q14); where a bat's wing membrane
+  meets the hind limb, by species (Q18); girth along a land snake or an eel (Q22: six sea snakes
+  at two stations came with R7-6, and their flattened tails are not a land snake's); a scaling
+  rule for a flyer above 250 kg; branch length and radius ratios by order from field measurement
+  (Q41), and measured branch angles for most species (Scots pine is the exception); the forms of
+  olive, coconut, baobab and acacia (Q43); suspension travel by class of vehicle beyond one
+  pickup (Q31); track pitch and sprocket sizes; turning gait and stair descent; water's colour
+  by depth and by water type (Q46); a waterfall's path (Q47); chest girth of most wild animals;
+  neck length of any animal but the horse; metapodial and toe bones; the footfall phases of a
+  bound; a cat's gaits from an opened primary. The published steps of the three erosion methods
+  (Q45), first listed as not found, came with R7-5b.
+- **Edited after delivery, by a few words only:** a person's first name was replaced by "the
+  owner" in two files, and the phrases naming the time zone it was compiled in were taken out
+  of about two dozen lines; one heading of a checker's file ("Still open") was reworded, since
+  a guard reads that phrase as a list of decisions for the owner. Nothing else was changed, so the checkers' line references hold.
+- **The sources themselves are not in the repository** (about 600 MB of papers, data files and
+  saved pages; several are all-rights-reserved): they are cited by address in each file.
+- **Checked here: under way.** Two checkers that had no part in the research are holding the
+  delivered numbers against the packed data files and papers, re-deriving what was computed, and
+  listing which corrected numbers the engine already uses. Until their reports are recorded
+  here, nothing of round seven is typed into the engine as checked.
