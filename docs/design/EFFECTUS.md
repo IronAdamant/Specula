@@ -475,31 +475,62 @@ change what catches as well as when, either way.
   only that it does not steer a fire by id (below).
 - *Fairness.* No neighbour is left out for ever: a cut query resumes where it stopped, at the
   next step, first (`a_crowded_cell_is_heated_whole_across_steps`: 2,000 tufts in one cell at
-  the smallest budget all catch), and nothing but its own node ends it (next item). Nothing
+  the smallest budget all catch), and nothing but its own node, or more than 1,024 changes
+  the pass must remember, ends it (next item). Nothing
   leans by id or place: every sink at one gap from one torch, 2,000 of them in one cell, is
   given the same heat under a budget that cuts the query every pass
   (`every_neighbour_of_a_cut_query_is_given_the_same_heat`; on `52be4bf7` the first half of the
   query had half the heat of the second), and a forest with its ids mirrored burns the same
   (below).
 - *A cut query when the world changes before it resumes.* It resumes by ids, not by places in
-  a list, so a node added or removed in between moves nothing: a node added before the resume
-  point is not reached in that pass, one removed is simply not there. A node the query has
-  already passed that then moves, or is removed, goes on the query's **skip list** (saved, at
-  most `MAX_SKIP`, 1,024 ids): the rest of the pass passes over it, wherever it is now, so it is
-  not heated twice, even if it is removed and added again ahead of the resume point. The query
-  goes on to its end. Only its own node ends it: removed, no longer burning, or moved so that
-  its query's cells change (the cells it was walking are no longer its own); a move within its
-  query's cells changes nothing. And, the one bound: more than 1,024 passed nodes moved or
-  removed between two spread steps end the query (the skip list is full); that needs a crowd of
-  over a thousand movers inside one query, every step. Nothing is heated twice in a pass, and
-  the result is a function of the saved state (the cursor and the skip list are saved and
-  hashed, and changed only by these calls). Tested:
-  `a_cut_query_heats_no_neighbour_twice_when_nodes_come_and_go`, `..._when_nodes_move`,
-  `a_mover_cannot_starve_a_cut_query` (the third reviewer's `starve`: a node moved across the
-  cut point after every cut ended 299 of 300 passes on `17a5a593`, and 986 of 2,000 sinks were
-  never heated; now every sink is given exactly what it is given with no mover, every pass)
-  and `a_node_removed_and_added_again_ahead_of_the_cut_is_not_heated_twice` (the reviewer's
-  `readd`: 1.61 times a staying sink's heat on `17a5a593`; now no more than it).
+  a list, so a node added or removed in between moves nothing. What a change does is decided by
+  **whether the pass has given the node its heat**, not by where the node is when it moves. A
+  node on neither of the pass's two lists was given its heat exactly when it lies where the pass
+  has been (a query cell before the cursor's, or in it at a lower id than the next) and within
+  the cut node's reach by the heating's own test (`box_gap` at most the reach): the pass gave
+  it heat when it looked there, and nothing it has not looked at. The lists hold the nodes whose
+  place says the wrong thing, and every add, move and remove keeps them so:
+  - the **skip list**: nodes given their heat that are now somewhere the pass may meet them
+    again (ahead of the cut, out of its reach, or gone). The rest of the pass passes over them,
+    so none is heated twice, even removed and added again ahead of the resume point. A listed
+    node that comes back where the pass has been is taken off.
+  - the **missed list**: nodes not given their heat that are now where the pass has been (moved
+    or added behind the cut, within its reach), so that one that goes ahead again is given its
+    heat once when the pass meets it. Off it when it leaves.
+
+  So a move that changes nothing the pass would see lists nothing: a passed node jiggling where
+  it is, or any node beyond the reach (the fourth reviewer's `jitter`: 1,100 nodes two metres
+  out of the reach jiggled by 0.1 mm after every cut ended 149 of 299 passes on `b2d675d4`,
+  1,289 of 2,000 sinks were never heated and the lowest ids got twice the heat; now no pass
+  ends and every sink is given exactly what it is with no crowd). A node moved behind the cut
+  and back (the reviewer's `wrongskip`: 0 heat on `b2d675d4` against 0.005148 for a sink that
+  stayed) is given exactly what a staying sink is. A node that sits behind the cut while the
+  pass goes on misses that pass (the pass had looked there before it came), and is given its
+  heat in every other. Two cases are counted on the safe side: a node that was burning when
+  the pass looked at it (given nothing) counts as given; and once the cut node itself has moved
+  within its query's cells (`cut_moved`, saved), "where the pass has been" is every place before
+  the cursor in its query, reach or not, since its reach was elsewhere when it looked.
+  The query goes on to its end. Its own node ends it: removed, no longer burning, or moved so
+  that its query's cells change. **And the one bound:** more than 1,024 nodes on either list at
+  once (`MAX_SKIP`) end it. Only nodes within the cut node's reach (once it has moved, any in
+  its query's cells before the cursor) are ever listed: 1,025 nodes it had given heat to moved
+  ahead of the cut, out of its reach or removed, or 1,025 it had not moved or added behind the
+  cut within its reach. The lists accumulate over the whole pass, not between two spread steps,
+  less the nodes that came back. Nothing is heated twice in a pass, and the result is a
+  function of the saved state (the cursor, both lists and `cut_moved` are saved and hashed, and
+  changed only by these calls, in any order of calls on different nodes below the bound).
+  Tested: `a_cut_query_heats_no_neighbour_twice_when_nodes_come_and_go`, `..._when_nodes_move`
+  (the mover against a staying sink of the same run: exactly equal; with the skip list taken
+  out it had exactly twice, which the comparison with room it made before could not see),
+  `a_mover_cannot_starve_a_cut_query` (the third reviewer's `starve`),
+  `a_node_removed_and_added_again_ahead_of_the_cut_is_not_heated_twice` (the reviewer's
+  `readd`), `a_crowd_moving_out_of_the_reach_neither_ends_a_cut_query_nor_tilts_it`,
+  `a_node_moved_behind_the_cut_and_back_is_still_given_its_heat_once`, and
+  `whatever_ends_a_cut_pass_the_state_it_leaves_saves_and_loads` (a pass finishing with both
+  lists in use, its node removed, put out or moved out of its cells, 1,024 and 1,025 on each
+  list, a batch add of 1,024 and 1,025 behind the cut: the state's save loads at every tick; on
+  `b2d675d4` the reviewer's mutants that kept the list past its pass, or let it grow past 1,024,
+  left saves that load refused, and no test said so).
 - *Embers and crowded cells.* An ember lands whole or not at all: partly landing would give the
   lowest ids in its cell the heat and leave the rest, the lean by id this design removes. So an
   ember never lands in a cell holding more nodes than the work limit can look at after the
@@ -573,8 +604,30 @@ a tree 1 × 10 × 1 m covers at most 2 × 6 × 2 cells of 2 m); the entries are 
 binary search away; a query walks its cells in x, y, z order and counts a node met in several
 cells once, in the first cell the two boxes share, so no set is needed. Since the reach is at
 most a cell, a burning node's query covers at most `(a+2)(b+2)(c+2)` cells where `abc ≤ 64`,
-so at most 594 lookups. A crowded cell has no cap of its own, so one query can be longer than
+so at most 594 lookups (more by the margin below, at a cell boundary). A crowded cell has no cap of its own, so one query can be longer than
 the work budget: it is resumed where it stopped, at the next step (above).
+
+**The exact test decides, never the cells.** A query's and an act's cells are their box grown
+by the reach (or the radius) **and by a rounding margin**, `reach_pad = (|centre| + 2 half +
+2 reach + 10,000) × 2^-21` m on each axis (`grid::reach_box`): about 5 mm near the origin, 0.5 m
+at 1,000 km. Its comment proves, from f32's rounding, that every node `box_gap` puts within the
+reach has an entry in those cells, so the grid's candidates hold every node the exact test
+accepts and that test alone decides. Without it, on `b2d675d4`, a node touching an act's sphere
+at a cell boundary was missed by the grid and reached by the scan an out-of-date grid takes:
+the fourth reviewer's `actgrid` reached 0 nodes live and 1 after a load of the same state, the
+hashes parted after 60 ticks, and `check` (which makes the grid current) predicted another run
+(573 such nodes in 18 million samples near the origin). The spread query had the same fault
+without a second path to show it: a neighbour within the reach whose top corner rounded into
+the cell below was never heated (973 of 18 million boundary samples near the origin, 41,000
+hundreds of km out). An ember holds a point by the corners the grid enters a node by
+(`grid::holds`), so the one cell it looks in holds every node that test accepts. Held by
+`tests/boundaries.rs`: the reviewer's case live, after a load and in a prediction; acts in 90
+random worlds of 64 spheres with nodes within four places of each sphere's bottom and top
+boundary, out to 980 km and at cells of 0.25, 2 and 64 m, live (walking the grid) and after a
+load (looking at every node) against a look at every node, the same nodes and the same saved
+bytes; the spread query in 60 such worlds, every sink's heat exactly the model's for its gap,
+or 0 past the reach; and the ember's cell for 600,000 points at boundaries. Cost: a box
+within the margin of a cell boundary looks up one more cell on that side.
 
 **The grid kept up to date, not rebuilt.** The grid is derived: never saved or hashed. A node
 that moves within the cells it already covers changes nothing in it (the common case: a thing
@@ -627,6 +680,17 @@ once every 6 ticks), not 10% (9 to 15 ms, most of a frame on the reference devic
 movers should track only those that matter to fire as nodes, or give them a larger cell. Every
 figure here is a time on one machine; what the tests hold is the counts.
 
+**The rule a project checks before a run** (the practical ceiling): with `c` the nodes expected
+to cross into other cells between two spread steps (those crossing a tick, times
+`ticks_per_step()`, at most the nodes), `moving_grid_ops(c)` plus `ops_per_step` is a spread
+step's counted cost. The grid's part grows with the entries (a node covers at most
+`(⌊2h/cell⌋ + 2)` cells on each axis, at most 64: a 0.5 m thing at a 0.25 m cell is 64 entries,
+at 2 m one to eight) and, past a few crossings, is a pass over all of them. Here an operation
+of a grid update cost about 10 to 20 ns, so keep `moving_grid_ops(c)` under about a million
+for a step within a frame on this laptop (about 10 to 20 ms here; measure the reference
+device), and expect a tenth of a second at 10 million. A world over it moves fewer tracked
+things, or tracks them at a larger cell.
+
 **What it costs for 20,000 nodes** (counted by the test `a_forest_of_20000_steps_within_the_
 stated_work_bound`, never timed: a 141 × 142 m forest at 1 m spacing, wood 0.7 × 3 × 0.7 m and
 grass 0.6 × 0.4 × 0.6 m, `reach_m` 1, a 4 m/s wind, the default limits): 64,416 grid entries
@@ -657,8 +721,28 @@ spent every step; two runs of five steps each, the range of all ten, with other 
 
 So the work limit's maximum is now 524,288 (`MAX_WORK`; it was 1,048,576 counted the old way,
 which measured 400 to 500 ms a step in a still world at the node limit and 1.6 s in a churned
-tick): no setting the crate accepts means much more than a frame's worth of one core on this
-laptop for the spread step itself, with a spread step every 6 ticks. A whole tick can still cost far
+tick): in a **still** world no work setting the crate accepts means much more than a frame's
+worth of one core on this laptop for the spread step, with a spread step every 6 ticks. That
+does not hold once the step updates the grid: **what holds is the counted bound**
+(`ops_per_step + grid_ops`, and the grid's part said before by `pending_grid_ops()` or, before
+a run, `moving_grid_ops`), which every figure below stayed within; its time is the world's
+choice of cell size and motion. The fourth reviewer's figures (one machine: this laptop,
+release, other work possibly running; probes `timing`, `allmove` and `t10`), 32,768 nodes all
+burning, a spread step:
+
+| Cell | Crossing cells a tick | A spread step | Grid ops |
+|---|---|---|---|
+| 2 m | none | 5.3 to 6.3 ms (default work), 9.7 to 12.2 ms (524,288) | 0 |
+| 2 m | 1% | 6.9 to 10 ms | |
+| 2 m | 10% | 36 to 130 ms in one run, 11 to 35 ms in another | 760,064 |
+| 0.25 m (1.52 million entries) | none | 7.4 to 17 ms | 0 |
+| 0.25 m | 1% | 48 to 153 ms | 4.8 million |
+| 0.25 m | 10% | 208 to 307 ms | 22.6 million |
+| 0.25 m, every node 64 cells (2,097,152 entries) | every node | 304 to 1,015 ms | 50.95 million (bound 53.15 million) |
+
+So **at small cells a spread step that updates the grid can cost hundreds of milliseconds**, and
+a second when everything crosses; the rule for a project is under "For the engine's lane"
+(below). A whole tick can still cost far
 more where the world asks for it: the third reviewer's churned tick at the node limit (cell
 0.25 m, 64 acts each after an add, a remove or a move, so each act looks at all 32,768 nodes;
 its busiest tick also made the grid's 1.2 million entries) counted 29.8 million operations, and
@@ -718,11 +802,17 @@ limit's pace, or tracks fewer, larger nodes.
   (`update_ops(n, n, max(n, 1,024), 64n, 64n, 64n)`: about 31 million at 20,000 nodes and 51
   million at 32,768). A real update after a few changes is far less (the table above).
 - `act_ops`: one act, `3n + 1` (its work at most `2n + 1`, and one update a node it reaches).
-- `call_ops`: one add, remove or move, `n + 3⌈log2(n + 1)⌉ + 2 + ⌈log2 1,025⌉ + 1,024` (a
+- `call_ops`: one add, remove or move, `n + 3⌈log2(n + 1)⌉ + 2 + 2(⌈log2 1,025⌉ + 1,024)` (a
   binary search, the node list shifted by one place, and, while a query is cut, the cut node's
-  search and the skip list searched and shifted). A move within its cells is a binary search and
-  a few comparisons; `add_many` of `m` costs at most `m + sort(m) + m(⌈log2(n + 1)⌉ + 1) + n + m`
-  (`Elementa::add_many_ops`), a merge, not a sort of the whole list.
+  search and each of its two lists searched and shifted). A move within its cells is a binary search and
+  a few comparisons; `add_many` of `m` costs at most `m + sort(m) + m(⌈log2(n + 1)⌉ + 1) + n + m`,
+  and while a query is cut `⌈log2(n + 1)⌉ + 1 + m(2⌈log2 1,025⌉ + 1) + 2(1,024 + m)` more for its
+  lists (`Elementa::add_many_ops`), a merge, not a sort of the whole list.
+- `WorstCase::moving_grid_ops(c)`: the grid update a spread step makes at worst when `c` nodes
+  crossed into other cells since the last, at the node limit with 64 cells a node;
+  `Elementa::moving_grid_ops(c)` the same for a world as it is (its entries, and the most
+  cells a node of its largest size can cover). Said before a run, so a project knows what its
+  motion costs at its cell size.
 - **A tick**, with `a` acts (at most 64) and `c` adds, removes and moves made in it in any
   order: at most `ops_per_step + grid_ops + a × act_ops + c × call_ops` (`WorstCase::tick_ops`),
   since only the spread step updates the grid. `StepReport::calls_ops` says what the calls since
@@ -766,11 +856,12 @@ before and after a prediction.
 
 **The save section `elementa`, version 1.** Self-contained: the config it ran under (every
 material, tag, the grid, the limits), the tick rate, tick, the ember key, the cursor (node,
-cell, next neighbour's id) and its skip list, `refused`, wind, ambient, every node (id, material, centre, half,
+cell, next neighbour's id), its skip list, its missed list and `cut_moved`, `refused`, wind, ambient, every node (id, material, centre, half,
 heat, fuel, wet, phase, since, ready_at) in id order, and the events still waiting. Floats are
 their bits. **Its layout changed on 2026-11-24 while staying version 1** (the per-node `owed`
 went, the cursor's entry index became a neighbour id with a skip list, and the stream's two
-words became the ember key): nothing has shipped, so no save of the earlier layout exists to read. On load: a
+words became the ember key; then, after the fourth review, the missed list and `cut_moved`
+followed the skip list): nothing has shipped, so no save of the earlier layout exists to read. On load: a
 tick past 2^62 is refused; every count against its cap and the bytes left before anything is
 allocated (`r.count`), the config by the same `validate` a file passes, ids strictly rising,
 materials in the table, every number in its range, a phase its material allows (only what can
@@ -778,7 +869,7 @@ burn burns, only what can freeze is frozen), no `since` or event after the save'
 to catch only by an intact node and not after the save's tick, at most the burning limit
 burning, a cursor part-way through a query only on a burning node and at a cell of that node's
 query (`a_cursor_part_way_through_a_query_is_checked_on_load`; the neighbour id it resumes at
-may be any id), a skip list only with such a cursor, rising, of at most 1,024 ids, at most 64 named events a kind, nothing left over. On `52be4bf7` a hand-made
+may be any id), the two lists and `cut_moved` only with such a cursor, each list rising, of at most 1,024 ids, and no id on both, at most 64 named events a kind, nothing left over. On `52be4bf7` a hand-made
 save with `owed` at `u32::MAX` loaded and lit four soaked neighbours in two steps; the field is
 gone. A load saves to the same bytes, gives the same step report on the next tick (on
 `b4e2012f` it said `burning 0` until the next spread step) and continues to the same hash
@@ -791,7 +882,7 @@ wrapping), and the refusal count at `u64::MAX` (loads; a refused node leaves it 
 nothing panics or hangs, and a count of `u32::MAX` is refused before allocation.
 
 **The hash** (`Elementa::hash`) covers the config's hash, tick rate, tick, ember key, the
-cursor's three parts and its skip list, `refused`, wind, ambient, every node's every field, and the waiting
+cursor's three parts, its two lists and `cut_moved`, `refused`, wind, ambient, every node's every field, and the waiting
 events. Tested: the same seed and inputs give the same hash at each of 10,000 ticks, twice, and
 with the nodes added in a batch, one at a time in reverse, and in interleaved batches; another
 seed differs; a grid kept up to date by merges gives the same hashes over 600 ticks as one made
@@ -807,7 +898,9 @@ whole after a load.
   `.fuel(s)`, `.heat(h)`, `.wet(w)` from an `element` component), `add_many(&[...])` at a load
   or a project start, `move_node(id, centre, half)` for an entity that moved, `remove(id)` for
   one deleted. Errors are `ElementaError` (`code`, `message`, `details`; `to_json()`).
-  `pending_grid_ops()` says what the next spread step's grid update will cost;
+  `pending_grid_ops()` says what the next spread step's grid update will cost, and
+  `moving_grid_ops(c)` what it costs with `c` nodes crossing cells between two steps (the rule
+  before a run, under "What moving things cost");
   `grid_is_current()` whether there is one.
 - *The world.* `set_wind(Vec3)` in m/s (strength × 4) and `set_ambient(h)` whenever
   `world_env` changes.
@@ -840,7 +933,21 @@ whole after a load.
     (`over_a_whole_fire_a_tight_budget_can_change_what_catches`).
   - That a cut query always reaches every neighbour in its pass. It does, unless its own node
     is removed, stops burning or moves so that its query's cells change, or more than 1,024
-    nodes it has passed move or go before it resumes; then the rest of that pass is not given.
+    changes the pass must remember come before it ends (nodes it gave heat to moved ahead of
+    the cut, out of its reach or removed; or nodes it had not moved or added behind the cut,
+    within its reach); then the rest of that pass is not given.
+  - That only movers near the fire can end a cut query. Movers beyond its reach never can (the
+    fourth reviewer's `jitter`, mended), but any 1,025 within it can, moving ahead of the cut
+    or behind it, counted over the whole pass, not between two steps.
+  - That every neighbour is given its heat in every pass. A node that comes behind the cut while
+    the pass goes on (moved or added where the pass has already looked) misses that pass, and
+    is given its heat in the next; a node moved behind and back keeps it (`wrongskip`, mended).
+    Once the cut node itself moves within its cells, a node that came behind the cut in reach
+    or not, and later goes ahead, is counted as given (the safe side): it misses that pass too.
+  - That an act reaches the same nodes whatever happened earlier in the tick, or after a load,
+    because two paths were once made to agree by testing them. They agree by construction
+    (`reach_box`'s margin, proved in its comment, and held by `tests/boundaries.rs`); a change to
+    the margin, to `box_gap` or to how cells are computed must keep that proof.
   - That embers reach every cell. None lands in a cell holding more nodes than the work limit
     can look at; `crowded_cells()` and a prediction's `crowded_cells` say where.
   - That counted operations are time. They are counts that hold on every machine; what they
@@ -851,6 +958,10 @@ whole after a load.
     such a tick cost up to 64 times the node count.
   - That moves are free. A move within a node's cells is; a move into other cells makes the next
     spread step pass over every grid entry.
+  - That a spread step is a few milliseconds whenever nodes move. At cell 0.25 m and the node
+    cap, 1% crossing cells a tick cost 0.05 to 0.15 s a step here, 10% 0.2 to 0.3 s, and every
+    node crossing up to a second; all within the counted bound, which `moving_grid_ops` says
+    before a run.
   - That `add_many` is inside `tick_ops`. It is counted apart (`Elementa::add_many_ops`).
   - That `take_events()` allocates nothing. It hands over the list; `swap_events` copies into
     the caller's buffer and allocates nothing once warm.
@@ -861,7 +972,7 @@ it, single `add`s keep what came first, so an engine that adds in id order shoul
 wide flat thing below a tall one leans less than it might. Burnt nodes stay tracked (counting
 against the node limit) until the engine removes them. The work limit's promise is for the
 same nodes burning only; over a whole fire it can change what catches (the `meet` test). A cut
-query ends early only by its own node, or past 1,024 passed nodes changed in one cut. An ember
+query ends early only by its own node, or past 1,024 ids on one of its two lists. An ember
 never lands in a cell more crowded than the work limit allows (said before a run). The
 grid update is linear in the grid's entries whenever anything crossed cells, not in what
 changed: a single node crossing a cell boundary costs a pass over every entry (the 1% rows of
