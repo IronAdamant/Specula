@@ -6,14 +6,16 @@
 //!   **one** journal entry, and the frame data reads as the 2D path's own sprite objects;
 //! - `world_undo` takes both back at once;
 //! - a bake lit by the project's light says so (`style.toml`'s `[stage]` game rig);
-//! - a long bake of one agent's is cancelled only by that agent: another agent's cancel is
-//!   refused and names the owner, the owner's cancel from a second connection stops it, and
-//!   nothing of it is written;
-//! - a bake of the most cells a call takes (512) answers with its sheet, and the log says what
-//!   it cost (the engine's own `cost` record).
+//! - a bake held at the engine's test gate (`SPECULA_TEST_BAKE_HOLD`, while the clock is
+//!   paused: it cannot have finished, on any GPU) is a job of its owner's: another agent's
+//!   cancel and question are refused naming the owner, the owner's cancel from another
+//!   connection stops it, and nothing of it is written;
+//! - a claim on a bake's frame data taken while it is held refuses its commit when it ends
+//!   (nothing written);
+//! - a bake of the most cells (512) is answered as a job and its sheet is there when it ends;
+//!   the log says what it cost (the engine's own `cost` record).
 
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use specula_core::Json;
@@ -57,6 +59,8 @@ pub fn sprite(cx: &mut Cx) -> Result<String, String> {
         copy_tree(&sepulcra.join(name), &project.join("assets").join(name))?;
     }
     let port = cx.port;
+    // The gate the held bakes below wait at (a test gate of the engine's: SPRITE_BAKE.md).
+    cx.engine_env("SPECULA_TEST_BAKE_HOLD", "held.png");
     cx.start(&project, port, &["--lead", "lead"])?;
 
     // One bake: two files in one journal entry, and the frame data the 2D path plays.
@@ -85,60 +89,65 @@ pub fn sprite(cx: &mut Cx) -> Result<String, String> {
     let lit = cx.call(port, ann, "sprite_bake", r#"{"recipe": "recipes/statue_angel.json", "directions": 1, "cell": 32, "light": "project", "path": "assets/sprites/lit.png"}"#)?;
     expect(text(&lit, "light").is_some_and(|l| l.starts_with("project")), "the bake was not lit by the project's style.toml", &lit)?;
 
-    // A long bake of ann's, from a process of its own; bob's cancel is refused naming ann, and
-    // ann's cancel from another connection stops it.
-    let (exe, p) = (cx.exe.to_string_lossy().into_owned(), port.to_string());
-    // (The heaviest bake a call takes: 512 cells of 112 at supersample 4. A cell of 128 would be
-    // refused at once, its atlas past 7 Mi pixels: the first run of this check met that.)
-    let long = r#"{"recipe": "recipes/shambler.json", "clips": ["walk"], "directions": 16, "frames": 32, "cell": 112, "supersample": 4, "path": "assets/sprites/long.png"}"#;
-    let running = Command::new(&exe)
-        .args(["call", "sprite_bake", long, "--port", &p, "--settings", &settings, "--as", "ann", "--role", "builder"])
-        .current_dir(&cx.out)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("the long bake's call could not be started: {e}"))?;
-    // (engine_info lists the step jobs only in its detailed answer.)
-    let began = std::time::Instant::now();
-    let listed = loop {
-        let info = cx.call(port, Some(("lead", "lead")), "engine_info", r#"{"response_format": "detailed"}"#)?;
-        if at(&info, "workers.step_jobs").and_then(Json::as_array).is_some_and(|j| j.iter().any(|s| text(s, "kind") == Some("sprite_bake"))) {
-            break info;
-        }
-        if began.elapsed() > Duration::from_secs(60) {
-            return Err(format!("the long bake's step job was not queued within 60 s; the last answer was: {}", super::short(&info)));
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    };
-    cx.say(format!("queued: {}", super::short(at(&listed, "workers.step_jobs").unwrap_or(&Json::Null))));
+    // A bake held by the check's own gate (`SPECULA_TEST_BAKE_HOLD`: a bake of held.png holds
+    // before its first render while the clock is paused), so it cannot have finished when the
+    // cancel comes, on any GPU: a job of ann's, cancelled by ann alone.
+    let lead = Some(("lead", "lead"));
+    cx.call(port, lead, "time_control", r#"{"action": "pause"}"#)?;
+    let held = r#"{"recipe": "recipes/shambler.json", "clips": ["walk"], "directions": 4, "frames": 4, "cell": 48, "path": "assets/sprites/held.png", "wait_s": 0}"#;
+    let first = cx.call(port, ann, "sprite_bake", held)?;
+    let job = at(&first, "job").and_then(Json::as_u64).ok_or_else(|| format!("a bake that did not end within its wait answered no job: {}", super::short(&first)))?;
+    expect(text(&first, "status") == Some("running"), "the held bake is not running", &first)?;
+    let asked = cx.call(port, ann, "sprite_bake", &format!(r#"{{"job": {job}}}"#))?;
+    expect(text(&asked, "phase").is_some_and(|p| p.starts_with("held")), "the bake is not held by the check's gate", &asked)?;
     let refused = cx.refused(port, bob, "sprite_bake", r#"{"cancel": true}"#, "not_job_owner")?;
     expect(at(&refused, "owners").and_then(Json::as_array).is_some_and(|o| o.iter().any(|n| n.as_str() == Some("ann"))), "bob's refused cancel does not name ann", &refused)?;
-    let cancelled = cx.call(port, ann, "sprite_bake", r#"{"cancel": true}"#)?;
+    let refused = cx.refused(port, bob, "sprite_bake", &format!(r#"{{"cancel": true, "job": {job}}}"#), "not_job_owner")?;
+    expect(text(&refused, "owner") == Some("ann"), "bob's refused cancel of the job does not name ann", &refused)?;
+    cx.refused(port, bob, "sprite_bake", &format!(r#"{{"job": {job}}}"#), "not_job_owner")?;
+    let cancelled = cx.call(port, ann, "sprite_bake", &format!(r#"{{"cancel": true, "job": {job}}}"#))?;
     expect(at(&cancelled, "cancelled").and_then(Json::as_u64) == Some(1), "ann's cancel did not stop her bake", &cancelled)?;
-    let out = running.wait_with_output().map_err(|e| format!("the long bake's call: {e}"))?;
-    let answer = Json::parse(String::from_utf8_lossy(&out.stdout).trim()).map_err(|e| format!("the long bake's call did not answer JSON: {e}"))?;
-    expect(text(&answer, "error") == Some("cancelled"), "the long bake did not answer cancelled", &answer)?;
+    let answer = cx.refused(port, ann, "sprite_bake", &format!(r#"{{"job": {job}, "wait_s": 20}}"#), "cancelled")?;
+    cx.say(format!("cancelled by its owner: {}", super::short(&answer)));
     let left = sprites(cx, port, ann)?;
-    expect(!left.iter().any(|p| p.contains("long")), &format!("a cancelled bake wrote {left:?}"), &answer)?;
+    expect(!left.iter().any(|p| p.contains("held")), &format!("a cancelled bake wrote {left:?}"), &answer)?;
 
-    // The most cells a call takes.
-    let most = r#"{"recipe": "recipes/shambler.json", "clips": ["walk"], "directions": 16, "frames": 32, "cell": 64, "path": "assets/sprites/most.png"}"#;
-    // Either its sheet, or (when this machine is too busy for the call's time) the bake's own
-    // `out_of_time` with how far it got, and nothing written: never a bare timeout.
-    let cost = match cx.call_as(port, ann, "sprite_bake", most)? {
-        Ok(full) => {
-            expect(at(&full, "cells").and_then(Json::as_u64) == Some(512), "the bake of 512 cells did not answer with its sheet", &full)?;
-            format!("its sheet, {}", super::short(at(&full, "cost").unwrap_or(&Json::Null)))
-        }
-        Err(refused) => {
-            expect(text(&refused, "error") == Some("out_of_time") && at(&refused, "cells_that_fit").is_some(), "the bake of 512 cells was refused, not for the call's time", &refused)?;
-            let left = sprites(cx, port, ann)?;
-            expect(!left.iter().any(|p| p.contains("most")), &format!("a bake out of time wrote {left:?}"), &refused)?;
-            format!("out of time, {}", super::short(&refused))
+    // A claim on its frame data that appears while the bake runs: the bake's commit is refused
+    // when it ends, and nothing is written (held again, so the claim comes first by construction).
+    let second = cx.call(port, ann, "sprite_bake", held)?;
+    let job = at(&second, "job").and_then(Json::as_u64).ok_or_else(|| format!("the second held bake answered no job: {}", super::short(&second)))?;
+    cx.call(port, bob, "claim_take", r#"{"path": "/project/assets/sprites/held.json"}"#)?;
+    cx.call(port, lead, "time_control", r#"{"action": "resume"}"#)?;
+    let answer = cx.refused(port, ann, "sprite_bake", &format!(r#"{{"job": {job}, "wait_s": 20}}"#), "claimed")?;
+    cx.say(format!("claimed while it ran: {}", super::short(&answer)));
+    let left = sprites(cx, port, ann)?;
+    expect(!left.iter().any(|p| p.contains("held")), &format!("a bake refused at its commit wrote {left:?}"), &answer)?;
+    cx.call(port, bob, "claim_release", r#"{"all": true}"#)?;
+
+    // The most cells a bake takes (512), as a job: its sheet when it ends, whatever this
+    // machine's pace (never refused for being long).
+    let most = r#"{"recipe": "recipes/shambler.json", "clips": ["walk"], "directions": 16, "frames": 32, "cell": 64, "path": "assets/sprites/most.png", "wait_s": 0}"#;
+    let started = cx.call(port, ann, "sprite_bake", most)?;
+    let full = match at(&started, "job").and_then(Json::as_u64) {
+        None => started,
+        Some(job) => {
+            let began = std::time::Instant::now();
+            loop {
+                let a = cx.call(port, ann, "sprite_bake", &format!(r#"{{"job": {job}, "wait_s": 20}}"#))?;
+                if text(&a, "status") != Some("running") {
+                    break a;
+                }
+                if began.elapsed() > Duration::from_secs(600) {
+                    return Err(format!("the bake of 512 cells had not ended after 600 s: {}", super::short(&a)));
+                }
+            }
         }
     };
+    expect(at(&full, "cells").and_then(Json::as_u64) == Some(512), "the bake of 512 cells did not answer with its sheet", &full)?;
+    let left = sprites(cx, port, ann)?;
+    expect(left.iter().any(|p| p == "assets/sprites/most.png") && left.iter().any(|p| p == "assets/sprites/most.json"), &format!("the bake of 512 cells wrote {left:?}"), &full)?;
+    let cost = super::short(at(&full, "cost").unwrap_or(&Json::Null));
     cx.say(format!("512 cells, headless: {cost}"));
     cx.stop(port)?;
-    Ok(format!("two files in one entry (journal {journal}) and one undo; the project's light; a bake cancelled by its owner only; 512 cells answered ({cost})"))
+    Ok(format!("two files in one entry (journal {journal}) and one undo; the project's light; a held bake cancelled by its owner only; a claim that came while a bake ran refused its commit; 512 cells answered as a job ({cost})"))
 }

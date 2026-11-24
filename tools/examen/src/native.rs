@@ -65,7 +65,7 @@ pub const CHECKS: &[Check] = &[
     },
     Check {
         name: "sprite_check",
-        about: "sprite_bake end to end: two files in one journal entry and one undo, the project's light, a bake cancelled by its owner only, the most cells a call takes (docs/design/SPRITE_BAKE.md)",
+        about: "sprite_bake end to end: two files in one journal entry and one undo, the project's light, a held bake cancelled by its owner only, a claim taken while a bake runs refusing its commit, 512 cells answered as a job (docs/design/SPRITE_BAKE.md)",
         run: sprite::sprite,
     },
 ];
@@ -96,6 +96,9 @@ pub struct Cx {
     /// The settings folder (below the check's own) its engines and commands use: whose
     /// machine this is. A check that needs a second operator names another for a while.
     operator: &'static str,
+    /// Environment variables the check's engines are started with (a test gate of the
+    /// engine's, such as `SPECULA_TEST_BAKE_HOLD`).
+    engine_env: Vec<(String, String)>,
 }
 
 impl Drop for Cx {
@@ -139,7 +142,7 @@ fn expect(ok: bool, what: &str, answer: &Json) -> Result<(), String> {
 impl Cx {
     pub fn new(out: &Path, port: u64) -> Cx {
         let exe = crate::run::target_dir().join("debug").join(if cfg!(windows) { "specula.exe" } else { "specula" });
-        Cx { out: out.to_path_buf(), port, exe, log: Vec::new(), engines: Vec::new(), started: 0, operator: "settings" }
+        Cx { out: out.to_path_buf(), port, exe, log: Vec::new(), engines: Vec::new(), started: 0, operator: "settings", engine_env: Vec::new() }
     }
 
     pub fn say(&mut self, line: impl Into<String>) {
@@ -151,6 +154,11 @@ impl Cx {
         let mut text = self.log.join("\n");
         text.push('\n');
         text
+    }
+
+    /// The engines started from here on get `name=value` in their environment.
+    pub fn engine_env(&mut self, name: &str, value: &str) {
+        self.engine_env.push((name.to_owned(), value.to_owned()));
     }
 
     /// From here on the check's engines and commands are another operator's: another settings
@@ -250,6 +258,7 @@ impl Cx {
         let mut cmd = Command::new(&self.exe);
         cmd.arg("--project").arg(project).args([if headless { "--headless" } else { "--no-activate" }, "--port", &port.to_string()]);
         cmd.args(["--settings", &own(self.operator), "--captures", &own("captures"), "--cache", &own("cache"), "--trace", &own("trace")]);
+        cmd.envs(self.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd.args(flags).current_dir(project).stdin(Stdio::null()).stdout(file.0).stderr(file.1);
         let mut child = cmd.spawn().map_err(|e| format!("the engine could not be started ({}): {e}", self.exe.display()))?;
         self.say(format!("engine {n} on port {port}: --project {} {} (log: {})", project.display(), flags.join(" "), log.display()));

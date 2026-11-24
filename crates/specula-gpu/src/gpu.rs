@@ -1666,6 +1666,29 @@ impl GpuInner {
         Ok(())
     }
 
+    /// `target`'s last render as it landed: its colour (copied back in its own submission) and its
+    /// opaque ids. Never waits and never records a copy: `Ok(None)` while any asynchronous render
+    /// is in flight (settle it first); an error when the render left its colour on the GPU or
+    /// another target's ID render came after it (render it again).
+    pub fn read_landed(&mut self, target: TargetId) -> Result<Option<(Vec<u8>, IdImage)>, GpuError> {
+        if self.pending.is_some() {
+            return Ok(None);
+        }
+        let t = self.targets.get(&target.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Target, target.0, ""))?;
+        if !t.rendered || !t.copied {
+            return Err(GpuError::new(format!("read_landed: target {}'s last render was not copied back in its submission (render_async with the copy)", target.0)));
+        }
+        let ids = self.ids.image(target.0)?;
+        let len = t.extent.width as usize * t.extent.height as usize * 4;
+        // SAFETY: as `read_rgba8`'s: persistently mapped coherent memory of `len` bytes; the
+        // render's own submission copied into it and has ended (nothing is pending, so it was
+        // settled: fence signalled, host-read barrier recorded); nothing writes it while `self`
+        // is borrowed.
+        let colour = unsafe { std::slice::from_raw_parts(t.readback.mapped as *const u8, len) }.to_vec();
+        self.readbacks.host_reads += 1;
+        Ok(Some((colour, ids)))
+    }
+
     pub fn read_rgba8(&mut self, target: TargetId) -> Result<Vec<u8>, GpuError> {
         if self.pending.as_ref().is_some_and(|p| p.target == target.0) {
             self.settle_offscreen(true)?;

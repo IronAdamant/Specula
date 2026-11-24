@@ -67,6 +67,8 @@ struct Entry {
     owner: JobOwner,
     session: String,
     cancel_on_close: bool,
+    /// Counted as its agent's but kept when its session closes ([`Engine::step_job_kept`]).
+    kept: bool,
     reply: Reply,
     deadline: Instant,
     class: Class,
@@ -132,7 +134,18 @@ impl Engine {
     /// call and is never refused); one that must queue is refused (`job_busy`) past
     /// [`MAX_STEP_JOBS`] agents' jobs queued or [`MAX_STEPS_PER_OWNER`] for this agent. A
     /// playtest's step (call 0) always queues.
-    pub(crate) fn step_job(&mut self, start: StepStart, mut job: Box<dyn StepJob>) {
+    pub(crate) fn step_job(&mut self, start: StepStart, job: Box<dyn StepJob>) {
+        self.step_job_as(start, job, false);
+    }
+
+    /// [`Engine::step_job`] for a job whose answer is kept for its owner's identity, which
+    /// outlives a connection (`sprite_bake`): counted as the agent's job, never dropped when
+    /// the session that started it closes (its own deadline still ends it).
+    pub(crate) fn step_job_kept(&mut self, start: StepStart, job: Box<dyn StepJob>) {
+        self.step_job_as(start, job, true);
+    }
+
+    fn step_job_as(&mut self, start: StepStart, mut job: Box<dyn StepJob>, kept: bool) {
         let StepStart { owner, session, call, reply, deadline, class } = start;
         let trace = specula_core::trace::Ctx::current();
         let started = Instant::now();
@@ -161,7 +174,7 @@ impl Engine {
             reply.refuse(&e);
             return;
         }
-        self.steps.queue.push_back(Entry { job, owner, session, cancel_on_close: call != 0, reply, deadline, class, trace, started, landed: false });
+        self.steps.queue.push_back(Entry { job, owner, session, cancel_on_close: call != 0, kept, reply, deadline, class, trace, started, landed: false });
     }
 
     /// Runs queued slices round-robin within the credit earned at `share` of the wall time since
@@ -190,7 +203,7 @@ impl Engine {
     /// doing: one that waits ([`Step::Wait`]) is dropped as one with more to do is.
     pub(crate) fn drop_closed_steps(&mut self, alive: &BTreeSet<String>) {
         for e in std::mem::take(&mut self.steps.queue) {
-            if e.cancel_on_close && !alive.contains(&e.session) {
+            if e.cancel_on_close && !e.kept && !alive.contains(&e.session) {
                 let _ = e.reply.send(stopped("session_closed", &format!("the session closed; its {} was dropped", e.job.kind())));
             } else {
                 self.steps.queue.push_back(e);

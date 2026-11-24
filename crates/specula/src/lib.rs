@@ -3323,7 +3323,7 @@ impl Engine {
             return;
         }
         if matches!(request.command, Command::SpriteBake(_)) {
-            // A cell per step (see `sprite_bake::job`); its PNG is encoded on the caller's thread.
+            // A job of its owner's: renders landed without waiting, the rest on workers (see `sprite_bake::job`).
             self.start_sprite_bake(request);
             return;
         }

@@ -4,22 +4,23 @@
 //! On the caller's connection thread: the arguments (each bounded), the model built as an entity
 //! would build it (lent here, as `model_export` borrows it), the plan (clips, frames, directions,
 //! one orthographic scale and one pivot fitted to every posed vertex, the atlas's layout) and every
-//! refusal a plan can make, before the engine renders anything. On the engine thread: one cell a
-//! step ([`job`]). Back here: the PNG encoded, and the atlas and its frame data committed as two
-//! project files in one journal entry (claims, versions, undo; `assets/sprites/`).
+//! refusal a plan can make, before the engine renders anything. Then the bake is a job of the
+//! caller's identity ([`job`]): its style files read, its cells rendered without waiting on the
+//! GPU, resolved, encoded and stored on workers, and its two files committed in one journal entry
+//! by the engine when it ends. The call waits for it up to `wait_s`; a bake still running then is
+//! answered with its job, and `sprite_bake {job}` gives its progress or its kept result.
 
 use crate::models::BuiltSlot;
 use crate::project::FileKind;
-use crate::project_tools::{Committed, ProjectCall};
 use crate::tools::{bool_arg, check_keys, int_arg, params_arg, string_arg, Command, Tools};
 use crate::world::{self, ModelSpec};
 use plan::{Ask, Clips, Rate, View};
 use specula_core::Json;
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub(crate) mod job;
 pub mod plan;
@@ -34,6 +35,12 @@ pub const FOLDER: &str = "assets/sprites";
 const MAX_LISTED: usize = 16;
 /// The most bakes one agent runs at once (each holds an atlas of up to 28 MiB).
 pub const MAX_RUNNING_PER_OWNER: usize = 2;
+/// How long a call waits for its bake before answering with the job (`wait_s`): the default
+/// and the most (under the engine's 25 s answer deadline).
+pub const WAIT_S: u64 = 20;
+/// A finished bake's result is kept for its owner this long, at most so many an owner.
+pub const KEPT_FOR: Duration = Duration::from_secs(30 * 60);
+pub const MAX_KEPT_PER_OWNER: usize = 8;
 
 fn err(code: &str, message: impl Into<String>) -> ToolOutput {
     ToolOutput::error(Json::obj([("error", Json::from(code)), ("message", Json::from(message.into()))]).to_string())
@@ -61,13 +68,17 @@ pub struct Request {
     /// The atlas's project path; the frame data is beside it (`.json`).
     pub path: String,
     pub dry_run: bool,
+    /// How long the call waits for the bake before answering with its job (seconds).
+    pub wait_s: u64,
 }
 
-/// A parsed call: a bake, or the caller's own bakes cancelled.
+/// A parsed call: a bake; the caller's own bakes cancelled (all, or one job); or a bake's
+/// progress or kept result asked for (waiting up to `wait_s` for it to end).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Call {
     Bake(Box<Request>),
-    Cancel,
+    Cancel(Option<u64>),
+    Job { id: u64, wait_s: u64 },
 }
 
 /// The frame data's path for an atlas path.
@@ -75,14 +86,26 @@ pub fn frames_path(png: &str) -> String {
     format!("{}.json", png.strip_suffix(".png").unwrap_or(png))
 }
 
+fn wait_of(args: &Json, default: u64) -> Result<u64, String> {
+    Ok(int_arg(args, "wait_s", 0, WAIT_S)?.unwrap_or(default))
+}
+
 /// Reads the arguments (every one bounded: AGENTS rule 15).
 pub fn parse(args: &Json) -> Result<Call, String> {
-    check_keys(args, "sprite_bake", &[&["recipe", "params", "seed", "clips", "directions", "view", "elevation_deg", "frames", "fps", "cell", "supersample", "pixel_art", "outline", "in_place", "shadow", "light", "path", "dry_run", "cancel"]])?;
+    check_keys(args, "sprite_bake", &[&["recipe", "params", "seed", "clips", "directions", "view", "elevation_deg", "frames", "fps", "cell", "supersample", "pixel_art", "outline", "in_place", "shadow", "light", "path", "dry_run", "wait_s", "cancel", "job"]])?;
+    let job = int_arg(args, "job", 1, u64::MAX >> 11)?;
+    let n = args.as_object().map_or(0, |o| o.len());
     if bool_arg(args, "cancel")? == Some(true) {
-        if args.as_object().is_some_and(|o| o.len() > 1) {
-            return Err("'cancel' stands alone: {\"cancel\": true} stops your own bakes".into());
+        if n > 1 + usize::from(job.is_some()) {
+            return Err("'cancel' stands alone, or with 'job': {\"cancel\": true} stops your own bakes, {\"cancel\": true, \"job\": N} that one".into());
         }
-        return Ok(Call::Cancel);
+        return Ok(Call::Cancel(job));
+    }
+    if let Some(id) = job {
+        if n > 1 + usize::from(args.get("wait_s").is_some()) {
+            return Err("'job' asks for a bake's progress or result, with 'wait_s' at most: {\"job\": N, \"wait_s\": 20}".into());
+        }
+        return Ok(Call::Job { id, wait_s: wait_of(args, 0)? });
     }
     let recipe = string_arg(args, "recipe")?.ok_or("'recipe' is required: a recipe (or .glb) under the assets root, e.g. \"recipes/shambler.json\"")?;
     if recipe.chars().count() > MAX_PATH_CHARS {
@@ -194,24 +217,97 @@ pub fn parse(args: &Json) -> Result<Call, String> {
         Some(other) => return Err(format!("'shadow' is \"none\" (default: the 2D game draws its own) or \"blob\" (a soft alpha-only blob in a cell of its own), not '{other}'")),
     };
     let ask = Ask { clips, directions, elevation_deg, rate, cell, supersample, in_place, shadow_blob };
-    Ok(Call::Bake(Box::new(Request { spec, ask, view, pixel_art, outline, light, path, dry_run })))
+    Ok(Call::Bake(Box::new(Request { spec, ask, view, pixel_art, outline, light, path, dry_run, wait_s: wait_of(args, WAIT_S)? })))
 }
 
 // ---------------------------------------------------------------------------------------------
-// Bakes running, for their owners' cancels
+// Bakes as jobs: who owns each, its progress, and its one answer kept for its owner
 
-/// One running bake: its owner's identity key, its cancel flag, and its owner's name as the
-/// engine knows it (set when its job starts; refusals name it).
-type Entry = (String, Arc<AtomicBool>, Arc<OnceLock<String>>);
+/// Where a bake is (its progress's `phase`).
+pub const PHASE_RENDERING: u8 = 1;
+pub const PHASE_ENCODING: u8 = 2;
+pub const PHASE_WRITING: u8 = 3;
+pub const PHASE_HELD: u8 = 4;
+const PHASES: [&str; 5] = ["reading its style files", "rendering", "encoding", "writing its two files", "held before its first render (SPECULA_TEST_BAKE_HOLD: a test's gate)"];
 
-/// A bake started: its id, its cancel flag, its owner's name cell.
-pub type Started = (u64, Arc<AtomicBool>, Arc<OnceLock<String>>);
+/// A bake's progress, written by the engine and read by its owner's `{job}` calls.
+#[derive(Default)]
+pub struct Progress {
+    /// Cells rendered and resolved into the atlas.
+    pub cells: AtomicUsize,
+    phase: AtomicU8,
+}
 
-/// The bakes running, by owner (identity key): `sprite_bake {cancel: true}` stops the caller's.
+impl Progress {
+    pub fn set_phase(&self, p: u8) {
+        self.phase.store(p, Ordering::Relaxed);
+    }
+
+    pub fn phase(&self) -> &'static str {
+        PHASES.get(usize::from(self.phase.load(Ordering::Relaxed))).copied().unwrap_or("?")
+    }
+}
+
+/// One bake: whose, what it writes, how far it got, and its answer.
+struct Entry {
+    /// The owner's identity key, and name as the engine knows it (set when its job starts).
+    owner: String,
+    name: Arc<OnceLock<String>>,
+    path: String,
+    cells: usize,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<Progress>,
+    started: Instant,
+    /// Where its answer comes (`None` while its call waits on it, or once it came).
+    answer: Option<mpsc::Receiver<ToolOutput>>,
+    /// Its answer once it came, kept for its owner, and when it came.
+    result: Option<(ToolOutput, Instant)>,
+}
+
+impl Entry {
+    fn running(&self) -> bool {
+        self.result.is_none()
+    }
+
+    fn name(&self) -> String {
+        self.name.get().cloned().unwrap_or_else(|| "an agent whose bake is starting".to_owned())
+    }
+}
+
+/// A bake started: its id, its cancel flag, its owner's name cell and its progress.
+pub struct Started {
+    pub id: u64,
+    pub cancel: Arc<AtomicBool>,
+    pub name: Arc<OnceLock<String>>,
+    pub progress: Arc<Progress>,
+}
+
+/// Every bake, by id (docs/design/AUTHORITY.md, "Jobs"): a busy atlas refused naming its owner,
+/// cancel by the owner only, progress and the kept result for the owner only.
 #[derive(Default)]
 pub struct Running {
     next: AtomicU64,
     by: Mutex<BTreeMap<u64, Entry>>,
+}
+
+fn not_owner(id: u64, owner: &str, what: &str) -> ToolOutput {
+    ToolOutput::error(
+        Json::obj([
+            ("error", Json::from("not_job_owner")),
+            ("message", Json::from(format!("bake {id} is {owner}'s, and only a bake's owner {what} it"))),
+            ("job", Json::from(id)),
+            ("owner", Json::from(owner)),
+        ])
+        .to_string(),
+    )
+}
+
+fn dropped() -> ToolOutput {
+    err("reply_dropped", "the engine dropped the bake without answering (shutting down): nothing of it was written")
+}
+
+fn unknown(id: u64) -> ToolOutput {
+    err("unknown_job", format!("there is no bake {id} (a finished one's result is kept {} minutes for its owner)", KEPT_FOR.as_secs() / 60))
 }
 
 impl Running {
@@ -219,46 +315,158 @@ impl Running {
         self.by.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A new bake of `owner`'s, or the refusal when it already runs [`MAX_RUNNING_PER_OWNER`]:
-    /// its id, its cancel flag, and the cell its owner's name goes in.
-    pub fn start(&self, owner: &str) -> Result<Started, String> {
-        let mut by = self.locked();
-        let mine = by.values().filter(|(o, _, _)| o == owner).count();
-        if mine >= MAX_RUNNING_PER_OWNER {
-            return Err(format!("you already run {mine} bakes (at most {MAX_RUNNING_PER_OWNER}): wait for one to answer, or sprite_bake {{cancel: true}}"));
+    /// Answers that came for bakes no call waits on are taken in; results kept past
+    /// [`KEPT_FOR`] go, and an owner's oldest past [`MAX_KEPT_PER_OWNER`].
+    fn tidy(by: &mut BTreeMap<u64, Entry>) {
+        for e in by.values_mut().filter(|e| e.running()) {
+            let got = match e.answer.as_ref().map(mpsc::Receiver::try_recv) {
+                Some(Ok(out)) => Some(out),
+                Some(Err(mpsc::TryRecvError::Disconnected)) => Some(dropped()),
+                _ => None,
+            };
+            if let Some(out) = got {
+                e.answer = None;
+                e.result = Some((out, Instant::now()));
+            }
         }
-        let id = self.next.fetch_add(1, Ordering::Relaxed);
-        let (flag, name) = (Arc::new(AtomicBool::new(false)), Arc::new(OnceLock::new()));
-        by.insert(id, (owner.to_owned(), Arc::clone(&flag), Arc::clone(&name)));
-        Ok((id, flag, name))
+        let now = Instant::now();
+        by.retain(|_, e| e.result.as_ref().is_none_or(|(_, at)| now.duration_since(*at) < KEPT_FOR));
+        let mut kept: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
+        for (id, e) in by.iter().filter(|(_, e)| !e.running()) {
+            kept.entry(e.owner.as_str()).or_default().push(*id);
+        }
+        let gone: Vec<u64> = kept.values().flat_map(|ids| ids.iter().rev().skip(MAX_KEPT_PER_OWNER).copied()).collect();
+        for id in gone {
+            by.remove(&id);
+        }
     }
 
+    /// A new bake of `owner`'s writing `path` (`cells` of them): refused while the owner runs
+    /// [`MAX_RUNNING_PER_OWNER`], or while another bake writes the same atlas (`job_busy`,
+    /// naming that bake's owner and job).
+    pub fn start(&self, owner: &str, path: &str, cells: usize) -> Result<Started, ToolOutput> {
+        let mut by = self.locked();
+        Self::tidy(&mut by);
+        if let Some((id, e)) = by.iter().find(|(_, e)| e.running() && e.path == path) {
+            let name = e.name();
+            return Err(ToolOutput::error(
+                Json::obj([
+                    ("error", Json::from("job_busy")),
+                    ("message", Json::from(format!("{name}'s bake (job {id}) is writing {path}; one bake writes an atlas at a time: wait for it to answer, or ask {name}"))),
+                    ("job", Json::from(*id)),
+                    ("owner", Json::from(name.as_str())),
+                ])
+                .to_string(),
+            ));
+        }
+        let mine = by.values().filter(|e| e.running() && e.owner == owner).count();
+        if mine >= MAX_RUNNING_PER_OWNER {
+            return Err(err("job_busy", format!("you already run {mine} bakes (at most {MAX_RUNNING_PER_OWNER}): wait for one to answer (sprite_bake {{job}}), or sprite_bake {{cancel: true}}")));
+        }
+        let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        let s = Started { id, cancel: Arc::default(), name: Arc::default(), progress: Arc::default() };
+        let e = Entry { owner: owner.to_owned(), name: Arc::clone(&s.name), path: path.to_owned(), cells, cancel: Arc::clone(&s.cancel), progress: Arc::clone(&s.progress), started: Instant::now(), answer: None, result: None };
+        by.insert(id, e);
+        Ok(s)
+    }
+
+    /// The call that started bake `id` answered it itself: nothing is kept.
     pub fn end(&self, id: u64) {
         self.locked().remove(&id);
     }
 
-    /// Cancels every bake `owner` runs: `Ok(how many)`. A bake is its owner's: when the caller
-    /// runs none and others do, `Err` names their owners (nothing is cancelled).
-    pub fn cancel(&self, owner: &str) -> Result<usize, Vec<String>> {
-        let by = self.locked();
-        let mine = by.values().filter(|(o, _, _)| o == owner).map(|(_, f, _)| f.store(true, Ordering::Relaxed)).count();
-        if mine == 0 && !by.is_empty() {
-            let mut owners: Vec<String> = by.values().map(|(_, _, n)| n.get().cloned().unwrap_or_else(|| "an agent whose bake is starting".to_owned())).collect();
-            owners.sort();
-            owners.dedup();
-            return Err(owners);
+    /// The call that started bake `id` stopped waiting: its answer is kept for its owner.
+    pub fn park(&self, id: u64, answer: mpsc::Receiver<ToolOutput>) {
+        if let Some(e) = self.locked().get_mut(&id) {
+            e.answer = Some(answer);
+        }
+    }
+
+    /// Cancels `owner`'s bakes (all, or `job`): how many. Another's bake is refused
+    /// (`not_job_owner`, naming its owner); with no `job`, when the caller runs none and others
+    /// do, the refusal names their owners (nothing is cancelled).
+    pub fn cancel(&self, owner: &str, job: Option<u64>) -> Result<usize, ToolOutput> {
+        let mut by = self.locked();
+        Self::tidy(&mut by);
+        if let Some(id) = job {
+            return match by.get(&id) {
+                None => Err(unknown(id)),
+                Some(e) if e.owner != owner => Err(not_owner(id, &e.name(), "cancels")),
+                Some(e) if !e.running() => Ok(0),
+                Some(e) => {
+                    e.cancel.store(true, Ordering::Relaxed);
+                    Ok(1)
+                }
+            };
+        }
+        let mine = by.values().filter(|e| e.running() && e.owner == owner).map(|e| e.cancel.store(true, Ordering::Relaxed)).count();
+        let mut others: Vec<String> = by.values().filter(|e| e.running() && e.owner != owner).map(Entry::name).collect();
+        if mine == 0 && !others.is_empty() {
+            others.sort();
+            others.dedup();
+            return Err(ToolOutput::error(
+                Json::obj([
+                    ("error", Json::from("not_job_owner")),
+                    ("message", Json::from(format!("you run no bake; the bakes running are {}'s, and only a bake's owner cancels it: nothing was cancelled", others.join(", ")))),
+                    ("owners", Json::arr(others.into_iter().map(Json::from))),
+                ])
+                .to_string(),
+            ));
         }
         Ok(mine)
     }
+
+    /// Bake `id`'s progress, or its kept result, for its owner only; waiting up to `wait` for a
+    /// bake still running to end.
+    pub fn ask(&self, owner: &str, id: u64, wait: Duration) -> ToolOutput {
+        let taken = {
+            let mut by = self.locked();
+            Self::tidy(&mut by);
+            match by.get_mut(&id) {
+                None => return unknown(id),
+                Some(e) if e.owner != owner => return not_owner(id, &e.name(), "reads"),
+                Some(e) => match &e.result {
+                    Some((out, _)) => return out.clone(),
+                    None if wait.is_zero() => None,
+                    None => e.answer.take(),
+                },
+            }
+        };
+        // Waited for outside the lock (other agents' calls go on meanwhile).
+        let got = taken.map(|rx| (rx.recv_timeout(wait), rx));
+        let mut by = self.locked();
+        let Some(e) = by.get_mut(&id) else { return unknown(id) };
+        match got {
+            Some((Ok(out), _)) => {
+                e.result = Some((out.clone(), Instant::now()));
+                return out;
+            }
+            Some((Err(mpsc::RecvTimeoutError::Disconnected), _)) => {
+                e.result = Some((dropped(), Instant::now()));
+                return dropped();
+            }
+            Some((Err(mpsc::RecvTimeoutError::Timeout), rx)) => e.answer = Some(rx),
+            None => {}
+        }
+        ToolOutput::text(running(id, e).to_string())
+    }
 }
 
-/// Ends a bake's registration however its call ends.
-struct Registered<'a>(&'a Running, u64);
-
-impl Drop for Registered<'_> {
-    fn drop(&mut self) {
-        self.0.end(self.1);
-    }
+/// A running bake as its owner is told of it.
+fn running(id: u64, e: &Entry) -> Json {
+    Json::obj([
+        ("job", Json::from(id)),
+        ("status", Json::from("running")),
+        ("phase", Json::from(e.progress.phase())),
+        ("cells_done", Json::from(e.progress.cells.load(Ordering::Relaxed))),
+        ("cells", Json::from(e.cells)),
+        ("elapsed_s", Json::from((e.started.elapsed().as_secs_f64() * 10.0).round() / 10.0)),
+        ("path", Json::from(e.path.as_str())),
+        (
+            "next",
+            Json::from(format!("sprite_bake {{job: {id}, wait_s: {WAIT_S}}} waits for its answer (kept {} minutes for you); sprite_bake {{cancel: true, job: {id}}} stops it; nothing is written until it ends", KEPT_FOR.as_secs() / 60)),
+        ),
+    ])
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -275,45 +483,6 @@ pub fn call(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
 /// The caller's identity key (another connection of the same agent cancels its bakes).
 fn owner_key(tools: &Tools, session: &SessionInfo) -> Option<String> {
     crate::project_binary::owner(tools, session).map(|k| k.split('\u{1f}').next().unwrap_or_default().to_owned())
-}
-
-/// A bake's look: the rig, what the light is called, the palette (pixel art) and notes.
-type Look = (specula_studio::rules::Rig, String, Option<Vec<[u8; 3]>>, Vec<String>);
-
-/// The rig and the palette for a bake: the style files beside the build (read here, on the
-/// caller's thread). The light says which it was (`project` falls back to `neutral`, said).
-fn look_of(tools: &Tools, built: &crate::models::Built, req: &Request) -> Result<Look, ToolOutput> {
-    let root = tools.procgen.assets.clone();
-    let (style_json, style_toml) = crate::studio::bible_files(&root, &built.style, &req.spec.recipe);
-    let style = style_json.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| specula_model::Style::parse(&t).ok());
-    let mut notes = Vec::new();
-    let palette: Vec<[u8; 3]> = style.as_ref().map_or_else(Vec::new, |s| s.palette.values().map(|c| [0, 1, 2].map(|i| (c[i].clamp(0.0, 1.0) * 255.0).round() as u8)).collect());
-    let palette = if req.pixel_art {
-        if palette.is_empty() {
-            return Err(err("no_palette", format!("pixel_art snaps colours to the project's palette, and {} has none (no style.json with a palette beside it or above it)", req.spec.recipe)));
-        }
-        Some(palette)
-    } else {
-        None
-    };
-    let (rig, light) = match req.light {
-        Light::Neutral => (specula_studio::rules::neutral_rig(), "neutral".to_owned()),
-        Light::Project => {
-            let parsed = style_toml.as_ref().and_then(|p| std::fs::read_to_string(p).ok().map(|t| (p, t))).map(|(p, t)| {
-                let lookup = |name: &str| style.as_ref().and_then(|s| s.palette.get(name)).map(|c| [c[0], c[1], c[2]]);
-                specula_studio::rules::StyleRules::parse(&t, &p.display().to_string(), &lookup)
-            });
-            match parsed {
-                Some(Ok(rules)) => (rules.stage.game.clone(), "project: style.toml [stage] game rig".to_owned()),
-                Some(Err(e)) => return Err(err("style_invalid", format!("the project's light is its style.toml's [stage] rig, and the style.toml does not parse: {}", e.message))),
-                None => {
-                    notes.push("light: no style.toml beside the recipe or above it, so the neutral rig lit it".to_owned());
-                    (specula_studio::rules::neutral_rig(), "neutral (no style.toml)".to_owned())
-                }
-            }
-        }
-    };
-    Ok((rig, light, palette, notes))
 }
 
 fn refusal(r: &plan::Refusal) -> ToolOutput {
@@ -380,19 +549,19 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
     let started = Instant::now();
     let Some(owner) = owner_key(tools, session) else { return err("no_answer", "the engine didn't say who you are") };
     let req = match call {
-        Call::Cancel => {
-            return match tools.bakes.cancel(&owner) {
-                Ok(n) => ToolOutput::text(Json::obj([("cancelled", Json::from(n)), ("note", Json::from(if n == 0 { "no bake is running: nothing was cancelled" } else { "each stops at its next cell and answers its own call \"cancelled\"; nothing of it is written" }))]).to_string()),
-                Err(owners) => ToolOutput::error(
+        Call::Cancel(job) => {
+            return match tools.bakes.cancel(&owner, job) {
+                Ok(n) => ToolOutput::text(
                     Json::obj([
-                        ("error", Json::from("not_job_owner")),
-                        ("message", Json::from(format!("you run no bake; the bakes running are {}'s, and only a bake's owner cancels it: nothing was cancelled", owners.join(", ")))),
-                        ("owners", Json::arr(owners.into_iter().map(Json::from))),
+                        ("cancelled", Json::from(n)),
+                        ("note", Json::from(if n == 0 { "no bake of yours is running: nothing was cancelled" } else { "each stops at its next step and answers \"cancelled\" (to its call, or to sprite_bake {job}); nothing of it is written" })),
                     ])
                     .to_string(),
                 ),
+                Err(out) => out,
             };
         }
+        Call::Job { id, wait_s } => return tools.bakes.ask(&owner, id, Duration::from_secs(wait_s)),
         Call::Bake(r) => *r,
     };
     // The model, built as an entity would build it, lent to this thread.
@@ -402,91 +571,78 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
         return built_answer;
     }
     let Some(built) = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { return err("no_answer", "the engine built the model and did not hand it over") };
-    let (rig, light, palette, mut notes) = match look_of(tools, &built, &req) {
-        Ok(x) => x,
-        Err(out) => return out,
-    };
     // The plan, and every refusal it makes, before anything renders.
     let plan = match plan::plan(&built, built.anims.as_deref(), &req.ask) {
         Ok(p) => p,
         Err(r) => return refusal(&r),
     };
-    let data = sheet_of(&plan, &req, &built, &light);
     let png_path = req.path.clone();
     let json_path = frames_path(&png_path);
-    if req.dry_run {
-        let mut a = answer(&plan, &data, &req, None, None, started);
-        a.set("dry_run", Json::Bool(true));
-        a.set("note", Json::from("nothing was rendered or written: call again without dry_run"));
-        return ToolOutput::text(a.to_string());
-    }
     // Where it goes: both files must be the project's kinds there, and not another's claim.
-    let mut bases = Vec::new();
-    for (p, kind) in [(&png_path, FileKind::Png), (&json_path, FileKind::SpriteSheet)] {
-        let snap = match crate::project_tools::snapshot(tools, session, p, None, false) {
+    let mut bases = [(0, 0); 2];
+    if !req.dry_run {
+        for (i, (p, kind)) in [(&png_path, FileKind::Png), (&json_path, FileKind::SpriteSheet)].into_iter().enumerate() {
+            let snap = match crate::project_tools::snapshot(tools, session, p, None, false) {
+                Ok(s) => s,
+                Err(out) => return out,
+            };
+            if snap.kind != Some(kind) {
+                return err("not_a_sprite_path", format!("{p} isn't a {} file of the project here (an atlas and its frame data go in a folder named sprites under assets/, e.g. \"{FOLDER}/wolf.png\")", kind.name()));
+            }
+            if let Some(e) = snap.claimed {
+                return ToolOutput::error(e.to_json().to_string());
+            }
+            bases[i] = snap.current.as_ref().map_or((0, 0), |f| (f.version, f.hash));
+        }
+        if tools.content.is_none() {
+            return err("no_content_store", "this engine has no content store (binary project files need one)");
+        }
+    }
+    // The bake: a job of the caller's identity, cancellable by its owner (a dry run is none).
+    let s = if req.dry_run {
+        Started { id: 0, cancel: Arc::default(), name: Arc::default(), progress: Arc::default() }
+    } else {
+        match tools.bakes.start(&owner, &png_path, plan.cells.len()) {
             Ok(s) => s,
             Err(out) => return out,
-        };
-        if snap.kind != Some(kind) {
-            return err("not_a_sprite_path", format!("{p} isn't a {} file of the project here (an atlas and its frame data go in a folder named sprites under assets/, e.g. \"{FOLDER}/wolf.png\")", kind.name()));
         }
-        if let Some(e) = snap.claimed {
-            return ToolOutput::error(e.to_json().to_string());
-        }
-        bases.push(snap.current.as_ref().map_or((0, 0), |f| (f.version, f.hash)));
-    }
-    let Some(store) = tools.content.as_ref().map(Arc::clone) else { return err("no_content_store", "this engine has no content store (binary project files need one)") };
-    // The renders: a step job on the engine thread, cancellable by its owner.
-    let (id, cancel, owner_name) = match tools.bakes.start(&owner) {
-        Ok(x) => x,
-        Err(m) => return err("job_busy", m),
     };
-    let _registered = Registered(&tools.bakes, id);
-    let out = Arc::new(Mutex::new(None));
-    let outline = if req.outline { palette.as_deref().and_then(plan::darkest) } else { None };
-    let bake = job::Bake { plan: plan.clone(), built: Arc::clone(&built), rig, palette, outline, cancel, owner_name, out: Arc::clone(&out) };
-    let rendered = tools.send(session, Command::SpriteBake(Box::new(bake)));
-    if rendered.is_error {
-        return rendered;
-    }
-    let Some(baked) = out.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { return err("no_answer", "the engine rendered the sheet and did not hand it over") };
-    if !baked.touching.is_empty() {
-        notes.push(format!("{} cell(s) have the model on their outermost pixels (cut off there): cells {:?}", baked.touching.len(), baked.touching.iter().take(8).collect::<Vec<_>>()));
-    }
-    // Encoded here, on the caller's thread.
-    let png = specula_core::png::encode_rgba8(plan.atlas[0], plan.atlas[1], &baked.rgba, specula_core::deflate::Level::Default);
-    if png.len() as u64 > crate::blobs::MAX_BLOB_BYTES {
-        return err("too_large", format!("the atlas encoded to {} bytes; a binary project file holds at most {}: a smaller cell or fewer cells", png.len(), crate::blobs::MAX_BLOB_BYTES));
-    }
-    if let Err(p) = crate::project_binary::inspect(&png_path, FileKind::Png, &png) {
-        return err("invalid", format!("the atlas did not check as a PNG: {}", p.first().map_or(String::new(), |p| p.message.clone())));
-    }
-    let text = data.to_json().to_pretty();
-    if let Err(e) = sheet::validate(&text) {
-        return err("internal", format!("the frame data did not read back ({}: {}); nothing was written", e.at, e.message));
-    }
-    let blob = match store.put(&png) {
-        Ok(b) => b,
-        Err(e) => return ToolOutput::error(e.to_json().to_string()),
+    let (done, answer) = crate::jobs::channel();
+    let wait = Duration::from_secs(if req.dry_run { WAIT_S } else { req.wait_s });
+    let bake = job::Bake {
+        req,
+        plan,
+        built,
+        bases,
+        assets: tools.procgen.assets.clone(),
+        store: tools.content.as_ref().map(Arc::clone),
+        cancel: Arc::clone(&s.cancel),
+        owner_name: Arc::clone(&s.name),
+        progress: Arc::clone(&s.progress),
+        done,
+        started,
     };
-    let pointer = crate::blobs::pointer(blob, png.len() as u64);
-    let (tx, rx) = mpsc::channel();
-    let files = vec![(png_path.clone(), bases[0], (FileKind::Png, Arc::from(pointer.as_str()))), (json_path.clone(), bases[1], (FileKind::SpriteSheet, Arc::from(text.as_str())))];
-    let sent = tools.send(session, Command::Project(ProjectCall::CommitFiles { files, reply: tx }));
+    let sent = tools.send(session, Command::SpriteBake(Box::new(bake)));
     if sent.is_error {
+        tools.bakes.end(s.id);
         return sent;
     }
-    let commit = match rx.recv_timeout(crate::project_tools::DEFERRED_WAIT) {
-        Ok(Committed::Done(j)) => j,
-        Ok(Committed::Changed) => return err("changed", format!("{png_path} or {json_path} changed while the sheet was baked; nothing was written: bake again")),
-        Ok(Committed::Refused(e)) => return ToolOutput::error(e.to_json().to_string()),
-        Err(_) => return err("no_answer", format!("the engine did not confirm the write: project_read {{path: \"{json_path}\"}} shows whether it is there")),
-    };
-    let mut a = answer(&plan, &data, &req, Some((&baked, png.len())), Some(commit), started);
-    if !notes.is_empty() {
-        a.set("warnings", Json::arr(notes.into_iter().map(Json::from)));
+    match answer.recv_timeout(wait) {
+        Ok(out) => {
+            tools.bakes.end(s.id);
+            out
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            tools.bakes.end(s.id);
+            dropped()
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) if s.id == 0 => err("no_answer", "the dry run did not answer in time: call again"),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Still running: its answer is kept for its owner, who is told how to ask.
+            tools.bakes.park(s.id, answer);
+            tools.bakes.ask(&owner, s.id, Duration::ZERO)
+        }
     }
-    ToolOutput::text(a.to_string())
 }
 
 /// The answer: what was written (or would be), the atlas, what it cost. Bounded: at most
@@ -575,14 +731,17 @@ pub fn definitions() -> Vec<ToolDef> {
              carries the 2D path's own sprite object: world_spawn {{shape: \"sprite\", sprite: <strips[i].sprite>}} plays it. pixel_art: no smoothing, \
              all-or-nothing alpha, colours snapped to the project's palette. Refused before any render when the atlas would pass {} pixels a side or \
              {} in all (the size it would have been is said), past {} cells, or a clip past {} frames. Written as two project files in one journal entry \
-             (claims, versions, world_undo). The same inputs on the same adapter give the same bytes. Rendered a cell a step off the frame's \
-             budget; a bake that would outrun the call answers out_of_time with how many cells fit (split the sheet); {{cancel: true}} stops your \
-             own bakes. No shadow is baked in (shadow: \"blob\" adds a soft one in a cell of its own); each strip says which feet are down per \
+             (claims, versions, world_undo). The same inputs on the same adapter give the same bytes. Seen from the view asked: side (level, 0 degrees), \
+             three_quarter (30 degrees down, the default) or top (90), or elevation_deg; the angle is in the answer and the frame data. Rendered \
+             off the engine thread; the call waits up to wait_s (default {WAIT_S}) and a bake still running then answers {{job, status: \
+             \"running\"}}: {{job: N, wait_s}} gives its progress or its result (kept for its owner {} minutes; its files are written when it \
+             ends); {{cancel: true}} or {{cancel: true, job: N}} stops your own. No shadow is baked in (shadow: \"blob\" adds a soft one in a cell of its own); each strip says which feet are down per \
              frame. dry_run plans and says the atlas without rendering.",
             plan::MAX_ATLAS_SIDE,
             plan::MAX_ATLAS_PIXELS,
             plan::MAX_CELLS,
-            plan::MAX_FRAMES_PER_CLIP
+            plan::MAX_FRAMES_PER_CLIP,
+            KEPT_FOR.as_secs() / 60
         ),
         input_schema: Json::obj([
             ("type", Json::from("object")),
@@ -625,7 +784,9 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("light", Json::obj([("type", Json::from("string")), ("enum", Json::arr([Json::from("neutral"), Json::from("project")])), ("description", Json::from("neutral (default) or the project's: its style.toml [stage] game rig; the light turns with the camera, so every direction is lit alike on screen"))])),
                     ("path", text(MAX_PATH_CHARS, "Where the atlas goes: a .png in a folder named sprites under assets/ (the .json goes beside it)")),
                     ("dry_run", t("boolean", "Plan only: the atlas's size, cells and scale, nothing rendered or written")),
-                    ("cancel", t("boolean", "Alone: stop your own bakes running now (nothing of them is written)")),
+                    ("wait_s", int(0, WAIT_S, "How long the call waits for the bake (default 20); a bake still running then answers with its job. With job: how long to wait for its answer (default 0)")),
+                    ("job", int(1, u64::MAX >> 11, "A bake's job: alone (or with wait_s) its progress or kept result; with cancel, stop that one")),
+                    ("cancel", t("boolean", "Alone or with job: stop your own bakes running now (nothing of them is written)")),
                 ]),
             ),
         ]),

@@ -17,14 +17,20 @@ Two project files, written in **one journal entry** (claims on `/project/<path>`
   row ends, in about a square atlas: their frames are still consecutive sheet frames.
 - `assets/sprites/<name>.json`: the frame data, project file kind `sprite_sheet` (`*.json` in a
   folder named `sprites`; `sprites` is also a folder PNGs are mirrored in). Format
-  `specula.sprite_sheet`, version 1: the atlas size, the cell, the columns, the **pivot** (the
+  `specula.sprite_sheet`, version 2: the atlas size, the cell, the columns, the **pivot** (the
   model's origin on its ground, in pixels from each cell's top left), the **metres per pixel**,
-  the view and elevation, the light, the source (recipe, params, seed, the model's name and
-  content hash); each strip's clip, direction (compass name and facing in degrees), first frame
-  and count, fps and each frame's seconds, playback (loop or once), duration, the clip's travel
-  per cycle (`distance_m`), its events by frame, and **`sprite`: the 2D path's own sprite
-  object** that plays it; each cell's rectangle, clip, direction, frame, time, duration and its
-  pivot in the atlas.
+  the view and **elevation** (the angle the camera looks down, in degrees), the light, the
+  source (recipe, params, seed, the model's name and content hash); each strip's clip,
+  direction (compass name and facing in degrees), first frame and count, fps and each frame's
+  seconds, playback (loop or once), duration, the clip's travel per cycle (`distance_m`), its
+  events by frame, which feet are down in each frame, and **`sprite`: the 2D path's own sprite
+  object** that plays it. **No list of cells**: every cell is where the grid puts it (a strip's
+  frame k is sheet frame `first + k`, at column `(first + k) % columns`, row
+  `(first + k) / columns`, packed or not), and its time is the strip's (`frame_times`), so the
+  reader derives them; version 1 listed each cell (its rectangle, clip, direction, frame,
+  time, duration, pivot in the atlas) and still reads. The shambler's walk at eight directions
+  (64 cells) was 29,194 bytes in version 1 and is SIZE_WALK; the cold try's wraith (every clip,
+  264 cells) was 106,322 and is SIZE_WRAITH.
 
 A game plays a strip with `world_spawn {shape: "sprite", sprite: <strips[i].sprite>}`: the
 `sheet` + `anim {first, count, fps, playback}` reader that already existed (`two_d.rs`) reads
@@ -59,38 +65,76 @@ On the caller's connection thread, before the engine renders anything:
    cells; a clip past 64 frames at the rate asked (`clip_too_long`); an unknown clip; clips on a
    model that has none; pixel art without a palette; a path that is not a sprite file.
 
-On the engine thread, a **step job** (docs/design/WORKERS.md): one cell a step, one render with
-the ID buffer and its readback, then the cell's resolve. It holds its build pinned on the GPU,
-stops at its next step when its session closes or its owner calls `sprite_bake {cancel: true}`
-(an agent's cancel stops that agent's bakes only), and answers within the call's deadline.
+Then the bake is **a job of the caller's identity** (`sprite_bake::job`; docs/design/WORKERS.md
+and AUTHORITY.md, "Jobs"). Nothing of it waits on the engine thread:
 
-**A bake answers in its call; it is not a background job.** When its next cell would start
-within 1.5 s of the call's deadline (25 s), it stops and answers `out_of_time` with the cells
-rendered, the pace, and about how many cells a call fits at that pace (four fifths of what it
-managed); nothing is written. So a call never ends in the step queue's bare `timed_out`.
-Measured on 2026-11-24, the shambler's walk at 16 directions and 32 frames (512 cells, the most
-a call takes), wall time of the call:
+1. The style files (the project light's rig, pixel art's palette) are read on a worker.
+2. Each cell is **submitted** to the GPU on a target of the bake's own (`render_async`, its
+   colour and ID buffer copied back in the same submission), and **landed** in a later step once
+   a poll of the fence finds it done (`settle_offscreen_within(0)`): meanwhile the job answers
+   `Step::Wait` and says it has a render on the GPU (`on_gpu`), so the window's pulses look at
+   it about every millisecond, as `perf_light`'s renders are landed. Landing is two copies out
+   of mapped memory (`Gpu::read_landed`, which never waits and never records a copy). Another
+   tool's render on the GPU is never waited for: the bake's goes after it. If another target's
+   ID render came between the bake's render and its landing (its ids gone), that cell is
+   rendered again. The target's graph images are made a slice a step before the first render
+   (the first step of the old bake, which made them, held the windowed iGPU 169 ms).
+3. A landed cell's resolve (alpha from the ID buffer, the supersampled colour, the palette, the
+   outline, the bleed) and its blit into the atlas run on a worker (two at once), while the GPU
+   renders the next cell.
+4. The atlas is encoded (`capture::encode_png`, the captures' worker-side encode), checked as
+   the project checks a PNG, the frame data read back by its own reader, and the PNG put in the
+   content store, on a worker.
+5. The two files are committed **by the engine when the bake ends**, in one journal entry,
+   through the project's own commit (`ProjectCall::CommitFiles`, which waits for a sync in
+   progress as every project commit does), as the agent that asked (its name and identity key),
+   under the project rule, and charged to the call that started the bake (one call, one
+   commit). A claim on either path that appeared while the bake ran refuses the commit then
+   (`claimed`, the world as it was, nothing written), and so does either file having changed
+   (`changed`).
 
-| Engine | cell 64, supersample 2 | cell 112, supersample 4 (the heaviest) |
-|---|---|---|
-| headless, discrete (RTX 4090 Laptop) | 4.4 s | 8.0 s |
-| headless, integrated (Intel RaptorLake-S) | 4.5 s | 8.7 s |
-| window at 960x540, integrated | 20.2 s | `out_of_time` after 444 of 512 cells (23.5 s) |
+The engine-thread guard has no allowance for `sprite_bake`: its files make no file-system
+call, no PNG encode and no blocking readback.
 
-With a window the step jobs get a quarter of the engine thread, so the largest bakes do not fit
-a call on the reference iGPU: the agent is told to split the sheet. A bake that outlives its
-call (answered as a job and committed later, as a GI bake is) is not built: the commit is the
-caller thread's, after its encode.
+**The call and the job.** The call waits for its bake up to `wait_s` (0 to 20 s, default 20,
+under the engine's 25 s answer deadline): a bake that ends by then answers in its call, as
+before. One still running answers `{job, status: "running", phase, cells_done, cells}`, and
+the bake goes on: `sprite_bake {job: N, wait_s}` gives its progress, or waits for its answer.
+The answer is kept for its owner (by identity key, so another connection of the same agent, a
+shell's next `specula call`, reads it) for 30 minutes, at most eight finished bakes an owner;
+another agent asking is refused `not_job_owner`, naming the owner. A bake outlives the
+connection that started it (a shell's `specula call` closes its session at once): its step job
+and its worker jobs are kept when the session closes (`Engine::step_job_kept`,
+`Offload::outlives_session`) and counted as the agent's all the same. Its job's deadline is 15
+minutes. `out_of_time` is gone: a bake is never refused for being long. The ceilings (atlas
+size, cells, frames a clip) stay refusals before any work.
 
-**Each cell's render waits for the GPU on the engine thread**, as `anim_filmstrip`'s tiles do
-(the engine-thread guard allows one `read_rgba8` in `sprite_bake/job.rs` for it). On the
-windowed iGPU above, 47 steps of the two bakes passed the render class's 30 ms budget (most
-36-75 ms; the first, which makes the offscreen target, 169 ms). An asynchronous render
-(`render_async` with `Step::Wait`, as `perf_light` lands its renders) on a target of the bake's
-own would take that off the frame; it is not built.
+- **Busy:** one bake writes an atlas at a time: another bake of the same path is refused
+  `job_busy`, naming the owner of the one running and its job; an agent runs at most two bakes
+  at once.
+- **Cancel:** `{cancel: true}` stops the caller's bakes, `{cancel: true, job: N}` that one. A
+  bake is its owner's: another agent's cancel is refused `not_job_owner` naming the owner
+  (`owners` when no job is named). A cancelled bake lands its render in flight, frees its
+  target and answers `cancelled`, nothing written.
+- **A test's gate:** with `SPECULA_TEST_BAKE_HOLD=<atlas file name>` in the engine's
+  environment, a bake of that atlas holds before its first render while the engine's clock is
+  paused (`time_control`), its phase saying so. The live check uses it to cancel a bake that
+  cannot have finished, on any GPU, and to take a claim on a bake's path before it ends; it
+  never depends on how fast the GPU is.
 
-Back on the caller's thread: the PNG is encoded, checked as the project checks a PNG, the frame
-data is read back by its own reader, and both are committed.
+MEASURED_WINDOW
+
+## The view: how far down the camera looks
+
+Every sheet is seen from one elevation, an explicit argument with named values: `view: "side"`
+(level, 0 degrees: a platformer's side view, no top face seen), `"three_quarter"` (30 degrees
+down: **the default**, the usual 2D three-quarter view, where a head overlaps the top of its
+torso and a plinth shows its top face) or `"top"` (90, straight down); `elevation_deg` (0 to 90)
+gives any other angle. The angle used is in the answer (`view`, `elevation_deg`) and in the
+frame data. Every sheet the second builder baked (the shambler and the angel, and the wraith)
+was at the default, `three_quarter`, 30 degrees: their frame data says so. A test projects a
+box's top face through the very cameras the bake renders with: at 0 degrees its area is nil (it
+is edge on), at 30 and 90 it is not.
 
 ## Alpha
 
@@ -148,8 +192,14 @@ the strips as written; nothing was added to it.
   (`FOOT_DOWN_M`) of its ground, its 15th-percentile height over the clip (as
   `measure::foot_contact` finds the ground). A model with none of those says so in the answer.
 - **Outline** (`outline: true`, pixel art only): the palette's darkest colour (Oklab lightness)
-  on every transparent pixel beside the silhouette, never within one pixel of the cell's edge
-  (the fit keeps two clear).
+  on every transparent pixel beside the silhouette, **never on a cell's outermost pixels**: the
+  fit keeps two pixels clear round every posed vertex and the outline is drawn at most one
+  pixel out, never in the outermost ring (`plan::outline`'s margin). Held by a test over a
+  silhouette that reaches the second pixel from the edge (the ring stays clear, the outline is
+  drawn inside), and on the GPU by the outlined pixel-art walk at eight directions: every
+  cell's outermost pixels are transparent. Should a model still reach a cell's outermost pixel
+  (the fit failing), an outlined bake is refused (`no_room_for_outline`, with a cell two
+  pixels larger a side) and nothing is written.
 - **In place** (`in_place: true`): each frame's root bone is put back over its rest place
   sideways (its height kept), so a 2D game that moves the sprite itself gets no wander. The
   wander is said either way (`root_drift`, with what was done with it).
@@ -182,12 +232,6 @@ for itself (`written`, `pending`, `held`). The regression table `every_write_pat
 has two rows for it (both files written; the frame data claimed by another agent, refused with
 the world as it was), and `sprite_bake_writes_and_undoes_its_two_files_together` holds one entry
 and one undo. One tool call makes one commit (AGENTS rule 14).
-
-## Cancel
-
-`sprite_bake {cancel: true}` stops the caller's own bakes (its identity key: another connection
-of the same agent counts). When the caller runs none and another agent does, it is refused
-(`not_job_owner`) naming the owners; nothing of theirs is cancelled.
 
 ## Not done
 

@@ -1,4 +1,4 @@
-//! The frame data written beside a baked atlas (`assets/sprites/<name>.json`, project file kind
+//! The frame data written beside a baked atlas (`assets/sprites/<name>.json`, projet file kind
 //! `sprite_sheet`): where each cell is, what it shows (clip, frame, direction), how long each
 //! frame lasts, the pivot on the model's ground and the metres a pixel stands for, and for each
 //! strip the 2D path's own sprite object that plays it (`world_spawn {shape: "sprite", sprite:
@@ -13,7 +13,7 @@ use specula_core::Json;
 
 /// The format's name and version (in every file).
 pub const FORMAT: &str = "specula.sprite_sheet";
-pub const VERSION: u64 = 1;
+pub const VERSION: u64 = 2;
 /// The most strips and cells a file may list (a bake makes at most `plan::MAX_CELLS` cells).
 pub const MAX_STRIPS: usize = 1024;
 pub const MAX_CELLS: usize = 4096;
@@ -176,19 +176,9 @@ impl SheetData {
             j.set("sprite", self.sprite(i));
             j
         });
-        let cells = self.cells.iter().map(|c| {
-            let s = &self.strips[c.strip as usize];
-            Json::obj([
-                ("rect", Json::arr(c.rect.map(Json::from))),
-                ("clip", s.clip.as_deref().map_or(Json::Null, Json::from)),
-                ("direction", Json::from(s.direction.as_str())),
-                ("frame", Json::from(c.frame)),
-                ("strip", Json::from(c.strip)),
-                ("time_s", Json::from(c.time_s)),
-                ("duration_s", Json::from(Self::frame_s(s))),
-                ("pivot", pair([c.rect[0] + self.pivot[0], c.rect[1] + self.pivot[1]])),
-            ])
-        });
+        // No list of cells: every cell is where the grid puts it (a strip's frame k is sheet
+        // frame first + k), and its time is the strip's (frames split a loop's cycle; a clip
+        // played once shows its first and last pose), so the reader derives them.
         let mut out = Json::obj([
             ("format", Json::from(FORMAT)),
             ("version", Json::from(VERSION)),
@@ -197,7 +187,8 @@ impl SheetData {
             ("cell", pair(self.cell)),
             ("columns", Json::from(self.columns)),
             ("pivot", pair(self.pivot)),
-            ("pivot_is", Json::from("the model's origin on its ground, in pixels from each cell's top left (cells[].pivot: in the atlas)")),
+            ("pivot_is", Json::from("the model's origin on its ground, in pixels from each cell's top left")),
+            ("cells_are", Json::from("a grid of cell-sized frames, columns wide: a strip's frame k is sheet frame first + k, at column (first + k) % columns and row (first + k) / columns; it lasts frame_s")),
             ("metres_per_pixel", Json::from(self.metres_per_pixel)),
             ("projection", Json::from("orthographic")),
             ("view", Json::from(self.view.as_str())),
@@ -210,7 +201,6 @@ impl SheetData {
             ("outline", Json::from(self.outline)),
             ("in_place", Json::from(self.in_place)),
             ("strips", Json::arr(strips)),
-            ("cells", Json::arr(cells)),
         ]);
         if let Some(sh) = &self.shadow {
             out.set(
@@ -248,9 +238,7 @@ impl SheetData {
         if s("format")? != FORMAT {
             return Err(bad("format", format!("'format' must be \"{FORMAT}\"")));
         }
-        if j.get("version").and_then(Json::as_u64) != Some(VERSION) {
-            return Err(bad("version", format!("'version' must be {VERSION} (the only version)")));
-        }
+        let version = j.get("version").and_then(Json::as_u64).filter(|v| (1..=VERSION).contains(v)).ok_or_else(|| bad("version", format!("'version' must be 1 or {VERSION}")))?;
         let texture = s("texture")?.to_owned();
         two_d::check_image_path("texture", &texture).map_err(|m| bad("texture", m))?;
         let size = pair("size", 1, u64::from(super::plan::MAX_ATLAS_SIDE))?;
@@ -334,7 +322,18 @@ impl SheetData {
             strips.push(strip);
         }
         let mut cells = Vec::new();
-        let list = j.get("cells").and_then(Json::as_array).filter(|a| a.len() <= MAX_CELLS).ok_or_else(|| bad("cells", format!("'cells' must be a list of at most {MAX_CELLS}")))?;
+        // Version 2 lists no cells: each is where the grid puts it, at its strip's frame time.
+        if version >= 2 && j.get("cells").is_none() {
+            for (i, st) in strips.iter().enumerate() {
+                for (k, t) in super::plan::frame_times(st.duration_s, st.looping, st.count).into_iter().enumerate() {
+                    let index = st.first + k as u32;
+                    cells.push(CellData { rect: [(index % columns) * cell[0], (index / columns) * cell[1], cell[0], cell[1]], strip: i as u32, frame: k as u32, time_s: t });
+                }
+            }
+        }
+        let (empty, null) = (Json::Arr(Vec::new()), Json::Null);
+        let given = if version >= 2 { j.get("cells").unwrap_or(&empty) } else { j.get("cells").unwrap_or(&null) };
+        let list = Some(given).and_then(Json::as_array).filter(|a| a.len() <= MAX_CELLS).ok_or_else(|| bad("cells", format!("'cells' must be a list of at most {MAX_CELLS}")))?;
         for (i, v) in list.iter().enumerate() {
             let at = |k: &str| format!("cells[{i}].{k}");
             let r = v.get("rect").and_then(Json::as_array).filter(|a| a.len() == 4).ok_or_else(|| bad(at("rect"), "'rect' must be [x, y, w, h]"))?;

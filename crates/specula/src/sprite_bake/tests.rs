@@ -50,7 +50,10 @@ fn arguments_are_read_bounded_and_defaulted() {
     let r = bake_of(r#"{"recipe": "recipes/a.json", "directions": [0, 45, 100], "cell": [32, 48], "clips": "all", "light": "project", "path": "assets/art/sprites/a.png"}"#);
     assert_eq!(r.ask.directions.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["s", "se", "100deg"]);
     assert_eq!((r.ask.cell, r.ask.clips.clone(), r.light, frames_path(&r.path)), ([32, 48], Clips::All, Light::Project, "assets/art/sprites/a.json".to_owned()));
-    assert_eq!(parse(&args(r#"{"cancel": true}"#)), Ok(Call::Cancel));
+    assert_eq!(parse(&args(r#"{"cancel": true}"#)), Ok(Call::Cancel(None)));
+    assert_eq!(parse(&args(r#"{"cancel": true, "job": 3}"#)), Ok(Call::Cancel(Some(3))));
+    assert_eq!(parse(&args(r#"{"job": 3, "wait_s": 5}"#)), Ok(Call::Job { id: 3, wait_s: 5 }));
+    assert_eq!(bake_of(r#"{"recipe": "recipes/a.json", "wait_s": 0}"#).wait_s, 0);
     for (bad, says) in [
         (r#"{}"#, "'recipe' is required"),
         (r#"{"recipe": "recipes/a.json", "frames": 4, "fps": 8}"#, "not both"),
@@ -72,6 +75,8 @@ fn arguments_are_read_bounded_and_defaulted() {
         (r#"{"recipe": "recipes/a.json", "clips": "walk"}"#, "'clips'"),
         (r#"{"recipe": "recipes/a.json", "format": "gif"}"#, "format"),
         (r#"{"recipe": "recipes/a.json", "cancel": true}"#, "stands alone"),
+        (r#"{"recipe": "recipes/a.json", "wait_s": 21}"#, "wait_s"),
+        (r#"{"job": 3, "recipe": "recipes/a.json"}"#, "'job'"),
     ] {
         let e = parse(&args(bad)).unwrap_err();
         assert!(e.contains(says), "{bad}: {e}");
@@ -433,11 +438,29 @@ fn frame_data_round_trips_and_the_2d_path_plays_each_strip_from_it() {
     assert!(sheet::validate(&text).is_ok());
     let p = crate::project_kinds::validate("assets/sprites/shambler.json", FileKind::SpriteSheet, &text, None, &[]);
     assert!(p.is_empty(), "{:?}", p.iter().map(|p| &p.message).collect::<Vec<_>>());
-    let cells_at = text.find("\"cells\"").unwrap();
-    let rect_at = cells_at + text[cells_at..].find("\"rect\": [").unwrap();
-    let digit_at = rect_at + text[rect_at..].find(|c: char| c.is_ascii_digit()).unwrap();
-    let moved = format!("{}7{}", &text[..digit_at], &text[digit_at..]);
-    let e = SheetData::parse(&moved).unwrap_err();
+    // Version 2 lists no cells (the grid and the strips' times give them); a version 1 file,
+    // which listed them, still reads the same; a list that lies about the grid is refused,
+    // saying where.
+    assert!(!text.contains("\"rect\""), "no cell rectangles in a regular grid");
+    let cell_json = |c: &super::sheet::CellData, rect: [u32; 4]| {
+        let s = &data.strips[c.strip as usize];
+        Json::obj([
+            ("rect", Json::arr(rect.map(Json::from))),
+            ("clip", s.clip.as_deref().map_or(Json::Null, Json::from)),
+            ("direction", Json::from(s.direction.as_str())),
+            ("frame", Json::from(c.frame)),
+            ("strip", Json::from(c.strip)),
+            ("time_s", Json::from(c.time_s)),
+        ])
+    };
+    let mut v1 = j.clone();
+    v1.set("version", Json::from(1));
+    v1.set("cells", Json::arr(data.cells.iter().map(|c| cell_json(c, c.rect))));
+    assert_eq!(SheetData::parse(&v1.to_pretty()).unwrap_or_else(|e| panic!("{}: {}", e.at, e.message)), data, "a version 1 file reads as before");
+    let mut lying = v1.clone();
+    let c0 = &data.cells[0];
+    lying.set("cells", Json::arr([cell_json(c0, [c0.rect[0] + 7, c0.rect[1], c0.rect[2], c0.rect[3]])]));
+    let e = SheetData::parse(&lying.to_string()).unwrap_err();
     assert!(e.at.starts_with("cells[") && e.message.contains("grid"), "{}: {}", e.at, e.message);
     let bad = crate::project_kinds::validate("assets/sprites/shambler.json", FileKind::SpriteSheet, "{\"format\": \"x\"}", None, &[]);
     assert!(bad.iter().any(|p| p.code == "invalid_sprite_sheet"));
@@ -462,25 +485,119 @@ fn the_same_plan_twice_and_its_bounds_on_the_answer() {
 }
 
 #[test]
-fn a_bake_is_cancelled_by_its_owner_only() {
+fn a_bake_is_a_job_of_its_owner_and_its_answer_is_kept_for_them() {
     let r = Running::default();
-    assert_eq!(r.cancel("cy"), Ok(0), "nothing running: nothing to cancel, nobody to name");
-    let (a, fa, na) = r.start("ann").unwrap();
-    let (b, fb, nb) = r.start("bob").unwrap();
-    let (a2, _, _) = r.start("ann").unwrap();
-    na.set("Ann".into()).unwrap();
-    nb.set("Bob".into()).unwrap();
-    assert!(r.start("ann").unwrap_err().contains("at most"));
-    assert_eq!(r.cancel("bob"), Ok(1));
-    assert!(fb.load(Ordering::Relaxed) && !fa.load(Ordering::Relaxed), "bob's cancel stops bob's bake only");
-    r.end(a);
-    assert_eq!(r.cancel("ann"), Ok(1));
-    // Another agent's cancel is refused and names the owners; nothing of theirs is cancelled.
-    r.end(a2);
-    let (_c, fc, _) = r.start("ann").unwrap();
-    assert_eq!(r.cancel("cy"), Err(vec!["Bob".to_owned(), "an agent whose bake is starting".to_owned()]));
-    assert!(!fc.load(Ordering::Relaxed));
-    r.end(b);
+    let code = |o: &ToolOutput| match &o.content[0] {
+        specula_protocol::Content::Text(t) => Json::parse(t).ok().and_then(|j| j.get("error").and_then(Json::as_str).map(str::to_owned)).unwrap_or_default(),
+        _ => String::new(),
+    };
+    assert_eq!(r.cancel("cy", None), Ok(0), "nothing running: nothing to cancel, nobody to name");
+    let a = r.start("ann", "assets/sprites/a.png", 4).unwrap();
+    let b = r.start("bob", "assets/sprites/b.png", 4).unwrap();
+    a.name.set("Ann".into()).unwrap();
+    b.name.set("Bob".into()).unwrap();
+    // One bake writes an atlas at a time: a second is refused, naming the bake's owner.
+    let busy = r.start("cy", "assets/sprites/a.png", 4).err().unwrap();
+    assert_eq!(code(&busy), "job_busy");
+    assert!(format!("{busy:?}").contains("Ann"), "{busy:?}");
+    let a2 = r.start("ann", "assets/sprites/a2.png", 4).unwrap();
+    assert!(r.start("ann", "assets/sprites/a3.png", 4).is_err(), "at most two of an owner's at once");
+    // Cancel is the owner's: by job or all of theirs; another's is refused naming the owner.
+    assert_eq!(code(&r.cancel("bob", Some(a.id)).unwrap_err()), "not_job_owner");
+    assert!(!a.cancel.load(Ordering::Relaxed));
+    assert_eq!(r.cancel("bob", None), Ok(1));
+    assert!(b.cancel.load(Ordering::Relaxed) && !a.cancel.load(Ordering::Relaxed), "bob's cancel stops bob's bake only");
+    r.end(b.id);
+    assert_eq!(code(&r.cancel("cy", None).unwrap_err()), "not_job_owner");
+    assert_eq!(r.cancel("ann", Some(a2.id)), Ok(1));
+    // A bake whose call stopped waiting: its progress, then its answer, for its owner only.
+    let (done, answer) = crate::jobs::channel();
+    r.park(a.id, answer);
+    a.progress.cells.store(3, Ordering::Relaxed);
+    let asked = r.ask("ann", a.id, Duration::ZERO);
+    assert!(!asked.is_error && format!("{asked:?}").contains("running") && format!("{asked:?}").contains("cells_done"), "{asked:?}");
+    assert_eq!(code(&r.ask("bob", a.id, Duration::ZERO)), "not_job_owner", "the progress is the owner's");
+    assert!(done.send(ToolOutput::text("{\"journal\": 7}")));
+    for _ in 0..2 {
+        let got = r.ask("ann", a.id, Duration::from_millis(1));
+        assert!(!got.is_error && format!("{got:?}").contains("journal"), "the result is kept for its owner: {got:?}");
+    }
+    assert_eq!(code(&r.ask("bob", a.id, Duration::ZERO)), "not_job_owner", "the result is the owner's");
+    // A finished bake no longer holds its atlas.
+    assert!(r.start("cy", "assets/sprites/a.png", 4).is_ok());
+    assert_eq!(code(&r.ask("ann", 999, Duration::ZERO)), "unknown_job");
+    // An engine that dropped a parked bake unanswered says so.
+    let (done, answer) = crate::jobs::channel();
+    r.park(a2.id, answer);
+    drop(done);
+    assert_eq!(code(&r.ask("ann", a2.id, Duration::ZERO)), "reply_dropped");
+}
+
+/// The lead's question (2026-11-24): a level view shows no top face. The cameras the renders use,
+/// fitted for a box, project the box's top face to a line at elevation 0 (no area: nothing of it
+/// is drawn), and to a face of area at the three-quarter view's 30 degrees and from the top.
+#[test]
+fn a_level_view_shows_no_top_face_and_the_angle_is_said() {
+    let shambler = built("shambler");
+    let area_of_top = |elevation_deg: f32| {
+        let a = Ask { elevation_deg, ..ask(Clips::Still, 4, Rate::Frames(1), 64, 1) };
+        let p = plan(&shambler, None, &a).unwrap();
+        let mut most = 0.0f32;
+        for cam in &p.cameras {
+            let m = cam.view_proj;
+            // A box's top face, half a metre round the pivot, half a metre up.
+            let corners = [[-0.5, 0.5, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]].map(|[x, y, z]| {
+                let c = |i: usize| m[i] * x + m[4 + i] * y + m[8 + i] * z + m[12 + i];
+                [c(0) / c(3) * 64.0, c(1) / c(3) * 64.0]
+            });
+            let mut twice = 0.0f32;
+            for i in 0..4 {
+                let (p0, p1) = (corners[i], corners[(i + 1) % 4]);
+                twice += p0[0] * p1[1] - p1[0] * p0[1];
+            }
+            most = most.max(twice.abs() / 2.0);
+        }
+        most
+    };
+    assert!(area_of_top(0.0) < 1e-3, "a level view sees the top face: {} square pixels", area_of_top(0.0));
+    assert!(area_of_top(30.0) > 10.0 && area_of_top(90.0) > area_of_top(30.0));
+    // The angle is the view's, named and bounded, and is written where a game reads it.
+    for (v, deg) in [("side", 0.0), ("three_quarter", 30.0), ("top", 90.0)] {
+        let req = bake_of(&format!(r#"{{"recipe": "recipes/shambler.json", "view": "{v}", "directions": 1, "cell": 32}}"#));
+        assert_eq!(req.ask.elevation_deg, deg);
+        let p = plan(&shambler, None, &req.ask).unwrap();
+        let data = sheet_of(&p, &req, &shambler, "neutral");
+        let text = data.to_json().to_pretty();
+        assert!(text.contains(&format!("\"view\": \"{v}\"")) && SheetData::parse(&text).unwrap().elevation_deg == deg);
+        let ans = answer(&p, &data, &req, None, None, Instant::now());
+        assert_eq!(ans.get("elevation_deg").and_then(Json::as_f64), Some(f64::from(deg)));
+    }
+    assert_eq!(bake_of(r#"{"recipe": "recipes/a.json", "view": "side", "elevation_deg": 12}"#).ask.elevation_deg, 12.0);
+}
+
+/// The outline is never on a cell's outermost pixels, even round a silhouette that reaches the
+/// edge (the fit keeps two clear, the outline one).
+#[test]
+fn the_outline_never_touches_a_cells_outermost_pixels() {
+    let cell = [16u32, 12];
+    let mut px = vec![0u8; (cell[0] * cell[1] * 4) as usize];
+    // A silhouette from the second pixel in to the second from the edge, and one pixel on it.
+    for y in 1..cell[1] - 1 {
+        for x in 1..cell[0] - 1 {
+            if x == 1 || y == 1 || x == cell[0] - 2 || y == cell[1] - 2 || (x, y) == (7, 6) {
+                px[((y * cell[0] + x) * 4 + 3) as usize] = 255;
+            }
+        }
+    }
+    outline(&mut px, cell, [1, 2, 3], MARGIN_PX - 1);
+    let a = |x: u32, y: u32| px[((y * cell[0] + x) * 4 + 3) as usize];
+    for x in 0..cell[0] {
+        assert_eq!((a(x, 0), a(x, cell[1] - 1)), (0, 0), "column {x}");
+    }
+    for y in 0..cell[1] {
+        assert_eq!((a(0, y), a(cell[0] - 1, y)), (0, 0), "row {y}");
+    }
+    assert_eq!(a(6, 6), 255, "the outline is drawn inside");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -503,33 +620,61 @@ fn engine_built(e: &mut crate::Engine, recipe: &str) -> Arc<Built> {
     }
 }
 
-fn bake_on(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<Vec<[u8; 3]>>, cancel_after: Option<usize>) -> (Result<job::Baked, ToolOutput>, Plan) {
-    bake_until(e, built, ask, palette, cancel_after, Instant::now() + std::time::Duration::from_secs(3600))
+/// A bake's job as the engine runs it, up to the atlas (before its encode and commit).
+fn job_of(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<Vec<[u8; 3]>>, outline: bool) -> (job::BakeJob, Plan, Arc<AtomicBool>) {
+    let p = plan(built, built.anims.as_deref(), ask).unwrap();
+    let mut req = bake_of(r#"{"recipe": "recipes/shambler.json"}"#);
+    req.ask = ask.clone();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (done, _answer) = crate::jobs::channel();
+    let bake = job::Bake {
+        req,
+        plan: p.clone(),
+        built: Arc::clone(built),
+        bases: [(0, 0); 2],
+        assets: std::path::PathBuf::new(),
+        store: None,
+        cancel: Arc::clone(&cancel),
+        owner_name: Arc::default(),
+        progress: Arc::default(),
+        done,
+        started: Instant::now(),
+    };
+    let outline = if outline { palette.as_deref().and_then(darkest) } else { None };
+    let look = job::Look { rig: specula_studio::rules::neutral_rig(), light: "neutral".into(), palette, outline, notes: Vec::new() };
+    let owner = crate::jobs::JobOwner { name: "sprite-test".into(), key: "sprite-test".into() };
+    (job::BakeJob::new(e, bake, look, owner, "sprite-test", 1), p, cancel)
 }
 
-fn bake_until(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<Vec<[u8; 3]>>, cancel_after: Option<usize>, deadline: Instant) -> (Result<job::Baked, ToolOutput>, Plan) {
+/// Steps a bake's job (and the workers its cells resolve on) until its atlas is whole, it ends,
+/// or `cancel_after` steps have passed (then it is cancelled).
+fn drive(e: &mut crate::Engine, j: &mut job::BakeJob, cancel: &AtomicBool, cancel_after: Option<usize>) -> Result<job::Baked, ToolOutput> {
     use crate::steps::{Step, StepJob};
-    let p = plan(built, built.anims.as_deref(), ask).unwrap();
-    let out = Arc::new(Mutex::new(None));
-    let cancel = Arc::new(AtomicBool::new(false));
-    let bake = job::Bake { plan: p.clone(), built: Arc::clone(built), rig: specula_studio::rules::neutral_rig(), palette, outline: None, cancel: Arc::clone(&cancel), owner_name: Arc::default(), out: Arc::clone(&out) };
-    let mut j = job::BakeJob::new(e, bake, "sprite-test", deadline);
     let (reply, _answer) = crate::jobs::channel();
     let give_up = Instant::now() + std::time::Duration::from_secs(120);
     let mut steps = 0;
     loop {
         assert!(Instant::now() < give_up, "the bake never finished");
+        if let Some(b) = j.rendered() {
+            return Ok(b);
+        }
         if cancel_after == Some(steps) {
             cancel.store(true, Ordering::Relaxed);
         }
         steps += 1;
         match j.step(e, &reply) {
-            Step::More | Step::Wait => {}
-            Step::Done(o) if o.is_error => return (Err(o), p),
-            Step::Done(_) => return (Ok(out.lock().unwrap().take().expect("the atlas")), p),
+            Step::More => {}
+            Step::Wait => e.workers_wait_one(std::time::Duration::from_millis(5)),
+            Step::Done(o) => return Err(o),
             Step::Handed => panic!("a bake answers in its steps"),
         }
+        e.pump_workers(None);
     }
+}
+
+fn bake_on(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<Vec<[u8; 3]>>, cancel_after: Option<usize>) -> (Result<job::Baked, ToolOutput>, Plan) {
+    let (mut j, p, cancel) = job_of(e, built, ask, palette, false);
+    (drive(e, &mut j, &cancel, cancel_after), p)
 }
 
 fn gpu_engine() -> Option<crate::Engine> {
@@ -545,6 +690,7 @@ static GPU: Mutex<()> = Mutex::new(());
 /// The picture and the ID buffer agree pixel for pixel: wherever the model's id is, the render
 /// is not the background, and wherever it is not, the render is the background exactly. So the
 /// alpha taken from the ID buffer is the silhouette in the picture, with no halo and no offset.
+/// Read from the renders the job landed (submitted without a wait, landed by a poll).
 #[test]
 fn the_alpha_is_the_silhouette_in_the_picture() {
     let _one = GPU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -552,17 +698,15 @@ fn the_alpha_is_the_silhouette_in_the_picture() {
     for (recipe, clips) in [("recipes/statue_angel.json", Clips::Still), ("recipes/shambler.json", Clips::Named(vec!["walk".into()]))] {
         let built = engine_built(&mut e, recipe);
         let a = ask(clips, 8, Rate::Frames(2), 64, 2);
-        let p = plan(&built, built.anims.as_deref(), &a).unwrap();
-        let bake = job::Bake { plan: p.clone(), built: Arc::clone(&built), rig: specula_studio::rules::neutral_rig(), palette: None, outline: None, cancel: Arc::default(), owner_name: Arc::default(), out: Arc::default() };
-        e.pin_for_job(1 << 60, "sprite-test", built.id);
-        for at in 0..p.cells.len() {
-            let give_up = Instant::now() + std::time::Duration::from_secs(60);
-            let (colour, ids) = loop {
-                if let Some(r) = job::render_raw(&mut e, &bake, at).unwrap_or_else(|o| panic!("{o:?}")) {
-                    break r;
-                }
-                assert!(Instant::now() < give_up, "the pipelines never came");
-            };
+        let (mut j, p, cancel) = job_of(&mut e, &built, &a, None, false);
+        let tap = j.tap();
+        drive(&mut e, &mut j, &cancel, None).unwrap_or_else(|o| panic!("{o:?}"));
+        let landed = tap.borrow();
+        let mut seen: Vec<usize> = landed.iter().map(|(at, _)| *at).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), p.cells.len(), "every cell landed");
+        for (at, (colour, ids)) in landed.iter() {
             let bg = [colour[0], colour[1], colour[2]];
             assert_eq!(ids[0], 0, "the corner is background");
             let (mut model, mut mismatched) = (0, 0);
@@ -578,12 +722,12 @@ fn the_alpha_is_the_silhouette_in_the_picture() {
             assert!(model > 50, "{recipe} cell {at}: {model} model pixels");
             assert_eq!(mismatched, 0, "{recipe} cell {at}: {mismatched} pixels where the picture and the ID buffer disagree (background {bg:?})");
         }
-        e.studio_done(1 << 60);
     }
 }
 
 /// The same inputs give the same bytes; no cell has the model on its edge (the fit held on the
-/// GPU); every cell has the model in it; pixel art is all palette and all-or-nothing alpha.
+/// GPU); every cell has the model in it; pixel art is all palette and all-or-nothing alpha, and
+/// its outline is never on a cell's outermost pixels.
 #[test]
 fn the_same_bake_twice_gives_the_same_bytes() {
     let _one = GPU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -607,14 +751,29 @@ fn the_same_bake_twice_gives_the_same_bytes() {
         assert!(seen > 20, "cell {:?} shows {seen} pixels", c.rect);
     }
     let palette = vec![[20u8, 20, 24], [90, 80, 70], [160, 150, 130], [220, 210, 190]];
-    let (art, _) = bake_on(&mut e, &built, &Ask { supersample: 1, ..a }, Some(palette.clone()), None);
-    let art = art.unwrap_or_else(|o| panic!("{o:?}"));
+    let art_ask = Ask { supersample: 1, ..a };
+    let (mut j, p, cancel) = job_of(&mut e, &built, &art_ask, Some(palette.clone()), true);
+    let art = drive(&mut e, &mut j, &cancel, None).unwrap_or_else(|o| panic!("{o:?}"));
     for px in art.rgba.as_chunks::<4>().0.iter() {
         assert!(px[3] == 0 || px[3] == 255);
         if px[3] == 255 {
             assert!(palette.contains(&[px[0], px[1], px[2]]), "{px:?}");
         }
     }
+    let alpha = |x: u32, y: u32| art.rgba[((y * p.atlas[0] + x) * 4 + 3) as usize];
+    let darkest = darkest(&palette).unwrap();
+    let mut outlined = 0;
+    for c in &p.cells {
+        let [x0, y0, w, h] = c.rect;
+        for x in x0..x0 + w {
+            assert_eq!((alpha(x, y0), alpha(x, y0 + h - 1)), (0, 0), "an outermost pixel of cell {:?} is drawn", c.rect);
+        }
+        for y in y0..y0 + h {
+            assert_eq!((alpha(x0, y), alpha(x0 + w - 1, y)), (0, 0), "an outermost pixel of cell {:?} is drawn", c.rect);
+        }
+        outlined += (y0..y0 + h).flat_map(|y| (x0..x0 + w).map(move |x| (x, y))).filter(|&(x, y)| alpha(x, y) == 255 && art.rgba[((y * p.atlas[0] + x) * 4) as usize..][..3] == darkest).count();
+    }
+    assert!(outlined > p.cells.len() * 10, "the outline is drawn ({outlined} pixels)");
 }
 
 #[test]
@@ -624,10 +783,7 @@ fn a_cancelled_bake_stops_and_hands_nothing_over() {
     let built = engine_built(&mut e, "recipes/statue_angel.json");
     let (r, _) = bake_on(&mut e, &built, &ask(Clips::Still, 8, Rate::Frames(1), 32, 1), None, Some(2));
     let out = r.err().expect("cancelled");
-    assert!(format!("{out:?}").contains("cancelled"), "{out:?}");
-    // A call whose time is (nearly) out answers why, with what it managed, and hands nothing
-    // over (where the step queue would drop it unanswered at the deadline).
-    let (r, _) = bake_until(&mut e, &built, &ask(Clips::Still, 8, Rate::Frames(1), 32, 1), None, None, Instant::now() + job::DEADLINE_MARGIN / 2);
-    let out = format!("{:?}", r.err().expect("out of time"));
-    assert!(out.contains(job::OUT_OF_TIME) && out.contains("nothing was written") && out.contains("cells_that_fit"), "{out}");
+    assert!(format!("{out:?}").contains("cancelled") && format!("{out:?}").contains("nothing was written"), "{out:?}");
+    // Its own target went with it, and nothing of it is left on the GPU.
+    assert!(!e.gpu.offscreen_pending(), "a cancelled bake left a render in flight");
 }
