@@ -135,9 +135,19 @@ so an agent can see exactly what it would build and take the recipe itself if it
   read as plus and minus two spreads where only a range is printed: the engine's assumption, said in the
   kind's answer); every length then follows size by the plan's exponents; then each **trait** of the plan
   (build, legs, neck, tail, head for a quadruped; the corpus's fourteen for a person) as a residual, normal,
-  at the spread the source gives, or the kind's `vary` where it gives none (marked `own`). Draws are
-  clipped at 2.5 spreads and at the kind's measured range, whichever is narrower: a specimen is always a
-  body that was measured or lies between measured ones.
+  at the spread the source gives, or the kind's `vary` where it gives none (marked `own`); then a number's
+  own residual, where the kind gives it a spread.
+- **Every residual is drawn from a normal truncated to its window** (review 2 of S0): ±2.5 spreads,
+  narrowed for the size to the kind's measured range, and for a number's own residual to where its value
+  stays inside the number's measured range given what the size and traits gave it. One uniform from the
+  stream becomes one residual by the inverse of the distribution (`normalis`: Φ by its series, Φ⁻¹ by
+  Acklam's start and two of Halley's steps, `cdf(quantile(p))` within 5e-16 of `p`), so nothing piles at
+  a window's end (a clip put 12 per cent of the design's wolves at exactly one of its two measured
+  heights) and no draw is rejected and drawn again. A specimen is still always a body that was measured or
+  lies between measured ones. What this costs: a normal truncated at ±2.5 has 0.955 of the spread it was
+  given (the 1.2 per cent of a population beyond 2.5 spreads is left out), and one cut by a narrow
+  measured range less still (the design's wolf: about 0.023 m, from 0.03); `exemplar_get` shows the mean, the
+  spread, the range and the window each size is drawn in.
 - **People are the corpus's**: a person's specimen is a `Body` with stature, build, age and traits drawn
   as CORPUS.md says a crowd is made (each trait about zero), and refused traits redrawn by a counted
   rule (at most 8 tries, then the mean), so a seed always gives a body.
@@ -440,19 +450,88 @@ beyond the code's own notes:
 
 1. A file `crates/specula-exemplaria/src/plans/<plan>.rs` with a unit struct and
    `pub static PLAN: MyPlan`, implementing `plan::Plan`: `name`, `about`, and its tables as
-   `'static` arrays (`size`, `numbers`, `traits`, `roles`, `options`, `motions`), then `write`,
-   which turns a `Specimen` into bones, parts and clips through `write::Writing` (`bone`,
-   `part`, `block`, `clip`, `gait`, `fact`; `material(role)` resolves a role).
-   `plans/box_creature.rs` is the pattern, at about 150 lines. Each number has the `range` its
-   `write` makes a whole body for (on its unit's step), as the size has one: a kind is held
-   inside them (Reach, below). The size's, traits' and numbers' names are unique across the
-   three tables.
+   `'static` arrays (`size`, `numbers`, `traits`, `roles`, `options`, `motions`, and
+   `relations`, which has a default of none), then `write`, which turns a `Specimen` into
+   bones, parts and clips through `write::Writing` (`bone`, `part`, `block`, `clip`, `gait`,
+   `fact`; `material(role)` resolves a role; `block(name, role, bone, size, at)` is a box of
+   `size` whose **bottom face** is centred at `at`). `plans/box_creature.rs` is the pattern, at
+   about 200 lines. The size's, traits' and numbers' names are unique across the three tables.
+   Its ranges and relations are the next paragraphs: they are what makes every accepted kind
+   build whole, and they are found by the plan's author, not guessed.
+   Three things the document's own test (a table written from this section alone,
+   `src/tests_table.rs`) had to guess: **every part names a bone**, so a plan with no motions
+   still writes a `root` bone for its parts; **the `write` places parts from the numbers only**,
+   never from the size (a relation names numbers, not the size, so a part placed by the size
+   could cross one placed by a number with nothing to hold them apart: make a height a number,
+   `leg_length`, with a share of the size); and **a plan is tested before it is listed** with
+   `resolve_among(kind, base, &[&MY_PLAN])` (`resolve` finds plans in `PLANS` only).
 2. **Two single lines** in `crates/specula-exemplaria/src/plans/mod.rs`: `pub mod <plan>;` at
    the end of the modules, and `&<plan>::PLAN,` at the end of `PLANS`.
-3. Nothing else registers it: `resolve` checks a kind against the plan's tables, and the test
-   `the_plans_tables_are_sound` holds every plan's tables (names valid and unique, a number's
-   traits known, at most four roles, every motion's generator in `specula_anim::gen::KINDS`,
-   every pattern in `gaits::PATTERNS`).
+3. Nothing else registers it: `resolve` checks a kind against the plan's tables, and the tests
+   `the_plans_tables_are_sound` and `a_plans_relations_are_sound_and_can_always_be_kept` hold
+   every plan's tables (names valid and unique, a number's traits known, at most four roles,
+   every motion's generator in `specula_anim::gen::KINDS`, every pattern in `gaits::PATTERNS`,
+   every relation's terms the plan's numbers of one unit, its margin at least two steps, and the
+   relation keepable inside the ranges).
+
+**A range is where the plan's geometry breaks, never a typical size** (review 2 of S0: the box
+creature's invented 0.3 to 1.2 m refused a measured cat of 0.26 m). A `NumberDef::range` is the
+least and most the plan's `write` makes a whole body for, whatever any other number is (that is
+what relations are for, below). How a plan's author finds them:
+
+- **The least.** Write down, for every pair of parts, every pair of their faces that face the same
+  way and overlap when seen along that axis, and the difference between the two faces as the
+  `write` computes it. A difference that is a fixed fraction of one number (a thigh's side
+  `0.1 × leg_girth` inside the trunk's side) must stay at least three of the recipe's steps
+  (0.3 mm: a written position can be off by up to 0.1 mm at each of two faces, and the modeller
+  welds equal points), and that sets the number's least (`leg_girth` at least 3 mm). A difference
+  that is a sum of several numbers is a relation. Parts that join must overlap by a fraction of a
+  number, never touch: two faces in one plane are one face after rounding (the review's open
+  meshes were two shins whose faces met at x = 0).
+- **The most.** Where a position no longer holds the recipe's step in the modeller's `f32`: under
+  256 m every position keeps the 0.05 mm grid three times over, so 60 m a length for the box
+  creature. A plan whose write has another limit (a joint that folds past a straight line, a
+  number of rings) says so.
+- **The size's range** is where the plan's defaults (its shares, and its traits at 2.5 spreads)
+  keep every number inside its own: the size enters the body only through the numbers.
+- **Then build at them**: a test builds the smallest body (every number at its least) and the
+  largest, and checks that one step under each least is refused by name
+  (`the_box_creature_builds_whole_at_its_limits`). And a test builds thousands of random accepted
+  kinds at random seeds, each body closed, of its boxes' volume, with no two parts sharing a face
+  (`random_accepted_kinds_build_whole_at_random_seeds`, `tests_build.rs`, which has the face check
+  to copy): a pair of faces the author missed shows there as a shared face, with the two parts
+  named.
+
+**A relation is what one number may be against another** (`plan::RelationDef`, the plan's
+`relations()`): `Σ coefficient × number ≥ margin` over two or three of its numbers of one unit, as
+data. Each is the difference of two faces found above that is a sum of several numbers, written
+exactly as the `write` computes it (the box creature's two feet of a side are apart by
+`body_width - 2.3 × leg_girth`: a thigh at `body_width/2 - 0.6 × leg_girth`, a foot 1.1 girths
+wide), with a margin of three steps (`0.0003` m). It names the term that yields (`yields`): if a
+draw would break it, the draw moves that number until it holds (the backstop; a negative
+coefficient's number goes down, a positive one's up), in the plan's order, so list them so that a
+yield only helps the relations after it. The reach holds every relation over every seed: a kind
+that could break one is refused, `outside_plan`, at the first of the relation's numbers the kind
+sets (else a trait it sets, else its size), with the relation's name, its numbers' worst values,
+its worst sum and its margin (`relation`, `values`, `worst`, `least` in the error; through the
+engine, the recipe error's numbers). A trait both terms follow cancels between them (a wide
+`build` moves the girth and the trunk's width together), so relations refuse what really breaks
+and accept what does not. The test `a_plans_relations_are_sound_and_can_always_be_kept` checks
+that the yielding number's value that keeps a relation, with every other term at the end of its
+range worst for it, lies inside the yielding number's own range: raise a least until it does.
+
+**Spreads, and what `source` and `own` mean for them.** A spread is a coefficient of variation of
+the number it moves (0.05: five in a hundred), and `source` or `own` says where *that spread* came
+from as well as the mean: a source's printed standard deviation over its mean is a `source`; a
+spread the engine chose is `own`, with its anchor. **A trait's spread is the spread of the lengths
+it moves, never of a mass**: `build` moves girths, and a mass's coefficient of variation of 20 per
+cent is a girth's of about 7 to 10 (a mass grows as a length cubed), so typing a mass's into
+`vary.build` refuses honest kinds for a unit mistake (research R7-CHECK, part (f): lengths' CVs
+are 4 to 12 per cent). Every residual is drawn from a normal truncated to ±2.5 spreads and to the
+measured range (A.2); a size with no measured range must have its 2.5 spreads inside the plan's
+range (the plan's range is where it breaks, not an end of the kind); a number's measured range is
+reached through its own spread, so a number with a range and no spread of its own must stay
+inside it through the size and the traits alone, or it is refused (`out_of_range`, its range).
 
 A plan's defaults are the engine's own numbers: a kind that leaves a number out takes the plan's
 share, and `exemplar_get` counts those as "at the plan's default share". A plan writes text and
@@ -515,18 +594,24 @@ after the others, its name at the end of the `use {...}` line, its arm in the di
   written in (the kind's own, its base's and the plan's defaults). Under the engine's `--style
   FILE` no patch is offered (the project's `style.json` is not what the copy is checked
   against): the answer names the roles to add to that file.
-- **Reach** (A.2, review 1 of S0): a plan gives each number the range it can write
-  (`NumberDef::range`), as it gives its size one. When a kind is resolved (at a load, a write,
-  a spawn, a take) the least and most each drawn number can be over every seed is worked out,
-  and a kind that could leave its plan's range is refused, `outside_plan`, at the kind's own
-  field (`size.shoulder_height.sd`, `vary.build.spread`, `numbers.leg_length.mean`, `.share`,
-  `.exponent`, `.range`), with the number, the worst value and the bound (`reach` in the error;
-  through the engine, the recipe error's numbers). The parser's own limits: a size's spread at
-  most 0.4 of its mean (2.5 spreads never pass zero), a spread of a trait or a number at most
-  0.36, a number's mean and any range above zero. A size with no range of the kind's keeps the
-  plan's, and its 2.5 spreads must lie inside it. As a backstop a draw holds every value inside
-  the plan's range whatever the kind says. Every accepted kind builds at every seed: a test
-  builds 32 seeds of every library kind and of fifteen accepted hostile kinds, each closed.
+- **Reach** (A.2, reviews 1 and 2 of S0): when a kind is resolved (at a load, a write, a spawn,
+  a take) the least and most each drawn number can be over every seed is worked out **by the
+  draw's own functions** (`NumberLaw::base`, `window`, `value`, `SizeLaw::at`: the same code the
+  draw calls) at every corner of the residuals' windows, on unrounded values, and a kind that
+  could leave its plan's range, or break one of its relations, is refused, `outside_plan`, at the
+  kind's own field (`size.shoulder_height.sd`, `vary.build.spread`, `numbers.leg_length.mean`,
+  `.share`, `.exponent`, `.range`, `.spread`), with the number, the worst value and the bound
+  (`reach` in the error; for a relation, `relation`; through the engine, the recipe error's
+  numbers). A relation's least is exact where every term is a product of factors each moved by
+  one residual (its sum is then linear along each residual); where a number's measured range
+  narrows it, or its terms grow by different exponents, a bound never above the least is used
+  instead, and the rounding of each number to its step is allowed for. What the catalogue prints
+  is rounded outward (the least down, the most up), so every written value lies inside it. The
+  parser's own limits: a size's spread at most 0.4 of its mean, a spread of a trait or a number at
+  most 0.36, a number's mean and any range above zero. **Two backstops**, which never act on an
+  accepted kind (the tests count them, `draw::backstops`, and hold them at zero over 300,000
+  draws and 3,000 builds of 3,000 and 1,000 random accepted kinds): a drawn value is held inside
+  the plan's range, and a relation is kept by moving its yielding number.
 - **Streams** (A.2): `specula_core::hash::stream_seed(seed, "<key>/<number>")`, the function
   the modeller uses for its parts and ops (moved into the core so there is one scheme), seeds
   a PCG32 generator for each number. `<key>` is the kind's name, or a copy's `taken.streams`
@@ -560,7 +645,11 @@ after the others, its name at the end of the `use {...}` line, its arm in the di
 - **A specimen's seed**: a spawn's or a build's is the model library's, 0 to 1,000,000;
   `exemplar_get` takes any seed a specimen is written with, 0 to 2^53 - 1, so a scatter's
   variant seeds (folded to 53 bits) can be previewed. `expand` refuses a larger seed: a recipe's
-  JSON cannot hold it exactly.
+  JSON cannot hold it exactly. Past 1,000,000 the preview's `use` offers no spawn or build (they
+  would make another specimen): it says why, and that the specimen's own recipe (`full: true`)
+  saved by `project_write` builds that one. **A kind's name is its file's**: `x.kind.json` holds
+  the kind `x`, or the project's checks, the build and a scatter item refuse it
+  (`name_not_file`, naming both); a kind whose base is itself is `base_cycle`.
 - **The catalogue's rows** carry each number's value at the kind's mean, its range over seeds
   (the reach) and its unit on one line, and the scatter snippet beside the spawn and build ones.
 - **Not in S0**: the `footfalls` and `stride` checks (stage Q), and the checks of form and motion
