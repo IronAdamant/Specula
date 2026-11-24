@@ -394,7 +394,7 @@ fn sprite_files(f: &mut Fix, claimed: Option<&'static str>) -> Result<(), WorldE
     let pointer = crate::blobs::pointer(crate::blobs::BlobId(1, 2, 0), 64);
     let files = vec![
         ("assets/sprites/b.png".to_owned(), Some(crate::project::ProjectFile::new(crate::project::FileKind::Png, Arc::from(pointer), 1, Arc::from("mallory")))),
-        ("assets/sprites/b.json".to_owned(), Some(crate::project::ProjectFile::new(crate::project::FileKind::SpriteSheet, Arc::from("{}"), 1, Arc::from("mallory")))),
+        ("assets/sprites/b.sheet.json".to_owned(), Some(crate::project::ProjectFile::new(crate::project::FileKind::SpriteSheet, Arc::from("{}"), 1, Arc::from("mallory")))),
     ];
     agent(f, MALLORY, Kind::File, Rule::Project, |wd| crate::project_engine::files_commit(wd, files))
 }
@@ -408,9 +408,9 @@ fn sprite_bake_writes_and_undoes_its_two_files_together() {
     let seq = f.sw.journal().last_seq();
     let entry = f.sw.journal().get(seq).unwrap();
     assert_eq!(entry.changes.iter().filter(|c| matches!(c, crate::world::Change::File { .. })).count(), 2, "one entry holds both files");
-    assert!(f.live.files().contains_key("assets/sprites/b.png") && f.live.files().contains_key("assets/sprites/b.json"));
+    assert!(f.live.files().contains_key("assets/sprites/b.png") && f.live.files().contains_key("assets/sprites/b.sheet.json"));
     f.live.undo(&mut f.sw, 1, MALLORY, &UndoRequest { ids: None, count: 1, force: false }).unwrap();
-    assert!(!f.live.files().contains_key("assets/sprites/b.png") && !f.live.files().contains_key("assets/sprites/b.json"), "one undo takes both back");
+    assert!(!f.live.files().contains_key("assets/sprites/b.png") && !f.live.files().contains_key("assets/sprites/b.sheet.json"), "one undo takes both back");
     let mut f = fixture();
     let before = contents(&f.live);
     assert_eq!(sprite_files(&mut f, Some("/project/assets/sprites/b.png")).unwrap_err().code, "claimed");
@@ -563,7 +563,7 @@ const ROWS: &[(&str, Write, Expect)] = &[
     // sprite_bake's atlas and frame data (ProjectCall::CommitFiles): two files, one entry under
     // the project tools' rule; a claim on either refuses both.
     ("sprite_bake's two files under the project tools' rule", |f| sprite_files(f, None), Expect::Allowed),
-    ("sprite_bake's two files with the frame data claimed", |f| sprite_files(f, Some("/project/assets/sprites/b.json")), Expect::Refused("claimed")),
+    ("sprite_bake's two files with the frame data claimed", |f| sprite_files(f, Some("/project/assets/sprites/b.sheet.json")), Expect::Refused("claimed")),
     ("a binary file put under world_set's rule", |f| {
         let text = crate::blobs::pointer(crate::blobs::BlobId(1, 2, 0), 64);
         agent(f, MALLORY, Kind::Set, Rule::World, |wd| {

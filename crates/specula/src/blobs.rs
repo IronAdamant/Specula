@@ -203,6 +203,13 @@ impl ContentStore {
     /// holding exactly these bytes, a damaged slot (rewritten), or the next free one. Refused
     /// below the disk floor.
     pub fn put(&self, bytes: &[u8]) -> Result<BlobId, DiskError> {
+        self.put_new(bytes).map(|(id, _)| id)
+    }
+
+    /// [`ContentStore::put`], and whether these bytes were new to the store: `Some(mark)` when
+    /// this put wrote them, for [`ContentStore::withdraw`] to take back if what they were for
+    /// is given up (a cancelled bake) before anything refers to them.
+    pub fn put_new(&self, bytes: &[u8]) -> Result<(BlobId, Option<u64>), DiskError> {
         if bytes.len() as u64 > MAX_BLOB_BYTES {
             return Err(err("too_large", format!("{} bytes; binary project files are at most {MAX_BLOB_BYTES}", bytes.len())));
         }
@@ -229,7 +236,7 @@ impl ContentStore {
                         m.used = seq;
                         m.put_at = Instant::now();
                     }
-                    return Ok(id);
+                    return Ok((id, None));
                 }
                 // Another content with the same hash (a collision): the next slot.
                 Ok(on_disk) if self.id_of(&on_disk) == base => {}
@@ -262,7 +269,23 @@ impl ContentStore {
         }
         let was = ix.blobs.insert(id, Meta { bytes: bytes.len() as u64, used: seq, put_at: Instant::now() });
         disk::book().wrote(Category::Content, "content", bytes.len() as i64 - old as i64, i64::from(was.is_none()));
-        Ok(id)
+        Ok((id, Some(seq)))
+    }
+
+    /// Takes back content [`ContentStore::put_new`] wrote (its `mark`), when nothing has used it
+    /// since (no other put of the same bytes, no read) and nothing refers to it: what a cancelled
+    /// bake stored is not left behind. Whether it went. Disk work: on a worker.
+    pub fn withdraw(&self, id: BlobId, mark: u64) -> bool {
+        let mut ix = self.lock();
+        let untouched = ix.blobs.get(&id).is_some_and(|m| m.used == mark) && !ix.referenced.contains(&id);
+        if !untouched || disk::remove_file_inside(&self.root, &self.path_of(id)).is_err() {
+            return false;
+        }
+        if let Some(m) = ix.blobs.remove(&id) {
+            disk::book().wrote(Category::Content, "content", -(m.bytes as i64), -1);
+        }
+        crate::project_binary::forget_checked(id);
+        true
     }
 
     pub fn has(&self, id: BlobId) -> bool {

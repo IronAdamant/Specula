@@ -19,15 +19,21 @@
 //! A bake is a job of its owner's identity: it outlives the connection that started it (a
 //! shell's `specula call` closes its session at once) and answers through its own
 //! [`jobs::Reply`], which the caller's thread waits on or keeps for the owner to ask later.
-//! It stops at its next step once its owner cancels it.
+//! It stops at its next step once its owner (or a lead, forcing) cancels it, until it begins
+//! writing its two files; from then a cancel is refused `too_late` ([`super::Stop`]).
+//!
+//! What it holds of the engine's (its render target, its pin on the model's build) goes back
+//! on every way its step job ends ([`StepJob::on_end`]: answered, refused, timed out, the
+//! engine shutting down). The pin is the job's, not its session's: a bake outlives the session
+//! that started it.
 
 use super::plan::{self, Plan};
-use super::{Progress, Request};
+use super::{Progress, Request, Stop};
 use crate::jobs::{self, JobOwner};
 use crate::models::Built;
 use crate::project::FileKind;
 use crate::project_tools::{Committed, ProjectCall};
-use crate::steps::{Step, StepJob, StepStart};
+use crate::steps::{Ended, Step, StepJob, StepStart};
 use crate::tools::Command;
 use crate::workers::{JobKind, Offload};
 use crate::Engine;
@@ -38,7 +44,8 @@ use specula_protocol::ToolOutput;
 use specula_studio::rules::Rig;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -51,14 +58,49 @@ pub const MAX_BAKE: Duration = Duration::from_secs(15 * 60);
 /// Cells resolving on the workers at once, per bake.
 const MAX_RESOLVING: usize = 2;
 
-/// Tests only (`SPECULA_TEST_BAKE_HOLD=<atlas file name>`): a bake of that atlas holds before
-/// its first render while the engine's clock is paused (`time_control`), so a check can cancel
-/// a bake that cannot have finished, or claim its path before it ends, on any GPU, by
-/// construction (never by timing); the clock played again lets it go on. Read once.
-fn held_by_test(png_path: &str) -> bool {
-    static HOLD: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+/// A cell rendered again at most this many times when other renders' ID buffers keep taking its
+/// own before it lands (each such render settles the bake's and overwrites its ids); past it the
+/// bake ends `render_contended`, nothing written.
+pub const MAX_RERENDERS_PER_CELL: u32 = 8;
+
+/// Where a test's gate holds a bake (`SPECULA_TEST_BAKE_HOLD`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hold {
+    /// Before its first render.
+    Start,
+    /// Its atlas encoded and stored, before its writing begins (a cancel is honoured here).
+    Encoded,
+    /// Its writing begun, before its commit is asked for (a cancel is refused `too_late`).
+    Writing,
+}
+
+/// Tests only (`SPECULA_TEST_BAKE_HOLD=<atlas file name>[@encoded|@writing]`, several comma-separated): a bake of that
+/// atlas holds, while the engine's clock is paused (`time_control`), before its first render
+/// (the name alone), once its atlas is encoded and stored (`@encoded`), or once its writing has
+/// begun (`@writing`). So a check can cancel a bake in each phase, or claim its path before it
+/// ends, on any GPU, by construction (never by timing); the clock played again lets it go on.
+/// Read once.
+fn held_by_test(png_path: &str, at: Hold) -> bool {
+    static HOLD: std::sync::OnceLock<Vec<(String, Hold)>> = std::sync::OnceLock::new();
     let name = png_path.rsplit('/').next().unwrap_or(png_path);
-    HOLD.get_or_init(|| std::env::var("SPECULA_TEST_BAKE_HOLD").ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())).as_deref() == Some(name)
+    let holds = HOLD.get_or_init(|| {
+        let Ok(v) = std::env::var("SPECULA_TEST_BAKE_HOLD") else { return Vec::new() };
+        // Several, comma-separated, at most a few (a test's own atlas names).
+        v.split(',')
+            .take(8)
+            .filter_map(|one| {
+                let one = one.trim();
+                let (file, phase) = match one.split_once('@') {
+                    None => (one, Hold::Start),
+                    Some((f, "encoded")) => (f, Hold::Encoded),
+                    Some((f, "writing")) => (f, Hold::Writing),
+                    Some(_) => return None,
+                };
+                (!file.is_empty()).then(|| (file.to_owned(), phase))
+            })
+            .collect()
+    });
+    holds.iter().any(|(f, p)| f == name && *p == at)
 }
 
 /// What the caller's thread hands the engine.
@@ -72,7 +114,7 @@ pub struct Bake {
     /// The assets root the style files are found under.
     pub assets: std::path::PathBuf,
     pub store: Option<Arc<crate::blobs::ContentStore>>,
-    pub cancel: Arc<AtomicBool>,
+    pub stop: Arc<Stop>,
     /// The owner's name as the engine knows it, set when the job starts (another agent's
     /// refused cancel names it).
     pub owner_name: Arc<std::sync::OnceLock<String>>,
@@ -88,6 +130,9 @@ pub struct Cost {
     pub renders: usize,
     pub engine_ms: f64,
     pub max_step_ms: f64,
+    /// The model's build uploaded to the GPU by the bake's renders: 1 when no entity had it there,
+    /// 0 when one did; never more (its pin holds it while the bake runs).
+    pub uploads: u64,
 }
 
 /// Tests: the atlas once every cell is in it, and the cells with the model on their outermost
@@ -167,17 +212,25 @@ enum Phase {
     /// Cells submitted, landed and resolved.
     Cells,
     /// The atlas encoded and stored on a worker.
-    Encoding(Rc<RefCell<Option<Result<Encoded, ToolOutput>>>>),
+    Encoding(Rc<RefCell<Option<EncodeOut>>>),
+    /// Encoded; held by a test's gate before its writing begins, or after.
+    Held(Hold, Encoded),
     /// The two files' commit asked for; its answer comes on this channel.
     Committing(mpsc::Receiver<Committed>, Encoded),
 }
 
-/// The encoded atlas and the frame data's text, ready to commit.
+/// The encoded atlas and the frame data's text, ready to commit; and the content the encode put
+/// in the store when it was new there (its id and mark), taken back if the bake is cancelled.
 struct Encoded {
     pointer: String,
     png_bytes: usize,
     text: String,
+    stored: Option<(crate::blobs::BlobId, u64)>,
 }
+
+/// What the encode on its worker came to: encoded, failed, or stopped by a cancel before it
+/// stored anything.
+type EncodeOut = Result<Option<Encoded>, ToolOutput>;
 
 /// A bake in steps.
 pub(crate) struct BakeJob {
@@ -193,10 +246,18 @@ pub(crate) struct BakeJob {
     /// The next cell to submit, and the one on the GPU.
     next: usize,
     flying: Option<usize>,
+    /// A cell landed (read out of the readback at once, so no later ID render can take its ids)
+    /// and waiting for a worker slot to resolve on.
+    landed: Option<(usize, Raw)>,
+    /// Cells rendered again (another render took their ids before they landed), by cell.
+    rerendered: BTreeMap<usize, u32>,
+    /// Its target and pin given back ([`BakeJob::release`]): once, whichever way it ends.
+    released: bool,
     resolving: Rc<RefCell<Resolving>>,
     atlas: Arc<Mutex<Vec<u8>>>,
     phase: Phase,
     renders: usize,
+    uploads: u64,
     pin: u64,
     engine_ms: f64,
     max_step_ms: f64,
@@ -207,7 +268,9 @@ pub(crate) struct BakeJob {
 impl BakeJob {
     pub(crate) fn new(e: &mut Engine, bake: Bake, look: Look, owner: JobOwner, session: &str, call: u64) -> BakeJob {
         let pin = PIN_KEYS.fetch_add(1, Ordering::Relaxed);
-        e.pin_for_job(pin, session, bake.built.id);
+        // The job's pin, not its session's (review 1, finding 1): the session of a shell's call
+        // is gone within a second, and a pin of its pruned then.
+        e.pin_for_kept_job(pin, bake.built.id);
         let [w, h] = bake.plan.atlas;
         let atlas = Arc::new(Mutex::new(vec![0u8; w as usize * h as usize * 4]));
         let (cell, ss) = (bake.plan.cell, bake.plan.supersample);
@@ -222,10 +285,14 @@ impl BakeJob {
             warm: false,
             next: 0,
             flying: None,
+            landed: None,
+            rerendered: BTreeMap::new(),
+            released: false,
             resolving: Rc::default(),
             atlas,
             phase: Phase::Cells,
             renders: 0,
+            uploads: 0,
             pin,
             engine_ms: 0.0,
             max_step_ms: 0.0,
@@ -233,21 +300,57 @@ impl BakeJob {
         }
     }
 
-    /// The bake's target and pin go (never while its render is on the GPU: the caller lands it
-    /// first). The target goes back to the engine's cache of offscreen targets, so a bake
-    /// neither ends nor begins in the driver's freeing and making of a render graph's images
-    /// (a target destroyed at a bake's end held the windowed iGPU 30-152 ms); it is destroyed
-    /// only when the cache is full.
+    /// The bake's target and pin go: once all its cells are in (it needs neither to encode and
+    /// write), and on every way its job ends ([`StepJob::on_end`]); again, it does nothing. The
+    /// target goes back to the engine's cache of offscreen targets, so a bake neither ends nor
+    /// begins in the driver's freeing and making of a render graph's images (a target destroyed
+    /// at a bake's end held the windowed iGPU 30-152 ms); it is destroyed only when the cache is
+    /// full. A target whose render is still on the GPU (a bake dropped at its deadline, say)
+    /// goes back once a later poll finds that render done ([`Engine::orphan_target`]), never
+    /// waited for. The pin goes at once: no pin outlives its job.
     fn release(&mut self, e: &mut Engine) {
         if let Some(t) = self.target.take() {
             let _z = specula_core::profile::zone("sprite_bake.release");
-            if e.targets.len() < crate::MAX_CACHED_TARGETS {
-                e.targets.push((self.target_size, t));
+            if self.flying.take().is_some() && e.gpu.offscreen_pending_target() == Some(t) {
+                e.orphan_target(self.target_size, t);
             } else {
-                e.gpu.destroy_target(t);
+                e.give_back_target(self.target_size, t);
             }
         }
-        e.studio_done(self.pin);
+        self.flying = None;
+        if !self.released {
+            self.released = true;
+            e.studio_unpin(self.pin);
+        }
+    }
+
+    /// Tests: whether its target and pin were given back.
+    #[cfg(test)]
+    pub(crate) fn released(&self) -> bool {
+        self.released && self.target.is_none()
+    }
+
+    /// Tests: the key of its pin on the model's build.
+    #[cfg(test)]
+    pub(crate) fn pin_key(&self) -> u64 {
+        self.pin
+    }
+
+    /// Tests: where it is (`cells`, `encoding`, `held`, `committing`).
+    #[cfg(test)]
+    pub(crate) fn phase_name(&self) -> &'static str {
+        match self.phase {
+            Phase::Cells => "cells",
+            Phase::Encoding(_) => "encoding",
+            Phase::Held(..) => "held",
+            Phase::Committing(..) => "committing",
+        }
+    }
+
+    /// Tests: the encode on its worker has come back (the next step reads it).
+    #[cfg(test)]
+    pub(crate) fn encoded(&self) -> bool {
+        matches!(&self.phase, Phase::Encoding(slot) if slot.borrow().is_some())
     }
 
     /// A target of `w` x `h` the bake holds alone while it runs: one of the engine's cached
@@ -279,7 +382,10 @@ impl BakeJob {
         let mut bones = Vec::new();
         let pose = specula_core::profile::zone("sprite_bake.pose");
         e.models.refresh_ready(&mut e.gpu);
-        if let Err(m) = e.models.posed_draws(&mut e.gpu, &self.bake.built, &plan.poses[cell.pose], &Mat4::IDENTITY, &mut bones, &mut draws) {
+        let uploads = e.models.uploads();
+        let posed = e.models.posed_draws(&mut e.gpu, &self.bake.built, &plan.poses[cell.pose], &Mat4::IDENTITY, &mut bones, &mut draws);
+        self.uploads += e.models.uploads() - uploads;
+        if let Err(m) = posed {
             if m.contains("still being built") {
                 return Ok(false);
             }
@@ -350,13 +456,14 @@ impl BakeJob {
         let (pixel_art, png_path) = (self.look.palette.is_some(), self.bake.req.path.clone());
         let text = super::sheet_of(&plan, &self.bake.req, &self.bake.built, &self.look.light).to_text();
         let store = self.bake.store.clone();
+        let stop = Arc::clone(&self.bake.stop);
         let slot = Rc::new(RefCell::new(None));
         let back = Rc::clone(&slot);
         let bytes = u64::from(plan.atlas[0]) * u64::from(plan.atlas[1]) * 4;
         let o = self.offload().bytes(bytes);
         e.offload(
             o,
-            move |_| -> Result<Encoded, ToolOutput> {
+            move |_| -> EncodeOut {
                 let mut rgba = std::mem::take(&mut *atlas.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
                 if let Some(sh) = &plan.shadow {
                     // The blob is drawn, not rendered: an ellipse on its own pivot.
@@ -374,13 +481,47 @@ impl BakeJob {
                     return Err(err("internal", format!("the frame data did not read back ({}: {}); nothing was written", e.at, e.message)));
                 }
                 let Some(store) = store else { return Err(err("no_content_store", "this engine has no content store (binary project files need one)")) };
-                let blob = store.put(&png).map_err(|e| ToolOutput::error(e.to_json().to_string()))?;
-                Ok(Encoded { pointer: crate::blobs::pointer(blob, png.len() as u64), png_bytes: png.len(), text })
+                if stop.cancelled() {
+                    // Cancelled while it encoded: nothing goes into the store.
+                    return Ok(None);
+                }
+                let (blob, mark) = store.put_new(&png).map_err(|e| ToolOutput::error(e.to_json().to_string()))?;
+                Ok(Some(Encoded { pointer: crate::blobs::pointer(blob, png.len() as u64), png_bytes: png.len(), text, stored: mark.map(|m| (blob, m)) }))
             },
             move |_, r| *back.borrow_mut() = Some(r.unwrap_or_else(|f| Err(f.to_output(JobKind::SpriteBake)))),
         )?;
         self.phase = Phase::Encoding(slot);
         Ok(())
+    }
+
+    /// The atlas is encoded and stored: the bake's writing begins, unless it was cancelled first
+    /// (then what it stored is taken back and it answers `cancelled`). Whichever of the two came
+    /// first holds ([`Stop`]): from here a cancel is refused `too_late`.
+    fn write(&mut self, e: &mut Engine, enc: Encoded) -> Step {
+        if self.bake.stop.cancelled() {
+            return self.cancelled(e, enc.stored);
+        }
+        if e.clock.paused() && held_by_test(&self.bake.req.path, Hold::Encoded) {
+            self.bake.progress.set_phase(super::PHASE_HELD);
+            self.phase = Phase::Held(Hold::Encoded, enc);
+            return Step::Wait;
+        }
+        if !self.bake.stop.begin_writing() {
+            return self.cancelled(e, enc.stored);
+        }
+        self.bake.progress.set_phase(super::PHASE_WRITING);
+        if e.clock.paused() && held_by_test(&self.bake.req.path, Hold::Writing) {
+            self.phase = Phase::Held(Hold::Writing, enc);
+            return Step::Wait;
+        }
+        self.commit_now(e, enc)
+    }
+
+    fn commit_now(&mut self, e: &mut Engine, enc: Encoded) -> Step {
+        match self.commit(e, enc) {
+            Some(out) => Step::Done(out),
+            None => Step::More,
+        }
     }
 
     /// Asks for the two files' commit, as the agent that asked for the bake: one journal entry,
@@ -400,6 +541,7 @@ impl BakeJob {
         });
         if refused.is_error {
             // (A project call refused before it reached the commit: no project here, say.)
+            self.withdraw(e, enc.stored);
             return Some(refused);
         }
         self.phase = Phase::Committing(rx, enc);
@@ -419,7 +561,7 @@ impl BakeJob {
             }
         };
         let r = self.resolving.borrow();
-        let cost = Cost { renders: self.renders, engine_ms: self.engine_ms, max_step_ms: self.max_step_ms };
+        let cost = Cost { renders: self.renders, engine_ms: self.engine_ms, max_step_ms: self.max_step_ms, uploads: self.uploads };
         let data = super::sheet_of(&self.bake.plan, &self.bake.req, &self.bake.built, &self.look.light);
         let mut a = super::answer(&self.bake.plan, &data, &self.bake.req, Some((&cost, enc.png_bytes)), Some(commit), self.bake.started);
         let mut notes = std::mem::take(&mut self.look.notes);
@@ -441,13 +583,22 @@ impl BakeJob {
                 let Some(r) = slot.borrow_mut().take() else { return Step::Wait };
                 return match r {
                     Err(out) => Step::Done(out),
-                    Ok(enc) => {
-                        self.bake.progress.set_phase(super::PHASE_WRITING);
-                        match self.commit(e, enc) {
-                            Some(out) => Step::Done(out),
-                            None => Step::More,
-                        }
-                    }
+                    // Cancelled before it stored anything.
+                    Ok(None) => self.cancelled(e, None),
+                    Ok(Some(enc)) => self.write(e, enc),
+                };
+            }
+            Phase::Held(at, _) => {
+                let at = *at;
+                // Held while the clock is paused; a cancel lets a bake held before its writing
+                // go at once (to answer `cancelled`).
+                if e.clock.paused() && !(at == Hold::Encoded && self.bake.stop.cancelled()) {
+                    return Step::Wait;
+                }
+                let Phase::Held(_, enc) = std::mem::replace(&mut self.phase, Phase::Cells) else { unreachable!("matched above") };
+                return match at {
+                    Hold::Encoded => self.write(e, enc),
+                    _ => self.commit_now(e, enc),
                 };
             }
             Phase::Committing(rx, _) => {
@@ -457,12 +608,18 @@ impl BakeJob {
                     Err(mpsc::TryRecvError::Disconnected) => return Step::Done(err("no_answer", "the engine dropped the bake's commit unanswered: project_list says whether its files are there")),
                 };
                 let Phase::Committing(_, enc) = std::mem::replace(&mut self.phase, Phase::Cells) else { unreachable!("matched above") };
+                if !matches!(got, Committed::Done(_)) {
+                    // Refused when it ended: nothing refers to what it stored.
+                    self.withdraw(e, enc.stored);
+                }
                 return Step::Done(self.answer(got, &enc));
             }
             Phase::Cells => {}
         }
         let cells = self.bake.plan.cells.len();
-        // A render on the GPU first: polled, never waited for.
+        // A render on the GPU first: polled, never waited for; landed (read out of the readback)
+        // in the same step its poll finds it done, so no later ID render can take its ids while
+        // it waits for a worker slot.
         if let Some(at) = self.flying {
             let Some(target) = self.target else { unreachable!("a cell flies on the bake's target") };
             if e.gpu.offscreen_pending_target() == Some(target) {
@@ -483,15 +640,6 @@ impl BakeJob {
                 // Another tool's render settled ours and is on the GPU now: its turn.
                 return Step::Wait;
             }
-            if self.bake.cancel.load(Ordering::Relaxed) {
-                self.flying = None;
-                return self.cancelled(e);
-            }
-            // The resolve needs a worker slot: the landed render waits in its readback for one.
-            let bytes = u64::from(self.bake.plan.cell[0] * self.bake.plan.supersample).pow(2) * 8;
-            if self.resolving.borrow().in_flight >= MAX_RESOLVING || e.workers_room(&self.owner, self.call, bytes).is_err() {
-                return Step::Wait;
-            }
             let landed = {
                 let _z = specula_core::profile::zone("sprite_bake.land");
                 e.gpu.read_landed(target)
@@ -508,23 +656,47 @@ impl BakeJob {
                     if let Some(t) = &self.tap {
                         t.borrow_mut().push((at, (colour.clone(), ids.ids.clone())));
                     }
-                    if self.resolve_later(e, at, (colour, ids.ids)).is_err() {
-                        // (Its room was asked for just now: only a race with another of the
-                        // owner's jobs gets here.) Rendered again when there is room.
-                        self.next = self.next.min(at);
-                    }
+                    self.landed = Some((at, (colour, ids.ids)));
                 }
                 Err(_) => {
                     // Another target's ID render came after ours (its ids are gone): this
-                    // cell is rendered again, so every cell is its own render exactly.
+                    // cell is rendered again, so every cell is its own render exactly; a cell
+                    // that keeps losing its ids so is given up at a bound, said.
                     self.flying = None;
+                    let n = {
+                        let n = self.rerendered.entry(at).or_insert(0);
+                        *n += 1;
+                        *n
+                    };
+                    if n > MAX_RERENDERS_PER_CELL {
+                        self.release(e);
+                        return Step::Done(err(
+                            "render_contended",
+                            format!("cell {at} was rendered {n} times and each time another render's ID buffer took its own before it landed (captures of ids running all the while); nothing was written: bake again when they have ended"),
+                        ));
+                    }
                     self.next = self.next.min(at);
+                    return Step::More;
                 }
             }
-            return Step::More;
         }
-        if self.bake.cancel.load(Ordering::Relaxed) {
-            return self.cancelled(e);
+        if self.bake.stop.cancelled() {
+            return self.cancelled(e, None);
+        }
+        // A landed cell to its worker, once there is a slot (it waits in memory meanwhile).
+        if let Some((at, _)) = &self.landed {
+            let at = *at;
+            let bytes = u64::from(self.bake.plan.cell[0] * self.bake.plan.supersample) * u64::from(self.bake.plan.cell[1] * self.bake.plan.supersample) * 8;
+            if self.resolving.borrow().in_flight >= MAX_RESOLVING || e.workers_room(&self.owner, self.call, bytes).is_err() {
+                return Step::Wait;
+            }
+            let Some((_, raw)) = self.landed.take() else { unreachable!("looked at above") };
+            if self.resolve_later(e, at, raw).is_err() {
+                // (Its room was asked for just now: only a race with another of the owner's
+                // jobs gets here.) Rendered again when there is room.
+                self.next = self.next.min(at);
+            }
+            return Step::More;
         }
         let failed = self.resolving.borrow_mut().failed.take();
         if let Some(out) = failed {
@@ -532,7 +704,7 @@ impl BakeJob {
             return Step::Done(out);
         }
         if self.next < cells {
-            if self.next == 0 && e.clock.paused() && held_by_test(&self.bake.req.path) {
+            if self.next == 0 && e.clock.paused() && held_by_test(&self.bake.req.path, Hold::Start) {
                 self.bake.progress.set_phase(super::PHASE_HELD);
                 return Step::Wait;
             }
@@ -615,13 +787,36 @@ impl BakeJob {
     #[cfg(test)]
     pub(crate) fn rendered(&self) -> Option<Baked> {
         let r = self.resolving.borrow();
-        let all = matches!(self.phase, Phase::Cells) && self.next == self.bake.plan.cells.len() && self.flying.is_none() && r.in_flight == 0 && r.failed.is_none();
+        let all = matches!(self.phase, Phase::Cells) && self.next == self.bake.plan.cells.len() && self.flying.is_none() && self.landed.is_none() && r.in_flight == 0 && r.failed.is_none();
         all.then(|| Baked { rgba: self.atlas.lock().unwrap().clone(), touching: r.touching.clone(), renders: self.renders })
     }
 
-    fn cancelled(&mut self, e: &mut Engine) -> Step {
+    /// Content the encode put in the store that nothing will refer to now (a cancel, a refused
+    /// commit) is taken back, on a worker; a worker with no room leaves it to the store's own
+    /// pruning (nothing refers to it, so it is the first to go when the disk needs room).
+    fn withdraw(&self, e: &mut Engine, stored: Option<(crate::blobs::BlobId, u64)>) {
+        if let (Some((id, mark)), Some(store)) = (stored, self.bake.store.clone()) {
+            let _ = e.offload(Offload::engine(JobKind::SpriteBake), move |_| store.withdraw(id, mark), |_, _| {});
+        }
+    }
+
+    /// Cancelled (by its owner, or a lead's forced cancel, logged on the board here): what it
+    /// holds goes back, what it stored is taken back, nothing is written.
+    fn cancelled(&mut self, e: &mut Engine, stored: Option<(crate::blobs::BlobId, u64)>) -> Step {
         self.release(e);
-        Step::Done(err("cancelled", format!("the bake was cancelled by its owner after {} of {} cells; nothing was written", self.resolving.borrow().done, self.bake.plan.cells.len())))
+        self.withdraw(e, stored);
+        let (done, cells) = (self.resolving.borrow().done, self.bake.plan.cells.len());
+        let by = match self.bake.stop.forced_by() {
+            Some(sid) => {
+                let lead = e.swarm.name_of(sid).unwrap_or_else(|| sid.to_owned());
+                let lead = lead.as_str();
+                let tick = e.clock.tick();
+                e.swarm.board.log(lead, tick, "sprite_bake", None, format!("forced cancel of {}'s bake of {} after {done} of {cells} cells", self.owner.name, self.bake.req.path));
+                format!("by {lead} (a forced cancel, logged on the board)")
+            }
+            None => "by its owner".to_owned(),
+        };
+        Step::Done(err("cancelled", format!("the bake was cancelled {by} after {done} of {cells} cells; nothing was written")))
     }
 }
 
@@ -658,8 +853,25 @@ impl StepJob for BakeJob {
         self.flying.is_some()
     }
 
+    fn on_end(&mut self, e: &mut Engine, how: Ended) {
+        self.release(e);
+        if how != Ended::Answered {
+            // Dropped mid-bake: what an encode stored and nothing will refer to goes back.
+            let stored = match &self.phase {
+                Phase::Held(_, enc) => enc.stored,
+                _ => None,
+            };
+            self.withdraw(e, stored);
+        }
+    }
+
     fn step(&mut self, e: &mut Engine, _reply: &jobs::Reply) -> Step {
         let started = Instant::now();
+        if !self.released {
+            // The pin again (a map lookup when it is there): whatever else took it, the next
+            // cell does not upload the model again.
+            e.pin_for_kept_job(self.pin, self.bake.built.id);
+        }
         let r = self.step_inner(e);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         self.engine_ms += ms;

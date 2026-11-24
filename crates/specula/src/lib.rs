@@ -2709,6 +2709,8 @@ impl Engine {
             stream_tools::Fly::abort(f);
         }
         self.studio_shutting_down();
+        // Step jobs give back what they hold (targets, pins) and are answered.
+        self.steps_shutting_down();
         // A perf_capture in progress answers with the frames it has.
         self.profiler.abort_capture();
     }

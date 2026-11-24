@@ -3577,9 +3577,23 @@ pub struct GpuModels {
     /// Builds kept uploaded though no entity wants them: the asset studio's calls in progress
     /// render them between frames (see [`GpuModels::set_pinned`]).
     pinned: BTreeSet<u64>,
+    /// Builds uploaded since start-up (by the sync and by offscreen renders): a test counts a
+    /// build uploaded twice, which it reads as no clock can.
+    uploads: u64,
 }
 
 impl GpuModels {
+    /// Builds uploaded since start-up ([`GpuModels::sync`] and [`GpuModels::posed_draws`]).
+    pub fn uploads(&self) -> u64 {
+        self.uploads
+    }
+
+    /// Tests: the next sync looks at every build again, as after a change to the world.
+    #[cfg(test)]
+    pub(crate) fn resync(&mut self) {
+        self.synced = None;
+    }
+
     /// Uploads the builds live model entities use and frees the rest, when the world's model
     /// entities or the library changed since the last call. Returns messages for failed uploads.
     pub fn sync(&mut self, gpu: &mut Gpu, library: &SharedLibrary, world: &World, world_generation: u64) -> Vec<String> {
@@ -3625,6 +3639,7 @@ impl GpuModels {
             }
             match upload(gpu, built) {
                 Ok(m) => {
+                    self.uploads += 1;
                     self.uploaded.insert(id, m);
                 }
                 Err(UploadError::Released) => {
@@ -3767,6 +3782,7 @@ impl GpuModels {
                 UploadError::Gpu(e) => format!("model upload failed: {e}"),
             })?;
             slot.insert(m);
+            self.uploads += 1;
             if !self.pinned.contains(&built.id) {
                 // The next sync drops it again unless an entity wants it.
                 self.synced = None;

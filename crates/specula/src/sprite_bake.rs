@@ -18,7 +18,7 @@ use plan::{Ask, Clips, Rate, View};
 use specula_core::Json;
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -77,13 +77,34 @@ pub struct Request {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Call {
     Bake(Box<Request>),
-    Cancel(Option<u64>),
+    /// Stop the caller's bakes (all, or one job); `force`: another agent's job (a lead's).
+    Cancel { job: Option<u64>, force: bool },
     Job { id: u64, wait_s: u64 },
+    /// The bakes running or kept: the caller's, or everyone's for a lead.
+    List,
 }
 
-/// The frame data's path for an atlas path.
+/// The frame data's path for an atlas path: `<name>.sheet.json` beside `<name>.png`. Its own
+/// suffix, so a project's hand-made sheets (an Aseprite or TexturePacker `hero.json` beside
+/// `hero.png` in a `sprites` folder) are never read as frame data (SPRITE_BAKE.md, "Where the
+/// files go").
 pub fn frames_path(png: &str) -> String {
-    format!("{}.json", png.strip_suffix(".png").unwrap_or(png))
+    format!("{}{}", png.strip_suffix(".png").unwrap_or(png), FRAMES_SUFFIX)
+}
+
+/// The frame data's suffix ([`frames_path`]); the file kind `sprite_sheet` is a file of this
+/// name directly in a folder named `sprites` under assets/.
+pub const FRAMES_SUFFIX: &str = ".sheet.json";
+
+/// Where a bake's atlas may go, said the same way by the schema, the parser and the refusals:
+/// the one rule ([`sprite_path_ok`]), which is the project's file kinds' (`project::kind_for`).
+pub const PATH_RULE: &str = "a .png directly in a folder named sprites under assets/ (e.g. \"assets/sprites/wolf.png\", or \"assets/art/sprites/wolf.png\"), its frame data beside it as <name>.sheet.json";
+
+/// Whether `path` is where an atlas may go ([`PATH_RULE`]).
+pub fn sprite_path_ok(path: &str) -> bool {
+    let mut back = path.rsplit('/');
+    let (name, parent) = (back.next().unwrap_or(""), back.next());
+    path.starts_with("assets/") && parent == Some("sprites") && name.len() > ".png".len() && name.ends_with(".png")
 }
 
 fn wait_of(args: &Json, default: u64) -> Result<u64, String> {
@@ -92,14 +113,27 @@ fn wait_of(args: &Json, default: u64) -> Result<u64, String> {
 
 /// Reads the arguments (every one bounded: AGENTS rule 15).
 pub fn parse(args: &Json) -> Result<Call, String> {
-    check_keys(args, "sprite_bake", &[&["recipe", "params", "seed", "clips", "directions", "view", "elevation_deg", "frames", "fps", "cell", "supersample", "pixel_art", "outline", "in_place", "shadow", "light", "path", "dry_run", "wait_s", "cancel", "job"]])?;
+    check_keys(args, "sprite_bake", &[&["recipe", "params", "seed", "clips", "directions", "view", "elevation_deg", "frames", "fps", "cell", "supersample", "pixel_art", "outline", "in_place", "shadow", "light", "path", "dry_run", "wait_s", "cancel", "job", "force", "list"]])?;
     let job = int_arg(args, "job", 1, u64::MAX >> 11)?;
     let n = args.as_object().map_or(0, |o| o.len());
-    if bool_arg(args, "cancel")? == Some(true) {
-        if n > 1 + usize::from(job.is_some()) {
-            return Err("'cancel' stands alone, or with 'job': {\"cancel\": true} stops your own bakes, {\"cancel\": true, \"job\": N} that one".into());
+    let force = bool_arg(args, "force")?;
+    if bool_arg(args, "list")? == Some(true) {
+        if n > 1 {
+            return Err("'list' stands alone: {\"list\": true} names the bakes running or kept (yours; everyone's for a lead)".into());
         }
-        return Ok(Call::Cancel(job));
+        return Ok(Call::List);
+    }
+    if bool_arg(args, "cancel")? == Some(true) {
+        if n > 1 + usize::from(job.is_some()) + usize::from(force.is_some()) {
+            return Err("'cancel' stands alone, or with 'job' (and 'force'): {\"cancel\": true} stops your own bakes, {\"cancel\": true, \"job\": N} that one, and a lead's {\"cancel\": true, \"job\": N, \"force\": true} another agent's".into());
+        }
+        if force == Some(true) && job.is_none() {
+            return Err("'force' stops one bake: {\"cancel\": true, \"job\": N, \"force\": true} ({\"list\": true} says which run)".into());
+        }
+        return Ok(Call::Cancel { job, force: force == Some(true) });
+    }
+    if force.is_some() {
+        return Err("'force' goes with cancel and job: {\"cancel\": true, \"job\": N, \"force\": true}".into());
     }
     if let Some(id) = job {
         if n > 1 + usize::from(args.get("wait_s").is_some()) {
@@ -200,9 +234,8 @@ pub fn parse(args: &Json) -> Result<Call, String> {
         Some(p) => p.to_owned(),
         None => format!("{FOLDER}/{}.png", crate::model_export::stem_of(recipe)),
     };
-    let in_sprites = path.split('/').rev().skip(1).any(|s| s == "sprites");
-    if !path.starts_with("assets/") || !path.ends_with(".png") || !in_sprites {
-        return Err(format!("'path' is where the atlas goes: a .png in a folder named sprites under assets/, e.g. \"{FOLDER}/wolf.png\" (its frame data goes beside it, .json); got '{path}'"));
+    if !sprite_path_ok(&path) {
+        return Err(format!("'path' is where the atlas goes: {PATH_RULE}; got '{path}'"));
     }
     crate::project::check_path(&path).map_err(|e| e.message)?;
     let dry_run = bool_arg(args, "dry_run")?.unwrap_or(false);
@@ -230,6 +263,60 @@ pub const PHASE_WRITING: u8 = 3;
 pub const PHASE_HELD: u8 = 4;
 const PHASES: [&str; 5] = ["reading its style files", "rendering", "encoding", "writing its two files", "held before its first render (SPECULA_TEST_BAKE_HOLD: a test's gate)"];
 
+/// Where a bake's stop stands: one atomic state, so a cancel and the bake's own start of its
+/// writing can never both win (review 1, finding 2: a cancel while the bake encoded or wrote was
+/// answered "nothing of it is written" and both files were committed).
+const RUNNING: u8 = 0;
+const CANCELLED: u8 = 1;
+const WRITING: u8 = 2;
+
+/// A bake's stop: cancelled (by its owner, or by a lead's forced cancel), or past the point
+/// where it can be (its two files' commit begun). Whichever comes first holds.
+#[derive(Default)]
+pub struct Stop {
+    state: AtomicU8,
+    /// Who forced the cancel (a lead or the owner), for the board.
+    forced_by: OnceLock<String>,
+}
+
+/// A cancel that came once the bake's commit had begun: it is being written.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TooLate;
+
+impl Stop {
+    /// Cancels the bake unless its writing has begun (`TooLate`). `forced_by`: a lead's or the
+    /// owner's forced cancel of another agent's bake, logged on the board when the bake stops.
+    pub fn cancel(&self, forced_by: Option<&str>) -> Result<(), TooLate> {
+        match self.state.compare_exchange(RUNNING, CANCELLED, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => {
+                if let Some(by) = forced_by {
+                    let _ = self.forced_by.set(by.to_owned());
+                }
+                Ok(())
+            }
+            Err(CANCELLED) => Ok(()),
+            Err(_) => Err(TooLate),
+        }
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.state.load(Ordering::Acquire) == CANCELLED
+    }
+
+    /// The bake's writing begins: `false` when it was cancelled first (it then writes nothing).
+    pub fn begin_writing(&self) -> bool {
+        self.state.compare_exchange(RUNNING, WRITING, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    pub fn writing(&self) -> bool {
+        self.state.load(Ordering::Acquire) == WRITING
+    }
+
+    pub fn forced_by(&self) -> Option<&str> {
+        self.forced_by.get().map(String::as_str)
+    }
+}
+
 /// A bake's progress, written by the engine and read by its owner's `{job}` calls.
 #[derive(Default)]
 pub struct Progress {
@@ -255,7 +342,7 @@ struct Entry {
     name: Arc<OnceLock<String>>,
     path: String,
     cells: usize,
-    cancel: Arc<AtomicBool>,
+    stop: Arc<Stop>,
     progress: Arc<Progress>,
     started: Instant,
     /// Where its answer comes (`None` while its call waits on it, or once it came).
@@ -274,10 +361,10 @@ impl Entry {
     }
 }
 
-/// A bake started: its id, its cancel flag, its owner's name cell and its progress.
+/// A bake started: its id, its stop, its owner's name cell and its progress.
 pub struct Started {
     pub id: u64,
-    pub cancel: Arc<AtomicBool>,
+    pub stop: Arc<Stop>,
     pub name: Arc<OnceLock<String>>,
     pub progress: Arc<Progress>,
 }
@@ -308,6 +395,30 @@ fn dropped() -> ToolOutput {
 
 fn unknown(id: u64) -> ToolOutput {
     err("unknown_job", format!("there is no bake {id} (a finished one's result is kept {} minutes for its owner)", KEPT_FOR.as_secs() / 60))
+}
+
+/// A cancel that came once the bake had begun writing its two files.
+fn too_late(id: u64) -> ToolOutput {
+    ToolOutput::error(
+        Json::obj([
+            ("error", Json::from("too_late")),
+            ("message", Json::from(format!("bake {id} is writing its two files now and can no longer be stopped: nothing was cancelled. Its answer says what was written (sprite_bake {{job: {id}, wait_s: {WAIT_S}}}); world_undo takes both files back"))),
+            ("job", Json::from(id)),
+        ])
+        .to_string(),
+    )
+}
+
+/// The bakes `sprite_bake {list}` names at most.
+pub const MAX_LISTED_JOBS: usize = 32;
+
+/// What a cancel did: the bakes it stopped, the ones it came too late for (being written), and
+/// whose bake a forced cancel stopped.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Cancelled {
+    pub stopped: Vec<u64>,
+    pub too_late: Vec<u64>,
+    pub forced: Option<String>,
 }
 
 impl Running {
@@ -364,8 +475,8 @@ impl Running {
             return Err(err("job_busy", format!("you already run {mine} bakes (at most {MAX_RUNNING_PER_OWNER}): wait for one to answer (sprite_bake {{job}}), or sprite_bake {{cancel: true}}")));
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        let s = Started { id, cancel: Arc::default(), name: Arc::default(), progress: Arc::default() };
-        let e = Entry { owner: owner.to_owned(), name: Arc::clone(&s.name), path: path.to_owned(), cells, cancel: Arc::clone(&s.cancel), progress: Arc::clone(&s.progress), started: Instant::now(), answer: None, result: None };
+        let s = Started { id, stop: Arc::default(), name: Arc::default(), progress: Arc::default() };
+        let e = Entry { owner: owner.to_owned(), name: Arc::clone(&s.name), path: path.to_owned(), cells, stop: Arc::clone(&s.stop), progress: Arc::clone(&s.progress), started: Instant::now(), answer: None, result: None };
         by.insert(id, e);
         Ok(s)
     }
@@ -382,24 +493,49 @@ impl Running {
         }
     }
 
-    /// Cancels `owner`'s bakes (all, or `job`): how many. Another's bake is refused
-    /// (`not_job_owner`, naming its owner); with no `job`, when the caller runs none and others
-    /// do, the refusal names their owners (nothing is cancelled).
-    pub fn cancel(&self, owner: &str, job: Option<u64>) -> Result<usize, ToolOutput> {
+    /// Cancels `owner`'s bakes (all, or `job`): how many, and the ones too late to stop (their
+    /// two files are being written). Another's bake is refused (`not_job_owner`, naming its
+    /// owner), unless `force` names it and the caller is a lead or the owner (`forcer`: the
+    /// caller's name when its authority allows a forced cancel; docs/design/AUTHORITY.md,
+    /// "Jobs"); force without that authority is refused `force_needs_lead`. With no `job`,
+    /// when the caller runs none and others do, the refusal names their owners (nothing is
+    /// cancelled); force always names one job.
+    pub fn cancel(&self, owner: &str, job: Option<u64>, force: bool, forcer: Option<&str>) -> Result<Cancelled, ToolOutput> {
         let mut by = self.locked();
         Self::tidy(&mut by);
         if let Some(id) = job {
             return match by.get(&id) {
                 None => Err(unknown(id)),
-                Some(e) if e.owner != owner => Err(not_owner(id, &e.name(), "cancels")),
-                Some(e) if !e.running() => Ok(0),
+                Some(e) if e.owner != owner && !force => Err(not_owner(id, &e.name(), "cancels")),
+                Some(e) if e.owner != owner && forcer.is_none() => Err(ToolOutput::error(
+                    crate::authority::refusal(crate::authority::Site::ForceOverride, format!("bake {id} is {}'s: a forced cancel of another agent's bake needs lead authority (a lead or the owner); ask them, or the lead", e.name()))
+                        .with("job", id)
+                        .with("owner", e.name().as_str())
+                        .with("needs", crate::authority::Authority::Lead.name())
+                        .to_json()
+                        .to_string(),
+                )),
+                Some(e) if !e.running() => Ok(Cancelled::default()),
                 Some(e) => {
-                    e.cancel.store(true, Ordering::Relaxed);
-                    Ok(1)
+                    let forced = (e.owner != owner).then_some(forcer).flatten();
+                    match e.stop.cancel(forced) {
+                        Ok(()) => Ok(Cancelled { stopped: vec![id], too_late: Vec::new(), forced: forced.map(|_| e.name()) }),
+                        Err(TooLate) => Err(too_late(id)),
+                    }
                 }
             };
         }
-        let mine = by.values().filter(|e| e.running() && e.owner == owner).map(|e| e.cancel.store(true, Ordering::Relaxed)).count();
+        if force {
+            return Err(err("invalid_arguments", "force stops one bake: {\"cancel\": true, \"job\": N, \"force\": true} (sprite_bake {\"list\": true} says which run)"));
+        }
+        let mut out = Cancelled::default();
+        for (id, e) in by.iter().filter(|(_, e)| e.running() && e.owner == owner) {
+            match e.stop.cancel(None) {
+                Ok(()) => out.stopped.push(*id),
+                Err(TooLate) => out.too_late.push(*id),
+            }
+        }
+        let mine = out.stopped.len() + out.too_late.len();
         let mut others: Vec<String> = by.values().filter(|e| e.running() && e.owner != owner).map(Entry::name).collect();
         if mine == 0 && !others.is_empty() {
             others.sort();
@@ -413,18 +549,37 @@ impl Running {
                 .to_string(),
             ));
         }
-        Ok(mine)
+        Ok(out)
     }
 
-    /// Bake `id`'s progress, or its kept result, for its owner only; waiting up to `wait` for a
-    /// bake still running to end.
-    pub fn ask(&self, owner: &str, id: u64, wait: Duration) -> ToolOutput {
+    /// Every bake running or kept: the caller's own, or (`all`: a lead or the owner) everyone's,
+    /// at most [`MAX_LISTED_JOBS`], newest first.
+    pub fn list(&self, owner: &str, all: bool) -> Json {
+        let mut by = self.locked();
+        Self::tidy(&mut by);
+        let seen: Vec<(&u64, &Entry)> = by.iter().rev().filter(|(_, e)| all || e.owner == owner).collect();
+        let jobs = seen.iter().take(MAX_LISTED_JOBS).map(|(id, e)| {
+            let mut j = running(**id, e);
+            if let Some((out, _)) = &e.result {
+                j.set("status", Json::from(if out.is_error { "ended_with_error" } else { "done" }));
+            }
+            j.set("owner", Json::from(e.name().as_str()));
+            j.set("next", Json::from(format!("sprite_bake {{job: {id}}} reads it")));
+            j
+        });
+        Json::obj([("jobs", Json::arr(jobs.collect::<Vec<_>>())), ("count", Json::from(seen.len())), ("of", Json::from(if all { "everyone (lead authority)" } else { "yours" }))])
+    }
+
+    /// Bake `id`'s progress, or its kept result, for its owner (and, `any`, for a lead or the
+    /// owner of the project, who may always read what runs); waiting up to `wait` for a bake
+    /// still running to end.
+    pub fn ask(&self, owner: &str, id: u64, wait: Duration, any: bool) -> ToolOutput {
         let taken = {
             let mut by = self.locked();
             Self::tidy(&mut by);
             match by.get_mut(&id) {
                 None => return unknown(id),
-                Some(e) if e.owner != owner => return not_owner(id, &e.name(), "reads"),
+                Some(e) if e.owner != owner && !any => return not_owner(id, &e.name(), "reads"),
                 Some(e) => match &e.result {
                     Some((out, _)) => return out.clone(),
                     None if wait.is_zero() => None,
@@ -545,25 +700,55 @@ pub fn sheet_of(p: &plan::Plan, req: &Request, built: &crate::models::Built, lig
     }
 }
 
+/// A caller with no identity of its own (no `agent_hello`; a shell's `specula call` without
+/// `--as`): its identity is its session's id, which ends with the session, so a bake kept past
+/// its call could be read by nobody (review 1, finding 4: one such bake committed and its answer
+/// was unreadable). Such a caller's bake runs within its call or not at all.
+fn anonymous(owner: &str, session: &SessionInfo) -> bool {
+    owner == session.id
+}
+
+/// The words that tell a caller with no name how to keep a bake past its call.
+const NAME_YOURSELF: &str = "a bake that runs past its call is kept for its owner's name, and you have none (no agent_hello): say agent_hello {name: \"...\"} first, or from a shell `specula call --as NAME sprite_bake ...`; the same name reads it later";
+
 fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
     let started = Instant::now();
     let Some(owner) = owner_key(tools, session) else { return err("no_answer", "the engine didn't say who you are") };
+    // A lead or the owner may force a cancel, list and read every bake (docs/design/AUTHORITY.md,
+    // "Jobs"); everyone else sees their own.
+    let lead = crate::authority::of_session(&session.id) >= crate::authority::Authority::Lead;
     let req = match call {
-        Call::Cancel(job) => {
-            return match tools.bakes.cancel(&owner, job) {
-                Ok(n) => ToolOutput::text(
-                    Json::obj([
-                        ("cancelled", Json::from(n)),
-                        ("note", Json::from(if n == 0 { "no bake of yours is running: nothing was cancelled" } else { "each stops at its next step and answers \"cancelled\" (to its call, or to sprite_bake {job}); nothing of it is written" })),
-                    ])
-                    .to_string(),
-                ),
+        Call::Cancel { job, force } => {
+            let forcer = lead.then_some(session.id.as_str());
+            return match tools.bakes.cancel(&owner, job, force, forcer) {
+                Ok(c) => {
+                    let n = c.stopped.len();
+                    let note = match (n, c.too_late.is_empty(), &c.forced) {
+                        (0, true, _) => "no bake of yours is running: nothing was cancelled".to_owned(),
+                        (_, _, Some(whose)) => format!("{whose}'s bake stops at its next step and answers \"cancelled\" to its owner (logged on the board); nothing of it is written"),
+                        (_, true, None) => "each stops at its next step and answers \"cancelled\" (to its call, or to sprite_bake {job}); nothing of it is written".to_owned(),
+                        (_, false, None) => format!("those stopped answer \"cancelled\", nothing of them written; too late for {:?}: they are writing their two files now and their answers say what was written", c.too_late),
+                    };
+                    let mut j = Json::obj([("cancelled", Json::from(n)), ("note", Json::from(note))]);
+                    if !c.too_late.is_empty() {
+                        j.set("too_late", Json::arr(c.too_late.iter().map(|id| Json::from(*id))));
+                    }
+                    if let Some(whose) = c.forced {
+                        j.set("forced", Json::from(whose));
+                    }
+                    ToolOutput::text(j.to_string())
+                }
                 Err(out) => out,
             };
         }
-        Call::Job { id, wait_s } => return tools.bakes.ask(&owner, id, Duration::from_secs(wait_s)),
+        Call::Job { id, wait_s } => return tools.bakes.ask(&owner, id, Duration::from_secs(wait_s), lead),
+        Call::List => return ToolOutput::text(tools.bakes.list(&owner, lead).to_string()),
         Call::Bake(r) => *r,
     };
+    let nameless = anonymous(&owner, session);
+    if nameless && !req.dry_run && req.wait_s == 0 {
+        return err("needs_a_name", format!("wait_s 0 asks for a bake kept past its call, and {NAME_YOURSELF}; or give wait_s (up to {WAIT_S}) and the bake answers within its call"));
+    }
     // The model, built as an entity would build it, lent to this thread.
     let slot = BuiltSlot::default();
     let built_answer = tools.send(session, Command::ModelExport(req.spec.clone(), Arc::clone(&slot)));
@@ -587,7 +772,9 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
                 Err(out) => return out,
             };
             if snap.kind != Some(kind) {
-                return err("not_a_sprite_path", format!("{p} isn't a {} file of the project here (an atlas and its frame data go in a folder named sprites under assets/, e.g. \"{FOLDER}/wolf.png\")", kind.name()));
+                // (The path rule was checked as the arguments were read: a project with no
+                // assets mount, say.)
+                return err("not_a_sprite_path", format!("{p} isn't a {} file of the project here ({}; the project mirrors its assets/ folder)", kind.name(), PATH_RULE));
             }
             if let Some(e) = snap.claimed {
                 return ToolOutput::error(e.to_json().to_string());
@@ -600,7 +787,7 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
     }
     // The bake: a job of the caller's identity, cancellable by its owner (a dry run is none).
     let s = if req.dry_run {
-        Started { id: 0, cancel: Arc::default(), name: Arc::default(), progress: Arc::default() }
+        Started { id: 0, stop: Arc::default(), name: Arc::default(), progress: Arc::default() }
     } else {
         match tools.bakes.start(&owner, &png_path, plan.cells.len()) {
             Ok(s) => s,
@@ -616,7 +803,7 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
         bases,
         assets: tools.procgen.assets.clone(),
         store: tools.content.as_ref().map(Arc::clone),
-        cancel: Arc::clone(&s.cancel),
+        stop: Arc::clone(&s.stop),
         owner_name: Arc::clone(&s.name),
         progress: Arc::clone(&s.progress),
         done,
@@ -637,13 +824,34 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
             dropped()
         }
         Err(mpsc::RecvTimeoutError::Timeout) if s.id == 0 => err("no_answer", "the dry run did not answer in time: call again"),
+        Err(mpsc::RecvTimeoutError::Timeout) if nameless => {
+            // Not kept for a caller who cannot be found again: stopped, unless it is being
+            // written already (then its answer is waited for a little longer, and said).
+            let cells_done = s.progress.cells.load(Ordering::Relaxed);
+            match s.stop.cancel(None) {
+                Ok(()) => {
+                    tools.bakes.end(s.id);
+                    err("needs_a_name", format!("the bake did not end within wait_s ({} s; {cells_done} cells of it done), and {NAME_YOURSELF}. It was stopped; nothing was written", wait.as_secs()))
+                }
+                Err(TooLate) => {
+                    let out = answer.recv_timeout(WRITING_WAIT).unwrap_or_else(|_| err("no_answer", "the bake was writing its two files when its call's time ran out and did not answer in time: project_list says whether they are there (world_undo takes them back)"));
+                    tools.bakes.end(s.id);
+                    out
+                }
+            }
+        }
         Err(mpsc::RecvTimeoutError::Timeout) => {
             // Still running: its answer is kept for its owner, who is told how to ask.
             tools.bakes.park(s.id, answer);
-            tools.bakes.ask(&owner, s.id, Duration::ZERO)
+            tools.bakes.ask(&owner, s.id, Duration::ZERO, false)
         }
     }
 }
+
+/// How long a nameless caller's call waits, past its `wait_s`, for a bake already writing its
+/// files (one project commit and a sync: well under a second), within the engine's answer
+/// deadline.
+const WRITING_WAIT: Duration = Duration::from_secs(2);
 
 /// The answer: what was written (or would be), the atlas, what it cost. Bounded: at most
 /// [`MAX_LISTED`] strips are listed (the file has all of them).
@@ -702,6 +910,7 @@ fn answer(p: &plan::Plan, data: &sheet::SheetData, req: &Request, baked: Option<
         cost.push(("renders", Json::from(b.renders)));
         cost.push(("engine_ms", r3(b.engine_ms)));
         cost.push(("max_step_ms", r3(b.max_step_ms)));
+        cost.push(("uploads", Json::from(b.uploads)));
         a.set("png_bytes", Json::from(png_bytes));
     }
     a.set("cost", Json::obj(cost));
@@ -725,7 +934,7 @@ pub fn definitions() -> Vec<ToolDef> {
         name: "sprite_bake".into(),
         description: format!(
             "Bake a model and its clips into a sprite sheet for a 2D game: one PNG atlas with alpha (the model's silhouette exactly, from the ID buffer, \
-             never a colour key) and its frame data as JSON beside it ({FOLDER}/<recipe's name>.png and .json unless path says where). The camera is \
+             never a colour key) and its frame data as JSON beside it ({FOLDER}/<recipe's name>.png and .sheet.json unless path says where). The camera is \
              orthographic and fitted to every posed vertex of every frame from every direction, so a swung limb is never cut off and one pixel is the \
              same size in every cell; the pivot (the model's origin on its ground) is the same pixel in every cell. Each strip (a clip from a direction) \
              carries the 2D path's own sprite object: world_spawn {{shape: \"sprite\", sprite: <strips[i].sprite>}} plays it. pixel_art: no smoothing, \
@@ -735,7 +944,7 @@ pub fn definitions() -> Vec<ToolDef> {
              three_quarter (30 degrees down, the default) or top (90), or elevation_deg; the angle is in the answer and the frame data. Rendered \
              off the engine thread; the call waits up to wait_s (default {WAIT_S}) and a bake still running then answers {{job, status: \
              \"running\"}}: {{job: N, wait_s}} gives its progress or its result (kept for its owner {} minutes; its files are written when it \
-             ends); {{cancel: true}} or {{cancel: true, job: N}} stops your own. No shadow is baked in (shadow: \"blob\" adds a soft one in a cell of its own); each strip says which feet are down per \
+             ends); {{cancel: true}} or {{cancel: true, job: N}} stops your own until it begins writing (then too_late); {{list: true}} names them; a lead may read any and stop another's with force. No shadow is baked in (shadow: \"blob\" adds a soft one in a cell of its own); each strip says which feet are down per \
              frame. dry_run plans and says the atlas without rendering.",
             plan::MAX_ATLAS_SIDE,
             plan::MAX_ATLAS_PIXELS,
@@ -782,11 +991,13 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("in_place", t("boolean", "Take each clip's sideways root wander out of every frame (a 2D game moves the sprite itself); the wander is said either way")),
                     ("shadow", Json::obj([("type", Json::from("string")), ("enum", Json::arr([Json::from("none"), Json::from("blob")])), ("description", Json::from("none (default: no shadow baked in; a 2D game draws its own) or blob: a soft alpha-only ellipse in a cell of its own, drawn under the model at its pivot"))])),
                     ("light", Json::obj([("type", Json::from("string")), ("enum", Json::arr([Json::from("neutral"), Json::from("project")])), ("description", Json::from("neutral (default) or the project's: its style.toml [stage] game rig; the light turns with the camera, so every direction is lit alike on screen"))])),
-                    ("path", text(MAX_PATH_CHARS, "Where the atlas goes: a .png in a folder named sprites under assets/ (the .json goes beside it)")),
+                    ("path", text(MAX_PATH_CHARS, &format!("Where the atlas goes: {PATH_RULE}"))),
                     ("dry_run", t("boolean", "Plan only: the atlas's size, cells and scale, nothing rendered or written")),
-                    ("wait_s", int(0, WAIT_S, "How long the call waits for the bake (default 20); a bake still running then answers with its job. With job: how long to wait for its answer (default 0)")),
-                    ("job", int(1, u64::MAX >> 11, "A bake's job: alone (or with wait_s) its progress or kept result; with cancel, stop that one")),
-                    ("cancel", t("boolean", "Alone or with job: stop your own bakes running now (nothing of them is written)")),
+                    ("wait_s", int(0, WAIT_S, "How long the call waits for the bake (default 20); a bake still running then answers with its job (a caller with no name, no agent_hello, gets its answer within the call or none: its bake is stopped). With job: how long to wait for its answer (default 0)")),
+                    ("job", int(1, u64::MAX >> 11, "A bake's job: alone (or with wait_s) its progress or kept result (your own; a lead's: any); with cancel, stop that one")),
+                    ("cancel", t("boolean", "Alone or with job: stop your own bakes running now (nothing of them is written); refused too_late once a bake is writing its two files")),
+                    ("force", t("boolean", "With cancel and job: stop another agent's bake (lead or owner authority; logged on the board)")),
+                    ("list", t("boolean", "Alone: the bakes running or kept, yours (a lead's: everyone's), at most 32")),
                 ]),
             ),
         ]),

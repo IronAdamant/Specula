@@ -49,9 +49,9 @@ fn arguments_are_read_bounded_and_defaulted() {
     assert_eq!((r.ask.clips.clone(), r.ask.rate), (Clips::Named(vec!["walk".into(), "idle".into()]), Rate::Frames(6)));
     let r = bake_of(r#"{"recipe": "recipes/a.json", "directions": [0, 45, 100], "cell": [32, 48], "clips": "all", "light": "project", "path": "assets/art/sprites/a.png"}"#);
     assert_eq!(r.ask.directions.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["s", "se", "100deg"]);
-    assert_eq!((r.ask.cell, r.ask.clips.clone(), r.light, frames_path(&r.path)), ([32, 48], Clips::All, Light::Project, "assets/art/sprites/a.json".to_owned()));
-    assert_eq!(parse(&args(r#"{"cancel": true}"#)), Ok(Call::Cancel(None)));
-    assert_eq!(parse(&args(r#"{"cancel": true, "job": 3}"#)), Ok(Call::Cancel(Some(3))));
+    assert_eq!((r.ask.cell, r.ask.clips.clone(), r.light, frames_path(&r.path)), ([32, 48], Clips::All, Light::Project, "assets/art/sprites/a.sheet.json".to_owned()));
+    assert_eq!(parse(&args(r#"{"cancel": true}"#)), Ok(Call::Cancel { job: None, force: false }));
+    assert_eq!(parse(&args(r#"{"cancel": true, "job": 3}"#)), Ok(Call::Cancel { job: Some(3), force: false }));
     assert_eq!(parse(&args(r#"{"job": 3, "wait_s": 5}"#)), Ok(Call::Job { id: 3, wait_s: 5 }));
     assert_eq!(bake_of(r#"{"recipe": "recipes/a.json", "wait_s": 0}"#).wait_s, 0);
     for (bad, says) in [
@@ -437,7 +437,7 @@ fn frame_data_round_trips_and_the_2d_path_plays_each_strip_from_it() {
     }
     // The project's validator reads it; a file that lies about its grid is refused, saying where.
     assert!(sheet::validate(&text).is_ok());
-    let p = crate::project_kinds::validate("assets/sprites/shambler.json", FileKind::SpriteSheet, &text, None, &[]);
+    let p = crate::project_kinds::validate("assets/sprites/shambler.sheet.json", FileKind::SpriteSheet, &text, None, &[]);
     assert!(p.is_empty(), "{:?}", p.iter().map(|p| &p.message).collect::<Vec<_>>());
     // Version 2 lists no cells (the grid and the strips' times give them); a version 1 file,
     // which listed them, still reads the same; a list that lies about the grid is refused,
@@ -463,10 +463,10 @@ fn frame_data_round_trips_and_the_2d_path_plays_each_strip_from_it() {
     lying.set("cells", Json::arr([cell_json(c0, [c0.rect[0] + 7, c0.rect[1], c0.rect[2], c0.rect[3]])]));
     let e = SheetData::parse(&lying.to_string()).unwrap_err();
     assert!(e.at.starts_with("cells[") && e.message.contains("grid"), "{}: {}", e.at, e.message);
-    let bad = crate::project_kinds::validate("assets/sprites/shambler.json", FileKind::SpriteSheet, "{\"format\": \"x\"}", None, &[]);
+    let bad = crate::project_kinds::validate("assets/sprites/shambler.sheet.json", FileKind::SpriteSheet, "{\"format\": \"x\"}", None, &[]);
     assert!(bad.iter().any(|p| p.code == "invalid_sprite_sheet"));
     // Where the files go: kinds the project mirrors.
-    assert_eq!(crate::project::kind_for(crate::project::MountKind::Assets, "sprites/shambler.json"), Some(FileKind::SpriteSheet));
+    assert_eq!(crate::project::kind_for(crate::project::MountKind::Assets, "sprites/shambler.sheet.json"), Some(FileKind::SpriteSheet));
     assert_eq!(crate::project::kind_for(crate::project::MountKind::Assets, "sprites/shambler.png"), Some(FileKind::Png));
 }
 
@@ -485,14 +485,22 @@ fn the_same_plan_twice_and_its_bounds_on_the_answer() {
     assert!(ans.to_string().len() < 8 * 1024, "{}", ans.to_string().len());
 }
 
+fn code_of(o: &ToolOutput) -> String {
+    match &o.content[0] {
+        specula_protocol::Content::Text(t) => Json::parse(t).ok().and_then(|j| j.get("error").and_then(Json::as_str).map(str::to_owned)).unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+fn stopped(ids: &[u64]) -> Cancelled {
+    Cancelled { stopped: ids.to_vec(), ..Cancelled::default() }
+}
+
 #[test]
 fn a_bake_is_a_job_of_its_owner_and_its_answer_is_kept_for_them() {
     let r = Running::default();
-    let code = |o: &ToolOutput| match &o.content[0] {
-        specula_protocol::Content::Text(t) => Json::parse(t).ok().and_then(|j| j.get("error").and_then(Json::as_str).map(str::to_owned)).unwrap_or_default(),
-        _ => String::new(),
-    };
-    assert_eq!(r.cancel("cy", None), Ok(0), "nothing running: nothing to cancel, nobody to name");
+    let code = code_of;
+    assert_eq!(r.cancel("cy", None, false, None), Ok(Cancelled::default()), "nothing running: nothing to cancel, nobody to name");
     let a = r.start("ann", "assets/sprites/a.png", 4).unwrap();
     let b = r.start("bob", "assets/sprites/b.png", 4).unwrap();
     a.name.set("Ann".into()).unwrap();
@@ -504,34 +512,146 @@ fn a_bake_is_a_job_of_its_owner_and_its_answer_is_kept_for_them() {
     let a2 = r.start("ann", "assets/sprites/a2.png", 4).unwrap();
     assert!(r.start("ann", "assets/sprites/a3.png", 4).is_err(), "at most two of an owner's at once");
     // Cancel is the owner's: by job or all of theirs; another's is refused naming the owner.
-    assert_eq!(code(&r.cancel("bob", Some(a.id)).unwrap_err()), "not_job_owner");
-    assert!(!a.cancel.load(Ordering::Relaxed));
-    assert_eq!(r.cancel("bob", None), Ok(1));
-    assert!(b.cancel.load(Ordering::Relaxed) && !a.cancel.load(Ordering::Relaxed), "bob's cancel stops bob's bake only");
+    assert_eq!(code(&r.cancel("bob", Some(a.id), false, None).unwrap_err()), "not_job_owner");
+    assert!(!a.stop.cancelled());
+    assert_eq!(r.cancel("bob", None, false, None), Ok(stopped(&[b.id])));
+    assert!(b.stop.cancelled() && !a.stop.cancelled(), "bob's cancel stops bob's bake only");
     r.end(b.id);
-    assert_eq!(code(&r.cancel("cy", None).unwrap_err()), "not_job_owner");
-    assert_eq!(r.cancel("ann", Some(a2.id)), Ok(1));
+    assert_eq!(code(&r.cancel("cy", None, false, None).unwrap_err()), "not_job_owner");
+    assert_eq!(r.cancel("ann", Some(a2.id), false, None), Ok(stopped(&[a2.id])));
     // A bake whose call stopped waiting: its progress, then its answer, for its owner only.
     let (done, answer) = crate::jobs::channel();
     r.park(a.id, answer);
     a.progress.cells.store(3, Ordering::Relaxed);
-    let asked = r.ask("ann", a.id, Duration::ZERO);
+    let asked = r.ask("ann", a.id, Duration::ZERO, false);
     assert!(!asked.is_error && format!("{asked:?}").contains("running") && format!("{asked:?}").contains("cells_done"), "{asked:?}");
-    assert_eq!(code(&r.ask("bob", a.id, Duration::ZERO)), "not_job_owner", "the progress is the owner's");
+    assert_eq!(code(&r.ask("bob", a.id, Duration::ZERO, false)), "not_job_owner", "the progress is the owner's");
     assert!(done.send(ToolOutput::text("{\"journal\": 7}")));
     for _ in 0..2 {
-        let got = r.ask("ann", a.id, Duration::from_millis(1));
+        let got = r.ask("ann", a.id, Duration::from_millis(1), false);
         assert!(!got.is_error && format!("{got:?}").contains("journal"), "the result is kept for its owner: {got:?}");
     }
-    assert_eq!(code(&r.ask("bob", a.id, Duration::ZERO)), "not_job_owner", "the result is the owner's");
+    assert_eq!(code(&r.ask("bob", a.id, Duration::ZERO, false)), "not_job_owner", "the result is the owner's");
     // A finished bake no longer holds its atlas.
     assert!(r.start("cy", "assets/sprites/a.png", 4).is_ok());
-    assert_eq!(code(&r.ask("ann", 999, Duration::ZERO)), "unknown_job");
+    assert_eq!(code(&r.ask("ann", 999, Duration::ZERO, false)), "unknown_job");
     // An engine that dropped a parked bake unanswered says so.
     let (done, answer) = crate::jobs::channel();
     r.park(a2.id, answer);
     drop(done);
-    assert_eq!(code(&r.ask("ann", a2.id, Duration::ZERO)), "reply_dropped");
+    assert_eq!(code(&r.ask("ann", a2.id, Duration::ZERO, false)), "reply_dropped");
+}
+
+/// Review 1, finding 2: a cancel that came while the bake encoded or wrote its files was
+/// answered "cancelled: 1, nothing of it is written" and both files were committed. One state
+/// decides: a cancel before the writing begins holds (the bake then never begins it), and one
+/// after is refused `too_late`, saying so; never both.
+#[test]
+fn a_cancel_and_the_writing_cannot_both_win() {
+    let s = Stop::default();
+    assert!(s.begin_writing() && s.writing());
+    assert_eq!(s.cancel(None), Err(TooLate), "the writing began first: too late");
+    assert!(!s.cancelled());
+    let s = Stop::default();
+    assert_eq!(s.cancel(None), Ok(()));
+    assert!(!s.begin_writing() && s.cancelled(), "cancelled first: the bake never begins its writing");
+    assert_eq!(s.cancel(None), Ok(()), "a second cancel is the same cancel");
+    // Through the registry: a bake writing its files is refused, by job or among all.
+    let r = Running::default();
+    let a = r.start("ann", "assets/sprites/a.png", 4).unwrap();
+    let a2 = r.start("ann", "assets/sprites/a2.png", 4).unwrap();
+    assert!(a.stop.begin_writing());
+    let late = r.cancel("ann", Some(a.id), false, None).unwrap_err();
+    assert_eq!(code_of(&late), "too_late");
+    assert!(format!("{late:?}").contains("can no longer be stopped"), "{late:?}");
+    assert_eq!(r.cancel("ann", None, false, None), Ok(Cancelled { stopped: vec![a2.id], too_late: vec![a.id], forced: None }));
+    assert!(!a.stop.cancelled() && a2.stop.cancelled());
+}
+
+/// Review 1, finding 4: AUTHORITY.md allows a lead (or the owner) a forced cancel of another
+/// agent's job; the bakes had none. A lead's force stops another's bake and names whose; force
+/// without that authority is refused `force_needs_lead`; a lead lists and reads every bake,
+/// anyone else their own.
+#[test]
+fn a_lead_may_force_a_cancel_and_read_every_bake() {
+    let r = Running::default();
+    let a = r.start("ann", "assets/sprites/a.png", 4).unwrap();
+    a.name.set("Ann".into()).unwrap();
+    assert_eq!(code_of(&r.cancel("bob", Some(a.id), true, None).unwrap_err()), "force_needs_lead");
+    assert!(!a.stop.cancelled());
+    let forced = r.cancel("lee", Some(a.id), true, Some("lee-session")).unwrap();
+    assert_eq!(forced, Cancelled { stopped: vec![a.id], too_late: Vec::new(), forced: Some("Ann".into()) });
+    assert!(a.stop.cancelled() && a.stop.forced_by() == Some("lee-session"), "the forcer is kept for the board");
+    // Without force, a lead is refused like anyone (force is asked for, never implied).
+    let b = r.start("bob", "assets/sprites/b.png", 4).unwrap();
+    assert_eq!(code_of(&r.cancel("lee", Some(b.id), false, Some("lee-session")).unwrap_err()), "not_job_owner");
+    // The owner's own cancel is never "forced".
+    assert_eq!(r.cancel("bob", Some(b.id), true, None), Ok(stopped(&[b.id])));
+    assert!(b.stop.forced_by().is_none());
+    // Reading: the owner's, and a lead's of any.
+    assert_eq!(code_of(&r.ask("cy", a.id, Duration::ZERO, false)), "not_job_owner");
+    assert!(!r.ask("lee", a.id, Duration::ZERO, true).is_error);
+    let mine = r.list("ann", false);
+    assert_eq!(mine.get("count").and_then(Json::as_u64), Some(1));
+    let all = r.list("lee", true);
+    assert_eq!(all.get("count").and_then(Json::as_u64), Some(2));
+    assert!(all.to_string().len() < 16 * 1024);
+    // Force names one job.
+    assert!(parse(&args(r#"{"cancel": true, "force": true}"#)).unwrap_err().contains("one bake"));
+    assert!(parse(&args(r#"{"job": 3, "force": true}"#)).unwrap_err().contains("force"));
+    assert_eq!(parse(&args(r#"{"cancel": true, "job": 3, "force": true}"#)), Ok(Call::Cancel { job: Some(3), force: true }));
+    assert_eq!(parse(&args(r#"{"list": true}"#)), Ok(Call::List));
+    assert!(parse(&args(r#"{"list": true, "job": 3}"#)).is_err());
+}
+
+/// Review 1, finding 5: the parser took a .png anywhere below a folder named sprites while the
+/// frame data's kind needed its parent to be one, so `assets/sprites/h11/held.png` passed the
+/// parser and was refused `not_a_sprite_path` with a message restating the rule it met. One rule
+/// now: the parser, the file kinds and the message agree on every path.
+#[test]
+fn one_rule_says_where_a_sheet_goes() {
+    use crate::project::{kind_for, MountKind};
+    for (path, ok) in [
+        ("assets/sprites/wolf.png", true),
+        ("assets/art/sprites/wolf.png", true),
+        ("assets/sprites/h11/held.png", false),
+        ("assets/sprites/.png", false),
+        ("assets/images/wolf.png", false),
+        ("sprites/wolf.png", false),
+        ("assets/sprites/wolf.json", false),
+    ] {
+        assert_eq!(sprite_path_ok(path), ok, "{path}");
+        let parsed = parse(&args(&format!(r#"{{"recipe": "recipes/a.json", "path": "{path}"}}"#)));
+        assert_eq!(parsed.is_ok(), ok, "{path}: {parsed:?}");
+        if let Err(m) = parsed {
+            assert!(m.contains(PATH_RULE), "{m}");
+        }
+        if ok {
+            // Both files are the project's kinds there, so the bake never meets not_a_sprite_path.
+            let rel = path.strip_prefix("assets/").unwrap();
+            assert_eq!(kind_for(MountKind::Assets, rel), Some(FileKind::Png), "{path}");
+            assert_eq!(kind_for(MountKind::Assets, frames_path(path).strip_prefix("assets/").unwrap()), Some(FileKind::SpriteSheet), "{path}");
+        }
+    }
+    // The schema says the rule as the parser does.
+    let schema = definitions()[0].input_schema.to_string();
+    assert!(schema.contains("a .png directly in a folder named sprites under assets/"), "{schema}");
+}
+
+/// Finding 6: putting `sprites` among the folders a project mirrors must not change what a
+/// project that already keeps hand-made sheets there reads. An Aseprite or TexturePacker sheet
+/// (`hero.json` beside `hero.png`) is not frame data: it is not mirrored as `sprite_sheet` (nor
+/// validated as one), as before; its PNG is mirrored, as a PNG in `textures` is.
+#[test]
+fn a_projects_own_sprite_sheets_are_left_as_they_were() {
+    use crate::project::{kind_for, MountKind};
+    let aseprite = r#"{"frames": {"hero 0.aseprite": {"frame": {"x": 0, "y": 0, "w": 32, "h": 32}, "duration": 100}}, "meta": {"app": "aseprite", "image": "hero.png", "size": {"w": 32, "h": 32}}}"#;
+    for rel in ["sprites/hero.json", "sprites/enemies/bat.json", "art/sprites/hero.json", "sprites/hero.atlas.json"] {
+        assert_eq!(kind_for(MountKind::Assets, rel), None, "{rel} is the project's own: not mirrored, not read");
+    }
+    assert_eq!(kind_for(MountKind::Assets, "sprites/hero.png"), Some(FileKind::Png));
+    // Were it read as frame data, it would be refused: the reason the kind is narrowed.
+    assert!(crate::project_kinds::validate("assets/sprites/hero.sheet.json", FileKind::SpriteSheet, aseprite, None, &[]).iter().any(|p| p.code == "invalid_sprite_sheet"));
 }
 
 /// The lead's question (2026-11-24): a level view shows no top face. The cameras the renders use,
@@ -622,11 +742,16 @@ fn engine_built(e: &mut crate::Engine, recipe: &str) -> Arc<Built> {
 }
 
 /// A bake's job as the engine runs it, up to the atlas (before its encode and commit).
-fn job_of(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<Vec<[u8; 3]>>, outline: bool) -> (job::BakeJob, Plan, Arc<AtomicBool>) {
+fn job_of(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<Vec<[u8; 3]>>, outline: bool) -> (job::BakeJob, Plan, Arc<Stop>) {
+    job_with(e, built, ask, palette, outline, None)
+}
+
+/// [`job_of`] with a content store (the encode puts the atlas there).
+fn job_with(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<Vec<[u8; 3]>>, outline: bool, store: Option<Arc<crate::blobs::ContentStore>>) -> (job::BakeJob, Plan, Arc<Stop>) {
     let p = plan(built, built.anims.as_deref(), ask).unwrap();
     let mut req = bake_of(r#"{"recipe": "recipes/shambler.json"}"#);
     req.ask = ask.clone();
-    let cancel = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(Stop::default());
     let (done, _answer) = crate::jobs::channel();
     let bake = job::Bake {
         req,
@@ -634,8 +759,8 @@ fn job_of(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<
         built: Arc::clone(built),
         bases: [(0, 0); 2],
         assets: std::path::PathBuf::new(),
-        store: None,
-        cancel: Arc::clone(&cancel),
+        store,
+        stop: Arc::clone(&stop),
         owner_name: Arc::default(),
         progress: Arc::default(),
         done,
@@ -644,29 +769,58 @@ fn job_of(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<
     let outline = if outline { palette.as_deref().and_then(darkest) } else { None };
     let look = job::Look { rig: specula_studio::rules::neutral_rig(), light: "neutral".into(), palette, outline, notes: Vec::new() };
     let owner = crate::jobs::JobOwner { name: "sprite-test".into(), key: "sprite-test".into() };
-    (job::BakeJob::new(e, bake, look, owner, "sprite-test", 1), p, cancel)
+    (job::BakeJob::new(e, bake, look, owner, "sprite-test", 1), p, stop)
 }
 
 /// Steps a bake's job (and the workers its cells resolve on) until its atlas is whole, it ends,
-/// or `cancel_after` steps have passed (then it is cancelled).
-fn drive(e: &mut crate::Engine, j: &mut job::BakeJob, cancel: &AtomicBool, cancel_after: Option<usize>) -> Result<job::Baked, ToolOutput> {
-    use crate::steps::{Step, StepJob};
+/// or `cancel_after` steps have passed (then it is cancelled). It is ended as the step queue
+/// ends a job ([`StepJob::on_end`]), so its target and pin go back.
+fn drive(e: &mut crate::Engine, j: &mut job::BakeJob, stop: &Stop, cancel_after: Option<usize>) -> Result<job::Baked, ToolOutput> {
+    use crate::steps::{Ended, Step, StepJob};
     let (reply, _answer) = crate::jobs::channel();
     let give_up = Instant::now() + std::time::Duration::from_secs(120);
     let mut steps = 0;
     loop {
         assert!(Instant::now() < give_up, "the bake never finished");
         if let Some(b) = j.rendered() {
+            j.on_end(e, Ended::Answered);
             return Ok(b);
         }
         if cancel_after == Some(steps) {
-            cancel.store(true, Ordering::Relaxed);
+            let _ = stop.cancel(None);
         }
         steps += 1;
         match j.step(e, &reply) {
             Step::More => {}
             Step::Wait => e.workers_wait_one(std::time::Duration::from_millis(5)),
-            Step::Done(o) => return Err(o),
+            Step::Done(o) => {
+                j.on_end(e, Ended::Answered);
+                return Err(o);
+            }
+            Step::Handed => panic!("a bake answers in its steps"),
+        }
+        e.pump_workers(None);
+    }
+}
+
+/// Steps a bake's job to its answer, calling `between` before every step (with the step's
+/// number); ended as the step queue ends one.
+fn drive_to_end(e: &mut crate::Engine, j: &mut job::BakeJob, mut between: impl FnMut(&mut crate::Engine, &mut job::BakeJob, usize)) -> ToolOutput {
+    use crate::steps::{Ended, Step, StepJob};
+    let (reply, _answer) = crate::jobs::channel();
+    let give_up = Instant::now() + std::time::Duration::from_secs(120);
+    let mut steps = 0;
+    loop {
+        assert!(Instant::now() < give_up, "the bake never finished");
+        between(e, j, steps);
+        steps += 1;
+        match j.step(e, &reply) {
+            Step::More => {}
+            Step::Wait => e.workers_wait_one(std::time::Duration::from_millis(5)),
+            Step::Done(o) => {
+                j.on_end(e, Ended::Answered);
+                return o;
+            }
             Step::Handed => panic!("a bake answers in its steps"),
         }
         e.pump_workers(None);
@@ -674,8 +828,8 @@ fn drive(e: &mut crate::Engine, j: &mut job::BakeJob, cancel: &AtomicBool, cance
 }
 
 fn bake_on(e: &mut crate::Engine, built: &Arc<Built>, ask: &Ask, palette: Option<Vec<[u8; 3]>>, cancel_after: Option<usize>) -> (Result<job::Baked, ToolOutput>, Plan) {
-    let (mut j, p, cancel) = job_of(e, built, ask, palette, false);
-    (drive(e, &mut j, &cancel, cancel_after), p)
+    let (mut j, p, stop) = job_of(e, built, ask, palette, false);
+    (drive(e, &mut j, &stop, cancel_after), p)
 }
 
 fn gpu_engine() -> Option<crate::Engine> {
@@ -787,4 +941,198 @@ fn a_cancelled_bake_stops_and_hands_nothing_over() {
     assert!(format!("{out:?}").contains("cancelled") && format!("{out:?}").contains("nothing was written"), "{out:?}");
     // Its own target went with it, and nothing of it is left on the GPU.
     assert!(!e.gpu.offscreen_pending(), "a cancelled bake left a render in flight");
+}
+
+/// The engine's cached targets of `size`.
+fn cached(e: &crate::Engine, size: (u32, u32)) -> usize {
+    e.targets.iter().filter(|(s, _)| *s == size).count()
+}
+
+/// A bake of the statue at sixteen directions, 32-pixel cells, one sample: a target of 32 x 32.
+fn small_ask() -> Ask {
+    ask(Clips::Still, 16, Rate::Frames(1), 32, 1)
+}
+
+/// Review 1, finding 1 (major): the bake pinned its build once, under its session, and the
+/// studio prunes a pin whose session is gone or that sat 60 s: a shell's `specula call` closes
+/// its session at once, so within a second the pin went, and in a window every cell uploaded
+/// the model again (`posed_draws`) for the next sync to drop it (54 s against 13 s; a textured
+/// model's second upload fails `Released`). The pin is the job's now: with the session gone, a
+/// minute past, and the window's sync between every cell, the build is uploaded once. Counted,
+/// not timed. Once the bake ends its pin is gone.
+#[test]
+fn a_bakes_build_is_uploaded_once_though_its_session_closed_and_the_window_synced_between_cells() {
+    let _one = GPU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut e) = gpu_engine() else { return };
+    let built = engine_built(&mut e, "recipes/shambler.json");
+    let a = ask(Clips::Named(vec!["walk".into()]), 4, Rate::Frames(4), 32, 1);
+    let (mut j, p, _stop) = job_of(&mut e, &built, &a, None, false);
+    let pin = j.pin_key();
+    let before = e.models.uploads();
+    let nobody = std::collections::BTreeSet::new();
+    let out = drive_to_end(&mut e, &mut j, |e, j, _| {
+        if !j.released() {
+            assert!(e.studio_pinned(pin), "the bake's pin went while it ran");
+        }
+        // Its session closed long ago (no session is alive) and more than a minute has passed.
+        e.studio_prune_pins(Instant::now() + crate::Engine::PIN_IDLE + std::time::Duration::from_secs(5), &nobody);
+        // The window's sync, as after any change to the world.
+        e.models.resync();
+        let _ = e.sync_meshes();
+    });
+    // (No content store here: it ends at the encode, every cell rendered.)
+    assert_eq!(code_of(&out), "no_content_store", "{out:?}");
+    assert_eq!(e.models.uploads() - before, 1, "the build was uploaded more than once in a bake of {} cells", p.cells.len());
+    assert!(!e.studio_pinned(pin), "the bake's pin outlived it");
+}
+
+/// A job that waits for ever (it fills an owner's step slots).
+struct Waits;
+
+impl crate::steps::StepJob for Waits {
+    fn kind(&self) -> &'static str {
+        "waits"
+    }
+
+    fn step(&mut self, _: &mut crate::Engine, _: &crate::jobs::Reply) -> crate::steps::Step {
+        crate::steps::Step::Wait
+    }
+}
+
+fn start_of(call: u64) -> (crate::steps::StepStart, std::sync::mpsc::Receiver<ToolOutput>) {
+    let (reply, answer) = crate::jobs::channel();
+    let owner = crate::jobs::JobOwner { name: "sprite-test".into(), key: "sprite-test".into() };
+    (crate::steps::StepStart { owner, session: "sprite-test".into(), call, reply, deadline: Instant::now() + std::time::Duration::from_secs(120), class: crate::schedule::Class::Render }, answer)
+}
+
+/// Passes of the step queue until `done` (the workers' answers taken in between).
+fn pass_until(e: &mut crate::Engine, mut done: impl FnMut(&mut crate::Engine) -> bool) {
+    let give_up = Instant::now() + std::time::Duration::from_secs(120);
+    while !done(e) {
+        assert!(Instant::now() < give_up, "never came");
+        e.steps_pass();
+        e.pump_workers(None);
+        e.workers_wait_one(std::time::Duration::from_millis(2));
+    }
+}
+
+/// Review 1, finding 3: a bake the step queue dropped never gave its target back nor let its
+/// pin go (no end hook): at its deadline, refused `job_busy` after its first slices took a
+/// target, or at the engine's shutdown. Each way, the target cache and the pins are as they were
+/// before the bake; a target whose render was still on the GPU goes back once that render is
+/// done (polled, never waited for), and nothing is left on the GPU.
+#[test]
+fn a_bake_the_queue_drops_gives_its_target_and_pin_back() {
+    let _one = GPU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut e) = gpu_engine() else { return };
+    let built = engine_built(&mut e, "recipes/statue_angel.json");
+    let size = (32, 32);
+    // One bake first, so the cache holds a target of the size: every bake after takes it.
+    let (r, _) = bake_on(&mut e, &built, &small_ask(), None, None);
+    r.unwrap_or_else(|o| panic!("{o:?}"));
+    assert_eq!(cached(&e, size), 1);
+    for how in ["deadline", "refused", "shutdown"] {
+        let (j, _, _) = job_of(&mut e, &built, &small_ask(), None, false);
+        let pin = j.pin_key();
+        assert!(e.studio_pinned(pin));
+        let mut fillers = Vec::new();
+        if how == "refused" {
+            // The owner's step slots full: its bake runs its first slices in its call, then is
+            // refused.
+            for _ in 0..crate::steps::MAX_STEPS_PER_OWNER {
+                let (s, a) = start_of(7);
+                e.step_job(s, Box::new(Waits));
+                fillers.push(a);
+            }
+        }
+        let (s, answer) = start_of(1);
+        e.step_job_kept(s, Box::new(j));
+        match how {
+            "refused" => {
+                let out = answer.try_recv().expect("refused at once");
+                assert_eq!(code_of(&out), "job_busy", "{out:?}");
+            }
+            _ => {
+                // Queued, its target taken (its first slices ran in its call; a render of it is likely on the GPU).
+                pass_until(&mut e, |e| e.steps_queued() > 0 && cached(e, size) == 0);
+                if how == "deadline" {
+                    e.steps_expire_all();
+                    e.steps_pass();
+                } else {
+                    e.steps_shutting_down();
+                }
+                let out = answer.try_recv().expect("answered");
+                assert_eq!(code_of(&out), if how == "deadline" { "timed_out" } else { "shutting_down" }, "{out:?}");
+            }
+        }
+        // Back in the cache once its render is done (the deadline's case: polled by later passes).
+        pass_until(&mut e, |e| e.steps.orphans.is_empty() && !e.gpu.offscreen_pending());
+        assert_eq!(cached(&e, size), 1, "{how}: the bake's target did not go back");
+        assert!(!e.studio_pinned(pin), "{how}: the bake's pin outlived it");
+        // The fillers go too.
+        if how == "refused" {
+            e.steps_shutting_down();
+        }
+        drop(fillers);
+    }
+}
+
+/// Finding 7 (not checked by the review): the re-render loop. A cell whose ids another render
+/// keeps taking before it lands (an ID render on another target settles the bake's and
+/// overwrites the shared ID buffer) is rendered again, and was so for ever; now at most
+/// MAX_RERENDERS_PER_CELL times, then the bake ends `render_contended`, nothing written, its
+/// target given back.
+#[test]
+fn a_cell_whose_ids_are_always_taken_ends_the_bake_at_a_bound() {
+    let _one = GPU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut e) = gpu_engine() else { return };
+    let built = engine_built(&mut e, "recipes/statue_angel.json");
+    let other = e.gpu.create_target(16, 16).unwrap();
+    let (mut j, _, _) = job_of(&mut e, &built, &small_ask(), None, false);
+    let mut taken = 0;
+    let out = drive_to_end(&mut e, &mut j, |e, j, _| {
+        use crate::steps::StepJob;
+        if j.on_gpu() {
+            // Another tool's ID render, between the bake's render and its landing.
+            e.gpu.render_with_ids(other, &specula_gpu::FrameDesc { reverse_z: true, ..Default::default() }, &[]).unwrap();
+            taken += 1;
+        }
+    });
+    assert_eq!(code_of(&out), "render_contended", "{out:?}");
+    assert_eq!(taken, job::MAX_RERENDERS_PER_CELL as usize + 1, "one cell, rendered again up to the bound");
+    assert!(j.released() && !e.gpu.offscreen_pending());
+    e.gpu.destroy_target(other);
+}
+
+/// Review 1, finding 2, in the job: a cancel while the atlas is encoded (before the worker
+/// stores it, or once it has) is honoured: the bake answers `cancelled`, nothing is written, and
+/// what the encode put in the content store is taken back (the store is as it was).
+#[test]
+fn a_cancel_while_the_atlas_is_encoded_writes_nothing_and_leaves_nothing_stored() {
+    let _one = GPU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut e) = gpu_engine() else { return };
+    let built = engine_built(&mut e, "recipes/statue_angel.json");
+    for (i, when) in ["as the encode is asked for", "once the encode has stored the atlas"].into_iter().enumerate() {
+        let dir = std::env::temp_dir().join(format!("specula-sprite-cancel-{i}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Arc::new(crate::blobs::ContentStore::open(&dir.join("content")).unwrap());
+        let (mut j, _, stop) = job_with(&mut e, &built, &small_ask(), None, false, Some(Arc::clone(&store)));
+        let out = drive_to_end(&mut e, &mut j, |_, j, _| {
+            let now = if i == 0 { j.phase_name() == "encoding" } else { j.encoded() };
+            if now {
+                assert_eq!(stop.cancel(None), Ok(()), "{when}: the cancel was refused");
+            }
+        });
+        assert_eq!(code_of(&out), "cancelled", "{when}: {out:?}");
+        assert!(format!("{out:?}").contains("nothing was written"));
+        assert!(!stop.writing(), "{when}: its writing began");
+        // What the encode stored is taken back (on a worker).
+        let give_up = Instant::now() + std::time::Duration::from_secs(30);
+        while store.stats() != (0, 0) {
+            assert!(Instant::now() < give_up, "{when}: the store kept {:?}", store.stats());
+            e.pump_workers(None);
+            e.workers_wait_one(std::time::Duration::from_millis(5));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

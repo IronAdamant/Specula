@@ -104,8 +104,9 @@ pub enum FileKind {
     /// `game.json` at a project's root: the game file (`specula_ludus::GameFile`), which the
     /// project shell follows while the engine runs.
     Game,
-    /// `*.json` in a folder named `sprites`: a baked sprite sheet's frame data (`sprite_bake`;
-    /// read and checked by [`crate::sprite_bake::sheet::SheetData::parse`]).
+    /// `*.sheet.json` directly in a folder named `sprites`: a baked sprite sheet's frame data
+    /// (`sprite_bake`; read and checked by [`crate::sprite_bake::sheet::SheetData::parse`]).
+    /// Any other JSON there (a hand-made sheet's own) is not mirrored, as before the kind.
     SpriteSheet,
     /// Binary files (see [`FileKind::is_binary`]).
     Png,
@@ -428,7 +429,9 @@ pub fn kind_for(mount: MountKind, rel: &str) -> Option<FileKind> {
                 "anims" => Some(FileKind::AnimSet),
                 "timelines" => Some(FileKind::Timeline),
                 "strings" => Some(FileKind::Strings),
-                "sprites" => Some(FileKind::SpriteSheet),
+                // A baked sheet's frame data only (`sprite_bake`): any other JSON in a sprites
+                // folder (a hand-made sheet's own) is the project's to keep as it is, unread.
+                "sprites" if name.ends_with(crate::sprite_bake::FRAMES_SUFFIX) => Some(FileKind::SpriteSheet),
                 _ => None,
             }
         }

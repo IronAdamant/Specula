@@ -498,7 +498,9 @@ struct Target {
 
 /// A call's pinned builds (see [`GpuModels::set_pinned`]).
 struct Pin {
-    session: String,
+    /// The session whose call holds it; `None`: a kept job's (`sprite_bake`), which outlives
+    /// its session and holds the pin until the job ends ([`Engine::pin_for_kept_job`]).
+    session: Option<String>,
     builds: BTreeSet<u64>,
     last: Instant,
     /// The call ended: its builds stay pinned for [`PIN_GRACE`] (an agent's next call in a taste
@@ -1125,7 +1127,7 @@ impl Engine {
     /// an upload the call still needs (a textured glTF's textures leave the CPU when uploaded).
     pub(crate) fn studio_enqueue(&mut self, job: Box<RenderJob>) {
         let now = Instant::now();
-        let pin = self.studio.pins.entry(job.call).or_insert_with(|| Pin { session: job.session.clone(), builds: BTreeSet::new(), last: now, done: false });
+        let pin = self.studio.pins.entry(job.call).or_insert_with(|| Pin { session: Some(job.session.clone()), builds: BTreeSet::new(), last: now, done: false });
         pin.last = now;
         let mut changed = false;
         for p in &job.req.subjects {
@@ -1141,11 +1143,38 @@ impl Engine {
     /// the sync would drop an upload no entity wants). [`Engine::studio_done`] with the same key
     /// lets it go after [`PIN_GRACE`].
     pub(crate) fn pin_for_job(&mut self, key: u64, session: &str, build: u64) {
-        let pin = self.studio.pins.entry(key).or_insert_with(|| Pin { session: session.to_owned(), builds: BTreeSet::new(), last: Instant::now(), done: false });
+        let pin = self.studio.pins.entry(key).or_insert_with(|| Pin { session: Some(session.to_owned()), builds: BTreeSet::new(), last: Instant::now(), done: false });
         pin.last = Instant::now();
         if pin.builds.insert(build) {
             self.studio_pins_changed();
         }
+    }
+
+    /// Pins `build` on the GPU for a kept step job keyed `key` (`sprite_bake`): held by the job,
+    /// not by a session or a clock. A bake outlives the session that started it (a shell's
+    /// `specula call` closes its own at once) and may run minutes; a pin tied to either went
+    /// within a second or at 60 s, and every cell after that uploaded the model again (review 1
+    /// of the bake, finding 1). Never pruned: [`Engine::studio_unpin`] at the job's end
+    /// ([`crate::steps::StepJob::on_end`], called on every way a job leaves the queue) lets it
+    /// go. Called again each step, it costs a map lookup.
+    pub(crate) fn pin_for_kept_job(&mut self, key: u64, build: u64) {
+        let pin = self.studio.pins.entry(key).or_insert_with(|| Pin { session: None, builds: BTreeSet::new(), last: Instant::now(), done: false });
+        if pin.builds.insert(build) {
+            self.studio_pins_changed();
+        }
+    }
+
+    /// A kept job's pin goes at once ([`Engine::pin_for_kept_job`]): no pin outlives its job.
+    pub(crate) fn studio_unpin(&mut self, key: u64) {
+        if self.studio.pins.remove(&key).is_some() {
+            self.studio_pins_changed();
+        }
+    }
+
+    /// Tests: whether a pin keyed `key` is held.
+    #[cfg(test)]
+    pub(crate) fn studio_pinned(&self, key: u64) -> bool {
+        self.studio.pins.contains_key(&key)
     }
 
     /// A call ended: its builds stay pinned for [`PIN_GRACE`], then go.
@@ -1340,12 +1369,25 @@ impl Engine {
             return;
         }
         let alive: BTreeSet<String> = server.all_sessions().into_iter().map(|s| s.id).chain([gallery::WORKER_SESSION.to_owned()]).collect();
+        self.studio_prune_pins(now, &alive);
+    }
+
+    /// Pins of sessions not in `alive`, or idle past [`PIN_IDLE`] (ended: [`PIN_GRACE`]), go; a
+    /// kept job's pin (no session) is its job's to let go, never pruned here.
+    pub(crate) fn studio_prune_pins(&mut self, now: Instant, alive: &BTreeSet<String>) {
         let before = self.studio.pins.len();
-        self.studio.pins.retain(|_, p| alive.contains(&p.session) && now - p.last <= if p.done { PIN_GRACE } else { PIN_IDLE });
+        self.studio.pins.retain(|_, p| match &p.session {
+            None => true,
+            Some(s) => alive.contains(s) && now.saturating_duration_since(p.last) <= if p.done { PIN_GRACE } else { PIN_IDLE },
+        });
         if self.studio.pins.len() != before {
             self.studio_pins_changed();
         }
     }
+
+    /// Tests: how long a pin may sit idle before it is pruned.
+    #[cfg(test)]
+    pub(crate) const PIN_IDLE: Duration = PIN_IDLE;
 
     /// Whether a render needs a skinned or textured pipeline variant that is still compiling
     /// (the builds' uploads started it; the render waits); a failed variant doesn't wait (the
