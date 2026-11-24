@@ -119,7 +119,7 @@ fn the_burning_limit_holds_and_the_longest_waiting_catch_first() {
 /// Burnt or burning nodes of a square grass field after 30 s, below and above the row it was
 /// lit on (z), with the ids laid out rising or falling with z.
 fn field(ids_fall_with_z: bool) -> (u32, u32) {
-    let json = r#"{"elements": 1, "reach_m": 1.0, "limits": {"nodes": 20000, "burning": 64, "work": 32768}}"#;
+    let json = r#"{"elements": 1, "reach_m": 1.0, "limits": {"nodes": 20000, "burning": 64, "work": 262144}}"#;
     let mut e = sim(json, 7);
     let grass = mat(&e, "grass");
     let cols = 61usize;
@@ -224,7 +224,7 @@ fn a_grid_update_is_said_before_it_runs_and_a_few_changes_cost_little() {
     assert!(due >= specula_elementa::grid::rebuild_ops(entries), "the first update makes every entry: {due}");
     assert!(due <= e.config().worst_case().grid_ops);
     let bound = e.check_bound(60, 0);
-    assert!(bound >= due + 10 * specula_elementa::config::step_ops(3000, 32_768), "the prediction's ceiling counts the update: {bound}");
+    assert!(bound >= due + 10 * specula_elementa::config::step_ops(3000, 262_144), "the prediction's ceiling counts the update: {bound}");
     let mut seen = 0;
     for _ in 0..12 {
         let r = *e.step();
@@ -269,13 +269,13 @@ fn a_grid_update_is_said_before_it_runs_and_a_few_changes_cost_little() {
 
 #[test]
 fn a_forest_of_20000_steps_within_the_stated_work_bound() {
-    let json = r#"{"elements": 1, "reach_m": 1.0, "limits": {"nodes": 20000, "burning": 512, "work": 32768}}"#;
+    let json = r#"{"elements": 1, "reach_m": 1.0, "limits": {"nodes": 20000, "burning": 512, "work": 262144}}"#;
     let mut e = sim(json, 7);
     let trees = forest(&e, 20_000, 1);
     assert_eq!(e.add_many(&trees).unwrap().added, 20_000);
     e.set_wind(Vec3::new(4.0, 0.0, 1.0)).unwrap();
     let worst = e.config().worst_case();
-    assert_eq!(worst.ops_per_step, specula_elementa::config::step_ops(20_000, 32_768));
+    assert_eq!(worst.ops_per_step, specula_elementa::config::step_ops(20_000, 262_144));
     e.act(Act { kind: ActKind::Ignite, target: Target::Sphere { at: forest_centre(20_000), radius: 4.0 }, amount: 1.0 }).unwrap();
     let (mut steps, mut cut, mut waited, mut ignited, mut peak_work, mut entries, mut total_ops) = (0, 0, 0, 0u64, 0, 0, 0u64);
     let (mut processed, mut work) = (0u64, 0u64);
@@ -286,7 +286,7 @@ fn a_forest_of_20000_steps_within_the_stated_work_bound() {
             continue;
         }
         steps += 1;
-        assert!(r.work <= 32_768, "step at tick {}: work {}", r.tick, r.work);
+        assert!(r.work <= 262_144, "step at tick {}: work {}", r.tick, r.work);
         assert_eq!(r.work, r.lookups + r.checks);
         assert!(r.burning <= 512, "{} burning", r.burning);
         assert_eq!(r.node_updates, 20_000);

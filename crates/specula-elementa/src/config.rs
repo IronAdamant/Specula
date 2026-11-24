@@ -81,7 +81,7 @@ pub struct Limits {
 }
 
 impl Limits {
-    pub const DEFAULT: Limits = Limits { nodes: 4096, burning: 512, work: 32_768 };
+    pub const DEFAULT: Limits = Limits { nodes: 4096, burning: 512, work: 262_144 };
 }
 
 impl Default for Limits {
