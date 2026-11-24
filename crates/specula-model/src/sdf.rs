@@ -7340,7 +7340,8 @@ mod tests {
     }
 
     /// **A cancel stops the search within a ball**, and **a build's work limit within one
-    /// charge**: a cancel raised at the search's tenth charge after its sixteen columns' walks
+    /// charge**: a cancel raised at the search's tenth charge after its reach and its sixteen
+    /// columns' walks
     /// (the spender itself does not look at it) ends it with the cancel's error before more
     /// than one ball's range at every copy and one evaluation of the tree are charged after
     /// it; raised at its first (a column's walk), before another walk. Through [`mesh`], a
@@ -7353,8 +7354,15 @@ mod tests {
         outline_columns(&mut p, &mut |_| Ok(())).unwrap();
         let ball = RANGE_COPIES as u64 * range_cost(&p) + prepared_cost(&p);
         let walk = column_walk_cost(MAX_SECTIONS, 5.0);
-        // (Its first sixteen charges are its columns' walks.)
-        for (at, most) in [(26u64, ball), (1, walk)] {
+        // (Its first charges are its reach's, whose own cancel is
+        // `a_cancel_or_the_limit_stops_the_reach_at_once`; then its sixteen columns' walks.)
+        let mut reached = 0u64;
+        reach_charged(&tree, 0.0, &mut |_| {
+            reached += 1;
+            Ok(())
+        })
+        .unwrap();
+        for (at, most) in [(reached + 16 + 10, ball), (reached + 1, walk)] {
             let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let _guard = crate::work::cancel_on(flag.clone());
             let (mut calls, mut after) = (0u64, 0u64);
