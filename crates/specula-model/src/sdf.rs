@@ -441,11 +441,12 @@ fn prune_asking(n: &Prepared, c: V3, reach: f32, spent: &mut Spent) -> Prepared 
     if NO_PRUNE.with(|f| f.get()) {
         return n.clone();
     }
-    pruned(n, c, reach, &valued(n, c), spent)
+    pruned(n, c, reach, &valued(n, c), spent, &mut Noted::new())
 }
 
 /// [`prune`], with every node's distance at the ball's middle already taken ([`valued`]).
-fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued, spent: &mut Spent) -> Prepared {
+/// `seen` holds the ranges the loose children's walks took on the way down ([`Noted`]).
+fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued, spent: &mut Spent, seen: &mut Noted) -> Prepared {
     let keep_all = |kind: PKind| Prepared { kind, m: n.m.clone(), inv_rot: n.inv_rot, rotated: n.rotated, seed: n.seed, lip: n.lip, slack: n.slack, steady: n.steady, wander: n.wander, least: n.least, loose: n.loose, outline: n.outline };
     let PKind::Group { op, kids, smooth } = &n.kind else { return n.clone() };
     let m = &n.m;
@@ -456,13 +457,13 @@ fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued, spent: &mut Spent) -> Pr
     let r = reach / (m.scale * m.stretch[0].min(m.stretch[1]).min(m.stretch[2]));
     // A cut or an intersection keeps every child, each pruned for the same ball.
     if !matches!(op, Combine::Union | Combine::Near) {
-        return keep_all(PKind::Group { op: *op, kids: kids.iter().zip(&at.kids).map(|(kid, v)| pruned(kid, q, r, v, spent)).collect(), smooth: *smooth });
+        return keep_all(PKind::Group { op: *op, kids: kids.iter().zip(&at.kids).map(|(kid, v)| pruned(kid, q, r, v, spent, seen)).collect(), smooth: *smooth });
     }
     // A smooth plain union with a child that is not steady keeps every child: such a child
     // stays whatever it says, and blending in turn it could carry the pull of a child that
     // went (three spheres, the middle one twisted: the pruned tree differed in the fifth place).
     if *op == Combine::Union && *smooth > 0.0 && kids.iter().any(|k| !k.steady) {
-        return keep_all(PKind::Group { op: *op, kids: kids.iter().zip(&at.kids).map(|(kid, v)| pruned(kid, q, r, v, spent)).collect(), smooth: *smooth });
+        return keep_all(PKind::Group { op: *op, kids: kids.iter().zip(&at.kids).map(|(kid, v)| pruned(kid, q, r, v, spent, seen)).collect(), smooth: *smooth });
     }
     // Each child's least and greatest distance anywhere in the ball.
     let span: Vec<(f32, f32)> = kids
@@ -479,7 +480,12 @@ fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued, spent: &mut Spent) -> Pr
                 // nothing across the ball (inside it changes as fast as it likes near its
                 // middle; outside a flat one's changes hundreds of times faster than the
                 // distance): its range in the ball is worked out through it instead.
-                return field_range_as(k, q, r, &mut 1, spent, true);
+                // (Taken once a prune: a loose child under a loose child kept was walked with
+                // it, and its range is found where that walk noted it.)
+                if let Some(got) = seen.get(&(std::ptr::from_ref(k) as usize)) {
+                    return *got;
+                }
+                return field_range_noting(k, q, r, &mut 1, spent, true, Some(seen));
             }
             if k.wander == 0.0 {
                 let spread = k.lip * r + k.slack;
@@ -531,7 +537,7 @@ fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued, spent: &mut Spent) -> Pr
             break;
         }
     }
-    let kids = kids.iter().zip(&keep).zip(&at.kids).filter(|((_, k), _)| **k).map(|((kid, _), v)| pruned(kid, q, r, v, spent)).collect();
+    let kids = kids.iter().zip(&keep).zip(&at.kids).filter(|((_, k), _)| **k).map(|((kid, _), v)| pruned(kid, q, r, v, spent, seen)).collect();
     keep_all(PKind::Group { op: *op, kids, smooth: *smooth })
 }
 
@@ -2209,6 +2215,23 @@ fn field_range(n: &Prepared, c: V3, r: f32, copies: &mut u32, spent: &mut Spent)
 /// flat ellipsoid can still be shown solid. (The box's search asks without it, as it was
 /// reviewed.) Whoever asks is charged `spent.work`, in the one scheme ([`Spent`]).
 fn field_range_as(n: &Prepared, c: V3, r: f32, copies: &mut u32, spent: &mut Spent, tight: bool) -> (f32, f32) {
+    field_range_noting(n, c, r, copies, spent, tight, None)
+}
+
+/// The ranges a walk of [`field_range_noting`] took of each child of a group it passed
+/// through, by the child's place in memory (one prune's: the tree is borrowed for it, and the
+/// place decides only whose range is whose, never a value).
+type Noted = std::collections::BTreeMap<usize, (f32, f32)>;
+
+/// [`field_range_as`], noting in `seen` (when given) the range it took of each child of every
+/// group it passed through, so that [`pruned`], going down into a loose child whose range it
+/// has just taken, finds its children's ranges there rather than walking them again (review 2
+/// of the mesher lane: nested loose unions were walked once a level, 418 million evaluations
+/// where the factors had taken 211 million). Such a child's range was taken over a ball about
+/// the same middle, as [`local`] takes it, and a hair larger (each frame widens the radius by
+/// a ten-thousandth), so it holds over the smaller ball `pruned` asks of: sound, never tighter.
+#[allow(clippy::too_many_arguments, reason = "the range's walk, its counts, its two modes and what it notes")]
+fn field_range_noting(n: &Prepared, c: V3, r: f32, copies: &mut u32, spent: &mut Spent, tight: bool, mut seen: Option<&mut Noted>) -> (f32, f32) {
     let m = &n.m;
     let unknown = (-UNKNOWN, UNKNOWN);
     let shrink = m.scale * m.stretch[0].min(m.stretch[1]).min(m.stretch[2]);
@@ -2299,7 +2322,7 @@ fn field_range_as(n: &Prepared, c: V3, r: f32, copies: &mut u32, spent: &mut Spe
                     d.octaves += m.displace.map_or(0, |(_, _, o)| u64::from(o.max(1)));
                 });
                 spent.work += modifiers_cost(m);
-                let (a, b) = inner_range(n, p, rr, copies, spent, tight);
+                let (a, b) = inner_range(n, p, rr, copies, spent, tight, seen.as_deref_mut());
                 lo = lo.min(a);
                 hi = hi.max(b);
             }
@@ -2325,7 +2348,8 @@ fn field_range_as(n: &Prepared, c: V3, r: f32, copies: &mut u32, spent: &mut Spe
 }
 
 /// [`field_range`] of a node's own distance in its own frame, before its distance modifiers.
-fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, spent: &mut Spent, tight: bool) -> (f32, f32) {
+#[allow(clippy::too_many_arguments, reason = "as field_range_noting")]
+fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, spent: &mut Spent, tight: bool, mut seen: Option<&mut Noted>) -> (f32, f32) {
     #[cfg(test)]
     DID.with(|d| {
         let mut d = d.borrow_mut();
@@ -2452,7 +2476,12 @@ fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, spent: &mut Spent,
             (d - by, d + by)
         }
         PKind::Group { op, kids, smooth } => {
-            let got: Vec<(f32, f32)> = kids.iter().map(|k| field_range_as(k, q, r, copies, spent, tight)).collect();
+            let got: Vec<(f32, f32)> = kids.iter().map(|k| field_range_noting(k, q, r, copies, spent, tight, seen.as_deref_mut())).collect();
+            if let Some(seen) = seen {
+                for (k, g) in kids.iter().zip(&got) {
+                    seen.entry(std::ptr::from_ref(k) as usize).or_insert(*g);
+                }
+            }
             if got.is_empty() {
                 return (UNKNOWN, UNKNOWN);
             }
@@ -7643,6 +7672,85 @@ mod tests {
             }
         }
         assert!(searched >= 5, "{searched} searches ran");
+    }
+
+    /// **The mesher walks each column once, and is charged its ranges** (review 4 of the box
+    /// lane, item M: the mesher's own tree was never outlined, so a column's range walked its
+    /// curve again at every block it was asked of, charged as eight evaluations where a walk is
+    /// 43,800 to 297,240 units). Three columns whose breadth and depth trade places along them,
+    /// one joined with a flat ellipsoid, meshed in a box given (no reach, no search) and as
+    /// wide again as they are each way: blocks far from them ask the tree's range, and every
+    /// prune asks the range of the loose union, so the columns' ranges are asked many times;
+    /// each curve is walked once ([`outline_columns`]), and what the ranges and the walks did
+    /// ([`did_shares`]) is in the work, as [`SdfStats::range_work`].
+    #[test]
+    fn the_mesher_walks_each_column_once() {
+        let column = |x: f32| {
+            let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+            sections[0] = [0.0, 0.1, 0.05];
+            sections[1] = [1.0, 0.05, 0.1];
+            prim(Prim::Column { a: [x, 0.0, 0.0], b: [x, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 2, square: 3.0 })
+        };
+        let mut flat = prim(Prim::Ellipsoid { radii: [0.3, 0.05, 0.2] });
+        flat.m.at = [0.0, 0.5, 0.0];
+        let tree = group(Combine::Union, vec![group(Combine::Union, vec![flat, column(0.2)], 0.0), column(-0.3), column(0.6)], 0.0);
+        let p = prepare(&tree, 1, &mut 0);
+        assert!(p.wander > 0.0 && p.loose, "its ranges are asked");
+        let (lo, hi, _, _) = bounds(&tree).unwrap();
+        let size = math3::sub(hi, lo);
+        let (lo, hi) = (math3::sub(lo, size), math3::add(hi, size));
+        for res in [24, 48, 96] {
+            Did::taken();
+            let (_, st) = mesh(&tree, &MeshOptions { bounds: Some((lo, hi)), ..opts(res) }).unwrap();
+            let d = Did::taken();
+            assert_eq!((st.reach_work, st.box_work), (0, 0));
+            assert_eq!(d.pieces, 3 * COLUMN_PIECES as u64, "res {res}: each column walked once");
+            assert!(d.column_ranges > 3 * 20, "res {res}: {} columns' ranges asked", d.column_ranges);
+            let did: u64 = did_shares(&d, 0).iter().map(|s| s.1).sum();
+            assert!(st.range_work >= did && st.range_work < st.work, "res {res}: ranges charged {}, did {did}, of {}", st.range_work, st.work);
+        }
+    }
+
+    /// **A prune takes each loose child's range once** (review 2 of the mesher lane, finding
+    /// 1: at each kept union the range was taken over the whole loose child, then the
+    /// recursion walked its loose children again, so nested loose unions cost their depth
+    /// times their size). Sixteen nested unions, each of the last, a flat ellipsoid and a few
+    /// balls, pruned over balls of every size about points through it: no node's range is
+    /// taken more than once a prune ([`Did`]'s frames: at most the tree's nodes), and the
+    /// pruned tree is the whole tree, bit for bit, through each ball.
+    #[test]
+    fn a_prune_takes_each_loose_childs_range_once() {
+        let mut t = prim(Prim::Sphere { radius: 0.03 });
+        for level in 0..16 {
+            let x = 0.06 * level as f32;
+            let mut e = prim(Prim::Ellipsoid { radii: [0.08, 0.02, 0.08] });
+            e.m.at = [x, 0.0, 0.0];
+            let mut kids = vec![t, e];
+            for b in 0..3 {
+                let mut s = prim(Prim::Sphere { radius: 0.01 });
+                s.m.at = [x + 0.02 * b as f32, 0.03, 0.0];
+                kids.push(s);
+            }
+            t = group(Combine::Union, kids, 0.0);
+        }
+        let nodes = count_nodes(&t) as u64;
+        let p = prepare(&t, 1, &mut 0);
+        let mut r = Review(0x7e57_0f_0e5e_1234);
+        let mut asked = 0;
+        for _ in 0..200 {
+            let c = [r.range(-0.1, 1.0), r.range(-0.05, 0.06), r.range(-0.08, 0.08)];
+            let reach = [0.005, 0.02, 0.08, 0.3][r.pick(4)];
+            Did::taken();
+            let here = prune_asking(&p, c, reach, &mut Spent::default());
+            let d = Did::taken();
+            assert!(d.range_nodes <= nodes, "{} ranges taken of {nodes} nodes about {c:?}, {reach}", d.range_nodes);
+            asked += usize::from(d.range_nodes > 0);
+            for _ in 0..8 {
+                let q = math3::add(c, math3::scale(math3::normalize(r.v3(-1.0, 1.0)), reach * r.unit()));
+                assert_eq!(eval(&here, q).to_bits(), eval(&p, q).to_bits(), "about {c:?}, {reach}, at {q:?}");
+            }
+        }
+        assert!(asked > 100, "{asked} prunes asked a range");
     }
 
     /// **A cancelled sculpt gives one error, wherever the cancel is seen** (review 4 of the box
