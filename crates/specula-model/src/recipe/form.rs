@@ -315,6 +315,9 @@ fn to_shape(m: &FMesh, path: &str) -> Result<Shape, RecipeError> {
     };
     let wide = |p: V3| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
     let mut out = Vec::with_capacity(tris.len());
+    // A face of a surface the form calls flat is a facet: hard-edged against every face not in
+    // its plane (shape::TAG_FACET).
+    let tags: Vec<u8> = tris.iter().map(|(fi, _)| if m.surfaces.get(m.faces[*fi as usize].surface as usize).is_some_and(|s| !s.smooth) { crate::shape::TAG_FACET } else { crate::shape::TAG_FACE }).collect();
     for (k, (_, t)) in tris.iter().enumerate() {
         let n64 = normal(m.points[t[0] as usize], m.points[t[1] as usize], m.points[t[2] as usize]);
         let n32 = normal(wide(positions[t[0] as usize]), wide(positions[t[1] as usize]), wide(positions[t[2] as usize]));
@@ -329,8 +332,7 @@ fn to_shape(m: &FMesh, path: &str) -> Result<Shape, RecipeError> {
         }
         out.push(*t);
     }
-    let n = out.len();
-    Ok(Shape { colors: vec![[1.0; 4]; positions.len()], positions, tris: out, tags: vec![crate::shape::TAG_FACE; n], bevel_tint: None, owners: Vec::new() })
+    Ok(Shape { colors: vec![[1.0; 4]; positions.len()], positions, tris: out, tags, bevel_tint: None, owners: Vec::new() })
 }
 
 /// Open edges of a shape as it was made: points told apart by their exact bits, every triangle

@@ -38,22 +38,24 @@ fn every_new_rule_is_refused_with_its_numbers() {
     refused("truss", Plane, &[("height", 0.6), ("bar", 0.3)], "bars_fill_the_truss");
     refused("truss", Plane, &[("length", 4.0), ("bays", 100.0), ("bar", 0.05)], "bars_fill_a_bay");
     refused("banner", Plane, &[("length", 1.0), ("notch", 1.0)], "notch_past_the_hoist");
-    refused("leaf", Plane, &[("width", 1.0), ("widest", 0.4)], "wider_than_its_arcs_allow");
     refused("rounded_cylinder", Solid, &[("height", 0.2), ("fillet", 0.1)], "fillet_past_the_flats");
     refused("cup", Solid, &[("height", 0.5), ("floor", 0.5)], "floor_over_the_rim");
     refused("cup", Solid, &[("radius", 0.4), ("top", 0.45), ("wall", 0.45)], "wall_fills_the_cup");
-    refused("bell", Solid, &[("height", 0.3), ("wall", 0.3)], "wall_over_the_height");
-    refused("bell", Solid, &[("curve", 0.55)], "flare_too_deep");
-    refused("bell", Solid, &[("crown", 0.1), ("wall", 0.3)], "wall_too_thick_for_the_flare");
+    refused("bell", Solid, &[("height_ratio", 0.6), ("flare_ratio", 0.05), ("wall", 0.025)], "flare_under_the_lip");
+    refused("bell", Solid, &[("flare_ratio", 0.9), ("shoulder_ratio", 0.95)], "shoulder_under_the_flare");
+    refused("bell", Solid, &[("shoulder_ratio", 0.05), ("wall", 0.025)], "wall_past_the_shoulder");
+    refused("bell", Solid, &[("height_ratio", 0.6)], "flare_too_shallow");
     refused("goblet", Solid, &[("radius", 0.04), ("stem", 0.04)], "stem_wider_than_cup_or_foot");
     refused("goblet", Solid, &[("wall", 0.0001), ("stem", 0.01)], "wall_too_thin_over_the_stem");
-    refused("bottle", Solid, &[("height", 2.0), ("neck_length", 0.8), ("shoulder", 20.0)], "neck_and_shoulder_over_the_height");
-    refused("vase", Solid, &[("radius", 0.12), ("foot", 0.12)], "foot_or_neck_past_the_belly");
-    refused("baluster", Solid, &[("base", 0.05), ("neck", 0.05)], "neck_past_the_ball_or_plinth");
+    refused("bottle", Solid, &[("height_ratio", 3.0), ("neck_length_ratio", 0.6), ("shoulder_ratio", 10.0)], "neck_and_shoulder_over_the_height");
+    refused("bottle", Solid, &[("wall", 0.02)], "wall_fills_the_neck");
+    refused("vase", Solid, &[("wall", 0.05)], "wall_fills_the_vase");
+    refused("vase", Solid, &[("height_ratio", 1.5), ("foot_ratio", 0.98), ("waist_ratio", 0.1)], "foot_too_steep");
+    refused("baluster", Solid, &[("height_ratio", 20.0), ("bulb_ratio", 0.5), ("neck_ratio", 0.7)], "neck_too_steep");
     refused("mushroom", Solid, &[("stem", 0.06), ("cap", 0.06)], "stem_wider_than_the_cap");
     refused("mushroom", Solid, &[("cap", 0.06), ("cap_height", 0.07)], "cap_past_a_half_ball");
     refused("chamfered_box", Solid, &[("height", 0.2), ("chamfer", 0.1)], "chamfer_past_the_faces");
-    refused("gem", Solid, &[("sides", 3.0), ("table", 0.5)], "table_past_the_girdle");
+    refused("gem", Solid, &[("sides", 3.0), ("table_ratio", 0.5)], "table_past_the_girdle");
     refused("chain_link", Solid, &[("radius", 0.03), ("wire", 0.03)], "wire_thicker_than_the_bend");
 }
 
@@ -81,20 +83,33 @@ fn volumes_against_their_own_integrals() {
     // The cup: radius 0.4, top 0.45, height 0.5, wall 0.03, floor 0.04.
     let (r, t, hh, w, fl) = (0.4, 0.45, 0.5, 0.03, 0.04);
     let outer = |y: f64| r + (t - r) * y / hh;
-    let inner = |y: f64| outer(y) - w;
+    // The inside: the outside's line moved `w` across it, so `w L / h` in, level.
+    let inner = |y: f64| outer(y) - w * ((t - r) * (t - r) + hh * hh).sqrt() / hh;
     close("cup", vol("cup"), disc(&outer, 0.0, hh) - disc(&inner, fl, hh));
     // The mushroom: stem 0.02 to 0.06, a cap of radius 0.06 and height 0.04.
     let (s, hs, c, hc) = (0.02, 0.06, 0.06, 0.04);
     let rho = (c * c + hc * hc) / (2.0 * hc);
     let cap = |y: f64| (rho * rho - (y - (hs + hc - rho)) * (y - (hs + hc - rho))).max(0.0).sqrt();
     close("mushroom", vol("mushroom"), PI * s * s * hs + disc(&cap, hs, hs + hc));
-    // The vase: a ball of 0.12 on a foot of 0.06, a neck from 0.05 to a mouth of 0.07 over 0.08.
-    let (rb, fo, ne, mo, ln): (f64, f64, f64, f64, f64) = (0.12, 0.06, 0.05, 0.07, 0.08);
-    let cy = (rb * rb - fo * fo).sqrt();
-    let y1 = cy + (rb * rb - ne * ne).sqrt();
-    let ball = |y: f64| (rb * rb - (y - cy) * (y - cy)).max(0.0).sqrt();
-    let neck = |y: f64| ne + (mo - ne) * (y - y1) / ln;
-    close("vase", vol("vase"), disc(&ball, 0.0, y1) + disc(&neck, y1, y1 + ln));
+    // The bottle at its defaults (radius 0.038, height 8 radii, neck 0.36 of it, the neck 0.28
+    // of the height with a lip ring an eighth of it tall and a seventh wider, the shoulder 1.6
+    // times its step in, a wall of 0.003 and a floor as thick): its shoulder an S of two arcs
+    // of one radius, written here from that description.
+    let (r, t) = (0.038, 0.003);
+    let (h, n) = (8.0 * r, 0.36 * r);
+    let (ln, sh) = (0.28 * h, 1.6 * (r - n));
+    let ys = h - ln - sh;
+    let rho = ((r - n) * (r - n) + sh * sh) / (4.0 * (r - n));
+    // The outside: the body, then the S (its first arc about (r − ρ, ys), its second about
+    // (n + ρ, ys + sh)), the neck, the lip ring.
+    // (The arcs meet halfway between their centres; moved `off` across, at `off / ρ` of half
+    // the shoulder lower.)
+    let s_out = |y: f64, off: f64| if y <= ys + 0.5 * sh * (1.0 - off / rho) { r - rho + ((rho - off) * (rho - off) - (y - ys) * (y - ys)).max(0.0).sqrt() } else { n + rho - ((rho + off) * (rho + off) - (y - ys - sh) * (y - ys - sh)).max(0.0).sqrt() };
+    let (rl, hl) = (n * 8.0 / 7.0, ln / 8.0);
+    let outside = PI * r * r * ys + disc(&|y| s_out(y, 0.0), ys, ys + sh) + PI * n * n * (h - hl - ys - sh) + PI * rl * rl * hl;
+    // The inside: the outside moved t across, from the floor (t) up to the mouth.
+    let inside = PI * (r - t) * (r - t) * (ys - t) + disc(&|y| s_out(y, t), ys, ys + sh) + PI * (n - t) * (n - t) * (h - ys - sh);
+    close("bottle", vol("bottle"), outside - inside);
     // The chamfered box at its defaults (1 × 1 × 1, chamfer 0.1) by the region's own test, on a
     // grid: the cube less where |x| + |y| > 1 − c (a pair) or |x| + |y| + |z| > 1.5 − 2c, with
     // the half side 0.5. The cells' middles fall on the cutting planes (the chamfer is a whole
@@ -145,7 +160,8 @@ fn fractals_at_every_depth() {
 }
 
 /// Counts a reader checks by eye: the chamfered box's 24 points and 26 faces (6 faces, 12
-/// chamfers, 8 corners), the gem's `2n + 1` points and `3n + 1` faces, the crystal's, the
+/// chamfers, 8 corners), the gem's `3n + 1` points and `4n + 1` faces with a girdle band (`2n +
+/// 1` and `3n + 1` with none), the crystal's, the
 /// stairs' `4n + 4` points and `2n + 4` faces, the chain link's `2 (k + 1) m`.
 #[test]
 fn counts_by_eye() {
@@ -157,6 +173,8 @@ fn counts_by_eye() {
     assert_eq!((m.points.len(), m.faces.len()), (24, 26));
     assert_eq!([0, 1, 2].map(|s| m.faces.iter().filter(|f| f.surface == s).count()), [6, 12, 8]);
     let m = mesh("gem", &[("sides", 8.0)], 8);
+    assert_eq!((m.points.len(), m.faces.len()), (25, 33));
+    let m = mesh("gem", &[("sides", 8.0), ("girdle", 0.0)], 8);
     assert_eq!((m.points.len(), m.faces.len()), (17, 25));
     let m = mesh("crystal", &[("sides", 6.0)], 8);
     assert_eq!((m.points.len(), m.faces.len()), (14, 18));
@@ -194,24 +212,33 @@ fn the_chain_links_field_by_hand() {
 }
 
 
-/// A grate whose bars are under a ten-millionth of its size is refused before it is raised: the
-/// raise's cap cutter was seen not to make the cap of a 1 by 10,000 m grate with bars of 3e-4 m
-/// (`not_well_made`), and a raise of every grate it accepts at a corner of its ranges is made or
-/// refused soundly.
+/// Grates at the corners of their ranges (one and eight columns and rows; the widest and the
+/// thinnest bar that leaves a hole; a width and a height of 1e-4 and 1e4 against each other)
+/// are raised as a slab at details 8 and 9, or refused by a rule that is true of them: never
+/// `not_well_made`. (A grate's border has a point level with each hole's corner, so its cap is
+/// cut into rectangles a bar wide: see `bordered`.)
 #[test]
-fn a_grates_bars_are_not_thinner_than_its_cap_can_be_cut() {
-    refused("grate", Kind::Plane, &[("width", 1.0), ("height", 10000.0), ("bar", 0.0003)], "bar_too_thin_for_its_size");
-    refused("truss", Kind::Plane, &[("length", 10000.0), ("bar", 0.0003)], "bar_too_thin_for_its_size");
-    for (w, h) in [(1.0, 10000.0), (10000.0, 1.0), (1.0, 1000.0)] {
-        for bar in [1e-3, 2e-3] {
-            let s = Spec::new("grate", None, &[("width", w), ("height", h), ("columns", 5.0), ("rows", 5.0), ("bar", bar)]).unwrap();
-            for d in [8, 9] {
-                match crate::raise::slab(&s, 1.0).and_then(|x| x.build(d).map(|_| ())) {
-                    Ok(()) => {}
-                    Err(Error::Constraint { rule, .. }) => assert_ne!(rule, "not_well_made", "{w} x {h}, bar {bar}, detail {d}"),
-                    Err(e) => panic!("{e}"),
+fn a_grate_at_every_corner_of_its_ranges_is_raised_soundly() {
+    let mut tried = 0;
+    for (w, h) in [(1.0f64, 1.0f64), (0.1, 1e4), (1e4, 1e-1), (1.0, 1e4), (1e4, 1e4), (1e-3, 1e-3)] {
+        for c in [1.0, 8.0] {
+            for r in [1.0, 8.0] {
+                // The widest bar that leaves a hole each way, a hair under; and the thinnest the
+                // table takes.
+                let widest = (w / (c + 1.0)).min(h / (r + 1.0)) * (1.0 - 1e-6);
+                for bar in [widest, crate::table::LEN_MIN] {
+                    let Ok(s) = Spec::new("grate", Some(Kind::Plane), &[("width", w), ("height", h), ("columns", c), ("rows", r), ("bar", bar)]) else { continue };
+                    for d in [8, 9] {
+                        tried += 1;
+                        match crate::raise::slab(&s, 0.1 * w.min(h)).and_then(|x| x.build(d).map(|_| ())) {
+                            Ok(()) => {}
+                            Err(Error::Constraint { rule, .. }) => assert!(matches!(rule, "edge_under_floor" | "bars_fill_the_grate"), "{w} x {h}, {c} x {r}, bar {bar}, detail {d}: {rule}"),
+                            Err(e) => panic!("{w} x {h}, {c} x {r}, bar {bar}: {e}"),
+                        }
+                    }
                 }
             }
         }
     }
+    assert!(tried >= 80, "{tried}");
 }

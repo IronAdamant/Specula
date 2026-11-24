@@ -910,7 +910,7 @@ const PINNED: u64 = 0x5828_3630_0961_f0e0;
 #[test]
 fn t8_stage_4_builds_are_pinned() {
     let names = [
-        "cavetto", "cyma_recta", "cyma_reversa", "arch_portal", "stair_profile", "grate", "truss", "banner", "leaf", "koch_snowflake", "sierpinski_carpet", "rounded_cylinder", "chamfered_box", "stairs", "cup",
+        "cavetto", "cyma_recta", "cyma_reversa", "bead", "arch_portal", "stair_profile", "grate", "truss", "banner", "leaf", "koch_snowflake", "sierpinski_carpet", "rounded_cylinder", "chamfered_box", "stairs", "cup",
         "bell", "goblet", "bottle", "vase", "baluster", "mushroom", "crystal", "gem", "chain_link",
     ];
     let bytes_of = |name: &str, d: u32| {
@@ -942,7 +942,10 @@ fn t8_stage_4_builds_are_pinned() {
     let h = specula_core::hash::hash_bytes(&all);
     assert_eq!(h, PINNED_4, "the stage 4 builds moved: hash {h:#018x}");
 }
-const PINNED_4: u64 = 0xe91f_aad0_31dc_0a7a;
+/// (Moved in round 2 of stage 4: the grate and the truss have points on their borders, the cup its
+/// wall across, the bell, the bottle, the vase, the baluster and the leaf are remade, the gem has
+/// a girdle band and the bead is a form of its own.)
+const PINNED_4: u64 = 0xcb20_6857_5fdd_cc4c;
 
 // ---------------------------------------------------------------- particular checks
 

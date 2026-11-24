@@ -9,6 +9,7 @@
 //! areas are a polygon's (the two arcs' segments cancel), and each arc turns through at most a
 //! quarter, which keeps the S monotone in height and its region simple.
 
+use super::supellex::El;
 use super::{ap, none};
 use crate::anchor::{at, out, Anchor, On, MAX_NUMBERED};
 use crate::error::{refuse, Refusal};
@@ -166,6 +167,26 @@ fn reversa_anchors(a: &Args) -> Vec<Anchor> {
     v
 }
 
+// ---------------------------------------------------------------- a bead
+
+const P_BEAD: &[Param] = &[len("radius", "the half disc's radius (the bead is twice that tall)", 0.02)];
+/// A bead in the moulding frame: the back on `x = 0` from the bed `(0, 0)` up to `(0, 2r)`, and
+/// the half circle about `(0, r)` bulging toward `+x`. (The semicircle the word named before
+/// stood on its flat side, centred on `x = 0`: swept along a wall, half of it was inside the
+/// wall: review 1 of stage 4, finding 9.)
+fn bead_geom(a: &Args) -> Result<Geom, Refusal> {
+    let r = a.f("radius");
+    Ok(ring(vec![arc_ends([0.0, r], r, -0.5 * PI, PI, O, [0.0, 2.0 * r]), line([0.0, 2.0 * r], O)]))
+}
+fn bead_closed(a: &Args) -> Measures {
+    let r = a.f("radius");
+    Measures { centroid: Some([4.0 * r / (3.0 * PI), r, 0.0]), ..ap(Some(0.5 * PI * r * r), Some((PI + 2.0) * r)) }
+}
+fn bead_anchors(a: &Args) -> Vec<Anchor> {
+    let r = a.f("radius");
+    vec![out("back_foot", O, [-1.0, -1.0], On::Vertex), out("back", [0.0, r], [-1.0, 0.0], On::Boundary), out("top_back", [0.0, 2.0 * r], [-1.0, 1.0], On::Vertex), out("front", [r, r], [1.0, 0.0], On::Boundary)]
+}
+
 // ---------------------------------------------------------------- an arched wall
 
 const P_PORTAL: &[Param] = &[len("width", "the wall's width", 2.0), len("height", "the wall's height", 3.0), len("opening", "the opening's width (the arch's span)", 1.0), len("spring", "the opening's legs, from the floor to where the arch springs", 1.6)];
@@ -254,10 +275,6 @@ fn steps_anchors(a: &Args) -> Vec<Anchor> {
 
 // ---------------------------------------------------------------- a grate and a truss
 
-/// The thinnest bar between holes, as a share of the figure's longer side. The raise's cap
-/// cutter (cap.rs) was seen to fail (`CapNotCut`, so `not_well_made`) on a grate 1 by 10,000 m
-/// with bars of 3e-4 m (3e-8 of it), and to hold at 5e-4.
-const THIN_BAR: f64 = 1e-7;
 const P_GRATE: &[Param] = &[len("width", "along x", 1.0), len("height", "along y", 1.0), count("columns", "the holes across", 4.0, 1.0, 8.0), count("rows", "the holes up", 4.0, 1.0, 8.0), len("bar", "each bar's width, the border's too", 0.05)];
 /// A grate's width, height, columns, rows, bar, and its holes' width and height.
 type GrateParts = (f64, f64, usize, usize, f64, f64, f64);
@@ -268,22 +285,47 @@ fn grate_parts(a: &Args) -> Result<GrateParts, Refusal> {
     if hw <= 0.0 || hh <= 0.0 {
         return Err(refuse("bars_fill_the_grate", "the bars leave no hole: (count + 1) bars must be narrower than the side", &[("width", w), ("height", h), ("columns", c as f64), ("rows", r as f64), ("bar", b)]));
     }
-    if b < THIN_BAR * w.max(h) {
-        return Err(refuse("bar_too_thin_for_its_size", "a bar must be at least a ten-millionth of the grate's longer side (thinner, the cap that a raise cuts between holes so close is not made)", &[("width", w), ("height", h), ("bar", b)]));
-    }
     Ok((w, h, c, r, b, hw, hh))
 }
 fn grate_geom(a: &Args) -> Result<Geom, Refusal> {
     let (w, h, c, r, b, hw, hh) = grate_parts(a)?;
-    let mut rings = vec![poly(&[[-0.5 * w, -0.5 * h], [0.5 * w, -0.5 * h], [0.5 * w, 0.5 * h], [-0.5 * w, 0.5 * h]])];
+    let xs: Vec<f64> = (0..c).flat_map(|i| {
+        let x0 = -0.5 * w + b + i as f64 * (hw + b);
+        [x0, x0 + hw]
+    }).collect();
+    let ys: Vec<f64> = (0..r).flat_map(|j| {
+        let y0 = -0.5 * h + b + j as f64 * (hh + b);
+        [y0, y0 + hh]
+    }).collect();
+    let mut rings = vec![poly(&bordered([-0.5 * w, -0.5 * h], [0.5 * w, 0.5 * h], (&xs, &xs), (&ys, &ys)))];
     for j in 0..r {
         for i in 0..c {
-            let x0 = -0.5 * w + b + i as f64 * (hw + b);
-            let y0 = -0.5 * h + b + j as f64 * (hh + b);
+            let (x0, y0) = (xs[2 * i], ys[2 * j]);
             rings.push(poly(&[[x0, y0], [x0, y0 + hh], [x0 + hw, y0 + hh], [x0 + hw, y0]]));
         }
     }
     Ok(Geom::Rings(rings))
+}
+/// A rectangle from `lo` to `hi`, counter-clockwise from `lo`, with points on its sides level
+/// with its holes' corners: at `xs.0` along the bottom and `xs.1` along the top (each rising),
+/// at `ys.0` up the left side and `ys.1` up the right. Its shape and measures are the
+/// rectangle's; the points are there for the caps a raise cuts: a cap's triangles have only the
+/// outline's points for corners, so between a long side with no point on it and a row of holes'
+/// corners a bar `b` from it, a triangle across a gap `g` between two holes reaches the far
+/// corner of the side, `L` away, and is about `b g / 2L` across: under the mesh's floor for a
+/// one-column grate 65 m tall with bars of 2.5 mm (review 1 of stage 4, finding 7). With a point
+/// level with every corner the strip is cut into rectangles a bar wide.
+fn bordered(lo: Pt, hi: Pt, xs: (&[f64], &[f64]), ys: (&[f64], &[f64])) -> Vec<Pt> {
+    let inside = |v: f64, a: f64, b: f64| v > a && v < b;
+    let mut v = vec![lo];
+    v.extend(xs.0.iter().filter(|&&x| inside(x, lo[0], hi[0])).map(|&x| [x, lo[1]]));
+    v.push([hi[0], lo[1]]);
+    v.extend(ys.1.iter().filter(|&&y| inside(y, lo[1], hi[1])).map(|&y| [hi[0], y]));
+    v.push(hi);
+    v.extend(xs.1.iter().rev().filter(|&&x| inside(x, lo[0], hi[0])).map(|&x| [x, hi[1]]));
+    v.push([lo[0], hi[1]]);
+    v.extend(ys.0.iter().rev().filter(|&&y| inside(y, lo[1], hi[1])).map(|&y| [lo[0], y]));
+    v
 }
 fn grate_closed(a: &Args) -> Measures {
     let Ok((w, h, c, r, _, hw, hh)) = grate_parts(a) else { return Measures::default() };
@@ -370,9 +412,6 @@ fn truss_parts(a: &Args) -> Result<(f64, f64, Vec<[Pt; 3]>), Refusal> {
     if 2.0 * b >= l.min(h) {
         return Err(refuse("bars_fill_the_truss", "two bars must be narrower than the length and the height", &nums));
     }
-    if b < THIN_BAR * l.max(h) {
-        return Err(refuse("bar_too_thin_for_its_size", "a bar must be at least a ten-millionth of the truss's longer side (thinner, the cap that a raise cuts between holes so close is not made)", &nums));
-    }
     match truss_holes(l, h, n, b) {
         Ok(v) => Ok((l, h, v)),
         Err(i) => {
@@ -384,7 +423,22 @@ fn truss_parts(a: &Args) -> Result<(f64, f64, Vec<[Pt; 3]>), Refusal> {
 }
 fn truss_geom(a: &Args) -> Result<Geom, Refusal> {
     let (l, h, holes) = truss_parts(a)?;
-    let mut rings = vec![poly(&[[-0.5 * l, 0.0], [0.5 * l, 0.0], [0.5 * l, h], [-0.5 * l, h]])];
+    // The border's points level with the holes' corners that lie on the chords' and the end
+    // posts' inner lines (see `bordered`).
+    let b = a.f("bar");
+    let (x0, x1, y0, y1) = (-0.5 * l + b, 0.5 * l - b, b, h - b);
+    let on = |v: f64, at: f64| (v - at).abs() <= 1e-9 * l.max(h);
+    let pick = |f: &dyn Fn(Pt) -> Option<f64>| -> Vec<f64> {
+        let mut v: Vec<f64> = holes.iter().flatten().filter_map(|&p| f(p)).collect();
+        v.sort_by(f64::total_cmp);
+        v.dedup_by(|p, q| (*p - *q).abs() <= 1e-9 * l.max(h));
+        v
+    };
+    let bottom = pick(&|p| on(p[1], y0).then_some(p[0]));
+    let top = pick(&|p| on(p[1], y1).then_some(p[0]));
+    let left = pick(&|p| on(p[0], x0).then_some(p[1]));
+    let right = pick(&|p| on(p[0], x1).then_some(p[1]));
+    let mut rings = vec![poly(&bordered([-0.5 * l, 0.0], [0.5 * l, h], (&bottom, &top), (&left, &right)))];
     rings.extend(holes.iter().map(|t| poly(&[t[0], t[2], t[1]])));
     Ok(Geom::Rings(rings))
 }
@@ -430,37 +484,82 @@ fn banner_anchors(a: &Args) -> Vec<Anchor> {
     ]
 }
 
-const P_LEAF: &[Param] = &[len("length", "from the base to the tip, along +y", 0.1), ratio("width", "at its widest, as a share of the length", 0.4, 0.02, 1.0), ratio("widest", "where it is widest, as a share of the length from the base", 0.4, 0.1, 0.9)];
-/// A leaf's widest height, and its two arcs' radii and centres' `x` on the right side.
-fn leaf_parts(a: &Args) -> Result<(f64, f64, f64, f64, f64), Refusal> {
-    let (l, k) = (a.f("length"), a.f("widest"));
-    let w = a.f("width") * l;
-    let (hw, yw) = (0.5 * w, k * l);
-    if hw > yw || hw > l - yw {
-        return Err(refuse("wider_than_its_arcs_allow", "half the width must be at most the widest point's height and its distance from the tip (each arc at most a quarter turn: a convex leaf)", &[("length", l), ("width", a.f("width")), ("widest", k)]));
+const P_LEAF: &[Param] = &[
+    len("length", "the blade's length, from where the stalk meets it to the tip", 0.1),
+    ratio("width_ratio", "the blade's width at its widest, as a share of its length", 0.5, 0.1, 0.9),
+    ratio("widest_ratio", "how far up the blade it is widest, as a share of its length", 0.38, 0.15, 0.6),
+    len("stalk", "the stalk's length (its width is a twentieth of the blade's)", 0.02),
+];
+/// A leaf, its right side from the stalk's foot up: the stalk (a twentieth of the blade's width
+/// across); the blade's base, an arc from the stalk out to the widest point, upright there
+/// (rounded where the widest point is high, a heart's lobe where it is low); then a convex arc
+/// and a concave one of one radius into the tip, which it reaches at a fixed share of the angle
+/// its straight line from the widest point makes (so the tip is drawn out to a point, as a beech's
+/// or a birch's is: acuminate). Mirrored about the midrib.
+struct Leaf {
+    st: f64,
+    sw: f64,
+    l: f64,
+    w: f64,
+    yw: f64,
+    side: [El; 3],
+}
+/// The tip's half-angle as a share of the angle of the straight line from the widest point to
+/// the tip.
+const LEAF_TIP: f64 = 0.4;
+fn leaf_parts(a: &Args) -> Result<Leaf, Refusal> {
+    let (l, st) = (a.f("length"), a.f("stalk"));
+    let w = 0.5 * a.f("width_ratio") * l;
+    let sw = 0.1 * w;
+    let yw = a.f("widest_ratio") * l;
+    let nums = [("length", l), ("width_ratio", a.f("width_ratio")), ("widest_ratio", a.f("widest_ratio")), ("stalk", st)];
+    // The base: about (w − ρ, y₀ + yw), through the stalk's top (sw/2, y₀).
+    let y0 = st;
+    let k = w - 0.5 * sw;
+    let ra = (k * k + yw * yw) / (2.0 * k);
+    let base = El::Arc { c: [w - ra, y0 + yw], r: ra, a: [0.5 * sw, y0], b: [w, y0 + yw], ccw: true };
+    // The upper part: from (w, yw) heading up to the tip (0, l) heading in at α off upright,
+    // two arcs of one radius ρ: 2(1 − cos α) ρ² − 2 (D sin α − w (1 + cos α)) ρ − (w² + D²) = 0.
+    let d = l - yw;
+    let al = LEAF_TIP * atan2(w, d);
+    let (sa, ca) = sin_cos(al);
+    let kk = d * sa - w * (1.0 + ca);
+    let q = 2.0 * (1.0 - ca);
+    let rho = (kk + (kk * kk + q * (w * w + d * d)).sqrt()) / q;
+    let c1 = [w - rho, y0 + yw];
+    let c2 = [rho * ca, y0 + l + rho * sa];
+    let m = scale(add(c1, c2), 0.5);
+    if m[0] <= 0.0 || !(rho.is_finite()) {
+        return Err(refuse("too_narrow_for_its_tip", "the blade's curve into the tip would cross the midrib: a wider blade or a lower widest point", &nums));
     }
-    let r1 = (hw * hw + yw * yw) / w;
-    let r2 = (hw * hw + (l - yw) * (l - yw)) / w;
-    Ok((l, hw, yw, r1, r2))
+    let side = [base, El::Arc { c: c1, r: rho, a: [w, y0 + yw], b: m, ccw: true }, El::Arc { c: c2, r: rho, a: m, b: [0.0, y0 + l], ccw: false }];
+    Ok(Leaf { st, sw, l, w, yw, side })
 }
 fn leaf_geom(a: &Args) -> Result<Geom, Refusal> {
-    let (l, hw, yw, r1, r2) = leaf_parts(a)?;
-    // Each side two arcs, upright at the widest point; the right side's centres on the widest
-    // line at `x = hw − r` (at or left of the axis: a convex leaf).
-    let a0 = atan2(-yw, r1 - hw);
-    let a1 = atan2(l - yw, r2 - hw);
-    let (wr, wl, tip) = ([hw, yw], [-hw, yw], [0.0, l]);
-    Ok(ring(vec![
-        arc_ends([hw - r1, yw], r1, a0, -a0, O, wr),
-        arc_ends([hw - r2, yw], r2, 0.0, a1, wr, tip),
-        arc_ends([r2 - hw, yw], r2, PI - a1, a1, tip, wl),
-        arc_ends([r1 - hw, yw], r1, PI, -a0, wl, O),
-    ]))
+    let f = leaf_parts(a)?;
+    let mirror = |p: Pt| [-p[0], p[1]];
+    let flip = |e: El| match e {
+        El::Line(a, b) => El::Line(mirror(b), mirror(a)),
+        El::Arc { c, r, a, b, ccw } => El::Arc { c: mirror(c), r, a: mirror(b), b: mirror(a), ccw },
+    };
+    let h = 0.5 * f.sw;
+    let mut segs = vec![line([-h, 0.0], [h, 0.0]), line([h, 0.0], [h, f.st])];
+    segs.extend(f.side.iter().map(|e| e.seg()));
+    segs.extend(f.side.iter().rev().map(|&e| flip(e).seg()));
+    segs.push(line([-h, f.st], [-h, 0.0]));
+    Ok(ring(segs))
 }
 fn leaf_anchors(a: &Args) -> Vec<Anchor> {
-    let (l, k) = (a.f("length"), a.f("widest"));
-    let w = a.f("width") * l;
-    vec![out("base", O, [0.0, -1.0], On::Vertex), out("tip", [0.0, l], [0.0, 1.0], On::Vertex), out("right", [0.5 * w, k * l], [1.0, 0.0], On::Vertex), out("left", [-0.5 * w, k * l], [-1.0, 0.0], On::Vertex), at("centre", [0.0, k * l], On::Inside)]
+    let Ok(f) = leaf_parts(a) else { return Vec::new() };
+    let y = f.st + f.yw;
+    vec![
+        out("base", O, [0.0, -1.0], On::Boundary),
+        at("blade_base", [0.0, f.st], On::Inside),
+        out("tip", [0.0, f.st + f.l], [0.0, 1.0], On::Vertex),
+        out("right", [f.w, y], [1.0, 0.0], On::Vertex),
+        out("left", [-f.w, y], [-1.0, 0.0], On::Vertex),
+        at("centre", [0.0, y], On::Inside),
+    ]
 }
 
 // ---------------------------------------------------------------- fractals
@@ -552,12 +651,13 @@ pub(crate) const FORMS: &[Form] = &[
     plane!("cavetto", Moulding, "a cove moulding: a block less a quarter disc at its outer upper corner (back on x = 0, bed on y = 0)", "the back's foot", P_CAVETTO, curved: true, kin: SLAB, cavetto_geom, cavetto_closed, cavetto_anchors),
     plane!("cyma_recta", Moulding, "an ogee moulding: an S of two equal arcs, convex below and concave above, level at its ends (a crown moulding's)", "the back's foot", P_CYMA, curved: true, kin: SLAB, recta_geom, recta_closed, recta_anchors),
     plane!("cyma_reversa", Moulding, "a reverse ogee moulding: an S of two equal arcs, concave below and convex above, upright at its ends", "the back's foot", P_CYMA_REV, curved: true, kin: SLAB, reversa_geom, reversa_closed, reversa_anchors),
+    plane!("bead", Moulding, "a bead moulding: a half disc whose flat side is the back (back on x = 0, bed on y = 0, bulging toward +x)", "the back's foot", P_BEAD, curved: true, kin: SLAB, bead_geom, bead_closed, bead_anchors),
     plane!("arch_portal", Arch, "a wall with a round-arched opening from its floor (a doorway or a gate's wall)", "the middle of the opening's floor", P_PORTAL, curved: true, kin: SLAB, portal_geom, portal_closed, portal_anchors),
     plane!("stair_profile", Stair, "the side of a flight of steps rising along +x, down to the floor", "the middle of its foot", P_STEPS, curved: false, kin: &["stairs", "slab"], steps_geom, steps_closed, steps_anchors),
     plane!("grate", Frame, "a panel with a grid of rectangular holes (a grille, a vent, a window's bars)", "the centre", P_GRATE, curved: false, kin: SLAB, grate_geom, grate_closed, grate_anchors),
     plane!("truss", Frame, "a Warren truss panel: chords, end posts and diagonals of one width, with triangular holes", "the middle of its bottom edge", P_TRUSS, curved: false, kin: SLAB, truss_geom, none, truss_anchors),
     plane!("banner", Symbol, "a swallowtail banner: a rectangle with a V cut into its fly end", "the middle of the hoist edge", P_BANNER, curved: false, kin: SLAB, banner_geom, banner_closed, banner_anchors),
-    plane!("leaf", Leaf, "a leaf (or a petal) of two arcs a side, pointed at its base and its tip, widest where asked", "the base", P_LEAF, curved: true, kin: SLAB, leaf_geom, none, leaf_anchors),
+    plane!("leaf", Leaf, "a leaf on its stalk: a blade rounded at its base and drawn out to a point at its tip, widest where asked (arcs only)", "the stalk's foot", P_LEAF, curved: true, kin: SLAB, leaf_geom, none, leaf_anchors),
     plane!("koch_snowflake", Fractal, "the Koch snowflake to a depth: each side of a triangle replaced by four, again and again", "the centre", P_KOCH, curved: false, kin: SLAB, koch_geom, koch_closed, koch_anchors),
     plane!("sierpinski_carpet", Fractal, "the Sierpinski carpet to a depth: a square with its middle ninth taken out, and each of the eight left the same", "the centre", P_CARPET, curved: false, kin: SLAB, carpet_geom, carpet_closed, carpet_anchors),
 ];
@@ -570,8 +670,8 @@ pub(crate) const ALIASES: &[Alias] = &[
     alias!("reverse_ogee", Plane, "cyma_reversa", "a reverse ogee moulding", &[]),
     alias!("ovolo", Plane, "sector", "a quarter-round moulding (a quarter disc)", &[Set::Fixed("angle", 90.0)]),
     alias!("quarter_round", Plane, "sector", "a quarter-round moulding (a quarter disc)", &[Set::Fixed("angle", 90.0)]),
-    alias!("bead", Plane, "semicircle", "a bead moulding (a half disc)", &[]),
-    alias!("astragal", Plane, "semicircle", "an astragal (a half-round bead)", &[]),
+    alias!("astragal", Plane, "bead", "an astragal (a half-round bead)", &[]),
+    alias!("half_round", Plane, "bead", "a half-round moulding", &[]),
     alias!("doorway", Plane, "arch_portal", "a wall with an arched doorway", &[]),
     alias!("archway", Plane, "arch_portal", "a wall with an arched opening", &[]),
     alias!("stair_side", Plane, "stair_profile", "a flight's side", &[]),

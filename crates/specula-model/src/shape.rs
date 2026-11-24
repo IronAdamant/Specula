@@ -27,6 +27,14 @@ use crate::poly;
 pub const TAG_FACE: u8 = 0;
 /// Triangle tag: a chamfer/bevel face (can be tinted with [`Shape::bevel_tint`]).
 pub const TAG_BEVEL: u8 = 1;
+/// Triangle tag: a face of a flat facet (a library solid's face its form calls flat: a
+/// polyhedron's, a disc's, a raised figure's cap or straight wall). Its edge with any face not in
+/// its plane is hard at [`Shape::finalize`], whatever the smooth angle: a cut stone's crown
+/// facets meet at under 30 degrees and were shaded as one curve (the picture check of stage 4).
+pub const TAG_FACET: u8 = 2;
+/// How near two faces' unit normals must be (their dot product) for a facet to share a corner's
+/// normal with the other: in one plane, to the rounding of `f32` (a quarter of a degree).
+const FACET_COS: f32 = 0.99999;
 
 /// sRGB colour with linear alpha, each 0..1.
 pub type Rgba = [f32; 4];
@@ -36,7 +44,7 @@ pub struct Shape {
     pub positions: Vec<V3>,
     pub colors: Vec<Rgba>,
     pub tris: Vec<[u32; 3]>,
-    /// One [`TAG_FACE`]/[`TAG_BEVEL`] per triangle.
+    /// One [`TAG_FACE`], [`TAG_BEVEL`] or [`TAG_FACET`] per triangle.
     pub tags: Vec<u8>,
     /// Colour blended into bevel faces at [`Shape::finalize`]: (colour, amount 0..1).
     pub bevel_tint: Option<(Rgba, f32)>,
@@ -1067,8 +1075,11 @@ impl Shape {
             for k in 0..3 {
                 let v = t[k] as usize;
                 let mut n = [0.0f32; 3];
+                let facet_f = s.tags.get(f) == Some(&TAG_FACET);
                 for &g in &inc[start[v] as usize..start[v + 1] as usize] {
-                    if math3::dot(face_u[g as usize], face_u[f]) >= cos_t {
+                    let d = math3::dot(face_u[g as usize], face_u[f]);
+                    let least = if facet_f || s.tags.get(g as usize) == Some(&TAG_FACET) { FACET_COS } else { cos_t };
+                    if d >= least {
                         n = math3::add(n, face_n[g as usize]);
                     }
                 }

@@ -92,28 +92,145 @@ fn rcyl_anchors(a: &Args) -> Vec<Anchor> {
     v
 }
 
+// ---------------------------------------------------------------- a profile laid out
+
+/// A piece of a turned profile as it is laid out: a line, or an arc about `c` of radius `r` from
+/// `a` to `b`, turning counter-clockwise (`ccw`) or clockwise.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum El {
+    Line(Pt, Pt),
+    Arc { c: Pt, r: f64, a: Pt, b: Pt, ccw: bool },
+}
+
+impl El {
+    pub(super) fn seg(self) -> Seg {
+        match self {
+            El::Line(a, b) => line(a, b),
+            El::Arc { c, r, a, b, ccw } => {
+                let a0 = atan2(a[1] - c[1], a[0] - c[0]);
+                let a1 = atan2(b[1] - c[1], b[0] - c[0]);
+                let mut sweep = a1 - a0;
+                if ccw && sweep <= 0.0 {
+                    sweep += TAU;
+                } else if !ccw && sweep >= 0.0 {
+                    sweep -= TAU;
+                }
+                arc_ends(c, r, a0, sweep, a, b)
+            }
+        }
+    }
+    /// The same piece run the other way.
+    fn rev(self) -> El {
+        match self {
+            El::Line(a, b) => El::Line(b, a),
+            El::Arc { c, r, a, b, ccw } => El::Arc { c, r, a: b, b: a, ccw: !ccw },
+        }
+    }
+    /// The piece moved `t` to the left of the way it runs (a wall's inside, for a profile that
+    /// runs up the outside with the material on its left): a line moved along its normal, an arc
+    /// about the same centre with `t` less radius where it turns left and `t` more where it turns
+    /// right. `None` where an arc turning left is no larger than `t`.
+    fn inset(self, t: f64) -> Option<El> {
+        match self {
+            El::Line(a, b) => {
+                let d = sub(b, a);
+                let l = crate::maths::len(d);
+                let n = [-d[1] / l * t, d[0] / l * t];
+                Some(El::Line(add(a, n), add(b, n)))
+            }
+            El::Arc { c, r, a, b, ccw } => {
+                let r2 = if ccw { r - t } else { r + t };
+                if r2 <= 0.0 {
+                    return None;
+                }
+                let k = r2 / r;
+                Some(El::Arc { c, r: r2, a: add(c, scale(sub(a, c), k)), b: add(c, scale(sub(b, c), k)), ccw })
+            }
+        }
+    }
+    fn end(self) -> Pt {
+        match self {
+            El::Line(_, b) | El::Arc { b, .. } => b,
+        }
+    }
+}
+
+/// The two arcs of one radius from `a` up to `b`, the profile upright (running along +y) at both:
+/// out and back in an S, the first arc turning toward `b`'s side and the second back. Their
+/// radius `(dx² + dy²) / 4|dx|` makes them meet halfway between their centres with one tangent.
+/// `Err` with the rise and the step across where the rise is less than the step (each arc would
+/// turn past a quarter, and the profile would fold back down) or more than fifty times it (the
+/// arcs' centres so far off that the measures' digits go).
+fn s_join(a: Pt, b: Pt) -> Result<[El; 2], (f64, f64)> {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    if !(dy >= dx.abs() && dy <= 50.0 * dx.abs()) {
+        return Err((dy, dx.abs()));
+    }
+    let rho = (dx * dx + dy * dy) / (4.0 * dx.abs());
+    let s = if dx > 0.0 { 1.0 } else { -1.0 };
+    let (c1, c2) = ([a[0] + s * rho, a[1]], [b[0] - s * rho, b[1]]);
+    let m = scale(add(c1, c2), 0.5);
+    Ok([El::Arc { c: c1, r: rho, a, b: m, ccw: s < 0.0 }, El::Arc { c: c2, r: rho, a: m, b, ccw: s > 0.0 }])
+}
+
+/// An S as a refusal: its rise against its step across, with the form's numbers.
+fn steep(rule: &'static str, what: &str, (dy, dx): (f64, f64), nums: &[(&'static str, f64)]) -> Refusal {
+    let mut v = nums.to_vec();
+    v.push(("rise", dy));
+    v.push(("across", dx));
+    refuse(rule, &format!("{what}: its rise must be from one to fifty times the step across it (each of its two arcs at most a quarter turn)"), &v)
+}
+
+/// The inside of a wall `t` thick under `outer` (pieces running up the outside), run back down:
+/// `Err` with the radius of the first arc no larger than the wall.
+fn inside(outer: &[El], t: f64) -> Result<Vec<El>, f64> {
+    let mut v = Vec::with_capacity(outer.len());
+    for e in outer.iter().rev() {
+        match e.inset(t) {
+            Some(i) => v.push(i.rev()),
+            None => {
+                return Err(match e {
+                    El::Arc { r, .. } => *r,
+                    El::Line(..) => 0.0,
+                })
+            }
+        }
+    }
+    Ok(v)
+}
+
+/// A turned form from named pieces laid out.
+fn turned_els(els: &[(El, &'static str)]) -> Result<Geom, Refusal> {
+    turned(els.iter().map(|&(e, name)| piece(e.seg(), name)).collect())
+}
+
 // ---------------------------------------------------------------- vessels
 
-const P_CUP: &[Param] = &[len("radius", "the outside's radius at the bottom", 0.4), len("top", "the outside's radius at the rim", 0.45), len("height", "the height", 0.5), len("wall", "the wall's thickness, across", 0.03), len("floor", "the floor's thickness", 0.04)];
-/// A cup's numbers and the inside's radius at the floor.
-fn cup_parts(a: &Args) -> Result<(f64, f64, f64, f64, f64, f64), Refusal> {
+const P_CUP: &[Param] = &[len("radius", "the outside's radius at the bottom", 0.4), len("top", "the outside's radius at the rim", 0.45), len("height", "the height", 0.5), len("wall", "the wall's thickness, measured across the wall", 0.03), len("floor", "the floor's thickness", 0.04)];
+/// A cup's numbers, and the inside's radii at the rim and at the floor. The inside is the
+/// outside's line moved `wall` across it (along its normal), so the wall is `wall` thick
+/// measured across, however the cup flares; level, it is `wall · L / h` (`L` the side's slant
+/// length): review 1 of stage 4 found a level offset, 0.0033 m across where 0.03 was asked.
+fn cup_parts(a: &Args) -> Result<(f64, f64, f64, f64, f64, f64, f64), Refusal> {
     let (r, t, h, w, f) = (a.f("radius"), a.f("top"), a.f("height"), a.f("wall"), a.f("floor"));
     if f >= h {
         return Err(refuse("floor_over_the_rim", "the floor must be thinner than the cup is tall", &[("height", h), ("floor", f)]));
     }
-    let rf = r - w + (t - r) * (f / h);
-    if rf <= 0.0 || w >= t {
-        return Err(refuse("wall_fills_the_cup", "the wall must leave a hole at the floor and at the rim", &[("radius", r), ("top", t), ("wall", w), ("floor", f), ("inside_at_floor", rf)]));
+    let level = w * ((t - r) * (t - r) + h * h).sqrt() / h;
+    let ti = t - level;
+    let rf = r + (t - r) * (f / h) - level;
+    if rf <= 0.0 || ti <= 0.0 {
+        return Err(refuse("wall_fills_the_cup", "the wall must leave a hole at the floor and at the rim", &[("radius", r), ("top", t), ("height", h), ("wall", w), ("floor", f), ("inside_at_floor", rf)]));
     }
-    Ok((r, t, h, w, f, rf))
+    Ok((r, t, h, w, f, ti, rf))
 }
 fn cup_geom(a: &Args) -> Result<Geom, Refusal> {
-    let (r, t, h, w, f, rf) = cup_parts(a)?;
+    let (r, t, h, _, f, ti, rf) = cup_parts(a)?;
     turned(vec![
         piece(line(O, [r, 0.0]), "bottom"),
         piece(line([r, 0.0], [t, h]), "outside"),
-        piece(line([t, h], [t - w, h]), "rim"),
-        piece(line([t - w, h], [rf, f]), "inside"),
+        piece(line([t, h], [ti, h]), "rim"),
+        piece(line([ti, h], [rf, f]), "inside"),
         piece(line([rf, f], [0.0, f]), "floor"),
     ])
 }
@@ -121,92 +238,110 @@ fn frustum_v(h: f64, a: f64, b: f64) -> f64 {
     PI * h * (a * a + a * b + b * b) / 3.0
 }
 fn cup_closed(a: &Args) -> Measures {
-    let Ok((r, t, h, w, f, rf)) = cup_parts(a) else { return Measures::default() };
-    let ti = t - w;
+    let Ok((r, t, h, _, f, ti, rf)) = cup_parts(a) else { return Measures::default() };
     let v = frustum_v(h, r, t) - frustum_v(h - f, rf, ti);
-    let area = PI * r * r + PI * (r + t) * ((t - r) * (t - r) + h * h).sqrt() + PI * (t + ti) * w + PI * (rf + ti) * ((ti - rf) * (ti - rf) + (h - f) * (h - f)).sqrt() + PI * rf * rf;
+    let area = PI * r * r + PI * (r + t) * ((t - r) * (t - r) + h * h).sqrt() + PI * (t + ti) * (t - ti) + PI * (rf + ti) * ((ti - rf) * (ti - rf) + (h - f) * (h - f)).sqrt() + PI * rf * rf;
     Measures { size: Some(v), boundary: Some(area), centroid: None, bounds: Some(([-r.max(t), 0.0, -r.max(t)], [r.max(t), h, r.max(t)])), series: None }
 }
 fn cup_anchors(a: &Args) -> Vec<Anchor> {
-    let (r, t, h, w, f) = (a.f("radius"), a.f("top"), a.f("height"), a.f("wall"), a.f("floor"));
-    let mut v = round_anchors(On::Boundary, (h, On::Free), 0.0, r);
-    v.retain(|x| !matches!(x.name.as_str(), "right" | "left" | "front" | "back"));
-    v.push(out3("rim", [t - 0.5 * w, h, 0.0], [0.0, 1.0, 0.0], On::Boundary));
-    v.push(out3("inside_floor", [0.0, f, 0.0], [0.0, 1.0, 0.0], On::Boundary));
-    v.push(out3("side", [0.5 * (r + t), 0.5 * h, 0.0], [h, r - t, 0.0], On::Boundary));
-    v
+    let Ok((r, t, h, _, f, ti, _)) = cup_parts(a) else { return Vec::new() };
+    vec![
+        out3("base", [0.0; 3], [0.0, -1.0, 0.0], On::Boundary),
+        at3("top", [0.0, h, 0.0], On::Free),
+        out3("rim", [0.5 * (t + ti), h, 0.0], [0.0, 1.0, 0.0], On::Boundary),
+        out3("inside_floor", [0.0, f, 0.0], [0.0, 1.0, 0.0], On::Boundary),
+        out3("side", [0.5 * (r + t), 0.5 * h, 0.0], [h, r - t, 0.0], On::Boundary),
+    ]
 }
 
-const P_BELL: &[Param] = &[len("radius", "the lip's radius", 0.5), ratio("crown", "the flat top's radius, as a share of the lip's", 0.4, 0.1, 0.9), ratio("height", "the height, as a share of the lip's radius", 1.2, 0.3, 3.0), ratio("wall", "the wall's thickness, as a share of the lip's radius", 0.06, 0.005, 0.3), ratio("curve", "the flare's radius as a share of its chord (from the crown's edge to the lip)", 1.5, 0.55, 4.0)];
-/// A bell: the outside's flare an arc of radius `ρ` about `c` from the lip `(R, 0)` up to the
-/// crown's edge `(rc, H)`, bowed in toward the axis; the inside the concentric arc `ρ + t` (a wall
-/// of one thickness) from under the crown (`y = H − t`) to the floor. Returns the centre, `ρ`,
-/// and the inside's radii at the crown and at the lip.
-#[allow(clippy::type_complexity, reason = "a bell's numbers, read by its geometry and its anchors")]
-fn bell_parts(a: &Args) -> Result<(f64, f64, f64, f64, Pt, f64, f64, f64), Refusal> {
-    // (Its proportions are shares of the lip's radius, so that a bell drawn at random is mostly a
-    // bell: four lengths drawn apart over eight decades almost never are.)
-    let big = a.f("radius");
-    let (rc, h, t, k) = (a.f("crown") * big, a.f("height") * big, a.f("wall") * big, a.f("curve"));
-    let nums = [("radius", big), ("crown", a.f("crown")), ("height", a.f("height")), ("wall", a.f("wall")), ("curve", k)];
-    if rc >= big {
-        return Err(refuse("crown_over_the_lip", "the crown must be narrower than the lip", &nums));
-    }
-    if t >= h {
-        return Err(refuse("wall_over_the_height", "the wall must be thinner than the bell is tall", &nums));
-    }
-    let chord = [rc - big, h];
-    let lc = crate::maths::len(chord);
-    let rho = k * lc;
-    let kk = ((rho - 0.5 * lc) * (rho + 0.5 * lc)).sqrt();
-    let c = [0.5 * (big + rc) + h / lc * kk, 0.5 * h + (big - rc) / lc * kk];
-    if c[0] <= big {
-        return Err(refuse("flare_too_deep", "the flare's arc must rise from the lip to the crown without dipping under the lip: a larger curve", &nums));
-    }
-    let ri = rho + t;
-    let at_y = |y: f64| -> Option<f64> {
-        let s = (ri - (y - c[1])) * (ri + (y - c[1]));
-        (s >= 0.0).then(|| c[0] - s.sqrt())
-    };
-    let (Some(r_top), Some(r_lip)) = (at_y(h - t), at_y(0.0)) else {
-        return Err(refuse("wall_too_thick_for_the_flare", "the inside's arc does not reach the crown and the lip", &nums));
-    };
-    let least = if c[1] > 0.0 && c[1] < h - t { c[0] - ri } else { r_top.min(r_lip) };
-    if r_top <= 0.0 || least <= 0.0 {
-        return Err(refuse("wall_too_thick_for_the_flare", "the inside would reach the axis: a thinner wall, a wider crown or a larger curve", &nums));
-    }
-    Ok((big, rc, h, t, c, rho, r_top, r_lip))
+const P_BELL: &[Param] = &[
+    len("radius", "the lip's radius", 0.5),
+    ratio("height_ratio", "the height, as a share of the lip's radius", 1.5, 0.6, 3.0),
+    ratio("waist_ratio", "the waist's radius, as a share of the lip's", 0.55, 0.25, 0.95),
+    ratio("flare_ratio", "how high the flare from the lip rises before the waist, as a share of the height", 0.45, 0.05, 0.9),
+    ratio("shoulder_ratio", "the shoulder's radius (round from the waist into the crown), as a share of the waist's", 0.4, 0.05, 0.95),
+    len("wall", "the wall's thickness, measured across the wall (the lip is a band two walls high, thicker where the flare is strong)", 0.025),
+];
+/// A bell's pieces, up the outside from the lip: a lip band two walls high; the flare, an arc
+/// bowed in from the lip up to the waist, upright there; the waist, straight up; the shoulder, a
+/// quarter round into the flat crown. Its inside is the outside moved `wall` across it, down to
+/// the lip band's top, then straight down to the mouth.
+struct Bell {
+    r: f64,
+    h: f64,
+    t: f64,
+    outer: Vec<El>,
+    rc: f64,
+    inner_lip: f64,
 }
-/// The angle of `p` about `c` taken in (π/2, 3π/2]: the side of the circle toward the axis.
-fn inner_angle(p: Pt, c: Pt) -> f64 {
-    let a = atan2(p[1] - c[1], p[0] - c[0]);
-    if a < 0.0 {
-        a + TAU
-    } else {
-        a
+fn bell_parts(a: &Args) -> Result<Bell, Refusal> {
+    let r = a.f("radius");
+    let (h, rw, t) = (a.f("height_ratio") * r, a.f("waist_ratio") * r, a.f("wall"));
+    let yw = a.f("flare_ratio") * h;
+    let s = a.f("shoulder_ratio") * rw;
+    let nums = [("radius", r), ("height_ratio", a.f("height_ratio")), ("waist_ratio", a.f("waist_ratio")), ("flare_ratio", a.f("flare_ratio")), ("shoulder_ratio", a.f("shoulder_ratio")), ("wall", t)];
+    let lip = 2.0 * t;
+    if yw <= lip {
+        return Err(refuse("flare_under_the_lip", "the flare must rise above the lip band (two walls): a larger flare_ratio or a thinner wall", &nums));
     }
+    let ys = h - s;
+    if ys <= yw {
+        return Err(refuse("shoulder_under_the_flare", "the shoulder's round must start above the flare: a smaller shoulder_ratio or flare_ratio", &nums));
+    }
+    if t >= s {
+        return Err(refuse("wall_past_the_shoulder", "the wall must be thinner than the shoulder's radius", &nums));
+    }
+    // The flare: about (rw + ρ, yw), through the lip band's top (r, lip). It rises at least as
+    // far as it steps in, or the circle's lowest point would come between the waist and the
+    // lip, and the flare would dip under the lip.
+    let (k, d) = (r - rw, yw - lip);
+    if d < k {
+        return Err(refuse("flare_too_shallow", "the flare must rise (from the lip band to the waist) at least as far as it steps in (from the lip to the waist): a larger height_ratio or flare_ratio, or a larger waist_ratio", &nums));
+    }
+    let rho = (k * k + d * d) / (2.0 * k);
+    let c = [rw + rho, yw];
+    let rc = rw - s;
+    let outer = vec![
+        El::Line([r, 0.0], [r, lip]),
+        El::Arc { c, r: rho, a: [r, lip], b: [rw, yw], ccw: false },
+        El::Line([rw, yw], [rw, ys]),
+        El::Arc { c: [rc, ys], r: s, a: [rw, ys], b: [rc, h], ccw: true },
+    ];
+    // The inside's flare meets the lip band's top at `x = c − √((ρ + t)² − d²)`: at least `t`
+    // in from the lip, since √(A + 2ρt + t²) − √A ≥ t for A = ρ² − d² ≤ ρ².
+    let inner_lip = c[0] - ((rho + t) * (rho + t) - d * d).sqrt();
+    Ok(Bell { r, h, t, outer, rc, inner_lip })
 }
 fn bell_geom(a: &Args) -> Result<Geom, Refusal> {
-    let (big, rc, h, t, c, rho, r_top, r_lip) = bell_parts(a)?;
-    let (ci, li) = ([r_top, h - t], [r_lip, 0.0]);
-    let (a_ci, a_li) = (inner_angle(ci, c), inner_angle(li, c));
-    let (a_lo, a_co) = (inner_angle([big, 0.0], c), inner_angle([rc, h], c));
-    turned(vec![
-        piece(line([0.0, h - t], ci), "under_crown"),
-        piece(arc_ends(c, rho + t, a_ci, a_li - a_ci, ci, li), "inside"),
-        piece(line(li, [big, 0.0]), "lip"),
-        piece(arc_ends(c, rho, a_lo, a_co - a_lo, [big, 0.0], [rc, h]), "outside"),
-        piece(line([rc, h], [0.0, h]), "crown"),
-    ])
+    let b = bell_parts(a)?;
+    let (r, h, t, lip) = (b.r, b.h, b.t, 2.0 * b.t);
+    let names = ["lip", "flare", "waist", "shoulder"];
+    // The inside of the flare, waist and shoulder (the lip band's is the straight drop).
+    let ins = inside(&b.outer[1..], t).map_err(|_| refuse("wall_past_the_shoulder", "the wall must be thinner than the shoulder's radius", &[("wall", t)]))?;
+    let mut els: Vec<(El, &'static str)> = vec![(El::Line([0.0, h - t], [b.rc, h - t]), "under_crown")];
+    for (e, n) in ins.iter().zip(["inside_shoulder", "inside_waist", "inside_flare"]) {
+        els.push((*e, n));
+    }
+    // The inside flare ends on the lip band's top, at `inner_lip`.
+    if let Some((El::Arc { c, r: ri, a, ccw, .. }, n)) = els.last().copied() {
+        let end = [b.inner_lip, lip];
+        *els.last_mut().unwrap() = (El::Arc { c, r: ri, a, b: end, ccw }, n);
+    }
+    els.push((El::Line([b.inner_lip, lip], [b.inner_lip, 0.0]), "inside_lip"));
+    els.push((El::Line([b.inner_lip, 0.0], [r, 0.0]), "mouth"));
+    for (e, n) in b.outer.iter().zip(names) {
+        els.push((*e, n));
+    }
+    els.push((El::Line([b.rc, h], [0.0, h]), "crown"));
+    turned_els(&els)
 }
 fn bell_anchors(a: &Args) -> Vec<Anchor> {
-    let big = a.f("radius");
-    let (h, t) = (a.f("height") * big, a.f("wall") * big);
+    let Ok(b) = bell_parts(a) else { return Vec::new() };
     vec![
         at3("mouth", [0.0; 3], On::Free),
-        out3("top", [0.0, h, 0.0], [0.0, 1.0, 0.0], On::Boundary),
-        out3("inside_top", [0.0, h - t, 0.0], [0.0, -1.0, 0.0], On::Boundary),
-        at3("lip", [big, 0.0, 0.0], On::Boundary),
+        out3("top", [0.0, b.h, 0.0], [0.0, 1.0, 0.0], On::Boundary),
+        out3("inside_top", [0.0, b.h - b.t, 0.0], [0.0, -1.0, 0.0], On::Boundary),
+        at3("lip", [b.r, 0.0, 0.0], On::Vertex),
     ]
 }
 
@@ -267,128 +402,192 @@ fn goblet_anchors(a: &Args) -> Vec<Anchor> {
 
 const P_BOTTLE: &[Param] = &[
     len("radius", "the body's radius", 0.038),
-    ratio("height", "the height, as a share of the body's radius", 8.0, 2.0, 30.0),
-    ratio("neck", "the neck's radius, as a share of the body's", 0.38, 0.05, 0.95),
-    ratio("neck_length", "the neck's length, as a share of the height", 0.3, 0.02, 0.8),
-    ratio("shoulder", "the shoulder's height over the body's radius less the neck's (at least 1: an arc of at most a quarter turn)", 1.7, 1.0, 20.0),
+    ratio("height_ratio", "the height, as a share of the body's radius", 8.0, 3.0, 30.0),
+    ratio("neck_ratio", "the neck's radius, as a share of the body's", 0.36, 0.1, 0.9),
+    ratio("neck_length_ratio", "the neck's length (with its lip), as a share of the height", 0.28, 0.05, 0.6),
+    ratio("shoulder_ratio", "the shoulder's height, as a multiple of the step in from the body to the neck (1 to 50: its S of two arcs at most a quarter turn each)", 1.6, 1.0, 10.0),
+    len("wall", "the wall's thickness, measured across the wall (the floor is as thick)", 0.003),
 ];
-/// A bottle's radius, height, neck radius, shoulder height, the body's height and the shoulder arc's
-/// radius. (Its proportions are shares of its radius, so that a bottle drawn at random is mostly a
-/// bottle: five lengths drawn apart over eight decades almost never were.)
-fn bottle_parts(a: &Args) -> Result<(f64, f64, f64, f64, f64, f64), Refusal> {
+/// A bottle up its outside: the body, straight; the shoulder, an S of two arcs from the body in
+/// to the neck, upright at both; the neck; a lip ring at the top (a seventh wider than the neck
+/// and an eighth of the neck's length tall); open at the mouth, its inside the outside moved
+/// `wall` across and a floor as thick.
+struct Bottle {
+    r: f64,
+    h: f64,
+    t: f64,
+    ys: f64,
+    outer: Vec<El>,
+    lip: (f64, f64),
+    n: f64,
+}
+fn bottle_parts(a: &Args) -> Result<Bottle, Refusal> {
     let r = a.f("radius");
-    let (h, n) = (a.f("height") * r, a.f("neck") * r);
-    let (ln, s) = (a.f("neck_length") * h, a.f("shoulder") * (r - n));
-    let nums = [("radius", r), ("height", a.f("height")), ("neck", a.f("neck")), ("neck_length", a.f("neck_length")), ("shoulder", a.f("shoulder"))];
-    let ys = h - ln - s;
-    if ys <= 0.0 {
-        return Err(refuse("neck_and_shoulder_over_the_height", "the neck and the shoulder must leave some body", &nums));
+    let (h, n, t) = (a.f("height_ratio") * r, a.f("neck_ratio") * r, a.f("wall"));
+    let ln = a.f("neck_length_ratio") * h;
+    let sh = a.f("shoulder_ratio") * (r - n);
+    let nums = [("radius", r), ("height_ratio", a.f("height_ratio")), ("neck_ratio", a.f("neck_ratio")), ("neck_length_ratio", a.f("neck_length_ratio")), ("shoulder_ratio", a.f("shoulder_ratio")), ("wall", t)];
+    let ys = h - ln - sh;
+    if ys <= t {
+        return Err(refuse("neck_and_shoulder_over_the_height", "the neck and the shoulder must leave some body over the floor", &nums));
     }
-    let k = r - n;
-    Ok((r, h, n, s, ys, (k * k + s * s) / (2.0 * k)))
+    if t >= n {
+        return Err(refuse("wall_fills_the_neck", "the wall must be thinner than the neck's radius", &nums));
+    }
+    let s = s_join([r, ys], [n, ys + sh]).map_err(|x| steep("shoulder_too_steep", "the shoulder", x, &nums))?;
+    let (rl, hl) = (n * 8.0 / 7.0, ln / 8.0);
+    let outer = vec![El::Line([r, t], [r, ys]), s[0], s[1], El::Line([n, ys + sh], [n, h])];
+    Ok(Bottle { r, h, t, ys, outer, lip: (rl, hl), n })
 }
 fn bottle_geom(a: &Args) -> Result<Geom, Refusal> {
-    let (r, h, n, s, ys, rho) = bottle_parts(a)?;
-    // The shoulder's centre `(r − ρ, ys)`; it ends at `(n, ys + s)`, at `(n − r + ρ, s)` from it.
-    let k = r - n;
-    let end = atan2(s, (s - k) * (s + k) / (2.0 * k));
-    turned(vec![
-        piece(line(O, [r, 0.0]), "base"),
-        piece(line([r, 0.0], [r, ys]), "body"),
-        piece(arc_ends([r - rho, ys], rho, 0.0, end, [r, ys], [n, ys + s]), "shoulder"),
-        piece(line([n, ys + s], [n, h]), "neck"),
-        piece(line([n, h], [0.0, h]), "mouth"),
-    ])
+    let b = bottle_parts(a)?;
+    let (r, h, t, (rl, hl), n) = (b.r, b.h, b.t, b.lip, b.n);
+    // The inside: the outside moved across, from the mouth (the neck's top) down to the floor
+    // (the body's foot, `t` up).
+    let ins = inside(&b.outer, t).map_err(|rad| refuse("wall_past_the_shoulder", "the wall must be thinner than the shoulder's arcs", &[("wall", t), ("arc_radius", rad)]))?;
+    let mut els: Vec<(El, &'static str)> = vec![(El::Line(O, [r, 0.0]), "base"), (El::Line([r, 0.0], [r, b.ys]), "body"), (b.outer[1], "shoulder"), (b.outer[2], "shoulder")];
+    els.push((El::Line([n, b.outer[2].end()[1]], [n, h - hl]), "neck"));
+    els.push((El::Line([n, h - hl], [rl, h - hl]), "lip_under"));
+    els.push((El::Line([rl, h - hl], [rl, h]), "lip"));
+    els.push((El::Line([rl, h], [n - t, h]), "rim"));
+    for (e, name) in ins.iter().zip(["inside_neck", "inside_shoulder", "inside_shoulder", "inside_body"]) {
+        els.push((*e, name));
+    }
+    els.push((El::Line([r - t, t], [0.0, t]), "floor"));
+    turned_els(&els)
 }
 fn bottle_anchors(a: &Args) -> Vec<Anchor> {
-    let Ok((r, h, n, _, ys, _)) = bottle_parts(a) else { return Vec::new() };
-    // (Round the body at half its height: on the cylinder whatever the shoulder takes.)
-    let mut v = round_anchors(On::Boundary, (h, On::Boundary), 0.5 * ys, r);
-    v.push(at3("neck_top", [n, h, 0.0], On::Boundary));
+    let Ok(b) = bottle_parts(a) else { return Vec::new() };
+    let mut v = round_anchors(On::Boundary, (b.h, On::Free), 0.5 * b.ys, b.r);
+    v.push(out3("rim", [0.5 * (b.lip.0 + b.n - b.t), b.h, 0.0], [0.0, 1.0, 0.0], On::Boundary));
+    v.push(out3("inside_floor", [0.0, b.t, 0.0], [0.0, 1.0, 0.0], On::Boundary));
     v
 }
 
 const P_VASE: &[Param] = &[
-    len("radius", "the ball belly's radius", 0.12),
-    len("foot", "the foot's radius, under the belly's", 0.06),
-    len("neck", "the neck's radius where it leaves the belly, under the belly's", 0.05),
-    len("mouth", "the mouth's radius", 0.07),
-    len("neck_length", "the neck's length", 0.08),
+    len("radius", "the belly's radius", 0.12),
+    ratio("height_ratio", "the height, as a share of the belly's radius", 3.0, 1.5, 8.0),
+    ratio("foot_ratio", "the foot's radius, as a share of the belly's", 0.6, 0.2, 0.98),
+    ratio("waist_ratio", "the waist's radius (between the foot and the belly), as a share of the foot's", 0.6, 0.1, 0.95),
+    ratio("neck_ratio", "the neck's radius, as a share of the belly's", 0.4, 0.1, 0.95),
+    ratio("mouth_ratio", "the mouth's radius, as a share of the neck's (over 1: a flared lip)", 1.5, 1.05, 4.0),
+    len("wall", "the wall's thickness, measured across the wall", 0.006),
 ];
-fn vase_parts(a: &Args) -> Result<Seven, Refusal> {
-    let (r, f, n, mo, ln) = (a.f("radius"), a.f("foot"), a.f("neck"), a.f("mouth"), a.f("neck_length"));
-    if f >= r || n >= r {
-        return Err(refuse("foot_or_neck_past_the_belly", "the foot and the neck must be narrower than the belly", &[("radius", r), ("foot", f), ("neck", n)]));
+/// The heights of a vase's foot band, waist, belly, neck and the lip's start, as shares of its
+/// height (the engine's own proportions: the belly a little under the middle, the neck at four
+/// fifths).
+const VASE_AT: [f64; 5] = [0.05, 0.15, 0.45, 0.8, 0.93];
+/// A vase up its outside: a foot disc, then S curves (two arcs a time, upright at each end) in
+/// to the waist, out to the belly, in to the neck and out to the mouth, and a short lip straight
+/// up; open at the mouth, its inside the outside moved `wall` across, down to the waist, where
+/// its floor is (the foot and the waist below it are solid).
+struct Vase {
+    rf: f64,
+    h: f64,
+    t: f64,
+    outer: Vec<El>,
+    yw: f64,
+    rm: f64,
+    belly: (f64, f64),
+}
+fn vase_parts(a: &Args) -> Result<Vase, Refusal> {
+    let r = a.f("radius");
+    let h = a.f("height_ratio") * r;
+    let rf = a.f("foot_ratio") * r;
+    let rw = a.f("waist_ratio") * rf;
+    let rn = a.f("neck_ratio") * r;
+    let rm = a.f("mouth_ratio") * rn;
+    let t = a.f("wall");
+    let nums = [("radius", r), ("height_ratio", a.f("height_ratio")), ("foot_ratio", a.f("foot_ratio")), ("waist_ratio", a.f("waist_ratio")), ("neck_ratio", a.f("neck_ratio")), ("mouth_ratio", a.f("mouth_ratio")), ("wall", t)];
+    let [hf, yw, yb, yn, ym] = VASE_AT.map(|k| k * h);
+    if t >= rw.min(rn) {
+        return Err(refuse("wall_fills_the_vase", "the wall must be thinner than the waist's and the neck's radii", &nums));
     }
-    let c = ((r - f) * (r + f)).sqrt();
-    let y1 = c + ((r - n) * (r + n)).sqrt();
-    Ok((r, f, n, mo, ln, c, y1))
+    let foot = s_join([rf, hf], [rw, yw]).map_err(|x| steep("foot_too_steep", "the curve from the foot in to the waist", x, &nums))?;
+    let belly = s_join([rw, yw], [r, yb]).map_err(|x| steep("belly_too_steep", "the curve from the waist out to the belly", x, &nums))?;
+    let shoulder = s_join([r, yb], [rn, yn]).map_err(|x| steep("shoulder_too_steep", "the curve from the belly in to the neck", x, &nums))?;
+    let flare = s_join([rn, yn], [rm, ym]).map_err(|x| steep("lip_too_steep", "the curve from the neck out to the mouth", x, &nums))?;
+    let outer = vec![El::Line([rf, 0.0], [rf, hf]), foot[0], foot[1], belly[0], belly[1], shoulder[0], shoulder[1], flare[0], flare[1], El::Line([rm, ym], [rm, h])];
+    Ok(Vase { rf, h, t, outer, yw, rm, belly: (r, yb) })
 }
 fn vase_geom(a: &Args) -> Result<Geom, Refusal> {
-    let (r, f, n, mo, ln, c, y1) = vase_parts(a)?;
-    let (a0, a1) = (atan2(-c, f), atan2(y1 - c, n));
-    turned(vec![
-        piece(line(O, [f, 0.0]), "foot"),
-        piece(arc_ends([0.0, c], r, a0, a1 - a0, [f, 0.0], [n, y1]), "belly"),
-        piece(line([n, y1], [mo, y1 + ln]), "neck"),
-        piece(line([mo, y1 + ln], [0.0, y1 + ln]), "mouth"),
-    ])
-}
-fn vase_closed(a: &Args) -> Measures {
-    let Ok((r, f, n, mo, ln, c, y1)) = vase_parts(a) else { return Measures::default() };
-    let zone = PI * (r * r * y1 - ((y1 - c) * (y1 - c) * (y1 - c) + c * c * c) / 3.0);
-    let v = zone + frustum_v(ln, n, mo);
-    let area = PI * f * f + TAU * r * y1 + PI * (n + mo) * ((mo - n) * (mo - n) + ln * ln).sqrt() + PI * mo * mo;
-    let w = r.max(mo);
-    Measures { size: Some(v), boundary: Some(area), centroid: None, bounds: Some(([-w, 0.0, -w], [w, y1 + ln, w])), series: None }
+    let v = vase_parts(a)?;
+    let (h, t) = (v.h, v.t);
+    let names = ["foot_edge", "foot_top", "foot_top", "belly", "belly", "shoulder", "shoulder", "flare", "flare", "lip"];
+    // The inside, from the mouth down to the waist (the outside's pieces from the waist up).
+    let ins = inside(&v.outer[3..], t).map_err(|rad| refuse("wall_past_a_curve", "the wall must be thinner than the radius of every arc that turns toward the inside", &[("wall", t), ("arc_radius", rad)]))?;
+    let mut els: Vec<(El, &'static str)> = vec![(El::Line(O, [v.rf, 0.0]), "foot_under")];
+    for (e, name) in v.outer.iter().zip(names) {
+        els.push((*e, name));
+    }
+    let top_in = match ins[0] {
+        El::Line(a, _) | El::Arc { a, .. } => a,
+    };
+    els.push((El::Line([v.rm, h], top_in), "rim"));
+    for e in &ins {
+        els.push((*e, "inside"));
+    }
+    let floor = ins.last().map_or([0.0, v.yw], |e| e.end());
+    els.push((El::Line(floor, [0.0, floor[1]]), "floor"));
+    turned_els(&els)
 }
 fn vase_anchors(a: &Args) -> Vec<Anchor> {
-    let Ok((r, _, _, mo, ln, c, y1)) = vase_parts(a) else { return Vec::new() };
-    let mut v = round_anchors(On::Boundary, (y1 + ln, On::Boundary), c, r);
-    v.push(at3("mouth_rim", [mo, y1 + ln, 0.0], On::Boundary));
-    v
+    let Ok(v) = vase_parts(a) else { return Vec::new() };
+    let mut out = round_anchors(On::Boundary, (v.h, On::Free), v.belly.1, v.belly.0);
+    out.push(out3("rim", [v.rm - 0.5 * v.t, v.h, 0.0], [0.0, 1.0, 0.0], On::Boundary));
+    out.push(out3("inside_floor", [0.0, v.yw, 0.0], [0.0, 1.0, 0.0], On::Boundary));
+    out
 }
 
 const P_BALUSTER: &[Param] = &[
-    len("radius", "the ball's radius", 0.06),
-    len("base", "the plinth's and the cap's radius", 0.05),
-    len("thickness", "the plinth's and the cap's thickness", 0.03),
-    len("neck", "the neck's radius, under the ball's and the plinth's", 0.025),
-    len("neck_length", "the neck's length", 0.25),
+    len("radius", "the plinth's and the cap's radius", 0.06),
+    ratio("height_ratio", "the height, as a share of the plinth's radius", 13.0, 6.0, 20.0),
+    ratio("bulb_ratio", "the bulb's radius, as a share of the plinth's", 0.85, 0.5, 1.0),
+    ratio("neck_ratio", "the neck's radius (the narrowest, above the bulb), as a share of the bulb's", 0.42, 0.2, 0.7),
 ];
-fn baluster_parts(a: &Args) -> Result<(f64, f64, f64, f64, f64, f64), Refusal> {
-    let (r, b, t, n, ln) = (a.f("radius"), a.f("base"), a.f("thickness"), a.f("neck"), a.f("neck_length"));
-    if n >= r || n >= b {
-        return Err(refuse("neck_past_the_ball_or_plinth", "the neck must be narrower than the ball and the plinth", &[("radius", r), ("base", b), ("neck", n)]));
-    }
-    Ok((r, b, t, n, ln, ((r - n) * (r + n)).sqrt()))
+/// The heights a baluster's turned part reaches, as shares of that part: the bulb at 0.22, the
+/// neck at 0.72, the collar at 0.86 and the throat under the cap at 1; its plinth is 0.11 of the
+/// whole height and its cap 0.08. (The engine's own proportions, after the vase-shaped baluster
+/// of a railing: the research library holds no balusters.)
+const BALUSTER_AT: [f64; 4] = [0.22, 0.72, 0.86, 1.0];
+/// A baluster up its outside: a plinth (a disc), a ledge in to the turned part, then S curves
+/// out to the bulb, in along a long neck, out to a collar and in to the throat, a ledge out to
+/// the cap (a disc) and its top. Solid.
+struct Baluster {
+    h: f64,
+    rb: f64,
+    els: Vec<El>,
+    bulb: (f64, f64),
+}
+fn baluster_parts(a: &Args) -> Result<Baluster, Refusal> {
+    let rb = a.f("radius");
+    let h = a.f("height_ratio") * rb;
+    let rbulb = a.f("bulb_ratio") * rb;
+    let rneck = a.f("neck_ratio") * rbulb;
+    let (r0, rcol, rq) = (0.6 * rbulb, 1.4 * rneck, 1.1 * rneck);
+    let (tb, tc) = (0.11 * h, 0.08 * h);
+    let l = h - tb - tc;
+    let [yb, yn, yc, yq] = BALUSTER_AT.map(|k| tb + k * l);
+    let nums = [("radius", rb), ("height_ratio", a.f("height_ratio")), ("bulb_ratio", a.f("bulb_ratio")), ("neck_ratio", a.f("neck_ratio"))];
+    let bulb = s_join([r0, tb], [rbulb, yb]).map_err(|x| steep("bulb_too_steep", "the curve out to the bulb", x, &nums))?;
+    let neck = s_join([rbulb, yb], [rneck, yn]).map_err(|x| steep("neck_too_steep", "the curve in from the bulb to the neck", x, &nums))?;
+    let collar = s_join([rneck, yn], [rcol, yc]).map_err(|x| steep("collar_too_steep", "the curve out to the collar", x, &nums))?;
+    let throat = s_join([rcol, yc], [rq, yq]).map_err(|x| steep("throat_too_steep", "the curve in under the cap", x, &nums))?;
+    let mut els = vec![El::Line(O, [rb, 0.0]), El::Line([rb, 0.0], [rb, tb]), El::Line([rb, tb], [r0, tb])];
+    els.extend(bulb.into_iter().chain(neck).chain(collar).chain(throat));
+    els.extend([El::Line([rq, yq], [rb, yq]), El::Line([rb, yq], [rb, h]), El::Line([rb, h], [0.0, h])]);
+    Ok(Baluster { h, rb, els, bulb: (rbulb, yb) })
 }
 fn baluster_geom(a: &Args) -> Result<Geom, Refusal> {
-    let (r, b, t, n, ln, h) = baluster_parts(a)?;
-    let al = atan2(h, n);
-    let y2 = t + 2.0 * h + ln;
-    turned(vec![
-        piece(line(O, [b, 0.0]), "plinth_under"),
-        piece(line([b, 0.0], [b, t]), "plinth"),
-        piece(line([b, t], [n, t]), "plinth_top"),
-        piece(arc_ends([0.0, t + h], r, -al, 2.0 * al, [n, t], [n, t + 2.0 * h]), "ball"),
-        piece(line([n, t + 2.0 * h], [n, y2]), "neck"),
-        piece(line([n, y2], [b, y2]), "cap_under"),
-        piece(line([b, y2], [b, y2 + t]), "cap"),
-        piece(line([b, y2 + t], [0.0, y2 + t]), "top"),
-    ])
-}
-fn baluster_closed(a: &Args) -> Measures {
-    let Ok((r, b, t, n, ln, h)) = baluster_parts(a) else { return Measures::default() };
-    let v = 2.0 * PI * b * b * t + PI * (2.0 * r * r * h - 2.0 * h * h * h / 3.0) + PI * n * n * ln;
-    let area = 2.0 * PI * b * b + 4.0 * PI * b * t + 2.0 * PI * (b - n) * (b + n) + 4.0 * PI * r * h + TAU * n * ln;
-    let total = 2.0 * t + 2.0 * h + ln;
-    let w = r.max(b);
-    Measures { size: Some(v), boundary: Some(area), centroid: None, bounds: Some(([-w, 0.0, -w], [w, total, w])), series: None }
+    let b = baluster_parts(a)?;
+    let names = ["plinth_under", "plinth", "plinth_top", "bulb", "bulb", "neck", "neck", "collar", "collar", "throat", "throat", "cap_under", "cap", "top"];
+    turned_els(&b.els.iter().copied().zip(names).collect::<Vec<_>>())
 }
 fn baluster_anchors(a: &Args) -> Vec<Anchor> {
-    let Ok((r, _, t, _, ln, h)) = baluster_parts(a) else { return Vec::new() };
-    round_anchors(On::Boundary, (2.0 * t + 2.0 * h + ln, On::Boundary), t + h, r)
+    let Ok(b) = baluster_parts(a) else { return Vec::new() };
+    let mut v = round_anchors(On::Boundary, (b.h, On::Boundary), b.bulb.1, b.bulb.0);
+    v.push(at3("plinth_edge", [b.rb, 0.0, 0.0], On::Vertex));
+    v
 }
 
 const P_MUSHROOM: &[Param] = &[
@@ -610,64 +809,63 @@ fn crystal_anchors(a: &Args) -> Vec<Anchor> {
 const P_GEM: &[Param] = &[
     count("sides", "the girdle's sides", 8.0, 3.0, 64.0),
     len("radius", "the girdle's circumradius", 0.05),
-    ratio("table", "the flat top's circumradius as a share of the girdle's, under cos(180°/sides)", 0.55, 0.1, 0.95),
-    len("crown", "from the girdle up to the table", 0.016),
+    ratio("table_ratio", "the flat top's circumradius, as a share of the girdle's (under cos(180°/sides))", 0.55, 0.1, 0.95),
+    len("crown", "from the girdle's top up to the table", 0.016),
+    Param { min: 0.0, ..len("girdle", "the girdle band's height, upright between the crown and the pavilion (0: a knife edge)", 0.0015) },
     len("pavilion", "from the point below up to the girdle", 0.043),
 ];
-fn gem_parts(a: &Args) -> Result<(usize, f64, f64, f64, f64), Refusal> {
-    let (n, r, t, c, p) = (a.n("sides"), a.f("radius"), a.f("table"), a.f("crown"), a.f("pavilion"));
+fn gem_parts(a: &Args) -> Result<(usize, f64, f64, f64, f64, f64), Refusal> {
+    let (n, r, t, c, g, p) = (a.n("sides"), a.f("radius"), a.f("table_ratio"), a.f("crown"), a.f("girdle"), a.f("pavilion"));
     // (With a margin: a table whose corner is on a girdle side to rounding makes a crown triangle
     // of no area.)
     if t >= cos(PI / n as f64) - 1e-6 {
-        return Err(refuse("table_past_the_girdle", "the table's corners must lie inside the girdle's sides: table under cos(180°/sides)", &[("sides", n as f64), ("table", t)]));
+        return Err(refuse("table_past_the_girdle", "the table's corners must lie inside the girdle's sides: table_ratio under cos(180°/sides)", &[("sides", n as f64), ("table_ratio", t)]));
     }
-    Ok((n, r, t * r, c, p))
+    Ok((n, r, t * r, c, g, p))
 }
-fn gem_poly(n: usize, r: f64, rt: f64, c: f64, p: f64) -> Poly {
+/// A cut stone: the culet (the pavilion's point) at the origin; the pavilion, a pyramid of
+/// triangles up to the girdle; the girdle band, upright quads `g` tall (none at `g = 0`); the
+/// crown, triangles between the girdle's top and the table turned half a side; the table.
+fn gem_poly(n: usize, r: f64, rt: f64, c: f64, g: f64, p: f64) -> Poly {
     let step = TAU / n as f64;
+    let band = g > 0.0;
     let mut pts = vec![[0.0; 3]];
     pts.extend((0..n).map(|i| ring_pt(r, p, step * i as f64)));
-    pts.extend((0..n).map(|i| ring_pt(rt, p + c, step * (i as f64 + 0.5))));
+    if band {
+        pts.extend((0..n).map(|i| ring_pt(r, p + g, step * i as f64)));
+    }
+    pts.extend((0..n).map(|i| ring_pt(rt, p + g + c, step * (i as f64 + 0.5))));
     let nn = n as u32;
-    let g = |i: u32| 1 + i % nn;
-    let t = |i: u32| 1 + nn + i % nn;
+    let lo = |i: u32| 1 + i % nn;
+    let hi = |i: u32| if band { 1 + nn + i % nn } else { lo(i) };
+    let t = |i: u32| if band { 1 + 2 * nn + i % nn } else { 1 + nn + i % nn };
     let mut faces = Vec::new();
     let mut surf = Vec::new();
     for i in 0..nn {
-        faces.push(vec![0, g(i + 1), g(i)]);
+        faces.push(vec![0, lo(i + 1), lo(i)]);
         surf.push(2);
-        faces.push(vec![g(i), g(i + 1), t(i)]);
+        if band {
+            faces.push(vec![lo(i), lo(i + 1), hi(i + 1), hi(i)]);
+            surf.push(3);
+        }
+        faces.push(vec![hi(i), hi(i + 1), t(i)]);
         surf.push(1);
-        faces.push(vec![t(i + nn - 1), g(i), t(i)]);
+        faces.push(vec![t(i + nn - 1), hi(i), t(i)]);
         surf.push(1);
     }
     faces.push((0..nn).map(t).collect());
     surf.push(0);
-    // (The pavilion is a graph below the girdle and the crown and table one above it, both
-    // over the girdle's polygon: each face is wound so that its normal points down below and up
-    // above.)
-    let faces = faces
-        .into_iter()
-        .zip(&surf)
-        .map(|(mut f, &s)| {
-            let mut area = [0.0; 3];
-            for i in 0..f.len() {
-                area = add3(area, cross3(pts[f[i] as usize], pts[f[(i + 1) % f.len()] as usize]));
-            }
-            if (area[1] > 0.0) != (s != 2) {
-                f.reverse();
-            }
-            f
-        })
-        .collect();
-    Poly { pts, faces, surf, names: ["table", "crown", "pavilion"].map(String::from).to_vec() }
+    // (The stone is convex: each face wound outward about a point inside it.)
+    let faces = outward(&pts, faces, [0.0, p + 0.5 * g, 0.0]);
+    let names = if band { &["table", "crown", "pavilion", "girdle"][..] } else { &["table", "crown", "pavilion"][..] };
+    Poly { pts, faces, surf, names: names.iter().map(|x| x.to_string()).collect() }
 }
 fn gem_geom(a: &Args) -> Result<Geom, Refusal> {
-    let (n, r, rt, c, p) = gem_parts(a)?;
-    Ok(Geom::Solid(Rc::new(gem_poly(n, r, rt, c, p))))
+    let (n, r, rt, c, g, p) = gem_parts(a)?;
+    Ok(Geom::Solid(Rc::new(gem_poly(n, r, rt, c, g, p))))
 }
 fn gem_closed(a: &Args) -> Measures {
-    let Ok((n, r, rt, c, p)) = gem_parts(a) else { return Measures::default() };
+    let Ok((n, r, rt, c, g, p)) = gem_parts(a) else { return Measures::default() };
     let nf = n as f64;
     // The crown is a prismatoid (every point in the girdle's plane or the table's): its volume is
     // c (A₀ + 4 M + A₁) / 6, M the area of its middle section, the polygon of its slant edges'
@@ -676,9 +874,9 @@ fn gem_closed(a: &Args) -> Measures {
     let mids: Vec<Pt> = (0..2 * n)
         .map(|k| {
             let i = k / 2;
-            let g = ring_pt(r, 0.0, step * i as f64);
+            let gp = ring_pt(r, 0.0, step * i as f64);
             let tq = ring_pt(rt, 0.0, step * (i as f64 + if k % 2 == 0 { -0.5 } else { 0.5 }));
-            [0.5 * (g[0] + tq[0]), 0.5 * (g[2] + tq[2])]
+            [0.5 * (gp[0] + tq[0]), 0.5 * (gp[2] + tq[2])]
         })
         .collect();
     let mut twice = 0.0;
@@ -687,12 +885,12 @@ fn gem_closed(a: &Args) -> Measures {
         twice += u[0] * w[1] - u[1] * w[0];
     }
     let mid = 0.5 * twice.abs();
-    let v = ngon_area(nf, r) * p / 3.0 + c * (ngon_area(nf, r) + 4.0 * mid + ngon_area(nf, rt)) / 6.0;
+    let v = ngon_area(nf, r) * (p / 3.0 + g) + c * (ngon_area(nf, r) + 4.0 * mid + ngon_area(nf, rt)) / 6.0;
     Measures { size: Some(v), ..Measures::default() }
 }
 fn gem_anchors(a: &Args) -> Vec<Anchor> {
-    let Ok((_, r, _, c, p)) = gem_parts(a) else { return Vec::new() };
-    vec![at3("culet", [0.0; 3], On::Vertex), out3("table", [0.0, p + c, 0.0], [0.0, 1.0, 0.0], On::Boundary), at3("girdle_0", [0.0, p, -r], On::Vertex), at3("centre", [0.0, p, 0.0], On::Inside)]
+    let Ok((_, r, _, c, g, p)) = gem_parts(a) else { return Vec::new() };
+    vec![at3("culet", [0.0; 3], On::Vertex), out3("table", [0.0, p + g + c, 0.0], [0.0, 1.0, 0.0], On::Boundary), at3("girdle_0", [0.0, p, -r], On::Vertex), at3("centre", [0.0, p + 0.5 * g, 0.0], On::Inside)]
 }
 
 const P_STAIRS: &[Param] = &[
@@ -850,15 +1048,15 @@ pub(crate) const FORMS: &[Form] = &[
     solid!("rounded_cylinder", Cylinder, "a cylinder with its two rims rounded to a true radius (a puck, a coin, a button, a cushion)", STANDS, P_RCYL, curved: true, kin: &["circle"], rcyl_geom, rcyl_closed, rcyl_anchors),
     solid!("chamfered_box", Block, "a box with every edge cut at 45 degrees and a triangle at each corner (the bevelled cube of modelling tools)", STANDS, P_CBOX, curved: false, kin: &["rectangle"], cbox_geom, cbox_closed, cbox_anchors),
     solid!("stairs", Stair, "a straight flight of steps rising along +x, solid down to the floor", "the middle of its foot, on y = 0", P_STAIRS, curved: false, kin: &["stair_profile"], stairs_geom, stairs_closed, stairs_anchors),
-    solid!("cup", Vessel, "a hollow vessel: a floor and a wall of one thickness, straight or tapered (a cup, a bucket, a pot)", STANDS, P_CUP, curved: true, kin: &["u_section"], cup_geom, cup_closed, cup_anchors),
-    solid!("bell", Vessel, "a hollow bell: a flat crown and a flare bowed in, its wall one thickness (two concentric arcs)", "the middle of the mouth, on y = 0", P_BELL, curved: true, kin: &[], bell_geom, super::none, bell_anchors),
+    solid!("cup", Vessel, "a hollow vessel open at the top: a floor and a wall of one thickness measured across it, straight or tapered (a cup, a bucket, a pot)", STANDS, P_CUP, curved: true, kin: &["u_section"], cup_geom, cup_closed, cup_anchors),
+    solid!("bell", Vessel, "a hollow bell open below: a lip band, a flare bowed in up to a straight waist, a round shoulder and a flat crown, its wall one thickness", "the middle of the mouth, on y = 0", P_BELL, curved: true, kin: &[], bell_geom, super::none, bell_anchors),
     solid!("goblet", Vessel, "a goblet: a hollow half-ball cup on a stem and a round foot", STANDS, P_GOBLET, curved: true, kin: &[], goblet_geom, super::none, goblet_anchors),
-    solid!("bottle", Lathe, "a bottle: a body, a shoulder (an arc upright at the body) and a neck", STANDS, P_BOTTLE, curved: true, kin: &[], bottle_geom, super::none, bottle_anchors),
-    solid!("vase", Lathe, "a vase: a ball belly on a foot, a neck flaring to the mouth (solid: no cavity)", STANDS, P_VASE, curved: true, kin: &[], vase_geom, vase_closed, vase_anchors),
-    solid!("baluster", Lathe, "a baluster: a ball on a plinth, a neck and a cap (a railing's post, a table's leg)", STANDS, P_BALUSTER, curved: true, kin: &[], baluster_geom, baluster_closed, baluster_anchors),
+    solid!("bottle", Vessel, "a hollow bottle open at the mouth: a straight body, a shoulder curving in to the neck (an S, smooth at both ends), a neck and a lip ring; its wall one thickness", STANDS, P_BOTTLE, curved: true, kin: &[], bottle_geom, super::none, bottle_anchors),
+    solid!("vase", Vessel, "a hollow vase open at the mouth: a foot, a waist, a belly, a neck and a lip flaring out, every join smooth; its wall one thickness down to a floor at the waist", STANDS, P_VASE, curved: true, kin: &[], vase_geom, super::none, vase_anchors),
+    solid!("baluster", Lathe, "a turned baluster (a railing's post, a table's leg): a plinth, a bulb low down, a long neck tapering up, a collar and a cap, every curve smooth", STANDS, P_BALUSTER, curved: true, kin: &[], baluster_geom, super::none, baluster_anchors),
     solid!("mushroom", Lathe, "a mushroom: a stem under a spherical cap", STANDS, P_MUSHROOM, curved: true, kin: &[], mushroom_geom, mushroom_closed, mushroom_anchors),
     solid!("crystal", Crystal, "a crystal: a prism on a regular polygon with a pyramid on its top and, if asked, under its foot", "its lowest point, on y = 0", P_CRYSTAL, curved: false, kin: &["regular_polygon"], crystal_geom, crystal_closed, crystal_anchors),
-    solid!("gem", Crystal, "a cut stone: a flat table, a crown of triangles, a girdle and a pointed pavilion", "the pavilion's point, on y = 0", P_GEM, curved: false, kin: &["regular_polygon"], gem_geom, gem_closed, gem_anchors),
+    solid!("gem", Crystal, "a cut stone: a flat table, a crown of triangles, an upright girdle band (or a knife edge) and a pointed pavilion, every facet flat", "the pavilion's point, on y = 0", P_GEM, curved: false, kin: &["regular_polygon"], gem_geom, gem_closed, gem_anchors),
     solid!("chain_link", Torus, "a chain link: a round wire along a stadium (two half tori and two cylinders), lying flat", "the middle of the link, its lowest side on y = 0", P_LINK, curved: true, kin: &["stadium"], link_geom, super::none, link_anchors),
 ];
 
@@ -882,3 +1080,87 @@ pub(crate) const ALIASES: &[Alias] = &[
     alias!("brilliant", Solid, "gem", "a cut stone", &[]),
     alias!("link", Solid, "chain_link", "a chain link", &[]),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::Spec;
+    use crate::table::Kind;
+
+    /// The unit direction a piece runs in at its start (`at_end` false) or its end.
+    fn heading(e: El, at_end: bool) -> Pt {
+        let d = match e {
+            El::Line(a, b) => sub(b, a),
+            El::Arc { c, a, b, ccw, .. } => {
+                let p = if at_end { b } else { a };
+                let r = sub(p, c);
+                if ccw {
+                    [-r[1], r[0]]
+                } else {
+                    [r[1], -r[0]]
+                }
+            }
+        };
+        scale(d, 1.0 / crate::maths::len(d))
+    }
+    fn start(e: El) -> Pt {
+        match e {
+            El::Line(a, _) | El::Arc { a, .. } => a,
+        }
+    }
+
+    /// Every join of `els` meets: the end of one is the start of the next (exactly, or to a
+    /// rounding of the size), and where it is said to be smooth, the two run the same way there
+    /// (to 1e-12 of a radian).
+    fn joins(name: &str, els: &[El], smooth: &[bool]) {
+        for (i, w) in els.windows(2).enumerate() {
+            let (e, f) = (w[0].end(), start(w[1]));
+            assert!(dist(e, f) <= 1e-12 * (1.0 + crate::maths::len(e)), "{name}: join {i} is {} apart", dist(e, f));
+            if smooth[i] {
+                let (h0, h1) = (heading(w[0], true), heading(w[1], false));
+                let turn = (h0[0] * h1[1] - h0[1] * h1[0]).abs();
+                assert!(turn <= 1e-12 && h0[0] * h1[0] + h0[1] * h1[1] > 0.0, "{name}: join {i} turns by {turn}");
+            }
+        }
+    }
+
+    fn args(name: &str, given: &[(&str, f64)]) -> Args {
+        Spec::new(name, Some(Kind::Solid), given).unwrap().args.clone()
+    }
+
+    /// The picture check saw a faint line across the bottle's body near its shoulder and on the
+    /// mushroom's stem: the profiles' joins are measured here. The bottle's, the vase's and the
+    /// baluster's turned stretches meet with one point and one tangent at every join the form
+    /// calls smooth (all of them but the foot's, the lip's and the plinth's and cap's ledges),
+    /// and the bell's flare, waist and shoulder do. (The mushroom's stem is one line from the
+    /// ground to the cap: it has no join to show; the line in that picture is a step of one
+    /// pixel in its silhouette, which a camera above draws converging downward.)
+    #[test]
+    fn turned_joins_are_smooth() {
+        for given in [vec![], vec![("shoulder_ratio", 1.0)], vec![("neck_ratio", 0.8), ("shoulder_ratio", 9.0)]] {
+            let b = bottle_parts(&args("bottle", &given)).unwrap();
+            joins("bottle", &b.outer, &[true, true, true]);
+        }
+        for given in [vec![], vec![("mouth_ratio", 1.06), ("waist_ratio", 0.9)]] {
+            let v = vase_parts(&args("vase", &given)).unwrap();
+            // The foot's band is upright and the S from it starts upright: every join smooth.
+            joins("vase", &v.outer, &[true; 9]);
+        }
+        let b = baluster_parts(&args("baluster", &[])).unwrap();
+        // Lines: the plinth's foot, side and top, then eight arcs, then the cap's ledge, side and
+        // top: corners at the ledges.
+        let mut smooth = vec![false, false, false];
+        smooth.extend([true; 7]);
+        smooth.extend([false, false, false]);
+        joins("baluster", &b.els, &smooth);
+        let b = bell_parts(&args("bell", &[])).unwrap();
+        joins("bell", &b.outer, &[false, true, true]);
+        // The S itself, any way round.
+        for (a, z) in [([1.0, 0.0], [0.4, 2.0]), ([0.4, 0.0], [1.0, 0.6]), ([0.2, 1.0], [0.3, 3.5])] {
+            let s = s_join(a, z).unwrap();
+            joins("an S", &s, &[true]);
+            assert!(dist(start(s[0]), a) == 0.0 && dist(s[1].end(), z) == 0.0);
+            assert!(heading(s[0], false)[1] == 1.0 && heading(s[1], true)[1] == 1.0, "upright at both ends");
+        }
+    }
+}
