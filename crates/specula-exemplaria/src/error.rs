@@ -20,7 +20,7 @@ pub struct Error {
     pub near: Vec<String>,
     /// For `outside_plan`: the number, the worst value a draw could reach, and the bounds it
     /// leaves (in the number's unit).
-    pub reach: Option<Reach>,
+    pub reach: Option<Box<Reach>>,
 }
 
 /// How far a kind's draws would go past what its plan allows.
@@ -45,7 +45,7 @@ impl Error {
     }
 
     pub fn with_reach(mut self, number: &str, worst: f64, bound: [f64; 2]) -> Error {
-        self.reach = Some(Reach { number: number.to_string(), worst, bound });
+        self.reach = Some(Box::new(Reach { number: number.to_string(), worst, bound }));
         self
     }
 

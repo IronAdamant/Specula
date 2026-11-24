@@ -491,14 +491,14 @@ fn with_roles_fix(tools: &Tools, session: &SessionInfo, out: ToolOutput, roles: 
 /// Every role a kind's specimen is written in, with the hint colour the write hands the style
 /// (the kind's own, its base's, or the plan's default): what a style must resolve.
 fn roles_written(r: &Resolved) -> BTreeMap<String, String> {
-    struct Seen(std::cell::RefCell<BTreeMap<String, String>>);
-    impl Roles for Seen {
+    struct Recorder(std::cell::RefCell<BTreeMap<String, String>>);
+    impl Roles for Recorder {
         fn preset(&self, role: &str, hint: &str) -> Result<String, String> {
             self.0.borrow_mut().insert(role.to_string(), hint.to_string());
             Ok(role.to_string())
         }
     }
-    let seen = Seen(std::cell::RefCell::new(BTreeMap::new()));
+    let seen = Recorder(std::cell::RefCell::new(BTreeMap::new()));
     let _ = expand(r, None, &seen, "");
     seen.0.into_inner()
 }
