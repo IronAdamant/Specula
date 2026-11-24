@@ -190,7 +190,9 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
       placeholder patch there): no fire on what looks like bare stone.
 - [ ] Fire ends: a cell burns about 8 s and is spent (char), a burning one of the dead burns out
       after its time.
-- [ ] Headless: `elements:` in a single run's report counts ignitions and fuel cells caught.
+- [ ] Headless: `elements:` in a single run's report counts ignitions, bursts and fuel cells caught
+      (its bursts are the sweep's "bursts mean": a burst that went off, counted once); a
+      `layout waits:` line says when the layout waited for dust or for one of the dead on a cell.
 
 ### 12.3 Lightning (Fulmen)
 
@@ -215,7 +217,8 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
       a crystalline crackle).
 - [ ] The next hit shatters a frozen one for double damage (more at higher tiers).
 - [ ] A frozen one thaws after its time and is wet for 4 s (it does not catch fire while wet).
-- [ ] Fire on a frozen one thaws it at once (steam) instead of burning it.
+- [ ] Fire on a frozen one thaws it at once (steam) instead of burning it, a Rogus lob included
+      (its damage shatters the ice; it does not set the enemy alight, nor light a Tumidus's fuse).
 - [ ] Frost on a burning one puts it out; rime on a cell stops the grass fire there.
 - [ ] The colossus barely chills (mass 8); Gelu is weak against it.
 
@@ -223,6 +226,7 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
 
 - [ ] With any of the dead in range, one alone included, a gust shoves them all back along their
       lane (runners farther, the colossus hardly at all); nobody loses a hit point to it.
+- [ ] A cairn whose recharge is not longer than its push is refused (`cooldown_s` named).
 - [ ] Repeated gusts cannot hold one for ever: each later shove it takes is weaker, and a lone
       one held by several cairns still reaches the graveyard.
 - [ ] A leaper in mid-air is not stopped in the air: the gust's shove takes it when it lands.

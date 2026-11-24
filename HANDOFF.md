@@ -753,6 +753,15 @@ Open (2026-11-24), from the elemental stones of Sepulcra (lane `m6-turres`;
   rooted cells, and do the roots burn? As built: no (a fire there would burn the player's own
   stone's work).
 
+Both decide numbers for the elemental stones' stage 2 (the stones on the shipped map), whose list
+of work is in DESIGN.md, "Elemental stones": the data and the economy; the balance swept before and
+after with `tests/balance.rs`, `tests/replay.rs` and "Balance so far" moved on purpose; players'
+old saves, recordings and pinned replays refused by content hash (planned: an old save refused by
+name, with a new run offered); `--rules lex` refused for elemental content until the elements are
+ported to Lex; the HUD's placeholder strings, charge meter and gamepad picks for nine stones; the
+flash governor before lightning is shown to a person; the engine's tests that read Sepulcra's
+assets; the grass budget.
+
 (Whether the sculpt mesher may be mended where a sheet is thinner than a cell, though it
 moves the meshes of three approved props (`grave_rock`, `statue_angel`, `statue_mourner`)
 and three of the fidelity set by a few triangles each, was decided on 2026-11-20: "You can
