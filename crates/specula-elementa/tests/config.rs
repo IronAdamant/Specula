@@ -39,8 +39,9 @@ fn a_project_overrides_and_adds_materials_and_maps_tags() {
     assert_eq!(c.limits, Limits { nodes: 20000, burning: 1000, work: 65536 });
     let w = c.worst_case();
     // Every node updated; at most 20,000 ready nodes sorted (15 comparisons each) and 40,000
-    // events (16 each), counted as sorts; the work budget.
-    assert_eq!(w.ops_per_step, 20000 + 20000 * (1 + 15) + 40000 * (1 + 16) + 65536);
+    // events (16 each), counted as sorts; the work budget; a skip list of at most 1,024 ids
+    // marked and unmarked (15 steps of search each).
+    assert_eq!(w.ops_per_step, 20000 + 20000 * (1 + 15) + 40000 * (1 + 16) + 65536 + 2 * 1024 * (1 + 15));
     assert_eq!(w.grid_entries, 20000 * 64);
     // The worst grid update: every id walked twice, 20,000 changed ids sorted, 1,280,000 entries
     // made and sorted (21 comparisons each), read and written.

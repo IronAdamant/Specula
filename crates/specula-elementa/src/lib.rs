@@ -16,7 +16,8 @@
 //! - **Bounded**: nodes tracked, nodes burning and work per step are limits ([`Limits`]),
 //!   checked when given and said before a run ([`Config::worst_case`]); a step never passes its
 //!   work limit (it resumes where it stopped at the next step; heat it could not give is not
-//!   given, so a limit only slows a fire); under the burning limit the longest waiting catch
+//!   given: with the same nodes burning a node catches no sooner, though over a whole fire the
+//!   limit can change what catches); under the burning limit the longest waiting catch
 //!   first. Only a spread step updates the grid, by a merge of what changed.
 //! - **Predicted** ([`Elementa::check`]): a scenario run on a copy, bounded, for a worker thread.
 //! - **Saved and hashed** ([`Elementa::save_state`], [`Elementa::restore_state`],

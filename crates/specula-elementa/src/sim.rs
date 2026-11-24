@@ -56,6 +56,8 @@ pub const MAX_TICK_HZ: u32 = 1000;
 pub const MAX_TICK: u64 = 1 << 62;
 /// `Node::ready_at` of a node not waiting to catch.
 pub const NOT_READY: u64 = u64::MAX;
+/// Nodes a cut query's skip list holds, at most: past it, the query ends.
+pub const MAX_SKIP: usize = 1024;
 
 /// Where a node stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -373,7 +375,12 @@ pub struct StepReport {
     pub embers: u32,
     /// Embers thrown that the rest of the work budget could not land whole (not given).
     pub embers_dropped: u32,
+    /// Cells looked up.
+    pub cells: u32,
+    /// Work spent finding cells: each lookup is [`lookup_cost`] (its two binary searches over the
+    /// grid), and resuming inside a cell its binary search.
     pub lookups: u32,
+    /// Work spent on neighbours: one a neighbour.
     pub checks: u32,
     /// `lookups + checks`: never above the work limit.
     pub work: u32,
@@ -387,6 +394,9 @@ pub struct StepReport {
     /// The grid brought up to date ([`crate::grid::update_ops`]); 0 when nothing was added,
     /// removed or moved into other cells.
     pub grid_ops: u64,
+    /// A resumed query's skip list marked and unmarked (at most [`MAX_SKIP`] binary searches
+    /// each way).
+    pub skip_ops: u64,
     pub events: u32,
     /// Operations of the calls made since the last tick (adds, removes, moves and acts), so that
     /// `ops() + calls_ops` is everything the tick cost.
@@ -398,7 +408,7 @@ impl StepReport {
     /// [`crate::config::WorstCase::ops_per_step`] plus [`crate::config::WorstCase::grid_ops`]
     /// (and the grid's part is what [`Elementa::pending_grid_ops`] said before the step).
     pub fn ops(&self) -> u64 {
-        u64::from(self.node_updates) + self.sort_ops + u64::from(self.work) + self.grid_ops
+        u64::from(self.node_updates) + self.sort_ops + u64::from(self.work) + self.grid_ops + self.skip_ops
     }
 }
 
@@ -419,6 +429,11 @@ pub struct Elementa {
     pub(crate) ambient: f32,
     /// Where the next spread step starts giving heat.
     pub(crate) cursor: Cursor,
+    /// While a query is cut part-way: the ids (sorted) of nodes it had already passed that have
+    /// moved or gone since; its rest skips them, so none is heated twice in the pass.
+    pub(crate) skip: Vec<u64>,
+    /// The skip list as a mark by node index, made at a spread step that resumes a cut query.
+    skip_mask: Vec<bool>,
     /// Nodes refused or left out for the node limit, all told.
     pub(crate) refused: u64,
     pub(crate) acts: u32,
@@ -539,6 +554,8 @@ impl Elementa {
             wind: Vec3::ZERO,
             ambient: 0.0,
             cursor: Cursor::default(),
+            skip: Vec::new(),
+            skip_mask: Vec::new(),
             refused: 0,
             acts: 0,
             events: Events { list: Vec::with_capacity(MAX_EVENTS_PER_KIND * EVENT_KINDS.len()), ..Events::default() },
@@ -564,12 +581,22 @@ impl Elementa {
         self.step_events.reserve(grow(self.step_events.len(), 2 * n));
         self.hit.reserve(grow(self.hit.len(), n));
         self.ranges.reserve(grow(self.ranges.len(), n));
+        self.skip_mask.reserve(grow(self.skip_mask.len(), n));
+        self.skip.reserve(MAX_SKIP.saturating_sub(self.skip.len()));
     }
 
     /// The capacities of every buffer a step or an act uses (a test holds that a warm state's
     /// do not grow).
     pub fn capacities(&self) -> Vec<usize> {
-        let mut c = vec![self.gain.capacity(), self.queue.capacity(), self.step_events.capacity(), self.hit.capacity(), self.ranges.capacity()];
+        let mut c = vec![
+            self.gain.capacity(),
+            self.queue.capacity(),
+            self.step_events.capacity(),
+            self.hit.capacity(),
+            self.ranges.capacity(),
+            self.skip.capacity(),
+            self.skip_mask.capacity(),
+        ];
         c.extend(self.grid.capacities());
         c.push(self.changes.ids.capacity());
         c.push(self.events.list.capacity());
@@ -674,9 +701,10 @@ impl Elementa {
     }
 
     /// The most a single add, remove or move costs, in ops, at `n` nodes: a binary search, the
-    /// node list shifted by one place, and (a move) the cut query's two keys.
+    /// node list shifted by one place, and (a move or a remove while a query is cut) the cut
+    /// node found and the skip list (at most [`MAX_SKIP`] ids) searched and shifted.
     pub fn call_ops(n: u64) -> u64 {
-        n + 2 * log2_ceil(n + 1) + 2
+        n + 3 * log2_ceil(n + 1) + 2 + log2_ceil(MAX_SKIP as u64 + 1) + MAX_SKIP as u64
     }
 
     /// Tracks one node. Refused, with the number, when the node limit is reached. Costs at most
@@ -756,18 +784,19 @@ impl Elementa {
 
     /// Stops tracking a node; `false` if it was not tracked. Costs at most
     /// [`Elementa::call_ops`]; the grid lets it go at the next spread step. If the work budget had
-    /// cut this node's own query, the rest of that query is not given.
+    /// cut this node's own query, the rest of that query is not given. If it cut another's and
+    /// had already passed this node, the node is put on the query's skip list, so that added
+    /// again ahead of the resume point it is not heated twice in that pass.
     pub fn remove(&mut self, id: u64) -> bool {
         let n = self.nodes.len() as u64;
         self.calls_ops += log2_ceil(n + 1) + 1;
         match self.nodes.binary_search_by_key(&id, |n| n.id) {
             Ok(i) => {
                 self.calls_ops += n - i as u64;
+                let (c, h) = (self.nodes[i].center, self.nodes[i].half);
+                self.note_passed(id, c, h, None);
                 if self.nodes.remove(i).phase == Phase::Burning {
                     self.report.burning = self.report.burning.saturating_sub(1);
-                }
-                if self.cursor.is_mid() && self.cursor.id == id {
-                    self.cursor = Cursor::past(id);
                 }
                 self.changes.push(id, self.nodes.len());
                 true
@@ -776,36 +805,72 @@ impl Elementa {
         }
     }
 
+    /// The cut query's rule for a node about to move (to `to`) or be removed (`to` is `None`):
+    /// the cut node itself ends its query if it goes, or if its query's cells change; any other
+    /// node the query has already passed goes on the skip list (it was given its heat in this
+    /// pass, wherever it goes next). Nothing ends a query but its own node, so no mover can
+    /// starve it.
+    fn note_passed(&mut self, id: u64, center: Vec3, half: Vec3, to: Option<(Vec3, Vec3)>) {
+        if !self.cursor.is_mid() {
+            return;
+        }
+        let cut = self.cursor;
+        let n = self.nodes.len() as u64;
+        self.calls_ops += log2_ceil(n + 1) + 1;
+        let Ok(s) = self.nodes.binary_search_by_key(&cut.id, |n| n.id) else {
+            return;
+        };
+        let (lo, hi) = query_box(&self.nodes[s], &self.config);
+        if cut.id == id {
+            let stays = to.is_some_and(|(c, h)| {
+                let mut moved = self.nodes[s].clone();
+                moved.center = c;
+                moved.half = h;
+                query_box(&moved, &self.config) == (lo, hi)
+            });
+            if !stays {
+                self.end_cut();
+            }
+            return;
+        }
+        let at = (u64::from(cut.cell), cut.next);
+        if query_key(lo, hi, center, half, id, self.config.cell_m).is_some_and(|k| k < at) {
+            let k = self.skip.partition_point(|&x| x < id);
+            self.calls_ops += log2_ceil(self.skip.len() as u64 + 1) + (self.skip.len() - k) as u64;
+            if self.skip.get(k) != Some(&id) {
+                if self.skip.len() >= MAX_SKIP {
+                    // More passed nodes changed in one cut than the skip list holds: the query
+                    // ends (the only way a crowd of movers, past MAX_SKIP between two spread
+                    // steps, can end it).
+                    self.end_cut();
+                    return;
+                }
+                self.skip.insert(k, id);
+            }
+        }
+    }
+
+    /// The cut query ends here; the pass moves on to the next burning node.
+    fn end_cut(&mut self) {
+        self.cursor = Cursor::past(self.cursor.id);
+        self.skip.clear();
+    }
+
     /// A node's entity moved or changed size. Costs at most [`Elementa::call_ops`]. A node that
     /// stays in the cells it covered changes nothing in the grid; one that moves into others is
     /// taken in at the next spread step.
     ///
-    /// While the work budget has a query cut part-way, a move that could make that query heat a
-    /// neighbour twice ends it instead (the rest of its heat is not given, and the pass moves
-    /// on): the cut node itself moving (its query's cells change), or a neighbour the query has
-    /// already passed moving to where it has not yet been.
+    /// While the work budget has a query cut part-way: the cut node moving so that its query's
+    /// cells change ends that query (the rest of its heat is not given, and the pass moves on);
+    /// a neighbour the query has already passed is put on its skip list (see
+    /// [`Elementa::remove`]), so that it is not heated twice in the pass, wherever it goes.
     pub fn move_node(&mut self, id: u64, center: Vec3, half: Vec3) -> Result<(), ElementaError> {
         check_box(&self.config, id, center, half)?;
         let n = self.nodes.len() as u64;
         self.calls_ops += log2_ceil(n + 1) + 1;
         let i = self.index(id)?;
         let (old_c, old_h) = (self.nodes[i].center, self.nodes[i].half);
-        if self.cursor.is_mid() {
-            let cut = self.cursor;
-            if cut.id == id {
-                self.cursor = Cursor::past(id);
-            } else if let Ok(s) = self.nodes.binary_search_by_key(&cut.id, |n| n.id) {
-                self.calls_ops += log2_ceil(n + 1) + 1;
-                let (lo, hi) = query_box(&self.nodes[s], &self.config);
-                let at = (u64::from(cut.cell), cut.next);
-                let c = self.config.cell_m;
-                let passed = query_key(lo, hi, old_c, old_h, id, c).is_some_and(|k| k < at);
-                let ahead = query_key(lo, hi, center, half, id, c).is_some_and(|k| k >= at);
-                if passed && ahead {
-                    self.cursor = Cursor::past(cut.id);
-                }
-            }
-        }
+        self.note_passed(id, old_c, old_h, Some((center, half)));
         let before = node_cells(&self.nodes[i], self.config.cell_m);
         self.nodes[i].center = center;
         self.nodes[i].half = half;
@@ -837,6 +902,32 @@ impl Elementa {
         }
         self.ambient = h;
         Ok(())
+    }
+
+    /// Brings the grid up to date now (a spread step does this itself); its cost.
+    pub(crate) fn update_grid(&mut self) -> u64 {
+        self.grid.update(&self.nodes, &mut self.changes, self.config.cell_m)
+    }
+
+    /// How crowded the grid's cells are, as of its last update: how many cells hold so many
+    /// entries that an ember can never land in one (it lands whole or not at all, and the work
+    /// limit less the lookup is less than the entries), and the most entries in one cell. One
+    /// pass over the entries.
+    pub fn crowded_cells(&self) -> (u32, u32) {
+        let work = (u64::from(self.config.limits.work)).saturating_sub(lookup_cost(self.grid.len() as u64)) as usize;
+        let (mut crowded, mut most) = (0u32, 0u32);
+        let all = self.grid.entries();
+        let mut i = 0;
+        while i < all.len() {
+            let mut j = i + 1;
+            while j < all.len() && all[j].cell == all[i].cell {
+                j += 1;
+            }
+            crowded += u32::from(j - i > work);
+            most = most.max((j - i) as u32);
+            i = j;
+        }
+        (crowded, most)
     }
 
     /// After a load: the grid is made whole at the next spread step, and the buffers sized.
@@ -933,13 +1024,15 @@ impl Elementa {
                 let n = self.nodes.len() as u64;
                 let cells = cells_in(clo, chi);
                 let current = self.changes.is_empty();
+                let look = lookup_cost(self.grid.len() as u64);
+                let finding = cells.saturating_mul(look);
                 self.ranges.clear();
                 let mut entries = 0u64;
-                if current && cells <= n {
+                if current && finding <= n {
                     for x in clo[0]..=chi[0] {
                         for y in clo[1]..=chi[1] {
                             for z in clo[2]..=chi[2] {
-                                report.work += 1;
+                                report.work += look as u32;
                                 let (a, b) = self.grid.range([x, y, z]);
                                 entries += (b - a) as u64;
                                 self.ranges.push(([x, y, z], a, b));
@@ -947,9 +1040,9 @@ impl Elementa {
                         }
                     }
                 }
-                if !current || cells > n || cells + entries > n {
-                    // The grid out of date, or more cells or more entries in them than there
-                    // are nodes: every node once.
+                if !current || finding > n || finding + entries > n {
+                    // The grid out of date, or finding the cells and looking at their entries
+                    // would cost more than there are nodes: every node once.
                     report.scanned = !current;
                     for (i, node) in self.nodes.iter().enumerate() {
                         report.work += 1;
@@ -995,7 +1088,7 @@ impl Elementa {
     fn spread(&mut self) {
         let dt = 1.0 / self.config.spread_hz as f32;
         let mut rep = StepReport { tick: self.tick, spread: true, nodes: self.nodes.len() as u32, ..StepReport::default() };
-        rep.grid_ops = self.grid.update(&self.nodes, &mut self.changes, self.config.cell_m);
+        rep.grid_ops = self.update_grid();
         rep.grid_updated = rep.grid_ops > 0;
         rep.grid_entries = self.grid.len() as u32;
         let n = self.nodes.len();
@@ -1006,12 +1099,24 @@ impl Elementa {
         // work budget, each at most once a step. A burning node's query gives each neighbour it
         // reaches one step of heat; a query the budget cuts resumes at the next step where it
         // stopped, so every neighbour of one pass is given the same, once. What a node the
-        // budget did not reach this step would have given is not given: a limit can only slow a
-        // fire. Gains are summed first and applied after, so no node's place in the order
+        // budget did not reach this step would have given is not given (with the same nodes
+        // burning, no node is given more than with room). Gains are summed first and applied after, so no node's place in the order
         // changes another's result.
         let mut spend = Spend { used: 0, budget: u64::from(self.config.limits.work) };
         let resume = self.cursor;
         let start = self.nodes.partition_point(|x| x.id < resume.id);
+        // A resumed query's skip list, marked by index (at most MAX_SKIP binary searches).
+        let mut marked = 0usize;
+        if resume.is_mid() && !self.skip.is_empty() {
+            self.skip_mask.resize(n, false);
+            for id in &self.skip {
+                if let Ok(j) = self.nodes.binary_search_by_key(id, |x| x.id) {
+                    self.skip_mask[j] = true;
+                    marked += 1;
+                }
+            }
+            rep.skip_ops = 2 * self.skip.len() as u64 * (1 + log2_ceil(n as u64 + 1));
+        }
         let mut next_cursor = None;
         for k in 0..n {
             let i = (start + k) % n;
@@ -1025,9 +1130,11 @@ impl Elementa {
                 continue;
             }
             rep.processed += 1;
-            let from = if id == resume.id { (resume.cell, resume.next) } else { (0, 0) };
+            let resumed = id == resume.id && resume.is_mid();
+            let from = if resumed { (resume.cell, resume.next) } else { (0, 0) };
+            let skip: &[bool] = if resumed && !self.skip.is_empty() { &self.skip_mask } else { &[] };
             let q = Query { nodes: &self.nodes, grid: &self.grid, config: &self.config, wind: self.wind };
-            match q.heat(i, dt, from, &mut self.gain, &mut spend, &mut rep) {
+            match q.heat(i, dt, from, skip, &mut self.gain, &mut spend, &mut rep) {
                 Some((cell, next)) => {
                     rep.truncated += 1;
                     next_cursor.get_or_insert(Cursor { id, cell, next });
@@ -1044,7 +1151,19 @@ impl Elementa {
                 }
             }
         }
-        self.cursor = next_cursor.unwrap_or_default();
+        if marked > 0 {
+            for id in &self.skip {
+                if let Ok(j) = self.nodes.binary_search_by_key(id, |x| x.id) {
+                    self.skip_mask[j] = false;
+                }
+            }
+        }
+        let next = next_cursor.unwrap_or_default();
+        if !(next.is_mid() && next.id == resume.id && resume.is_mid()) {
+            // The cut query finished (or another is cut now): its skip list is spent.
+            self.skip.clear();
+        }
+        self.cursor = next;
         rep.work = spend.used as u32;
 
         // Phases: first what ends (out, burnt, frozen, thawed), in id order; then what catches.
@@ -1102,7 +1221,7 @@ impl Elementa {
         if self.cursor.is_mid() {
             let burns = self.node(self.cursor.id).is_some_and(|x| x.phase == Phase::Burning);
             if !burns {
-                self.cursor = Cursor::past(self.cursor.id);
+                self.end_cut();
             }
         }
         // What catches: every ready node, longest waiting first, then hottest, then in an order
@@ -1229,10 +1348,15 @@ struct Spend {
 impl Spend {
     /// One unit of work, if the budget has it.
     fn take(&mut self) -> bool {
-        if self.used >= self.budget {
+        self.take_n(1)
+    }
+
+    /// `n` units of work at once, if the budget has them all (else none is taken).
+    fn take_n(&mut self, n: u64) -> bool {
+        if self.used + n > self.budget {
             return false;
         }
-        self.used += 1;
+        self.used += n;
         true
     }
 
@@ -1241,12 +1365,20 @@ impl Spend {
     }
 }
 
+/// What looking up one cell costs in work: one, and the two binary searches over the grid's
+/// `entries` that find where the cell's entries begin and end.
+pub fn lookup_cost(entries: u64) -> u64 {
+    1 + 2 * log2_ceil(entries + 1)
+}
+
 impl Query<'_> {
     /// Heats the neighbours of burning node `i` with one step's heat each, starting at `from`
     /// (a cell, counted in x, y, z order over the query's cells, and the least id to begin at in
-    /// it). `Some(where to resume)` when the budget cut it short; `None` when every cell was
-    /// looked at.
-    fn heat(&self, i: usize, dt: f32, from: (u32, u64), gain: &mut [f32], spend: &mut Spend, rep: &mut StepReport) -> Option<(u32, u64)> {
+    /// it), passing over the nodes `skip` marks (by index: passed already in this pass, and
+    /// moved or gone since). `Some(where to resume)` when the budget cut it short; `None` when every cell
+    /// was looked at.
+    #[allow(clippy::too_many_arguments, reason = "one walk's inputs, all borrowed from the state")]
+    fn heat(&self, i: usize, dt: f32, from: (u32, u64), skip: &[bool], gain: &mut [f32], spend: &mut Spend, rep: &mut StepReport) -> Option<(u32, u64)> {
         let a = &self.nodes[i];
         let m = &self.config.materials[usize::from(a.material)];
         if m.heat_out <= 0.0 {
@@ -1254,6 +1386,7 @@ impl Query<'_> {
         }
         let reach = self.config.reach_m;
         let (lo, hi) = query_box(a, self.config);
+        let look = lookup_cost(self.grid.len() as u64);
         let mut k = 0u32;
         for x in lo[0]..=hi[0] {
             for y in lo[1]..=hi[1] {
@@ -1264,32 +1397,32 @@ impl Query<'_> {
                         continue;
                     }
                     let at = if this == from.0 { from.1 } else { 0 };
-                    if !spend.take() {
+                    if !spend.take_n(look) {
                         return Some((this, at));
                     }
-                    rep.lookups += 1;
+                    rep.cells += 1;
+                    rep.lookups += look as u32;
                     let entries = self.grid.cell([x, y, z]);
                     let mut first = 0;
                     if at > 0 {
                         // Resuming inside this cell: a binary search by id, counted.
-                        for _ in 0..log2_ceil(entries.len() as u64 + 1) {
-                            if !spend.take() {
-                                return Some((this, at));
-                            }
-                            rep.lookups += 1;
+                        let steps = log2_ceil(entries.len() as u64 + 1);
+                        if !spend.take_n(steps) {
+                            return Some((this, at));
                         }
+                        rep.lookups += steps as u32;
                         first = entries.partition_point(|e| self.nodes[e.node as usize].id < at);
                     }
                     for e in &entries[first..] {
                         let j = e.node as usize;
+                        let b = &self.nodes[j];
                         if !spend.take() {
-                            return Some((this, self.nodes[j].id));
+                            return Some((this, b.id));
                         }
                         rep.checks += 1;
-                        if j == i {
+                        if j == i || skip.get(j) == Some(&true) {
                             continue;
                         }
-                        let b = &self.nodes[j];
                         if matches!(b.phase, Phase::Burning | Phase::Burnt) || first_shared_cell(b, lo, self.config.cell_m) != [x, y, z] {
                             continue;
                         }
@@ -1306,14 +1439,18 @@ impl Query<'_> {
     }
 
     /// An ember lands at `at`: the things whose boxes hold that point are given its heat, if the
-    /// budget left holds the lookup and every entry of its cell; otherwise none is (`false`).
+    /// budget left holds the lookup and every entry of its cell; otherwise none is (`false`). So
+    /// a cell holding as many entries as the work limit, or more, never takes an ember
+    /// ([`Elementa::crowded_cells`]).
     fn ember(&self, at: Vec3, gain: &mut [f32], spend: &mut Spend, rep: &mut StepReport) -> bool {
         let c = self.config.cell_m;
         let lim = MAX_COORD + MAX_HALF * 2.0;
-        if at.x.abs() > lim || at.y.abs() > lim || at.z.abs() > lim || !spend.take() {
+        let look = lookup_cost(self.grid.len() as u64);
+        if at.x.abs() > lim || at.y.abs() > lim || at.z.abs() > lim || !spend.take_n(look) {
             return false;
         }
-        rep.lookups += 1;
+        rep.cells += 1;
+        rep.lookups += look as u32;
         let entries = self.grid.cell([cell_of(at.x, c), cell_of(at.y, c), cell_of(at.z, c)]);
         if (entries.len() as u64) > spend.left() {
             return false;

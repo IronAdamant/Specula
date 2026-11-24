@@ -57,6 +57,12 @@ pub struct Prediction {
     pub bound_ops: u64,
     /// The run stopped at `max_ops` before its ticks.
     pub cut: bool,
+    /// Cells, at the start, holding more nodes than an ember can ever land on under the work
+    /// limit ([`Elementa::crowded_cells`]): embers that fall there are dropped, whatever the
+    /// load; 0 in a world whose cells are not that crowded.
+    pub crowded_cells: u32,
+    /// The most nodes in one cell at the start.
+    pub most_in_a_cell: u32,
     /// The state's hash at the end, to compare with a real run.
     pub hash: u64,
 }
@@ -84,6 +90,8 @@ impl Prediction {
             ("most_waiting", Json::from(self.most_waiting)),
             ("bound_ops", Json::from(self.bound_ops)),
             ("cut", Json::from(self.cut)),
+            ("crowded_cells", Json::from(self.crowded_cells)),
+            ("most_in_a_cell", Json::from(self.most_in_a_cell)),
             ("hash", Json::from(format!("{:016x}", self.hash))),
         ])
     }
@@ -122,6 +130,10 @@ impl Elementa {
             sim.set_ambient(a)?;
         }
         let mut p = Prediction { bound_ops: self.check_bound(s.ticks, s.acts.len()), ..Prediction::default() };
+        // The grid made current first (the bound counts it), so that how crowded its cells are is
+        // said before the run.
+        p.ops += sim.update_grid();
+        (p.crowded_cells, p.most_in_a_cell) = sim.crowded_cells();
         for a in &s.acts {
             let r = sim.act(*a)?;
             p.ops += r.ops();

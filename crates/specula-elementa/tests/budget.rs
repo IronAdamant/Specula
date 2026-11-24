@@ -10,7 +10,7 @@ mod common;
 use common::{mat, sim};
 use specula_core::math::Vec3;
 use specula_core::rng::Rng;
-use specula_elementa::{Elementa, EventKind, NodeDesc, Phase};
+use specula_elementa::{Act, ActKind, Elementa, EventKind, NodeDesc, Phase, Scenario, Target};
 use std::collections::BTreeMap;
 
 /// A torch that burns for an hour giving very little heat, and `n` sinks (which never cool, so
@@ -38,7 +38,7 @@ fn sink_heats(e: &Elementa) -> Vec<f32> {
 
 #[test]
 fn every_neighbour_of_a_cut_query_is_given_the_same_heat() {
-    let mut room = sinks(1 << 20, 2000);
+    let mut room = sinks(1 << 19, 2000);
     for _ in 0..6 * 61 {
         room.step();
     }
@@ -64,7 +64,7 @@ fn every_neighbour_of_a_cut_query_is_given_the_same_heat() {
 #[test]
 fn a_tight_budget_never_crosses_a_gap_that_room_cannot() {
     // A source and a target that cools as fast as it is heated (the model says it never
-    // catches), and far off a hundred burning decoys whose queries eat the budget. On
+    // catches), and far off sixty burning decoys whose queries eat a tight budget (and fit in a full one). On
     // 52be4bf7 the heat the budget delayed was given in one lump and the target caught.
     let run = |work: u32| {
         let json = format!(
@@ -76,7 +76,7 @@ fn a_tight_budget_never_crosses_a_gap_that_room_cannot() {
         let mut e = sim(&json, 1);
         let (decoy, src, damp) = (mat(&e, "decoy"), mat(&e, "src"), mat(&e, "damp"));
         let mut d: Vec<NodeDesc> =
-            (0..100u64).map(|k| NodeDesc::new(1000 + k, decoy, Vec3::new(20.0 * k as f32, 100.0, 0.0), Vec3::new(3.9, 3.9, 3.9)).heat(1.0)).collect();
+            (0..60u64).map(|k| NodeDesc::new(1000 + k, decoy, Vec3::new(20.0 * k as f32, 100.0, 0.0), Vec3::new(3.9, 3.9, 3.9)).heat(1.0)).collect();
         d.push(NodeDesc::new(1, src, Vec3::ZERO, Vec3::new(0.1, 0.1, 0.1)).heat(1.0));
         d.push(NodeDesc::new(2, damp, Vec3::new(0.7, 0.0, 0.0), Vec3::new(0.1, 0.1, 0.1)));
         e.add_many(&d).unwrap();
@@ -88,7 +88,7 @@ fn a_tight_budget_never_crosses_a_gap_that_room_cannot() {
         }
         (e.node(2).unwrap().phase, cut)
     };
-    assert_eq!(run(1 << 20), (Phase::Intact, 0));
+    assert_eq!(run(1 << 19), (Phase::Intact, 0));
     let (phase, cut) = run(1024);
     assert!(cut > 100, "the budget cut {cut} steps");
     assert_eq!(phase, Phase::Intact, "a limit let heat cross a gap the model says it never crosses");
@@ -151,7 +151,7 @@ fn in_random_worlds_a_tight_budget_catches_no_more_and_none_sooner() {
     // no sooner, and catches only if it would with room.
     let (mut fewer, mut later, mut cut_worlds) = (0, 0, 0);
     for seed in 0..60u64 {
-        let room = world(seed, 1 << 20);
+        let room = world(seed, 1 << 19);
         let tight = world(seed, 1024);
         for (id, t) in &tight {
             let Some(r) = room.get(id) else {
@@ -236,31 +236,33 @@ fn a_cut_query_heats_no_neighbour_twice_when_nodes_move() {
     let h = Vec3::new(0.01, 0.01, 0.01);
     let (here, there) = (Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, -0.5, -0.5));
     // With room: what one sink is given in the run (at either place: the same gap and lean).
-    let mut room = corner(1 << 20);
+    let mut room = corner(1 << 19);
     for _ in 0..6 * 61 {
         room.step();
     }
     let full = room.node(MOVER + 1).unwrap().heat;
     // The passed sink moves ahead of the cut, then back after the step, every time a query is
-    // cut: on 52be4bf7 it was heated in both places in one pass.
+    // cut: on 52be4bf7 it was heated in both places in one pass. Now it goes on the query's
+    // skip list and the query goes on.
     let mut e = corner(1024);
-    let mut ended = 0;
+    let mut kept = 0;
     for _ in 0..6 * 61 {
         let r = *e.step();
         if r.spread && r.truncated > 0 {
             e.move_node(MOVER, there, h).unwrap();
-            ended += u32::from(!e.cursor().is_mid());
+            kept += u32::from(e.cursor().is_mid());
         } else if r.spread {
             e.move_node(MOVER, here, h).unwrap();
         }
     }
-    assert!(ended > 0, "the moves ended cut queries");
+    assert!(kept > 10, "the cut queries went on past the moves ({kept})");
     let mover = e.node(MOVER).unwrap().heat;
     assert!(mover <= full, "the moving sink was given {mover}, more than with room ({full})");
     assert!(e.nodes().iter().filter(|n| n.id != 5_000_000).all(|n| n.heat <= full));
 
-    // The burning node itself moves (or goes) between a cut and its resume: its query ends
-    // there and the pass moves on, so nothing is heated twice.
+    // The burning node itself moves between a cut and its resume: within its query's cells the
+    // query goes on; into other cells it ends there and the pass moves on (its cells are not
+    // the ones it was walking), so nothing is heated twice.
     let mut e = corner(1024);
     let mut moved = 0;
     for _ in 0..6 * 61 {
@@ -268,7 +270,10 @@ fn a_cut_query_heats_no_neighbour_twice_when_nodes_move() {
         if r.spread && r.truncated > 0 {
             let c = e.node(5_000_000).unwrap().center;
             e.move_node(5_000_000, c + Vec3::new(0.0, 0.0, 1.0e-4), h).unwrap();
-            assert_eq!(e.cursor().id, 5_000_001, "the pass moved past the moved node");
+            assert!(e.cursor().is_mid() && e.cursor().id == 5_000_000, "a move within its cells keeps the query");
+            e.move_node(5_000_000, c + Vec3::new(0.0, 0.0, 3.0), h).unwrap();
+            assert_eq!(e.cursor().id, 5_000_001, "the pass moved past the node that left its cells");
+            e.move_node(5_000_000, c, h).unwrap();
             moved += 1;
         }
     }
@@ -325,4 +330,158 @@ fn a_cursor_part_way_through_a_query_is_checked_on_load() {
     for _ in 0..60 {
         l.step();
     }
+}
+
+/// The second reviewer's `meet`: a line of 30 brush (front B) runs towards a target from one
+/// side; one brush (A) on the other side is lit by an act at `act_at`; the target catches only
+/// if both burn at once. Eighty decoys burning for 15 s eat a tight budget early (and fit in a full one), which
+/// delays front B. When B's last brush caught and burnt out, and when the target caught.
+fn meet(work: u32, act_at: Option<u64>) -> (Option<u64>, Option<u64>, Option<u64>, u32) {
+    let json = format!(
+        r#"{{"elements": 1, "materials": {{"decoy": {{"ignite": 0.1, "flame": 0.9, "burn_s": 15, "heat_out": 0.5, "cool": 0.1}},
+            "brush": {{"ignite": 0.2, "burn_s": 20, "heat_out": 0.4, "flame": 0.6, "cool": 0.05, "embers": 0}},
+            "damp": {{"ignite": 0.35, "burn_s": 10, "heat_out": 0, "flame": 0.8, "cool": 0.32}}}},
+            "cell_m": 2, "reach_m": 1.0, "limits": {{"nodes": 4096, "burning": 4096, "work": {work}}}}}"#
+    );
+    let mut e = sim(&json, 1);
+    let (decoy, brush, damp) = (mat(&e, "decoy"), mat(&e, "brush"), mat(&e, "damp"));
+    let h = Vec3::new(0.1, 0.1, 0.1);
+    let mut d: Vec<NodeDesc> =
+        (0..80u64).map(|k| NodeDesc::new(1000 + k, decoy, Vec3::new(20.0 * k as f32, 100.0, 0.0), Vec3::new(3.9, 3.9, 3.9)).heat(1.0)).collect();
+    for k in 1..=30u64 {
+        let n = NodeDesc::new(k, brush, Vec3::new(-31.0 + k as f32, 0.0, 0.0), h);
+        d.push(if k == 1 { n.heat(1.0) } else { n });
+    }
+    d.push(NodeDesc::new(100, damp, Vec3::ZERO, h));
+    d.push(NodeDesc::new(200, brush, Vec3::new(1.0, 0.0, 0.0), h));
+    e.add_many(&d).unwrap();
+    let (mut b_lit, mut b_out, mut t_lit, mut cut) = (None, None, None, 0);
+    for _ in 0..60 * 150 {
+        if Some(e.tick()) == act_at {
+            e.act(Act { kind: ActKind::Ignite, target: Target::Node(200), amount: 1.0 }).unwrap();
+        }
+        let r = *e.step();
+        cut += u32::from(r.deferred > 0 || r.truncated > 0);
+        for ev in e.take_events().list {
+            match (ev.id, ev.kind) {
+                (30, EventKind::Ignited) => b_lit = b_lit.or(Some(ev.tick)),
+                (30, EventKind::Burnt) => b_out = b_out.or(Some(ev.tick)),
+                (100, EventKind::Ignited) => t_lit = t_lit.or(Some(ev.tick)),
+                _ => {}
+            }
+        }
+    }
+    (b_lit, b_out, t_lit, cut)
+}
+
+#[test]
+fn over_a_whole_fire_a_tight_budget_can_change_what_catches() {
+    // What happens, held so that a change to it is seen (EFFECTUS.md, "What a limit may
+    // change"): with room, front B has burnt out before A is lit, and the target never catches;
+    // under a tight budget B is late, both burn at once, and the target catches. The promise is
+    // for the same nodes burning; here they are not the same.
+    let (_, room_out, _, _) = meet(1 << 19, None);
+    let (tight_lit, _, _, _) = meet(1024, None);
+    // A is lit just after front B reaches the target under the tight budget, which is long
+    // after B has burnt out with room.
+    let act = tight_lit.expect("front B arrives under the tight budget") + 60;
+    assert!(act > room_out.expect("front B burns out with room") + 60);
+    let room = meet(1 << 19, Some(act));
+    assert_eq!(room.3, 0, "with room no step is cut");
+    let tight = meet(1024, Some(act));
+    println!("front B lit/out: room {:?}/{:?}, tight {:?}/{:?}; A lit at {act}; target: room {:?}, tight {:?}", room.0, room.1, tight.0, tight.1, room.2, tight.2);
+    assert!(tight.0 > room.0, "the tight budget delays front B");
+    assert_eq!(room.2, None, "with room the two fires never burn at once, and the target never catches");
+    assert!(tight.2.is_some(), "under the tight budget both burn at once and the target catches");
+}
+
+#[test]
+fn a_mover_cannot_starve_a_cut_query() {
+    // The second reviewer's `starve`: a node moved from a cell the cut query has passed into the
+    // cell it is cut in, after every cut, and back between spread steps. On 17a5a593 each such
+    // move ended the query: 299 of 300 passes, and 986 of 2,000 sinks were never heated. Now
+    // the mover goes on the query's skip list and every pass runs to its end: every sink is
+    // given exactly what it is given with no mover.
+    let run = |oscillate: bool| {
+        let mut e = sinks(1024, 2000);
+        let sink = mat(&e, "sink");
+        let h = Vec3::new(0.01, 0.01, 0.01);
+        let (before, ahead) = (Vec3::new(-0.5, 0.5, 0.5), Vec3::new(1.0, 0.5, 0.5));
+        e.add(NodeDesc::new(999_999, sink, before, h)).unwrap();
+        let mut kept = 0;
+        for _ in 0..6 * 300 {
+            let r = *e.step();
+            if oscillate {
+                if r.spread && e.cursor().is_mid() {
+                    e.move_node(999_999, ahead, h).unwrap();
+                    kept += u32::from(e.cursor().is_mid());
+                } else if !r.spread && e.node(999_999).unwrap().center == ahead {
+                    e.move_node(999_999, before, h).unwrap();
+                }
+            }
+        }
+        (e.nodes().iter().filter(|n| n.id != 0 && n.id != 999_999).map(|n| n.heat).collect::<Vec<f32>>(), kept)
+    };
+    let (still, _) = run(false);
+    let (moved, kept) = run(true);
+    assert!(kept > 100, "the mover crossed the cut point {kept} times and the query went on");
+    assert!(still.iter().all(|&h| h > 0.0));
+    assert_eq!(moved, still, "with a mover crossing every cut, every sink is given what it is given with none");
+}
+
+#[test]
+fn a_node_removed_and_added_again_ahead_of_the_cut_is_not_heated_twice() {
+    // The second reviewer's `readd`: a sink the query has passed is removed and added again,
+    // with its own heat, in the cell the query is cut in; put back after the pass. On 17a5a593
+    // it ended at 1.61 times the heat of a sink that stayed.
+    let mut e = sinks(1024, 2000);
+    let sink = mat(&e, "sink");
+    let h = Vec3::new(0.01, 0.01, 0.01);
+    let (early, ahead) = (Vec3::new(-0.2, 0.5, 0.5), Vec3::new(1.0, 0.5, 0.5));
+    e.add(NodeDesc::new(999_000, sink, early, h)).unwrap();
+    let mut readded = 0;
+    for _ in 0..6 * 300 {
+        let r = *e.step();
+        let at = e.node(999_000).unwrap().center;
+        if r.spread && e.cursor().is_mid() && at == early {
+            let heat = e.node(999_000).unwrap().heat;
+            assert!(e.remove(999_000));
+            e.add(NodeDesc::new(999_000, sink, ahead, h).heat(heat)).unwrap();
+            readded += 1;
+        } else if r.spread && !e.cursor().is_mid() && at == ahead {
+            let heat = e.node(999_000).unwrap().heat;
+            assert!(e.remove(999_000));
+            e.add(NodeDesc::new(999_000, sink, early, h).heat(heat)).unwrap();
+        }
+    }
+    let (it, other) = (e.node(999_000).unwrap().heat, e.node(10).unwrap().heat);
+    assert!(readded > 50, "re-added {readded} times");
+    assert!(it <= other, "the re-added node was given {it}, more than a sink that stayed ({other})");
+}
+
+#[test]
+fn an_ember_never_lands_in_a_cell_more_crowded_than_the_work_limit_and_check_says_so() {
+    // The second reviewer's `crowdember`: one burning log in a wind, and 1,500 grass tufts
+    // tiling the cell downwind. An ember lands whole or not at all, so where a cell holds more
+    // than the work limit can look at, none ever lands there, whatever else burns. The
+    // prediction says so before the run.
+    let run = |work: u32| {
+        let json = format!(r#"{{"elements": 1, "materials": {{"wood": {{"embers": 1.0}}}}, "cell_m": 2, "reach_m": 0.5, "limits": {{"nodes": 4096, "burning": 4096, "work": {work}}}}}"#);
+        let mut e = sim(&json, 3);
+        let (wood, grass) = (mat(&e, "wood"), mat(&e, "grass"));
+        let mut d = vec![NodeDesc::new(1, wood, Vec3::new(1.0, 1.0, 1.0), Vec3::new(0.4, 0.4, 0.4)).heat(1.0)];
+        for i in 0..1500u64 {
+            d.push(NodeDesc::new(10 + i, grass, Vec3::new(4.05 + (i % 30) as f32 * 0.06, 1.0, 0.05 + (i / 30) as f32 * 0.038), Vec3::new(0.03, 0.03, 0.019)));
+        }
+        e.add_many(&d).unwrap();
+        e.set_wind(Vec3::new(4.0, 0.0, 0.0)).unwrap();
+        let p = e.check(&Scenario { acts: vec![], wind: None, ambient: None, ticks: 60 * 60, max_ops: u64::MAX }).unwrap();
+        (p.crowded_cells, p.most_in_a_cell, p.ignited)
+    };
+    let (crowded, most, caught) = run(1 << 19);
+    assert_eq!(crowded, 0);
+    assert!(most >= 1500 && caught > 1000, "with room the embers light the tufts ({caught})");
+    let (crowded, _, caught) = run(1024);
+    assert_eq!(crowded, 1, "the prediction names the crowded cell");
+    assert_eq!(caught, 1, "only the log: no ember lands among the tufts");
 }

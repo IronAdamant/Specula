@@ -205,7 +205,7 @@ fn an_acts_work_is_at_most_twice_the_node_count() {
     f.add_many(&d).unwrap();
     settle(&mut f);
     let r = f.act(wet(Vec3::new(30.0, 0.0, 30.0), 2.0)).unwrap();
-    assert!(r.nodes >= 1 && r.work < 100 && !r.scanned, "{r:?}");
+    assert!(r.nodes >= 1 && !r.scanned && (r.work as usize) < f.nodes().len(), "a few cells, each two binary searches: {r:?}");
 }
 
 /// Steps until a spread step has run (it brings the grid up to date).

@@ -20,8 +20,11 @@ pub const MAX_NAME: usize = 32;
 pub const MAX_FUEL_S: f32 = 3600.0;
 /// Nodes tracked, at most (the default is [`Limits::DEFAULT`]'s 4,096).
 pub const MAX_NODES: u32 = 32_768;
-/// Work per spread step, at most (cell lookups plus neighbour checks).
-pub const MAX_WORK: u32 = 1 << 20;
+/// Work per spread step, at most (cell lookups, each its two binary searches, plus neighbour
+/// checks). Measured on the development laptop (one machine's figure, docs/design/EFFECTUS.md,
+/// "Bounded, and said before a run"): a spread step spending all of it at the node limit took 6
+/// to 35 ms; twice this, 16 to 55 ms.
+pub const MAX_WORK: u32 = 1 << 19;
 /// Work per spread step, at least: a floor so that a step does useful work. A neighbour query
 /// larger than the budget (a crowded cell has no limit of its own) is not lost: it resumes where
 /// it stopped at the next step, and each neighbour of it is given one step's heat.
@@ -70,8 +73,10 @@ pub struct Limits {
     pub burning: u32,
     /// Work per spread step (cell lookups plus neighbour checks); a step that would pass it is
     /// cut and resumed at the next step where it stopped. A burning node the budget does not
-    /// reach in a step gives no heat that step: the heat is not given later, so this limit can
-    /// only slow a fire (docs/design/EFFECTUS.md, "What a limit may change").
+    /// reach in a step gives no heat that step: the heat is not given later. With the same nodes
+    /// burning, a node then catches no sooner and only if it would with room; over a whole fire
+    /// the limit can change what catches, either way (docs/design/EFFECTUS.md, "What a limit may
+    /// change").
     pub work: u32,
 }
 
@@ -576,9 +581,10 @@ impl Config {
 
 /// The most one spread step costs at `n` nodes and a work limit: every node updated, the ready
 /// nodes sorted (at most `n`), the step's events sorted (at most two a node: one ending, one
-/// catching), and the work budget.
+/// catching), the work budget, and a resumed query's skip list marked and unmarked.
 pub fn step_ops(n: u64, work: u32) -> u64 {
-    n + crate::grid::sort_ops(n) + crate::grid::sort_ops(2 * n) + u64::from(work)
+    let skip = crate::sim::MAX_SKIP as u64;
+    n + crate::grid::sort_ops(n) + crate::grid::sort_ops(2 * n) + u64::from(work) + 2 * skip * (1 + crate::grid::log2_ceil(n + 1))
 }
 
 /// The most one act costs at `n` nodes: its work (at most `2n + 1`) and one update a node.

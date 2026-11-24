@@ -10,14 +10,14 @@
 use crate::config::{Config, Limits, Material, MAX_FUEL_S, MAX_MATERIALS, MAX_NAME, MAX_TAGS};
 use crate::error::ElementaError;
 use crate::grid::cells_in;
-use crate::sim::{check_box, query_box, Cause, Cursor, Elementa, Event, EventKind, Events, Node, Phase, EVENT_KINDS, MAX_EVENTS_PER_KIND, MAX_TICK, NOT_READY};
+use crate::sim::{check_box, query_box, Cause, Cursor, Elementa, Event, EventKind, Events, Node, Phase, EVENT_KINDS, MAX_EVENTS_PER_KIND, MAX_SKIP, MAX_TICK, NOT_READY};
 use specula_core::bytes::{ByteReader, ByteWriter};
 use specula_core::hash::StableHasher;
 
 /// The section's version. Others are refused with `unsupported_version`. (Its layout changed
-/// on 2026-11-24 while still version 1: the per-node `owed` went, the cursor resumes by id, and
-/// the stream's two words became the ember key. Nothing had shipped, so no save of the earlier
-/// layout exists to read.)
+/// on 2026-11-24 while still version 1: the per-node `owed` went, the cursor resumes by id
+/// with a skip list, and the stream's two words became the ember key. Nothing had shipped, so
+/// no save of the earlier layout exists to read.)
 pub const SECTION_VERSION: u32 = 1;
 
 /// Bytes a material takes at least (an empty name's length, flags and floats).
@@ -67,6 +67,10 @@ impl Elementa {
         w.u64(self.cursor.id);
         w.u32(self.cursor.cell);
         w.u64(self.cursor.next);
+        w.len_u32(self.skip.len());
+        for id in &self.skip {
+            w.u64(*id);
+        }
         w.u64(self.refused);
         w.vec3(self.wind);
         w.f32(self.ambient);
@@ -167,6 +171,15 @@ impl Elementa {
         let tick = r.u64("tick")?;
         let ember_key = r.u64("ember_key")?;
         let cursor = Cursor { id: r.u64("cursor")?, cell: r.u32("cursor")?, next: r.u64("cursor")? };
+        let skips = r.count("skip", MAX_SKIP, 8)?;
+        let mut skip = Vec::with_capacity(skips);
+        for k in 0..skips {
+            let id = r.u64("skip")?;
+            if k > 0 && skip[k - 1] >= id {
+                return Err(invalid(format!("the skip list must rise: {} then {id}", skip[k - 1])).with("id", id));
+            }
+            skip.push(id);
+        }
         let refused = r.u64("refused")?;
         let wind = r.vec3("wind")?;
         let ambient = r.f32("ambient")?;
@@ -180,6 +193,10 @@ impl Elementa {
         e.tick = tick;
         e.ember_key = ember_key;
         e.cursor = cursor;
+        if !skip.is_empty() && !cursor.is_mid() {
+            return Err(invalid("a skip list with no query cut part-way"));
+        }
+        e.skip = skip;
         e.refused = refused;
 
         let count = r.count("nodes", e.config.limits.nodes as usize, NODE_BYTES)?;
@@ -290,6 +307,10 @@ impl Elementa {
         h.write_u64(self.cursor.id);
         h.write_u32(self.cursor.cell);
         h.write_u64(self.cursor.next);
+        h.write_u64(self.skip.len() as u64);
+        for id in &self.skip {
+            h.write_u64(*id);
+        }
         h.write_u64(self.refused);
         for v in [self.wind.x, self.wind.y, self.wind.z, self.ambient] {
             h.write_f32(v);

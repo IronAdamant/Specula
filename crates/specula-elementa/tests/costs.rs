@@ -130,3 +130,23 @@ fn a_warm_state_allocates_nothing_in_its_steps_and_acts() {
     }
     assert!(burned > 50, "a fire ran through it ({burned} at most burning)");
 }
+
+#[test]
+fn a_cell_lookup_is_counted_as_its_two_binary_searches() {
+    // On 17a5a593 a lookup counted 1, though it is two binary searches over the whole grid.
+    let mut e = sim(r#"{"elements": 1, "reach_m": 1.0, "limits": {"nodes": 4096, "burning": 4096, "work": 524288}}"#, 1);
+    e.add_many(&forest(&e, 3000, 1)).unwrap();
+    e.act(Act { kind: ActKind::Ignite, target: Target::Sphere { at: forest_centre(3000), radius: 3.0 }, amount: 1.0 }).unwrap();
+    let mut seen = 0;
+    for _ in 0..120 {
+        let r = *e.step();
+        if r.spread && r.processed > 0 {
+            let each = specula_elementa::sim::lookup_cost(u64::from(r.grid_entries));
+            assert!(each >= 20, "{} entries: {each} a lookup", r.grid_entries);
+            assert_eq!(u64::from(r.lookups), u64::from(r.cells) * each, "no resumes here: every lookup costs the same");
+            assert_eq!(r.work, r.lookups + r.checks);
+            seen += 1;
+        }
+    }
+    assert!(seen > 10);
+}
