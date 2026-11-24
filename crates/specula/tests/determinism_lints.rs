@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 /// Crates whose code runs in (or decides) the simulation: they carry the determinism clippy.toml.
-const SIMULATION: [&str; 24] = [
+const SIMULATION: [&str; 25] = [
     "crates/specula-physics",
     // Cosmetic, but reproducible: captures repeat bit for bit on every platform (docs/design/VFX.md).
     "crates/specula-scintilla",
@@ -54,6 +54,8 @@ const SIMULATION: [&str; 24] = [
     "games/colloquium",
     "games/quaestio",
     "games/exemplum",
+    // Elementa: fire, cold, wet and wind as simulation, saved and hashed (docs/design/EFFECTUS.md).
+    "crates/specula-elementa",
 ];
 
 /// Crates outside the simulation (rendering, platform, tools, presentation; or the engine, whose

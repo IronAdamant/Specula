@@ -634,6 +634,8 @@ fn open(ctx: &Ctx, which: &Which, front: bool, engine_args: &[String]) -> (i32, 
 /// An engine holds the project's lock: the one listed here that has it open, once it says so
 /// (it may still be starting); else that it is in use by one that is not listed here.
 fn found_or_in_use(ctx: &Ctx, folder: &Path) -> (i32, Json) {
+    #[cfg(test)]
+    tests::reached_lock_wait(folder);
     let deadline = Instant::now() + LOCK_WAIT;
     loop {
         if let Some(i) = ctx.engines().into_iter().find(|i| i.project.as_ref().is_some_and(|(path, _)| store::same_folder(path, folder))) {
@@ -1424,6 +1426,36 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
 mod tests {
     use super::*;
 
+    /// Tests waiting for a command to reach [`found_or_in_use`] for a folder: each is told once.
+    static LOCK_WAITERS: std::sync::Mutex<Vec<(PathBuf, std::sync::mpsc::Sender<()>)>> = std::sync::Mutex::new(Vec::new());
+
+    /// A command has found `folder`'s lock held and waits on it ([`found_or_in_use`]).
+    pub(super) fn reached_lock_wait(folder: &Path) {
+        let mut waiters = LOCK_WAITERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        waiters.retain(|(path, tell)| {
+            if !store::same_folder(path, folder) {
+                return true;
+            }
+            let _ = tell.send(()); // (a test that stopped waiting has dropped its end)
+            false
+        });
+    }
+
+    /// Told when a command next reaches the lock's wait for `folder`: what a test that changes
+    /// the lock or the list "while the command waits" waits for, rather than a time (a fixed
+    /// 300 ms was not long enough for a loaded machine to get the command there, 2026-11-24).
+    fn on_lock_wait(folder: &Path) -> std::sync::mpsc::Receiver<()> {
+        let (tell, told) = std::sync::mpsc::channel();
+        LOCK_WAITERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((folder.to_path_buf(), tell));
+        told
+    }
+
+    /// Waits for `told`. The bound is liveness only (a command that never reaches the wait is a
+    /// failure that says so, not a hang); what decides the test is the event.
+    fn reached(told: &std::sync::mpsc::Receiver<()>) {
+        told.recv_timeout(specula_core::speed_budget(Duration::from_secs(60))).expect("the command never reached the lock's wait");
+    }
+
     /// An answer through a pipe is one line with no spaces between its parts, and the same
     /// JSON as a person at a terminal is shown.
     #[test]
@@ -1735,9 +1767,11 @@ mod tests {
         let held = crate::launch_engine::lock(&crypt).unwrap();
         let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let holder = engine(903, port.local_addr().unwrap().port(), Some((crypt.to_str().unwrap(), "crypt")));
+        // (Written once the command waits on the lock: the "moment later" this is about.)
+        let waits = on_lock_wait(&crypt);
         let (code, j) = std::thread::scope(|s| {
             let call = s.spawn(|| run(open(), &c));
-            std::thread::sleep(Duration::from_millis(300));
+            reached(&waits);
             instances::write(&c.store.dir, &holder).unwrap();
             call.join().unwrap()
         });
@@ -1755,9 +1789,12 @@ mod tests {
         // The holder is not listed here and its lock goes while the command waits: said, and
         // nothing is started behind the person's back.
         instances::remove(&c.store.dir, 903);
+        // (Dropped once the command waits on it. Dropped before, the command found the folder
+        // free and started an engine: `not_started`, once in a loaded run, 2026-11-24.)
+        let waits = on_lock_wait(&crypt);
         let (code, j) = std::thread::scope(|s| {
             let call = s.spawn(|| run(open(), &c));
-            std::thread::sleep(Duration::from_millis(300));
+            reached(&waits);
             drop(held);
             call.join().unwrap()
         });
