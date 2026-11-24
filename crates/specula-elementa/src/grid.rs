@@ -15,7 +15,7 @@
 //! pass). A node that moves within the cells it already covers changes nothing here. The cost is
 //! [`update_ops`], said before it runs and counted in the step's operations.
 
-use crate::sim::Node;
+use crate::sim::{Node, MAX_HALF};
 use specula_core::dmath;
 use specula_core::math::Vec3;
 
@@ -49,6 +49,61 @@ pub fn cell_box(lo: Vec3, hi: Vec3, cell: f32) -> ([i32; 3], [i32; 3]) {
 /// The cells a node's box overlaps.
 pub fn node_cells(n: &Node, cell: f32) -> ([i32; 3], [i32; 3]) {
     cell_box(n.center - n.half, n.center + n.half, cell)
+}
+
+/// `2^-21`: the rounding margin [`reach_box`] adds is this times a sum of magnitudes.
+const PAD: f32 = 1.0 / 2_097_152.0;
+
+/// The margin [`reach_box`] adds on one axis of a box at `a` with half size `ha`, reaching `r`.
+pub fn reach_pad(a: f32, ha: f32, r: f32) -> f32 {
+    (a.abs() + 2.0 * ha + 2.0 * r + MAX_HALF) * PAD
+}
+
+/// The cells to look in for every node whose box [`box_gap`] puts within `r` of a box (centre
+/// `c`, half size `h`; a point when `h` is zero): the box grown by `r` and by a rounding margin,
+/// [`reach_pad`]. So a node the exact test accepts always has an entry in these cells, and the
+/// exact test alone decides what a query or an act reaches, whether it walks the grid or every
+/// node (on `b2d675d4` a node touching an act's sphere at a cell boundary was reached by the scan
+/// a stale grid takes and missed by the grid: a load changed what an act reached).
+///
+/// **Why the margin is enough.** One axis; the node (centre `C`, half `hb ≤ MAX_HALF`) below the
+/// box (`C ≤ A`; the other side is the mirror image, as rounding to nearest is symmetric under
+/// negation). Write `u = 2^-24` (f32's unit roundoff) and `fl` for a rounding; every value here
+/// is below `2^21` in magnitude (coordinates at most `MAX_COORD`, halves `MAX_HALF`, `r` at most
+/// 64), so nothing overflows, and every rounding errs by at most `u` times its exact result.
+/// 1. `box_gap` accepts: with `t = fl(fl(A − C) − fl(ha + hb))` and `d = max(t, 0)`,
+///    `fl(√(…fl(d²)…)) ≤ r`. A sum of non-negative terms rounds to no less than one of them, and
+///    `√` and rounding are monotone, so `d(1 − 2u) ≤ r`: `d ≤ r(1 + 3u)` (or `d < 2^-60`, where
+///    `d²` underflows).
+/// 2. Undoing the three roundings of `t` (`d > 0`), or from `fl(A − C) ≤ fl(ha + hb)` (`d = 0`):
+///    the exact gap `G = A − C − ha − hb ≤ r + E`, `E = 9ur + 4u(ha + hb) + 2^-60`.
+/// 3. The node's top corner, as the grid enters it, `X = fl(C + hb) ≥ fl(A − ha − r − E)`
+///    (rounding is monotone) `≥ A − ha − r − E − u(|A| + ha + r + E)`.
+/// 4. The box's bottom, `Y = fl(fl(fl(A − ha) − r) − m)` (three roundings, each of a value at most
+///    `|A| + ha + r + m` and a little): `Y ≤ A − ha − r − m + 3.01u(|A| + ha + r + m)`.
+/// 5. So `Y < X` when `m(1 − 3.01u) > 4.03u|A| + 8.04u·ha + 13.04u·r + 4.01u·hb + 2^-60`. Here
+///    `m = 8u(|A| + 2ha + 2r + MAX_HALF)`, computed with at most `3u` relative error: every
+///    coefficient is at least 1.2 times what is needed (`8` against `4.03`, `16` against `8.04`
+///    and `13.04`, `8·MAX_HALF` against `4.01·hb + 2^-60`).
+/// 6. A cell is `floor(fl(v / cell))`, monotone in `v`: `Y < X` puts the node's top cell at or
+///    above the box's bottom cell. Its bottom cell is at or below the box's top cell (its bottom
+///    corner is below `A`, the box's top above it). So the node's cells and these overlap, and
+///    the first cell they share is among them.
+///
+/// The margin is about 5 mm near the origin and 0.5 m at 1,000 km; a query or act at a cell
+/// boundary may look up one more cell on a side.
+pub fn reach_box(c: Vec3, h: Vec3, r: f32, cell: f32) -> ([i32; 3], [i32; 3]) {
+    let lo = |a: f32, ha: f32| cell_of(((a - ha) - r) - reach_pad(a, ha, r), cell);
+    let hi = |a: f32, ha: f32| cell_of(((a + ha) + r) + reach_pad(a, ha, r), cell);
+    ([lo(c.x, h.x), lo(c.y, h.y), lo(c.z, h.z)], [hi(c.x, h.x), hi(c.y, h.y), hi(c.z, h.z)])
+}
+
+/// Whether a node's box holds a point, by the corners the grid enters it by: so the point's cell
+/// is always one of the node's cells (a cell is monotone in a coordinate), and an ember finds,
+/// in its one cell, every node this test accepts.
+pub fn holds(center: Vec3, half: Vec3, p: Vec3) -> bool {
+    let (lo, hi) = (center - half, center + half);
+    lo.x <= p.x && p.x <= hi.x && lo.y <= p.y && p.y <= hi.y && lo.z <= p.z && p.z <= hi.z
 }
 
 /// How many cells lie in `lo..=hi`.

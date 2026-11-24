@@ -16,8 +16,9 @@ use specula_core::hash::StableHasher;
 
 /// The section's version. Others are refused with `unsupported_version`. (Its layout changed
 /// on 2026-11-24 while still version 1: the per-node `owed` went, the cursor resumes by id
-/// with a skip list, and the stream's two words became the ember key. Nothing had shipped, so
-/// no save of the earlier layout exists to read.)
+/// with a skip list, and the stream's two words became the ember key; then, the same day, the
+/// skip list was followed by the missed list and the cut node's moved flag. Nothing had shipped,
+/// so no save of an earlier layout exists to read.)
 pub const SECTION_VERSION: u32 = 1;
 
 /// Bytes a material takes at least (an empty name's length, flags and floats).
@@ -28,6 +29,20 @@ const EVENT_BYTES: usize = 1 + 8 + 8 + 12 + 1;
 
 fn invalid(message: impl Into<String>) -> ElementaError {
     ElementaError::new("snapshot_invalid", message)
+}
+
+/// A cut pass's list: at most [`MAX_SKIP`] ids, strictly rising (counted before it is allocated).
+fn read_ids(r: &mut ByteReader<'_>, field: &str) -> Result<Vec<u64>, ElementaError> {
+    let count = r.count(field, MAX_SKIP, 8)?;
+    let mut ids: Vec<u64> = Vec::with_capacity(count);
+    for k in 0..count {
+        let id = r.u64(field)?;
+        if k > 0 && ids[k - 1] >= id {
+            return Err(invalid(format!("the {field} list must rise: {} then {id}", ids[k - 1])).with("id", id));
+        }
+        ids.push(id);
+    }
+    Ok(ids)
 }
 
 impl Elementa {
@@ -71,6 +86,11 @@ impl Elementa {
         for id in &self.skip {
             w.u64(*id);
         }
+        w.len_u32(self.missed.len());
+        for id in &self.missed {
+            w.u64(*id);
+        }
+        w.bool(self.cut_moved);
         w.u64(self.refused);
         w.vec3(self.wind);
         w.f32(self.ambient);
@@ -171,15 +191,9 @@ impl Elementa {
         let tick = r.u64("tick")?;
         let ember_key = r.u64("ember_key")?;
         let cursor = Cursor { id: r.u64("cursor")?, cell: r.u32("cursor")?, next: r.u64("cursor")? };
-        let skips = r.count("skip", MAX_SKIP, 8)?;
-        let mut skip = Vec::with_capacity(skips);
-        for k in 0..skips {
-            let id = r.u64("skip")?;
-            if k > 0 && skip[k - 1] >= id {
-                return Err(invalid(format!("the skip list must rise: {} then {id}", skip[k - 1])).with("id", id));
-            }
-            skip.push(id);
-        }
+        let skip = read_ids(r, "skip")?;
+        let missed = read_ids(r, "missed")?;
+        let cut_moved = r.bool("cut_moved")?;
         let refused = r.u64("refused")?;
         let wind = r.vec3("wind")?;
         let ambient = r.f32("ambient")?;
@@ -193,10 +207,24 @@ impl Elementa {
         e.tick = tick;
         e.ember_key = ember_key;
         e.cursor = cursor;
-        if !skip.is_empty() && !cursor.is_mid() {
-            return Err(invalid("a skip list with no query cut part-way"));
+        if (!skip.is_empty() || !missed.is_empty() || cut_moved) && !cursor.is_mid() {
+            return Err(invalid("a skip or missed list, or a moved cut node, with no query cut part-way"));
+        }
+        // Both lists rise, so one walk finds an id on both (a node is given heat or not).
+        let (mut i, mut j) = (0, 0);
+        while i < skip.len() && j < missed.len() {
+            if skip[i] == missed[j] {
+                return Err(invalid(format!("node {} is on the skip list and the missed list", skip[i])).with("id", skip[i]));
+            }
+            if skip[i] < missed[j] {
+                i += 1;
+            } else {
+                j += 1;
+            }
         }
         e.skip = skip;
+        e.missed = missed;
+        e.cut_moved = cut_moved;
         e.refused = refused;
 
         let count = r.count("nodes", e.config.limits.nodes as usize, NODE_BYTES)?;
@@ -311,6 +339,11 @@ impl Elementa {
         for id in &self.skip {
             h.write_u64(*id);
         }
+        h.write_u64(self.missed.len() as u64);
+        for id in &self.missed {
+            h.write_u64(*id);
+        }
+        h.write_u8(u8::from(self.cut_moved));
         h.write_u64(self.refused);
         for v in [self.wind.x, self.wind.y, self.wind.z, self.ambient] {
             h.write_f32(v);

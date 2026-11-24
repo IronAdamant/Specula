@@ -259,6 +259,11 @@ fn a_cut_query_heats_no_neighbour_twice_when_nodes_move() {
     let mover = e.node(MOVER).unwrap().heat;
     assert!(mover <= full, "the moving sink was given {mover}, more than with room ({full})");
     assert!(e.nodes().iter().filter(|n| n.id != 5_000_000).all(|n| n.heat <= full));
+    // Against a sink of the same run, met right after it in every pass: exactly the same, one
+    // step's heat a pass (with the skip list taken out the mover had exactly twice: the fourth
+    // reviewer's mutant M1, which the comparison with room above cannot see).
+    let next = e.node(MOVER + 1).unwrap().heat;
+    assert_eq!(mover, next, "the moving sink against a staying one of the same run");
 
     // The burning node itself moves between a cut and its resume: within its query's cells the
     // query goes on; into other cells it ends there and the pass moves on (its cells are not
@@ -484,4 +489,224 @@ fn an_ember_never_lands_in_a_cell_more_crowded_than_the_work_limit_and_check_say
     let (crowded, _, caught) = run(1024);
     assert_eq!(crowded, 1, "the prediction names the crowded cell");
     assert_eq!(caught, 1, "only the log: no ember lands among the tufts");
+}
+
+/// The sinks world with `extra` more nodes, all at `at`, ids from 100,000.
+fn sinks_and(work: u32, n: u64, extra: u64, at: Vec3) -> Elementa {
+    let mut e = sinks(work, n);
+    let sink = mat(&e, "sink");
+    let h = Vec3::new(0.01, 0.01, 0.01);
+    let d: Vec<NodeDesc> = (0..extra).map(|k| NodeDesc::new(100_000 + k, sink, at, h)).collect();
+    e.add_many(&d).unwrap();
+    e
+}
+
+/// The state saves, and loads to the same hash: what the crate makes it always accepts.
+fn loads(e: &Elementa, when: &str) {
+    match Elementa::load(&e.save()) {
+        Ok(l) => assert_eq!(l.hash(), e.hash(), "{when}: loaded to another hash"),
+        Err(err) => panic!("{when}: the state's own save is refused: {err}"),
+    }
+}
+
+#[test]
+fn a_crowd_moving_out_of_the_reach_neither_ends_a_cut_query_nor_tilts_it() {
+    // The fourth reviewer's `jitter`: 1,100 nodes in a cell the query walks before the sinks'
+    // (x = -1.5, query cell 3), two metres beyond the torch's reach, jiggled by 0.1 mm within
+    // their cell after every cut. On b2d675d4 each went on the skip list: 149 of 299 passes ended,
+    // 1,289 of 2,000 sinks were never heated and the lowest ids got twice the heat. They are
+    // never heated, so a move of theirs changes nothing a pass would see: nothing is listed.
+    let base = Vec3::new(-1.5, 0.5, 0.5);
+    let run = |move_them: bool| {
+        let mut e = sinks_and(1024, 2000, 1100, base);
+        let (mut ended, mut cuts) = (0u32, 0u32);
+        for t in 0..6 * 300u64 {
+            let r = *e.step();
+            if move_them && r.spread && e.cursor().is_mid() {
+                cuts += 1;
+                let off = if t.is_multiple_of(12) { 1.0e-4 } else { -1.0e-4 };
+                for k in 0..1100u64 {
+                    e.move_node(100_000 + k, base + Vec3::new(off, 0.0, 0.0), Vec3::new(0.01, 0.01, 0.01)).unwrap();
+                }
+                ended += u32::from(!e.cursor().is_mid());
+                loads(&e, "after the jiggle");
+            }
+        }
+        (e.nodes().iter().filter(|n| n.id != 0 && n.id < 100_000).map(|n| n.heat).collect::<Vec<f32>>(), ended, cuts)
+    };
+    let (still, _, _) = run(false);
+    let (moved, ended, cuts) = run(true);
+    assert!(cuts > 100, "{cuts} cuts");
+    assert_eq!(ended, 0, "no cut query ended by moves out of its reach");
+    assert!(still.iter().all(|&h| h > 0.0));
+    assert_eq!(moved, still, "every sink is given what it is given with no crowd");
+}
+
+#[test]
+fn a_node_moved_behind_the_cut_and_back_is_still_given_its_heat_once() {
+    // The fourth reviewer's `wrongskip`: a sink ahead of every cut (the highest id in the cut
+    // cell) moved behind the cut (x = -0.5, a cell walked earlier, within the reach) and straight
+    // back after each cut; on b2d675d4 it went on the skip list and got 0 against 0.005148 for a
+    // sink that stayed. And a walker that crosses over two gaps: behind after one cut, back after
+    // the next step.
+    let (ahead, behind) = (Vec3::new(1.0, 0.5, 0.5), Vec3::new(-0.5, 0.5, 0.5));
+    let h = Vec3::new(0.01, 0.01, 0.01);
+    let run = |how: u32| {
+        let mut e = sinks_and(1024, 2000, 0, ahead);
+        let sink = mat(&e, "sink");
+        e.add(NodeDesc::new(999_999, sink, ahead, h)).unwrap();
+        let mut done = 0;
+        for _ in 0..6 * 300 {
+            let r = *e.step();
+            if !r.spread {
+                continue;
+            }
+            let here = e.node(999_999).unwrap().center;
+            match how {
+                1 if e.cursor().is_mid() => {
+                    e.move_node(999_999, behind, h).unwrap();
+                    e.move_node(999_999, ahead, h).unwrap();
+                    done += 1;
+                }
+                2 if e.cursor().is_mid() && here == ahead => {
+                    e.move_node(999_999, behind, h).unwrap();
+                    done += 1;
+                }
+                2 if here == behind => e.move_node(999_999, ahead, h).unwrap(),
+                _ => {}
+            }
+            loads(&e, "after the walker");
+        }
+        (e.node(999_999).unwrap().heat, e.node(20_000).unwrap().heat, done)
+    };
+    let (alone, other, _) = run(0);
+    assert!(alone > 0.0 && alone == other);
+    let (jiggled, other, done) = run(1);
+    assert!(done > 100);
+    assert_eq!(jiggled, other, "moved behind and back in one gap: given its heat, once a pass, as a sink that stayed");
+    // Over two gaps it misses the passes in which it sat behind the cut (the pass had looked
+    // there before it came), and is given its heat once in every other: never more than a sink
+    // that stayed, and not nothing.
+    let (walker, other, done) = run(2);
+    assert!(done > 50);
+    assert!(walker > 0.0 && walker <= other, "the walker {walker} against {other}");
+}
+
+#[test]
+fn whatever_ends_a_cut_pass_the_state_it_leaves_saves_and_loads() {
+    // A cut pass's lists exist only while its query is cut, and hold at most 1,024 ids each; a
+    // save of anything else is refused on load. So the state must clear them whenever a pass
+    // ends, however it ends. (The fourth reviewer's mutants M2 to M4 left a state whose save
+    // load refused, and no test said so.) Every tick of each run is saved and loaded.
+    let h = Vec3::new(0.01, 0.01, 0.01);
+    let away = Vec3::new(50.0, 0.5, 0.5);
+    let behind = Vec3::new(-0.5, 0.5, 0.5);
+    // Steps to the first cut, holding the save every tick.
+    let to_cut = |e: &mut Elementa| loop {
+        let r = *e.step();
+        loads(e, "before the cut");
+        if r.spread && e.cursor().is_mid() {
+            break;
+        }
+    };
+    // Passed sinks (ids below the cursor's next, in the cut cell) and ones still to come.
+    let passed = |e: &Elementa| -> Vec<u64> { e.nodes().iter().filter(|n| n.id != 0 && n.id < e.cursor().next).map(|n| n.id).collect() };
+    let ahead = |e: &Elementa| -> Vec<u64> { e.nodes().iter().filter(|n| n.id >= e.cursor().next && n.id < 100_000).map(|n| n.id).collect() };
+    let ticks = |e: &mut Elementa, what: &str, n: u32| {
+        for _ in 0..n {
+            e.step();
+            loads(e, what);
+        }
+    };
+
+    // The pass finishes with ids on both lists.
+    let mut e = sinks(1024, 2000);
+    to_cut(&mut e);
+    let (p, a) = (passed(&e), ahead(&e));
+    e.move_node(p[0], away, h).unwrap();
+    e.move_node(a[0], behind, h).unwrap();
+    assert!(e.cursor().is_mid());
+    loads(&e, "with both lists");
+    let c = e.node(0).unwrap().center;
+    e.move_node(0, c + Vec3::new(0.0, 1.0e-4, 0.0), h).unwrap();
+    assert!(e.cursor().is_mid(), "the cut node moved within its cells keeps its query");
+    loads(&e, "the cut node moved");
+    ticks(&mut e, "after the pass finished", 60);
+    // A sink taken away after the torch gave it heat got exactly one step's heat less a pass than
+    // it would; the one moved behind is in no worse place than the sinks: both are heated still.
+    assert!(e.node(p[0]).unwrap().heat > 0.0);
+
+    // The cut node removed.
+    let mut e = sinks(1024, 2000);
+    to_cut(&mut e);
+    let (p, a) = (passed(&e), ahead(&e));
+    e.move_node(p[0], away, h).unwrap();
+    e.move_node(a[0], behind, h).unwrap();
+    assert!(e.remove(0) && !e.cursor().is_mid());
+    loads(&e, "the cut node removed");
+    ticks(&mut e, "after the cut node went", 12);
+
+    // The cut node put out (wet through: it goes out at the next spread step, its pass still cut:
+    // 4,000 sinks take the smallest budget several steps).
+    let mut e = sinks(1024, 4000);
+    to_cut(&mut e);
+    let (p, a) = (passed(&e), ahead(&e));
+    e.move_node(p[0], away, h).unwrap();
+    e.move_node(a[0], behind, h).unwrap();
+    e.act(Act { kind: ActKind::Wet, target: Target::Node(0), amount: 1.0 }).unwrap();
+    ticks(&mut e, "the cut node put out", 12);
+    assert_ne!(e.node(0).unwrap().phase, Phase::Burning);
+
+    // The cut node moved out of its query's cells.
+    let mut e = sinks(1024, 2000);
+    to_cut(&mut e);
+    let p = passed(&e);
+    e.move_node(p[0], away, h).unwrap();
+    e.move_node(0, Vec3::new(9.5, 0.5, 0.5), h).unwrap();
+    assert!(!e.cursor().is_mid());
+    loads(&e, "the cut node left its cells");
+
+    // Full lists: 1,024 given sinks taken out of the reach keep the query; the 1,025th ends it.
+    let mut e = sinks(1500, 3000);
+    to_cut(&mut e);
+    let p = passed(&e);
+    assert!(p.len() > 1025, "{} passed", p.len());
+    for &id in &p[..1024] {
+        e.move_node(id, away, h).unwrap();
+    }
+    assert!(e.cursor().is_mid(), "1,024 on the skip list keep the query");
+    loads(&e, "a full skip list");
+    e.move_node(p[0], away + Vec3::new(1.0, 0.0, 0.0), h).unwrap();
+    assert!(e.cursor().is_mid(), "one already listed, moved again, adds nothing");
+    e.move_node(p[1024], away, h).unwrap();
+    assert!(!e.cursor().is_mid(), "the 1,025th ends it");
+    loads(&e, "past a full skip list");
+    ticks(&mut e, "after a full skip list", 12);
+
+    // And 1,025 sinks not yet given heat moved where the pass has been.
+    let mut e = sinks(1500, 3000);
+    to_cut(&mut e);
+    let a = ahead(&e);
+    assert!(a.len() > 1025, "{} ahead", a.len());
+    for &id in &a[..1024] {
+        e.move_node(id, behind, h).unwrap();
+    }
+    assert!(e.cursor().is_mid(), "1,024 on the missed list keep the query");
+    loads(&e, "a full missed list");
+    e.move_node(a[1024], behind, h).unwrap();
+    assert!(!e.cursor().is_mid(), "the 1,025th ends it");
+    loads(&e, "past a full missed list");
+
+    // The same by a batch: 1,024 new sinks where the pass has been keep it, one more ends it.
+    let sink_of = |e: &Elementa| mat(e, "sink");
+    for (count, mid) in [(1024u64, true), (1025, false)] {
+        let mut e = sinks(1500, 3000);
+        to_cut(&mut e);
+        let sink = sink_of(&e);
+        let d: Vec<NodeDesc> = (0..count).map(|k| NodeDesc::new(500_000 + k, sink, behind, h)).collect();
+        e.add_many(&d).unwrap();
+        assert_eq!(e.cursor().is_mid(), mid, "{count} added where the pass has been");
+        loads(&e, "after a batch");
+        ticks(&mut e, "after a batch", 12);
+    }
 }

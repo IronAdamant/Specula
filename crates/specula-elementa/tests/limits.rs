@@ -199,12 +199,13 @@ fn an_acts_work_is_at_most_twice_the_node_count() {
     assert_eq!(r.nodes, 1000);
     assert!(!r.scanned && r.work <= 2 * 1000 + 1, "work {} for 1,000 nodes", r.work);
     assert!(r.ops() <= specula_elementa::config::act_ops(1000));
-    // Spread out, a small sphere looks only at its own cells.
+    // Spread out, a small sphere looks only at its own cells (its box away from a cell boundary:
+    // within the rounding margin of one, it looks up one more cell on that side).
     let mut f = sim(r#"{"elements":1}"#, 1);
     let d: Vec<NodeDesc> = (0..1000u64).map(|i| NodeDesc::new(i, wood, Vec3::new((i % 40) as f32 * 3.0, 0.0, (i / 40) as f32 * 3.0), Vec3::ONE)).collect();
     f.add_many(&d).unwrap();
     settle(&mut f);
-    let r = f.act(wet(Vec3::new(30.0, 0.0, 30.0), 2.0)).unwrap();
+    let r = f.act(wet(Vec3::new(30.5, 0.5, 30.5), 2.0)).unwrap();
     assert!(r.nodes >= 1 && !r.scanned && (r.work as usize) < f.nodes().len(), "a few cells, each two binary searches: {r:?}");
 }
 
@@ -313,4 +314,39 @@ fn a_forest_of_20000_steps_within_the_stated_work_bound() {
         total_ops / steps as u64,
         work as f64 / processed.max(1) as f64
     );
+}
+
+#[test]
+fn what_moving_things_cost_the_grid_is_said_before_a_run_and_holds() {
+    // `moving_grid_ops(c)` bounds the update after `c` nodes cross cells, and the config's
+    // worst case bounds that; a small cell for the same things says a far larger cost.
+    for cell in [2.0f32, 0.25] {
+        let mut e = sim(&format!(r#"{{"elements": 1, "cell_m": {cell}, "reach_m": 0.25, "limits": {{"nodes": 8192}}}}"#), 1);
+        let trees = small_things(&e);
+        e.add_many(&trees).unwrap();
+        settle(&mut e);
+        for c in [1u64, 30, 300, 3000, 5000] {
+            let said = e.moving_grid_ops(c);
+            assert!(said <= e.config().worst_case().moving_grid_ops(c) && said <= e.config().worst_case().grid_ops);
+            let mut f = e.clone();
+            for id in 1..=c.min(3000) {
+                let n = f.node(id).unwrap().clone();
+                f.move_node(id, n.center + Vec3::new(7.3, 0.0, 0.0), n.half).unwrap();
+            }
+            let due = f.pending_grid_ops();
+            assert!(due > 0 && due <= said, "cell {cell}, {c} crossing: due {due}, said {said}");
+        }
+    }
+    let (a, b) = (sim(r#"{"elements": 1}"#, 1), sim(r#"{"elements": 1, "cell_m": 0.25, "reach_m": 0.25}"#, 1));
+    let (mut a, mut b) = (a, b);
+    let t = small_things(&a);
+    a.add_many(&t).unwrap();
+    b.add_many(&t).unwrap();
+    assert!(b.moving_grid_ops(300) > 4 * a.moving_grid_ops(300), "a small cell costs more to move in");
+}
+
+/// 3,000 things 0.4 m across on a 1 m square (each fits a 0.25 m cell's limit of 64 cells).
+fn small_things(e: &Elementa) -> Vec<NodeDesc> {
+    let wood = mat(e, "wood");
+    (0..3000u64).map(|i| NodeDesc::new(1 + i, wood, Vec3::new((i % 55) as f32 + 0.5, 0.3, (i / 55) as f32 + 0.5), Vec3::new(0.2, 0.2, 0.2))).collect()
 }

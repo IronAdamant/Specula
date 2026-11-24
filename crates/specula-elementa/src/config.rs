@@ -621,4 +621,17 @@ impl WorstCase {
     pub fn tick_ops(&self, acts: u64, calls: u64) -> u64 {
         self.ops_per_step + self.grid_ops + acts * self.act_ops + calls * self.call_ops
     }
+
+    /// The grid update a spread step makes at worst when `crossing` nodes moved into other cells
+    /// since the last, at the node limit with every node covering 64 cells: never above
+    /// [`WorstCase::grid_ops`]. For a world as it is, [`crate::sim::Elementa::moving_grid_ops`]
+    /// counts its own entries and sizes.
+    pub fn moving_grid_ops(&self, crossing: u64) -> u64 {
+        let n = self.grid_entries / u64::from(crate::grid::MAX_NODE_CELLS);
+        if crossing > n.max(1024) {
+            return self.grid_ops;
+        }
+        let fresh = crossing.min(n) * u64::from(crate::grid::MAX_NODE_CELLS);
+        crate::grid::update_ops(n, n, crossing, self.grid_entries, self.grid_entries, fresh)
+    }
 }

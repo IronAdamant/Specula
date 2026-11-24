@@ -2,7 +2,9 @@
 
 use crate::config::{Config, Material, MAX_FUEL_S};
 use crate::error::ElementaError;
-use crate::grid::{box_gap, cell_box, cell_of, cells_in, log2_ceil, node_cells, sort_ops, Changes, Grid, MAX_COORD, MAX_NODE_CELLS};
+use crate::grid::{
+    box_gap, cell_box, cell_of, cells_in, holds, log2_ceil, node_cells, reach_box, sort_ops, Changes, Grid, MAX_COORD, MAX_NODE_CELLS,
+};
 use specula_core::hash::avalanche;
 use specula_core::json::Json;
 use specula_core::math::Vec3;
@@ -129,10 +131,11 @@ impl Cursor {
     }
 }
 
-/// The cells a burning node's neighbour query covers: its box grown by the reach.
+/// The cells a burning node's neighbour query covers: its box grown by the reach, and by the
+/// rounding margin that makes every node within the reach one of their entries
+/// ([`crate::grid::reach_box`]).
 pub fn query_box(n: &Node, config: &Config) -> ([i32; 3], [i32; 3]) {
-    let r = Vec3::new(config.reach_m, config.reach_m, config.reach_m);
-    cell_box(n.center - n.half - r, n.center + n.half + r, config.cell_m)
+    reach_box(n.center, n.half, config.reach_m, config.cell_m)
 }
 
 /// Where a box would be met in a query over `lo..=hi`: the query's cell it is counted in (in x,
@@ -145,6 +148,34 @@ fn query_key(lo: [i32; 3], hi: [i32; 3], center: Vec3, half: Vec3, id: u64, cell
     let f = [0usize, 1, 2].map(|a| i64::from(blo[a].max(lo[a])) - i64::from(lo[a]));
     let (ny, nz) = (i64::from(hi[1]) - i64::from(lo[1]) + 1, i64::from(hi[2]) - i64::from(lo[2]) + 1);
     Some((((f[0] * ny + f[1]) * nz + f[2]) as u64, id))
+}
+
+/// What a cut query's pass has looked at: its node's query cells and box, and how far it got.
+struct CutView {
+    lo: [i32; 3],
+    hi: [i32; 3],
+    center: Vec3,
+    half: Vec3,
+    /// The cursor's cell and next id.
+    at: (u64, u64),
+    /// The cut node moved during the pass.
+    moved: bool,
+    cell: f32,
+    reach: f32,
+}
+
+impl CutView {
+    /// Whether a node at this place lies where the pass has been and could have given it heat:
+    /// counted in a query cell before the cursor's (or in it, at a lower id than the next) and,
+    /// unless the cut node moved during the pass, within its reach by the heating's own test
+    /// (`box_gap` at most the reach). The pass gives such a node its heat when it looks there,
+    /// so a node that has stayed in such a place since was given it; one in any other place
+    /// was not. (A node of a phase that takes no heat, burning, is counted as given when it was
+    /// there: the safe side.)
+    fn behind(&self, id: u64, center: Vec3, half: Vec3) -> bool {
+        query_key(self.lo, self.hi, center, half, id, self.cell).is_some_and(|k| k < self.at)
+            && (self.moved || box_gap(self.center, self.half, center, half) <= self.reach)
+    }
 }
 
 /// A node as the caller gives it. Unset state starts from the material.
@@ -429,9 +460,18 @@ pub struct Elementa {
     pub(crate) ambient: f32,
     /// Where the next spread step starts giving heat.
     pub(crate) cursor: Cursor,
-    /// While a query is cut part-way: the ids (sorted) of nodes it had already passed that have
-    /// moved or gone since; its rest skips them, so none is heated twice in the pass.
+    /// While a query is cut part-way: the ids (sorted) of nodes its pass has given heat to that
+    /// have since moved where the pass has still to look (ahead of the cut, or out of its
+    /// reach), or gone; its rest skips them, so none is heated twice in the pass
+    /// ([`Elementa::move_node`]).
     pub(crate) skip: Vec<u64>,
+    /// While a query is cut part-way: the ids (sorted) of nodes its pass has not given heat to
+    /// that have since come (moved or been added) where it has already looked, within its reach;
+    /// so that, if one goes ahead of the cut again, it is still given its heat once.
+    pub(crate) missed: Vec<u64>,
+    /// The cut node moved (within its query's cells) during the pass: from then on, "where the
+    /// pass could have given heat" is every place it has looked, not only within its reach.
+    pub(crate) cut_moved: bool,
     /// The skip list as a mark by node index, made at a spread step that resumes a cut query.
     skip_mask: Vec<bool>,
     /// Nodes refused or left out for the node limit, all told.
@@ -555,6 +595,8 @@ impl Elementa {
             ambient: 0.0,
             cursor: Cursor::default(),
             skip: Vec::new(),
+            missed: Vec::new(),
+            cut_moved: false,
             skip_mask: Vec::new(),
             refused: 0,
             acts: 0,
@@ -583,6 +625,7 @@ impl Elementa {
         self.ranges.reserve(grow(self.ranges.len(), n));
         self.skip_mask.reserve(grow(self.skip_mask.len(), n));
         self.skip.reserve(MAX_SKIP.saturating_sub(self.skip.len()));
+        self.missed.reserve(MAX_SKIP.saturating_sub(self.missed.len()));
     }
 
     /// The capacities of every buffer a step or an act uses (a test holds that a warm state's
@@ -595,6 +638,7 @@ impl Elementa {
             self.hit.capacity(),
             self.ranges.capacity(),
             self.skip.capacity(),
+            self.missed.capacity(),
             self.skip_mask.capacity(),
         ];
         c.extend(self.grid.capacities());
@@ -701,10 +745,10 @@ impl Elementa {
     }
 
     /// The most a single add, remove or move costs, in ops, at `n` nodes: a binary search, the
-    /// node list shifted by one place, and (a move or a remove while a query is cut) the cut
-    /// node found and the skip list (at most [`MAX_SKIP`] ids) searched and shifted.
+    /// node list shifted by one place, and (while a query is cut) the cut node found and each of
+    /// the pass's two lists (at most [`MAX_SKIP`] ids each) searched and shifted.
     pub fn call_ops(n: u64) -> u64 {
-        n + 3 * log2_ceil(n + 1) + 2 + log2_ceil(MAX_SKIP as u64 + 1) + MAX_SKIP as u64
+        n + 3 * log2_ceil(n + 1) + 2 + 2 * (log2_ceil(MAX_SKIP as u64 + 1) + MAX_SKIP as u64)
     }
 
     /// Tracks one node. Refused, with the number, when the node limit is reached. Costs at most
@@ -729,6 +773,7 @@ impl Elementa {
             .with("id", d.id));
         }
         self.calls_ops += n - at as u64;
+        self.note_change(d.id, None, Some((d.center, d.half)));
         self.nodes.insert(at, node);
         self.changes.push(d.id, self.nodes.len());
         self.reserve();
@@ -736,9 +781,11 @@ impl Elementa {
     }
 
     /// What [`Elementa::add_many`] of `m` nodes costs at most, in ops, at `n` nodes tracked:
-    /// each made, sorted, looked up, and merged into the list.
+    /// each made, sorted, looked up, and merged into the list; and, while a query is cut, the cut
+    /// node found, each new node looked for in the pass's two lists, and both lists walked once.
     pub fn add_many_ops(n: u64, m: u64) -> u64 {
-        m + sort_ops(m) + m * (log2_ceil(n + 1) + 1) + n + m
+        let lists = log2_ceil(n + 1) + 1 + m * (2 * log2_ceil(MAX_SKIP as u64 + 1) + 1) + 2 * (MAX_SKIP as u64 + m);
+        m + sort_ops(m) + m * (log2_ceil(n + 1) + 1) + n + m + lists
     }
 
     /// Tracks many nodes at once (one sort of the batch and one merge, not one insertion each).
@@ -760,6 +807,7 @@ impl Elementa {
         made.truncate(room);
         self.refused = self.refused.saturating_add(left_out as u64);
         let added = made.len() as u32;
+        self.note_added(&made);
         let cap = self.nodes.len() + made.len();
         for d in &made {
             self.changes.push(d.id, cap);
@@ -784,9 +832,9 @@ impl Elementa {
 
     /// Stops tracking a node; `false` if it was not tracked. Costs at most
     /// [`Elementa::call_ops`]; the grid lets it go at the next spread step. If the work budget had
-    /// cut this node's own query, the rest of that query is not given. If it cut another's and
-    /// had already passed this node, the node is put on the query's skip list, so that added
-    /// again ahead of the resume point it is not heated twice in that pass.
+    /// cut this node's own query, the rest of that query is not given. If it cut another's whose
+    /// pass had given this node heat, the node goes on the pass's skip list, so that added again
+    /// ahead of the resume point it is not heated twice in that pass ([`Elementa::move_node`]).
     pub fn remove(&mut self, id: u64) -> bool {
         let n = self.nodes.len() as u64;
         self.calls_ops += log2_ceil(n + 1) + 1;
@@ -794,7 +842,7 @@ impl Elementa {
             Ok(i) => {
                 self.calls_ops += n - i as u64;
                 let (c, h) = (self.nodes[i].center, self.nodes[i].half);
-                self.note_passed(id, c, h, None);
+                self.note_change(id, Some((c, h)), None);
                 if self.nodes.remove(i).phase == Phase::Burning {
                     self.report.burning = self.report.burning.saturating_sub(1);
                 }
@@ -805,55 +853,141 @@ impl Elementa {
         }
     }
 
-    /// The cut query's rule for a node about to move (to `to`) or be removed (`to` is `None`):
-    /// the cut node itself ends its query if it goes, or if its query's cells change; any other
-    /// node the query has already passed goes on the skip list (it was given its heat in this
-    /// pass, wherever it goes next). Nothing ends a query but its own node, so no mover can
-    /// starve it.
-    fn note_passed(&mut self, id: u64, center: Vec3, half: Vec3, to: Option<(Vec3, Vec3)>) {
+    /// What the cut query's pass has looked at, to tell where it has been; `None` with no cut.
+    fn cut_view(&self) -> Option<CutView> {
+        if !self.cursor.is_mid() {
+            return None;
+        }
+        let s = self.nodes.binary_search_by_key(&self.cursor.id, |n| n.id).ok()?;
+        let cut = &self.nodes[s];
+        let (lo, hi) = query_box(cut, &self.config);
+        Some(CutView {
+            lo,
+            hi,
+            center: cut.center,
+            half: cut.half,
+            at: (u64::from(self.cursor.cell), self.cursor.next),
+            moved: self.cut_moved,
+            cell: self.config.cell_m,
+            reach: self.config.reach_m,
+        })
+    }
+
+    /// The cut query's rule for a node about to be added (`from` is `None`), moved, or removed
+    /// (`to` is `None`). The cut node ends its query if it goes, or if its query's cells change.
+    /// For any other node, whether the pass has given it heat is decided from the lists and its
+    /// place before the change ([`CutView::behind`]: a node on neither list was given heat exactly
+    /// when it lies where the pass has been and within its reach), and the lists are kept so that
+    /// this stays true where it is now:
+    /// - given heat, and now somewhere the pass may meet it again (ahead of the cut, out of its
+    ///   reach, or gone): onto the skip list; back where the pass has been: off it;
+    /// - not given heat, and now where the pass has been: onto the missed list (so it is not taken
+    ///   for given); anywhere else: off it.
+    ///
+    /// So a move that changes nothing the pass would see (a passed node jiggling where it is, a
+    /// node out of the reach) lists nothing. Either list full ends the query: the only way
+    /// anything but its own node can end it.
+    fn note_change(&mut self, id: u64, from: Option<(Vec3, Vec3)>, to: Option<(Vec3, Vec3)>) {
         if !self.cursor.is_mid() {
             return;
         }
-        let cut = self.cursor;
         let n = self.nodes.len() as u64;
         self.calls_ops += log2_ceil(n + 1) + 1;
-        let Ok(s) = self.nodes.binary_search_by_key(&cut.id, |n| n.id) else {
+        let Some(v) = self.cut_view() else {
             return;
         };
-        let (lo, hi) = query_box(&self.nodes[s], &self.config);
-        if cut.id == id {
-            let stays = to.is_some_and(|(c, h)| {
-                let mut moved = self.nodes[s].clone();
-                moved.center = c;
-                moved.half = h;
-                query_box(&moved, &self.config) == (lo, hi)
-            });
+        if self.cursor.id == id {
+            let stays = to.is_some_and(|(c, h)| reach_box(c, h, v.reach, v.cell) == (v.lo, v.hi));
             if !stays {
                 self.end_cut();
+            } else if to != from {
+                // Its reach is somewhere else now: what it gave before is told by place alone.
+                self.cut_moved = true;
             }
             return;
         }
-        let at = (u64::from(cut.cell), cut.next);
-        if query_key(lo, hi, center, half, id, self.config.cell_m).is_some_and(|k| k < at) {
-            let k = self.skip.partition_point(|&x| x < id);
-            self.calls_ops += log2_ceil(self.skip.len() as u64 + 1) + (self.skip.len() - k) as u64;
-            if self.skip.get(k) != Some(&id) {
-                if self.skip.len() >= MAX_SKIP {
-                    // More passed nodes changed in one cut than the skip list holds: the query
-                    // ends (the only way a crowd of movers, past MAX_SKIP between two spread
-                    // steps, can end it).
+        let (sk, ms) = (self.skip.binary_search(&id), self.missed.binary_search(&id));
+        self.calls_ops += log2_ceil(self.skip.len() as u64 + 1) + log2_ceil(self.missed.len() as u64 + 1);
+        let given = match (sk, ms) {
+            (Ok(_), _) => true,
+            (_, Ok(_)) => false,
+            _ => from.is_some_and(|(c, h)| v.behind(id, c, h)),
+        };
+        let behind = to.is_some_and(|(c, h)| v.behind(id, c, h));
+        let (list, at, want) = if given { (&mut self.skip, sk, !behind) } else { (&mut self.missed, ms, behind) };
+        match (at, want) {
+            (Ok(k), false) => {
+                self.calls_ops += (list.len() - k) as u64;
+                list.remove(k);
+            }
+            (Err(k), true) => {
+                if list.len() >= MAX_SKIP {
+                    // More nodes than a list holds changed in one cut pass: the query ends.
                     self.end_cut();
                     return;
                 }
-                self.skip.insert(k, id);
+                self.calls_ops += (list.len() - k) as u64;
+                list.insert(k, id);
             }
+            _ => {}
+        }
+    }
+
+    /// [`Elementa::note_change`] for a batch of new nodes, sorted by id (none tracked before):
+    /// each looked for in the lists, and each list walked once.
+    fn note_added(&mut self, made: &[Node]) {
+        let Some(v) = self.cut_view() else {
+            return;
+        };
+        let (mut back, mut fresh) = (Vec::new(), Vec::new());
+        for d in made {
+            let listed = (self.skip.binary_search(&d.id), self.missed.binary_search(&d.id));
+            match (v.behind(d.id, d.center, d.half), listed) {
+                (true, (Ok(_), _)) => back.push(d.id),
+                (true, (Err(_), Err(_))) => fresh.push(d.id),
+                (false, (Err(_), Ok(_))) => back.push(d.id),
+                _ => {}
+            }
+        }
+        if self.missed.len() + fresh.len() > MAX_SKIP {
+            self.end_cut();
+            return;
+        }
+        // `back` holds skip ids now back where the pass has been, and missed ids (only in a
+        // hand-made save) now not: off their lists. Both walks are in id order.
+        for list in [&mut self.skip, &mut self.missed] {
+            let mut g = 0;
+            list.retain(|id| {
+                while g < back.len() && back[g] < *id {
+                    g += 1;
+                }
+                !(g < back.len() && back[g] == *id)
+            });
+        }
+        let old = std::mem::replace(&mut self.missed, Vec::with_capacity(MAX_SKIP));
+        let (mut a, mut b) = (old.into_iter().peekable(), fresh.into_iter().peekable());
+        loop {
+            let take_a = match (a.peek(), b.peek()) {
+                (Some(x), Some(y)) => x < y,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            self.missed.extend(if take_a { a.next() } else { b.next() });
         }
     }
 
     /// The cut query ends here; the pass moves on to the next burning node.
     fn end_cut(&mut self) {
         self.cursor = Cursor::past(self.cursor.id);
+        self.clear_cut();
+    }
+
+    /// The pass's lists are spent: its query ended or finished.
+    fn clear_cut(&mut self) {
         self.skip.clear();
+        self.missed.clear();
+        self.cut_moved = false;
     }
 
     /// A node's entity moved or changed size. Costs at most [`Elementa::call_ops`]. A node that
@@ -862,15 +996,18 @@ impl Elementa {
     ///
     /// While the work budget has a query cut part-way: the cut node moving so that its query's
     /// cells change ends that query (the rest of its heat is not given, and the pass moves on);
-    /// a neighbour the query has already passed is put on its skip list (see
-    /// [`Elementa::remove`]), so that it is not heated twice in the pass, wherever it goes.
+    /// within them the query goes on. Any other node keeps what the pass gave it: a node given
+    /// its heat is not heated again in the pass wherever it goes (the skip list), and one not
+    /// given it is given it once if the pass still meets it, even after it was where the pass
+    /// had been (the missed list). Only a node within the cut node's reach is ever listed (once
+    /// the cut node has moved, any where the pass has been).
     pub fn move_node(&mut self, id: u64, center: Vec3, half: Vec3) -> Result<(), ElementaError> {
         check_box(&self.config, id, center, half)?;
         let n = self.nodes.len() as u64;
         self.calls_ops += log2_ceil(n + 1) + 1;
         let i = self.index(id)?;
         let (old_c, old_h) = (self.nodes[i].center, self.nodes[i].half);
-        self.note_passed(id, old_c, old_h, Some((center, half)));
+        self.note_change(id, Some((old_c, old_h)), Some((center, half)));
         let before = node_cells(&self.nodes[i], self.config.cell_m);
         self.nodes[i].center = center;
         self.nodes[i].half = half;
@@ -940,6 +1077,34 @@ impl Elementa {
     /// date): said before it runs ([`crate::grid::update_ops`]).
     pub fn pending_grid_ops(&self) -> u64 {
         self.grid.pending_ops(&self.nodes, &self.changes, self.config.cell_m)
+    }
+
+    /// What a spread step's grid update costs, at most, in this world when `crossing` nodes
+    /// (each keeping its size) have moved into other cells since the last spread step: said
+    /// before a run, so that a project knows what its moving things cost at its cell size
+    /// ([`crate::grid::update_ops`] with the entries now and, for each crossing node, the most
+    /// cells a node of the largest size here can cover). Past `max(nodes, 1,024)` changes the
+    /// update makes every entry afresh, and this says so. One pass over the nodes.
+    pub fn moving_grid_ops(&self, crossing: u64) -> u64 {
+        let n = self.nodes.len() as u64;
+        let cell = self.config.cell_m;
+        // A box `2h` wide covers at most `floor(2h / cell) + 2` cells on an axis, wherever it is.
+        let most = self
+            .nodes
+            .iter()
+            .map(|x| {
+                let a = |h: f32| axis_cells(h, cell);
+                (a(x.half.x) * a(x.half.y) * a(x.half.z)).min(u64::from(MAX_NODE_CELLS))
+            })
+            .max()
+            .unwrap_or(0);
+        let entries = crate::grid::entries_for(&self.nodes, cell);
+        if crossing > n.max(1024) {
+            let all = n * most;
+            return crate::grid::update_ops(n, n, 0, entries, all, all);
+        }
+        let fresh = crossing.min(n) * most;
+        crate::grid::update_ops(n, n, crossing, entries, entries + fresh, fresh)
     }
 
     /// The grid holds every node where it is now (no add, remove or move into other cells since
@@ -1018,8 +1183,10 @@ impl Elementa {
                 if !radius.is_finite() || !(0.0..=MAX_ACT_RADIUS).contains(&radius) {
                     return Err(ElementaError::range(&format!("{}.radius", a.kind.name()), f64::from(radius), 0.0, f64::from(MAX_ACT_RADIUS)));
                 }
-                let r = Vec3::new(radius, radius, radius);
-                let (clo, chi) = cell_box(at - r, at + r, self.config.cell_m);
+                // The sphere's cells with the rounding margin: every node `within` accepts has an
+                // entry in them, so the grid's candidates hold every node the scan below would
+                // reach, and `within` alone decides on both paths.
+                let (clo, chi) = reach_box(at, Vec3::ZERO, radius, self.config.cell_m);
                 let within = |n: &Node| box_gap(at, Vec3::ZERO, n.center, n.half) <= radius;
                 let n = self.nodes.len() as u64;
                 let cells = cells_in(clo, chi);
@@ -1160,8 +1327,8 @@ impl Elementa {
         }
         let next = next_cursor.unwrap_or_default();
         if !(next.is_mid() && next.id == resume.id && resume.is_mid()) {
-            // The cut query finished (or another is cut now): its skip list is spent.
-            self.skip.clear();
+            // The cut query finished (or another is cut now): its lists are spent.
+            self.clear_cut();
         }
         self.cursor = next;
         rep.work = spend.used as u32;
@@ -1325,6 +1492,12 @@ fn check_rate(config: &Config, tick_hz: u32) -> Result<u32, ElementaError> {
     Ok(tick_hz / config.spread_hz)
 }
 
+/// The most cells a box of half size `h` covers on one axis, wherever it is: `floor(2h / cell) + 2`
+/// (one more than its width in cells, as it may straddle a boundary at each end).
+fn axis_cells(h: f32, cell: f32) -> u64 {
+    (specula_core::dmath::floor(2.0 * h / cell) as u64).saturating_add(2)
+}
+
 /// The cell where a node and a query box first share: where the node is counted.
 fn first_shared_cell(n: &Node, query_lo: [i32; 3], cell: f32) -> [i32; 3] {
     let lo = n.center - n.half;
@@ -1438,7 +1611,8 @@ impl Query<'_> {
         None
     }
 
-    /// An ember lands at `at`: the things whose boxes hold that point are given its heat, if the
+    /// An ember lands at `at`: the things whose boxes hold that point ([`holds`], by the corners
+    /// the grid enters them by, so every one is in the point's cell) are given its heat, if the
     /// budget left holds the lookup and every entry of its cell; otherwise none is (`false`). So
     /// a cell holding as many entries as the work limit, or more, never takes an ember
     /// ([`Elementa::crowded_cells`]).
@@ -1459,7 +1633,7 @@ impl Query<'_> {
             spend.take();
             rep.checks += 1;
             let b = &self.nodes[e.node as usize];
-            if !matches!(b.phase, Phase::Burning | Phase::Burnt) && box_gap(at, Vec3::ZERO, b.center, b.half) <= 0.0 {
+            if !matches!(b.phase, Phase::Burning | Phase::Burnt) && holds(b.center, b.half, at) {
                 gain[e.node as usize] += EMBER_HEAT;
             }
         }
