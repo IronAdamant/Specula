@@ -140,8 +140,9 @@ says which), `--mute` turns sound off. Agents use the same game over MCP on the 
 ## 12. The proving ground: the elemental stones (not a shipped map)
 
 The five elemental stones (Rogus fire, Fulmen lightning, Gelu frost, Ventus wind, Saxum earth) and
-the exploding dead (Tumidus) live only in the proving ground (DESIGN.md, "Elemental stones"), so
-the shipped map's balance does not move. **Their looks are placeholders today** (glow spheres, the
+the exploding dead (Tumidus) live only in the proving ground for now (DESIGN.md, "Elemental
+stones"), so the shipped map's balance does not move; the owner has decided they go on the shipped
+maps, which is the next round's work and this section's next revision. **Their looks are placeholders today** (glow spheres, the
 old dust puff, scorch and cracks), made to show that each rule fired: the items marked *(look)*
 below are for when the effects library (Effectus) and the elements (Elementa) have landed, and are
 expected to fail until then. The build bar still shows the four shipped stones: place the
@@ -161,9 +162,10 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
 
 - [ ] `cargo test -p sepulcra` passes: the elements' tests (each stone does what its row says),
       the shipped map's replay and balance tests unchanged.
-- [ ] The shipped map's sweep is unchanged: `--layout all --sweep 1000` prints the same win rates,
-      losses by wave and leaks as before the elements (DESIGN.md, "Balance so far"), and the final
-      hashes of seeds 1, 7, 42 and 999 for each built-in layout are the ones from before.
+- [ ] The shipped map's sweep is unchanged: `--layout all --sweep 1000` prints, line for line, what
+      it printed before the elements (the wall-time lines aside: DESIGN.md, "Balance so far"; the
+      extra `all runs:` line is printed for elemental content only), and the final hashes of seeds
+      1, 7, 42 and 999 for each built-in layout are the ones from before.
 - [ ] `--ground proving --layout all --sweep 1000` strands nobody (exit code 0) and prints a row
       per layout; the table in DESIGN.md ("What the sweeps say") matches it.
 - [ ] The same seed gives the same run: two `--journal` recordings of one proving layout and seed
@@ -181,7 +183,11 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
       west connector: *(look)* a front that advances cell by cell, char behind it, embers, smoke and
       light; nothing burns on bare stone, the lanes outside the dry stretches or the graveyard.
 - [ ] A shambler walking past burning grass catches fire.
-- [ ] A fire break holds: grass separated by bare stone wider than 2.9 m never catches.
+- [ ] A fire break holds: a gap of bare stone wider than 2.9 m stops grass spreading to grass.
+      It does not stop fire carried by the dead: a burning one that walks across lights the grass
+      on the far side (DESIGN.md, "What burns on the slab").
+- [ ] Grass is drawn on every cell that burns, the dry stretches on the lanes included (a
+      placeholder patch there): no fire on what looks like bare stone.
 - [ ] Fire ends: a cell burns about 8 s and is spent (char), a burning one of the dead burns out
       after its time.
 - [ ] Headless: `elements:` in a single run's report counts ignitions and fuel cells caught.
@@ -194,10 +200,14 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
 - [ ] A thawed (wet) one takes half again.
 - [ ] One staggered by Saxum ends the chain on itself (earth grounds lightning).
 - [ ] A struck Tumidus bursts at once.
-- [ ] **Photosensitivity:** one menhir never strikes more than once in 0.367 s (the content refuses
-      a shorter cooldown); with three menhirs and Rogus firing together, the engine's flash watch
+- [ ] **Photosensitivity:** one menhir never strikes more than three times a second (a cooldown
+      of at least 10 ticks; the content refuses a shorter one). Several menhirs together are not
+      held to it by the rules (how often lightning strikes is gameplay): what a person sees is held
+      by the engine's flash governor (the effects library's stage 1c). **A dependency: until that
+      governor exists, do not show the stones with lightning effects to a person**, and do not
+      tick this item. Then: with three menhirs and Rogus firing together, the engine's flash watch
       (`vfx_info`, the frame's problems) reports no more than three flashes a second (*look:* the
-      flash governor dims the extra ones).
+      governor dims the extra ones).
 
 ### 12.4 Frost (Gelu)
 
@@ -211,8 +221,11 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
 
 ### 12.5 Wind (Ventus): no damage, through the push, then recharge
 
-- [ ] With at least two of the dead in range, a gust shoves them all back along their lane (runners
-      farther, the colossus hardly at all); nobody loses a hit point to it.
+- [ ] With any of the dead in range, one alone included, a gust shoves them all back along their
+      lane (runners farther, the colossus hardly at all); nobody loses a hit point to it.
+- [ ] Repeated gusts cannot hold one for ever: each later shove it takes is weaker, and a lone
+      one held by several cairns still reaches the graveyard.
+- [ ] A leaper in mid-air is not stopped in the air: the gust's shove takes it when it lands.
 - [ ] The cairn then recharges: no second gust before its cooldown (6 s at tier I), whatever is in
       range; *(look)* a charge the player sees filling.
 - [ ] A shove never pushes one through a wall or off a lane, and stops at a spawn.
@@ -235,7 +248,10 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
       and rubble within 3 m goes (no refund), the dead around it are hurt and shoved.
 - [ ] After a burst every one of the dead that was going round takes the opened lane.
 - [ ] Killed, it bursts where it falls; set alight, it bursts when its 1.5 s fuse burns down
-      (unless frost puts it out first); frozen, it cannot burst, and if it dies frozen it dies whole.
+      (unless frost puts it out first); frozen when a strike, hit or blast reaches it, it cannot
+      burst: if that kills it, it dies whole; if it lives, the ice is gone and the next strike or
+      fire sets it off.
+- [ ] A burst never goes off after the game is lost (nothing happens after `Lost`).
 - [ ] Wind pushes it back from the wall it is walking to.
 
 ### 12.8 The low-end device (the integrated GPU) *(look)*

@@ -741,7 +741,17 @@ Not decisions of this kind, and also with the owner: the seven items of
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-Nothing is open (2026-11-20).
+Open (2026-11-24), from the elemental stones of Sepulcra (lane `m6-turres`;
+[games/sepulcra/DESIGN.md](games/sepulcra/DESIGN.md), "Elemental stones"):
+
+- **The exploding dead's blast: how far?** 3 m as built (the wall it hits and any other within
+  3 m: in a lane two walls thick both go; a wall across the neighbouring lane does not), or wide
+  enough to reach the next lane's walls (about 4 to 5 m on map 1: the owner's first words were
+  "destroys the walls that's placed other lane"). One number in `enemies.json`; it stays 3 m
+  until answered.
+- **Fire on the roots of nature** (the player's own slow, from wave 5): do the dead catch fire from
+  rooted cells, and do the roots burn? As built: no (a fire there would burn the player's own
+  stone's work).
 
 (Whether the sculpt mesher may be mended where a sheet is thinner than a cell, though it
 moves the meshes of three approved props (`grave_rock`, `statue_angel`, `statue_mourner`)
