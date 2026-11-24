@@ -23,10 +23,78 @@ rounds.
   this size, nearly the same game delivered; cheaper on one job (the 3D change, 0.68). The
   bullets below on the comparison are the record of how it got there, not work in hand. The
   pause on part 4 of 2026-11-22 ("We're still paused on shape, recipe, template, and sfx")
-  is lifted by this. **Whether subagents may be used for part 4 has not been said:** the
-  owner allowed several for the three mends ("Deploy several agents now"), for that work.
-  Ask before the first one. What part 4 had open is in the table below and under "Where M6
+  is lifted by this.
+  **Subagents, as many as the work needs (the owner, 2026-11-24):** "I want you to run as
+  many sub agents as you need to get sfx (sfx meaning like lightning, fire, and all that),
+  and then the template and so on. How you do it is at your discretion. But I want it done".
+  This replaces "by hand only" below for part 4 and the libraries. Lanes in worktrees of
+  their own, each reviewed by a model that wrote none of it before the lead merges, pictures
+  checked by a model that did not take them; `model` always passed (Opus for builders and
+  reviewers, Sonnet for picture checks). The machine's memory is the limit, not the owner
+  (`CARGO_BUILD_JOBS=3` a lane). The lanes' shared rules:
+  `.swarmnotes/m6/part4/lanes-2026-11-24/rules.md`. **Started 2026-11-24:** the sculpt's box
+  mend, finished from where it stopped (`C:/sr-k30`, `m6-bounds2`; the shape library's forms
+  as sculpt nodes wait for it); a project's catalogue and the orientation, finished from the
+  18 uncommitted files (`C:/sf-formae`, `m6-formae`); the effects library, its design note
+  and build plan first (`C:/sl-fx`, `m6-effectus`); the library of sample assets, its design
+  note and build plan first (`C:/sl-tpl`, `m6-exemplar`). Scratch: `C:/lv/lanes/`. Probe
+  ports 7800 to 7839, ten a lane.
+  What part 4 had open is in the table below and under "Where M6
   stands".
+- **Where the lanes stand (2026-11-24, late).** A lane is merged only on a "merge" from a
+  model that wrote none of it; every builder's report so far claimed more than its review
+  found. Reviews are in `C:/lv/lanes/rev-*/`, picture checks in each lane's scratch folder
+  (`picture-check*.md`), the lead's decisions in the four `*-decisions.md` files beside the
+  rules.
+
+  | Lane (branch, worktree) | State |
+  |---|---|
+  | Elementa, the simulation of fire, cold and wet (`specula-elementa`) | **merged** after five reviews |
+  | Tests that depended on the machine's speed, round one | **merged**; round two running in `C:/sl-clock` (three more seen failing under load: a lighting test, a thread-time test, a streaming test) |
+  | Library research, round seven | **filed and checked** (`docs/research/library/`, the README's last part) |
+  | Sculpt box (`m6-bounds2`, `C:/sr-k30`) and mesher (`m6-mesher-skip`, `C:/sl-mesh`) | each reviewed to "merge"; being joined as `m6-sculpt` in `C:/sl-mesh` (the box review's item M: the mesher's column ranges must read an outline, or they are charged about 770 times too little); one more review, then merge |
+  | A `body` shape for creatures (`m6-body`, `C:/sl-body`) | **rejected by the lead** for visible rims between parts; a third builder after the sculpt merge: one field, one meshing, then simplify (`body-decisions.md`) |
+  | Shape library stage 4, 25 more forms (`m6-formae4`, `C:/sl-f4`) | round 2 built (the cap cutter's three faults mended); second review running; pictures: 21 of 25 read as named, bell, baluster, cup and bead doubtful |
+  | Soft edges past an inset's events (`m6-margo`, `C:/sl-edge`) | round 2 built (work bounded); second review running; **no new pictures taken**: the look findings wait for a third builder |
+  | Catalogue and orientation (`m6-formae`, `C:/sf-formae`) | builder mending the first review |
+  | Effects library, engine side (`m6-effectus`, `C:/sl-fx`) | round 2 built (compositions off the engine thread, gore setting, light fade); second review running |
+  | Effects' look (`C:/sl-fxlook`) | second round of look work running; second picture check: fire, explosion, campfire, sparks read; bonfire, torch, blood, impact barely; welding no |
+  | Particle additions: beams, rings, wind, measured flash check (`C:/sl-scin`) | fifth builder finishing the flash check, which scores an effect with the watch's own code |
+  | Elementa in the engine, stage 6 (`m6-elementa-engine`, `C:/sl-elem6`) | built; first review running |
+  | Sample library, stage S0 (`m6-exemplar`, `C:/sl-tpl`) | builder mending the first review |
+  | Sprite baker (`m6-sprite`, `C:/sl-bake`) | first review: do not merge (a bake started from a shell loses its GPU pin and re-uploads the model every cell); fourth builder mending |
+  | Sepulcra's elemental stones and the exploding dead, rules (`m6-turres`, `C:/sl-turres`) | builder mending the first review; maps, models, strings and balance are stage 2 |
+
+- **The owner's decisions of 2026-11-24, for the lanes.**
+  - *Effects are made by code and mathematics, never drawn images or sprite sheets* ("I believe
+    those effects result better through maths, and code"); when one looks weak, the fix is
+    better mathematics.
+  - *Fire destroys things itself.* The lead's reading, put to the owner as theirs to overturn:
+    of things; `flesh` is charred and the rules are told, so that a creature's death stays the
+    game's.
+  - *Blood on hit, with gore.* Gore is a project owner's setting, unset in a new project; the
+    agent asks the owner. The owner's own: on.
+  - *Lightning:* at most three flashes; every bolt random in shape and always ending on its
+    target.
+  - *Sepulcra tests the elements:* stones of fire, lightning, frost, wind (no damage: it pushes
+    the dead back in their lane by physics and recharges each shot) and earth (rising spikes),
+    and an exploding dead that breaks the walls of the lane beside it and still bursts when
+    killed. They go on the shipped maps.
+  - *Research gaps are filled by working them out* (derivation, scaling, reference pictures,
+    building in the engine and looking), recorded as the engine's own estimate and never as
+    measured.
+  - Documents for the second reader go to the folder the owner named for them (not written
+    here: it is private), and are announced only once they are there.
+- **Disk and the person's own things (lanes' rules 13 to 16).** The drive fell from 317 GB free
+  to 20 in a day from per-lane and per-reviewer build folders: lanes build with
+  `CARGO_INCREMENTAL=0`, make no second target folder (a reviewer builds in the lane's own
+  worktree) and stop under 15 GB free; a merged lane's `target` is deleted. Every `specula`
+  command a lane runs names its own `--settings` folder and `specula new` its own `--in`: one
+  lane's scratch project turned up on the owner's start screen and another made a project in
+  their home folder (both removed, 2026-11-24).
+- **Not pushed since `59b79140`.** The working line (`m6-una`) holds the Elementa merge, the
+  research and the timing mends, ungated: the full gate waits for the timing lane's second
+  round, since three known tests can still fail it by load alone.
 - **By hand only, and lean.** The owner: "Only by hand working", then "For now we'll stick to 1
   agent". No subagent, and no paid measurement (`examen leverage` builders and judges) beyond what they ask for, until they
   say. When subagents come back: one or two at a time, and always with `model` passed (Opus for

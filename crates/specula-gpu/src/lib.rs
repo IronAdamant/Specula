@@ -1872,6 +1872,14 @@ impl Gpu {
         self.inner.pipeline_variants()
     }
 
+    /// Waits for the background pipeline build running now (and one queued behind it) to end,
+    /// and takes its pipelines: the variants it made, or its failure. Ends when the worker does,
+    /// never on a time, and builds nothing on this thread (a variant nobody asked for stays
+    /// missing). For loading screens and tests; a frame never waits for a pipeline.
+    pub fn wait_for_pipelines(&mut self) -> PipelineVariants {
+        self.inner.wait_for_pipelines()
+    }
+
     /// Starts building the terrain and water pipelines (scene, shadow, ID buffer) on a worker
     /// thread, as the skinned and textured variants are when their first mesh arrives: call it
     /// when a world first has terrain or water. Their draws are skipped until
