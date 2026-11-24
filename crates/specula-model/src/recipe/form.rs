@@ -210,7 +210,9 @@ impl Parser<'_> {
             for (k, _) in &args.fields {
                 if !takes.contains(&k.as_str()) {
                     let list = if takes.is_empty() { "no parameters".to_string() } else { takes.join(", ") };
-                    return Err(e(&args.at(k), ErrorCode::UnknownField, format!("'{k}' is not a parameter of '{word}'; it takes: {list}")));
+                    // (A name stage 4's remake replaced says the new one: review 2, finding 3.)
+                    let then = formae::renamed(word, k).map(|r| format!("; {}", formae::renamed_words(r))).unwrap_or_default();
+                    return Err(e(&args.at(k), ErrorCode::UnknownField, format!("'{k}' is not a parameter of '{word}'; it takes: {list}{then}")));
                 }
             }
         }
@@ -304,8 +306,10 @@ fn hold_floor(points: &[[f64; 3]], path: &str, what: &str) -> Result<(), RecipeE
 
 /// A library mesh as the modeller's shape: its faces cut into triangles, its points in `f32`.
 /// Refused where the step to `f32` would change it ([`hold_floor`], and a triangle that turns
-/// over or loses its area when rounded).
-fn to_shape(m: &FMesh, path: &str) -> Result<Shape, RecipeError> {
+/// over or loses its area when rounded). A faceted form's faces (`faceted`: [`formae::Form::faceted`])
+/// are tagged [`crate::shape::TAG_FACET`]; every other form's are plain faces, shaded by the
+/// part's smooth angle exactly as before the tag existed.
+fn to_shape(m: &FMesh, path: &str, faceted: bool) -> Result<Shape, RecipeError> {
     hold_floor(&m.points, path, "the form")?;
     let positions: Vec<V3> = m.points.iter().map(|p| crate::shape::canon([p[0] as f32, p[1] as f32, p[2] as f32])).collect();
     let tris = m.triangles();
@@ -315,9 +319,14 @@ fn to_shape(m: &FMesh, path: &str) -> Result<Shape, RecipeError> {
     };
     let wide = |p: V3| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
     let mut out = Vec::with_capacity(tris.len());
-    // A face of a surface the form calls flat is a facet: hard-edged against every face not in
-    // its plane (shape::TAG_FACET).
-    let tags: Vec<u8> = tris.iter().map(|(fi, _)| if m.surfaces.get(m.faces[*fi as usize].surface as usize).is_some_and(|s| !s.smooth) { crate::shape::TAG_FACET } else { crate::shape::TAG_FACE }).collect();
+    // A flat face of a faceted form is a facet: hard-edged against every face not within a
+    // degree of its plane (shape::TAG_FACET). Only a form that is faceted by what it is: a slab's
+    // cap or a prism's side follows the smooth angle (review 2 of stage 4, finding 1: a facet
+    // against a tangent round made a seam, and a 64-sided prism faceted).
+    let tags: Vec<u8> = tris
+        .iter()
+        .map(|(fi, _)| if faceted && m.surfaces.get(m.faces[*fi as usize].surface as usize).is_some_and(|s| !s.smooth) { crate::shape::TAG_FACET } else { crate::shape::TAG_FACE })
+        .collect();
     for (k, (_, t)) in tris.iter().enumerate() {
         let n64 = normal(m.points[t[0] as usize], m.points[t[1] as usize], m.points[t[2] as usize]);
         let n32 = normal(wide(positions[t[0] as usize]), wide(positions[t[1] as usize]), wide(positions[t[2] as usize]));
@@ -601,7 +610,7 @@ impl Ctx<'_> {
                 _ => return Err(e(&n.path, ErrorCode::Geometry, format!("'{word}' does not build to a solid"))),
             },
         };
-        let mut s = to_shape(&mesh, &n.path)?;
+        let mut s = to_shape(&mesh, &n.path, solid.is_none() && found.form.faceted())?;
         let what = found.form.name;
         let size = |k: u32| {
             let points = match &solid {

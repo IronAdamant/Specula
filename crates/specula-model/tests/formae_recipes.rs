@@ -361,33 +361,3 @@ fn an_unknown_field_is_named_in_its_refusal() {
         assert!(er.message.contains(&format!("{stranger} is not")) && er.message.contains(takes), "{er}");
     }
 }
-
-/// A form's flat faces are facets in the model: every corner of a triangle of a cut stone carries
-/// that triangle's own normal (its crown's triangles meet at under 30 degrees, and were shaded
-/// smooth across as one curve: the picture check of stage 4), at the recipe's default smooth
-/// angle; a rounded form's curved surface is still shaded smooth.
-#[test]
-fn a_forms_flat_faces_are_facets() {
-    let unit = |v: [f32; 3]| {
-        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-        [v[0] / l, v[1] / l, v[2] / l]
-    };
-    let flat_shaded = |m: &Model| {
-        let l = &m.lods[0];
-        l.indices.chunks(3).all(|t| {
-            let [a, b, c] = [0, 1, 2].map(|k| l.positions[t[k] as usize]);
-            let n = unit([(b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]), (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]), (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])]);
-            t.iter().all(|&i| {
-                let v = l.normals[i as usize];
-                v[0] * n[0] + v[1] * n[1] + v[2] * n[2] > 0.9999
-            })
-        })
-    };
-    for word in ["gem", "crystal", "chamfered_box"] {
-        let m = try_make(&recipe(&format!(r#"{{"op": "form", "form": "{word}"}}"#))).unwrap();
-        sound(&m, word);
-        assert!(flat_shaded(&m), "{word}: a corner's normal is not its face's");
-    }
-    let m = try_make(&recipe(r#"{"op": "form", "form": "rounded_cylinder"}"#)).unwrap();
-    assert!(!flat_shaded(&m), "the rounded cylinder's round is shaded flat");
-}

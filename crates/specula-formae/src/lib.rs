@@ -80,11 +80,11 @@ mod tests_cap;
 
 pub use anchor::{Anchor, On};
 pub use detail::{detail_for, sag, segments, DETAIL_DEFAULT, DETAIL_MAX, DETAIL_MIN};
-pub use error::Error;
+pub use error::{renamed_words, Error};
 pub use mesh::{Face, Mesh, Round, SolidFault, Surface};
 pub use outline::{Curve, Fault, Outline, EDGE_FLOOR};
 pub use spec::{params_of, Args, Spec};
-pub use table::{aliases, find, form, forms, nearest, Alias, Family, Form, Found, Kind, Param, Set, Unit};
+pub use table::{aliases, find, form, forms, nearest, renamed, Alias, Family, Form, Found, Kind, Param, Renamed, Set, Unit, FACETED_NAMES, RENAMED};
 
 /// The most points one build may have; a build over it is refused before any work.
 pub const MAX_POINTS: u64 = 262_144;

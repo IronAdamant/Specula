@@ -27,14 +27,18 @@ use crate::poly;
 pub const TAG_FACE: u8 = 0;
 /// Triangle tag: a chamfer/bevel face (can be tinted with [`Shape::bevel_tint`]).
 pub const TAG_BEVEL: u8 = 1;
-/// Triangle tag: a face of a flat facet (a library solid's face its form calls flat: a
-/// polyhedron's, a disc's, a raised figure's cap or straight wall). Its edge with any face not in
-/// its plane is hard at [`Shape::finalize`], whatever the smooth angle: a cut stone's crown
-/// facets meet at under 30 degrees and were shaded as one curve (the picture check of stage 4).
+/// Triangle tag: a face of a facet, a flat face of a library solid that is faceted by what it is
+/// (`specula_formae::Form::faceted`: the polyhedra, the chamfered box, the crystal, the cut
+/// stone). Its edge with any face not within [`ONE_SURFACE_COS`] of its plane is hard at
+/// [`Shape::finalize`], whatever the smooth angle: a cut stone's crown facets meet at under 30
+/// degrees and were shaded as one curve (the picture check of stage 4). A part's own
+/// `smooth_angle` takes the tag off (the recipe's `build_parts`).
 pub const TAG_FACET: u8 = 2;
-/// How near two faces' unit normals must be (their dot product) for a facet to share a corner's
-/// normal with the other: in one plane, to the rounding of `f32` (a quarter of a degree).
-const FACET_COS: f32 = 0.99999;
+/// Two faces whose unit normals are within a degree of each other (their dot product at least
+/// cos 1°) are one surface at a shared corner, tagged or not: a facet never creases against a
+/// face within a degree of its plane. (Untagged faces already share within a degree: the smooth
+/// angle is taken as at least one.)
+const ONE_SURFACE_COS: f32 = 0.999_847_7;
 
 /// sRGB colour with linear alpha, each 0..1.
 pub type Rgba = [f32; 4];
@@ -912,6 +916,12 @@ impl Shape {
         self.colors.iter_mut().for_each(|v| *v = c);
     }
 
+    /// Makes every facet ([`TAG_FACET`]) a plain face, shaded by the smooth angle it is finished
+    /// at (a part that gives its own `smooth_angle` asked for that shading).
+    pub fn unfacet(&mut self) {
+        self.tags.iter_mut().filter(|t| **t == TAG_FACET).for_each(|t| *t = TAG_FACE);
+    }
+
     /// Linear colour gradient along an axis (see [`Gradient`]).
     pub fn gradient(&mut self, g: &Gradient) {
         let Gradient { axis, from, to, range, absolute, strength, keep_outside } = *g;
@@ -1078,7 +1088,7 @@ impl Shape {
                 let facet_f = s.tags.get(f) == Some(&TAG_FACET);
                 for &g in &inc[start[v] as usize..start[v + 1] as usize] {
                     let d = math3::dot(face_u[g as usize], face_u[f]);
-                    let least = if facet_f || s.tags.get(g as usize) == Some(&TAG_FACET) { FACET_COS } else { cos_t };
+                    let least = if facet_f || s.tags.get(g as usize) == Some(&TAG_FACET) { ONE_SURFACE_COS } else { cos_t };
                     if d >= least {
                         n = math3::add(n, face_n[g as usize]);
                     }
