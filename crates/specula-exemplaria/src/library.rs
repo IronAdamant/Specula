@@ -1,7 +1,8 @@
 //! The library's entries: the kind files under `exemplaria/` at the repository's root, by plan
 //! (`exemplaria/<plan>/<name>.kind.json`), built into the engine so that what it answers and
-//! what a test hashes are the same bytes. A test holds this table against the folder: a file
-//! there without its line here, or a line without its file, fails.
+//! what a test hashes are the same bytes, and nothing beside the executable is read or can be
+//! swapped. A test (`tests/library.rs`) holds this table against the folder: any file there
+//! (at any depth, of any sort) without its line here, or a line without its file, fails.
 //!
 //! **Adding a kind**: its file under `exemplaria/<plan>/`, and one line in [`ENTRIES`].
 

@@ -43,7 +43,7 @@ pub const MAX_LEVEL_TRIANGLES: u32 = 200_000;
 /// The levels a kind may name.
 pub const LEVELS: &[&str] = &["near", "mid", "crowd", "far"];
 /// A kind file's own top-level fields (anything else with a string value is a plan's option).
-pub const FIELDS: &[&str] = &["kind", "name", "plan", "about", "aliases", "base", "licence", "from", "size", "numbers", "vary", "roles", "motion", "levels"];
+pub const FIELDS: &[&str] = &["kind", "name", "plan", "about", "aliases", "base", "licence", "from", "taken", "size", "numbers", "vary", "roles", "motion", "levels"];
 /// The engine's licence, which every entry of the library carries.
 pub const LICENCE: &str = "MIT OR Apache-2.0";
 
@@ -122,6 +122,21 @@ pub struct Motion {
     pub why: Option<Why>,
 }
 
+/// What a project's copy of a library kind records of its taking (`exemplar_take`), in the copy
+/// itself so that one file says everything (docs/design/EXEMPLARIA.md, A.8): its licence, what it
+/// is and every number with its source are the kind's own fields; this adds the rest.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Taken {
+    /// The library's version when it was taken (`library::version`, 16 hex digits).
+    pub library: String,
+    /// The base the library's kind named, now written into the copy (so the copy has none).
+    pub base: Option<String>,
+    /// What was checked when it was taken, in words (the seeds written and parsed).
+    pub checked: String,
+    /// How many of its numbers are the engine's own (the rest are measured).
+    pub own: u32,
+}
+
 /// A kind: a plan with its numbers set (parsed, before its base and its plan are applied).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Kind {
@@ -134,6 +149,9 @@ pub struct Kind {
     pub licence: String,
     /// Where a project's copy came from (`exemplaria/box_creature/box_creature@<hash>`).
     pub from: Option<String>,
+    /// What a project's copy records of its taking ([`Taken`]): the library's version, the base
+    /// that was written into it, what was checked.
+    pub taken: Option<Taken>,
     pub size: Option<Size>,
     pub numbers: BTreeMap<String, Number>,
     pub vary: BTreeMap<String, Vary>,
@@ -308,6 +326,21 @@ impl Kind {
                 }
                 "base" => kind.base = Some(name(v, p)?),
                 "from" => kind.from = Some(text(v, p)?),
+                "taken" => {
+                    let r = object(v, p, "{library, base, checked, own}")?;
+                    only(r, p, &["library", "base", "checked", "own"])?;
+                    let library = text(get(r, "library").ok_or_else(|| err("missing_field", &at(p, "library"), "the library's version it was taken from"))?, &at(p, "library"))?;
+                    if library.len() != 16 || !library.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return Err(err("wrong_type", &at(p, "library"), "the library's version: 16 hex digits"));
+                    }
+                    let own = number(get(r, "own").unwrap_or(&Json::from(0u64)), &at(p, "own"), 0.0, MAX_ENTRIES as f64 * 4.0)?;
+                    kind.taken = Some(Taken {
+                        library,
+                        base: get(r, "base").map(|x| name(x, &at(p, "base"))).transpose()?,
+                        checked: get(r, "checked").map(|x| text(x, &at(p, "checked"))).transpose()?.unwrap_or_default(),
+                        own: own as u32,
+                    });
+                }
                 "size" => {
                     let o = table(v, p, "{NAME: {mean, sd, range, unit, source | own}}")?;
                     if o.len() != 1 {
@@ -428,6 +461,15 @@ impl Kind {
         o.push(("licence", Json::from(self.licence.as_str())));
         if let Some(f) = &self.from {
             o.push(("from", Json::from(f.as_str())));
+        }
+        if let Some(t) = &self.taken {
+            let mut r = vec![("library", Json::from(t.library.as_str()))];
+            if let Some(b) = &t.base {
+                r.push(("base", Json::from(b.as_str())));
+            }
+            r.push(("checked", Json::from(t.checked.as_str())));
+            r.push(("own", Json::from(u64::from(t.own))));
+            o.push(("taken", Json::obj(r)));
         }
         let mut opts: Vec<(String, Json)> = self.options.iter().map(|(k, v)| (k.clone(), Json::from(v.as_str()))).collect();
         if let Some(s) = &self.size {

@@ -198,13 +198,14 @@ fn build_recipe_file(ctx: &Context, spec: &Json, field: &str) -> Result<Model, T
     let text = read_small(&file).map_err(|m| err("recipe_not_found", m, vec![]))?;
     let style = style_for(ctx, &file)?;
     let lib = library(&file);
+    let kinds = crate::exemplar_tools::FolderKinds { library: &lib, from: rel };
     let vals = params_of(spec, "params")?;
     let refs: Vec<(&str, f64)> = vals.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     let seed = match spec.get("seed") {
         Some(v) => Some(v.as_u64().ok_or_else(|| err("invalid_argument", format!("'{field}.seed' must be a whole number"), vec![]))?),
         None => None,
     };
-    specula_model::build(&text, &BuildParams { values: &refs, seed, library: Some(&lib), ..BuildParams::new(&style) }).map_err(|e| recipe_err(&e, &format!("{rel}: ")))
+    specula_model::build(&text, &BuildParams { values: &refs, seed, library: Some(&lib), specimens: Some(&kinds), ..BuildParams::new(&style) }).map_err(|e| recipe_err(&e, &format!("{rel}: ")))
 }
 
 /// A small PNG as MCP image content (at most `max_w` wide, nearest sampling).
@@ -386,9 +387,10 @@ pub(crate) fn collider_for_text(ctx: &Context, rel: &str, text: &str, params: &J
     let file = inside(ctx, rel, "recipe")?;
     let style = style_for(ctx, &file)?;
     let lib = library(&file);
+    let kinds = crate::exemplar_tools::FolderKinds { library: &lib, from: rel };
     let vals = params_of(&Json::obj([("params", params.clone())]), "params")?;
     let refs: Vec<(&str, f64)> = vals.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-    let model = specula_model::build(text, &BuildParams { values: &refs, seed, library: Some(&lib), ..BuildParams::new(&style) }).map_err(|e| recipe_err(&e, &format!("{rel}: ")))?;
+    let model = specula_model::build(text, &BuildParams { values: &refs, seed, library: Some(&lib), specimens: Some(&kinds), ..BuildParams::new(&style) }).map_err(|e| recipe_err(&e, &format!("{rel}: ")))?;
     let Some(t) = model.extras.terrain.as_ref() else {
         return Err(err("no_terrain", format!("'{}' has no terrain part", model.name), vec![]));
     };

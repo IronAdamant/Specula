@@ -1167,12 +1167,25 @@ pub struct BuildParams<'a> {
     pub seed: Option<u64>,
     /// Recipes available to `include`, by name (file stem).
     pub library: Option<&'a BTreeMap<String, String>>,
+    /// What writes a kind's specimen as a recipe, for a scatter item that names a `kind`
+    /// ([`Specimens`]). `None`: such an item is refused.
+    pub specimens: Option<&'a dyn Specimens>,
 }
 
 impl<'a> BuildParams<'a> {
     pub fn new(style: &'a Style) -> BuildParams<'a> {
-        BuildParams { style, values: &[], seed: None, library: None }
+        BuildParams { style, values: &[], seed: None, library: None, specimens: None }
     }
+}
+
+/// Writes one specimen of a kind of the library of sample assets as recipe text
+/// (docs/design/EXEMPLARIA.md: a kind is data, a specimen one seed of it). The modeller knows no
+/// kinds: the engine hands this in, so that a scatter item `{"kind": "grey_wolf", "variants": 8}`
+/// builds a different specimen at each variant's seed.
+pub trait Specimens: std::fmt::Debug {
+    /// The recipe text the kind `name` writes at `seed`, its roles resolved in `style`. Its
+    /// errors carry the kind's own paths (the caller puts the item's path before them).
+    fn specimen(&self, name: &str, seed: u64, style: &Style) -> Result<String, RecipeError>;
 }
 
 /// A built model: LOD meshes, a collider and the material presets its parts use.
@@ -3153,7 +3166,7 @@ mod form;
 mod procgen;
 mod schema;
 pub use schema::{schema, SCHEMA_EXAMPLE, SCHEMA_FIRST_BYTES};
-pub use procgen::{generator_names, sdf_names};
+pub use procgen::{generator_names, sdf_names, MAX_KIND_VARIANTS};
 
 #[cfg(test)]
 mod tests;

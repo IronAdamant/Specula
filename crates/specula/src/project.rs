@@ -415,7 +415,9 @@ pub fn kind_for(mount: MountKind, rel: &str) -> Option<FileKind> {
                 return None;
             }
             match parent? {
-                "recipes" => Some(FileKind::Recipe),
+                // A new project keeps its models in `models/` (scaffold.rs, notes/models.md) and
+                // Sepulcra in `recipes/`: the model library reads either, so both are mirrored.
+                "recipes" | "models" => Some(FileKind::Recipe),
                 "ui" if name == "theme.json" => Some(FileKind::UiTheme),
                 "ui" => Some(FileKind::UiScreen),
                 "sounds" => Some(FileKind::Sound),
@@ -1225,6 +1227,12 @@ mod tests {
         let a = MountKind::Assets;
         assert_eq!(kind_for(a, "recipes/tombstone.json"), Some(FileKind::Recipe));
         assert_eq!(kind_for(a, "games/x/assets/recipes/t.json"), Some(FileKind::Recipe));
+        // A new project's models (scaffold.rs) are recipes too, kinds of the sample assets among
+        // them; a model file beside them is still a model, and their exports are not recipes.
+        assert_eq!(kind_for(a, "models/gear.json"), Some(FileKind::Recipe));
+        assert_eq!(kind_for(a, "models/box_creature.kind.json"), Some(FileKind::Recipe));
+        assert_eq!(kind_for(a, "models/wraith.glb"), Some(FileKind::Glb));
+        assert_eq!(kind_for(a, "models/exports/x.json"), None);
         assert_eq!(kind_for(a, "ui/hud.json"), Some(FileKind::UiScreen));
         assert_eq!(kind_for(a, "ui/theme.json"), Some(FileKind::UiTheme));
         assert_eq!(kind_for(a, "sounds/ui_click.json"), Some(FileKind::Sound));

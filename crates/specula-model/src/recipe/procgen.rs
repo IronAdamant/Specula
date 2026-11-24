@@ -18,6 +18,10 @@ use crate::texgraph::{self, TexGraph, TextureSet};
 pub(super) const MAX_OPERANDS: usize = 64;
 const MAX_ITEMS: usize = 16;
 const MAX_VARIANTS: u32 = 8;
+/// Variants of one item that names a kind (`"kind"`): a crowd of specimens, each its own
+/// recipe. Each is built once as a template, so the build's work budget bounds them as any
+/// variant is bounded; a kind's specimen is a few dozen parts.
+pub const MAX_KIND_VARIANTS: u32 = 32;
 /// Stats entries one build keeps.
 const MAX_STATS: usize = 64;
 /// Work units ([`crate::work`], ≈ ns: boolean classifications, SDF evaluations, terrain
@@ -160,7 +164,7 @@ const TERRAIN: &[Field] = &[
 const MASK: &[Field] = &[r("scale", Num), r("threshold", Num), o("octaves", Int)];
 const SPLAT_RULE: &[Field] = &[r("layer", Int), r("least", Num)];
 const CLEAR_OF: &[Field] = &[r("part", Name), r("radius", Num)];
-const ITEM: &[Field] = &[o("shape", ShapeOps), o("include", Name), o("params", Ranges), o("material", Material), o("color", Color), o("weight", Num), o("variants", Int)];
+const ITEM: &[Field] = &[o("shape", ShapeOps), o("include", Name), o("kind", Name), o("params", Ranges), o("material", Material), o("color", Color), o("weight", Num), o("variants", Int)];
 const SCATTER: &[Field] = &[
     r("area", Outline),
     r("min_distance", Num),
@@ -201,8 +205,9 @@ pub(super) fn generator_includes(n: &Node) -> Option<Vec<String>> {
         items
             .iter()
             .filter_map(|i| match i {
-                Val::Obj(item) => match item.get("include") {
-                    Some(Val::Str(s)) => Some(s.clone()),
+                Val::Obj(item) => match (item.get("include"), item.get("kind")) {
+                    (Some(Val::Str(s)), _) => Some(s.clone()),
+                    (_, Some(Val::Str(k))) => Some(format!("{k}.kind")),
                     _ => None,
                 },
                 _ => None,
@@ -1190,8 +1195,11 @@ impl Gen<'_, '_> {
         }
         let mut weights = Vec::new();
         for it in &items {
-            if it.get("shape").is_some() == it.get("include").is_some() {
-                return Err(e(&it.path, ErrorCode::MissingField, "an item needs exactly one of \"shape\" or \"include\""));
+            if [it.get("shape"), it.get("include"), it.get("kind")].iter().filter(|x| x.is_some()).count() != 1 {
+                return Err(e(&it.path, ErrorCode::MissingField, "an item needs exactly one of \"shape\", \"include\" or \"kind\" (a kind of the library of sample assets: each variant another specimen)"));
+            }
+            if it.get("kind").is_some() && it.get("params").is_some() {
+                return Err(e(&it.at("params"), ErrorCode::UnknownField, "a kind item takes no \"params\": each variant's seed draws the kind's numbers (change them in the kind's file)"));
             }
             weights.push(c.ranged(it, "weight", 1.0, 0.0, 1e4)?);
         }
@@ -1264,7 +1272,8 @@ impl Gen<'_, '_> {
         // an item is recorded by what was placed of it.)
         let mut built: Vec<Vec<Vec<BuiltPart>>> = Vec::new();
         for (ii, it) in items.iter().enumerate() {
-            let variants = c.int(it, "variants", 1, 1, MAX_VARIANTS as i64)?;
+            let most = if it.get("kind").is_some() { MAX_KIND_VARIANTS } else { MAX_VARIANTS };
+            let variants = c.int(it, "variants", 1, 1, most as i64)?;
             let mut vs = Vec::new();
             for v in 0..variants {
                 let vseed = stream_seed(self.seed, &format!("item{ii}/variant{v}"));
@@ -1277,6 +1286,16 @@ impl Gen<'_, '_> {
                     c.paint.set(colour);
                     let s = c.shape_and_ops(sn, vseed)?;
                     vec![self.piece(s, &material, None)]
+                } else if let Some(Val::Str(kind)) = it.get("kind") {
+                    // One specimen of the kind at this variant's seed, written as a recipe by the
+                    // engine and built as an included recipe is.
+                    let path = it.at("kind");
+                    let asset = format!("{kind}.kind");
+                    let specimens = self.params.specimens.ok_or_else(|| e(&path, ErrorCode::UnknownAsset, format!("'{kind}' is a kind of the library of sample assets: only the engine builds kinds (this build was given none)")))?;
+                    // (A recipe's seed is at most 2^53: the variant's seed folded into it.)
+                    let kseed = vseed & ((1u64 << 53) - 1);
+                    let text = specimens.specimen(kind, kseed, self.params.style).map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?;
+                    build_included(&asset, &text, &[], kseed, self.params, self.stack, self.tally, self.coarse, &path)?
                 } else {
                     let Some(Val::Str(asset)) = it.get("include") else { unreachable!("checked") };
                     let mut vals: Vec<(String, f64)> = Vec::new();
@@ -1364,6 +1383,14 @@ impl Gen<'_, '_> {
 /// Builds an included recipe's parts (as an include part does).
 #[allow(clippy::too_many_arguments)]
 fn build_include(asset: &str, vals: &[(String, f64)], seed: u64, params: &BuildParams, stack: &mut Vec<String>, tally: &Tally, coarse: bool, path: &str) -> Result<Vec<BuiltPart>, RecipeError> {
+    let text = params.library.and_then(|l| l.get(asset)).ok_or_else(|| e(path, ErrorCode::UnknownAsset, format!("'{asset}' is not in the recipe library")))?;
+    build_included(asset, text, vals, seed, params, stack, tally, coarse, path)
+}
+
+/// Builds the parts of a recipe's `text` included as `asset` (a library recipe, or a kind's
+/// specimen written for this item).
+#[allow(clippy::too_many_arguments)]
+fn build_included(asset: &str, text: &str, vals: &[(String, f64)], seed: u64, params: &BuildParams, stack: &mut Vec<String>, tally: &Tally, coarse: bool, path: &str) -> Result<Vec<BuiltPart>, RecipeError> {
     if stack.len() > MAX_INCLUDE_DEPTH {
         return Err(e(path, ErrorCode::IncludeCycle, format!("includes nest deeper than {MAX_INCLUDE_DEPTH}: {}", stack.join(" > "))));
     }
@@ -1371,7 +1398,6 @@ fn build_include(asset: &str, vals: &[(String, f64)], seed: u64, params: &BuildP
         return Err(e(path, ErrorCode::IncludeCycle, format!("include cycle: {} > {asset}", stack.join(" > "))));
     }
     tally.include(path)?;
-    let text = params.library.and_then(|l| l.get(asset)).ok_or_else(|| e(path, ErrorCode::UnknownAsset, format!("'{asset}' is not in the recipe library")))?;
     let child = Recipe::parse(text, params.style).map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?;
     let refs: Vec<(&str, f64)> = vals.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     stack.push(asset.to_string());

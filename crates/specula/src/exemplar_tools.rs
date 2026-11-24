@@ -19,6 +19,7 @@ use crate::catalog_names;
 use crate::tools::{argument_error, check_keys, int_arg, string_arg, Tools};
 use specula_core::Json;
 use specula_exemplaria::library::{self, Entry};
+use specula_exemplaria::kind::Taken;
 use specula_exemplaria::{expand, AsNamed, Kind, Resolved, Roles, Why};
 use specula_model::{ErrorCode, RecipeError, Style};
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
@@ -37,7 +38,7 @@ pub const LIMITS: (usize, usize) = (10, 100);
 /// The longest word or name argument.
 pub const MAX_WORD: usize = 64;
 /// The folder of the project's assets a kind is taken into.
-pub const TAKE_FOLDER: &str = "assets/recipes";
+pub const TAKE_FOLDER: &str = "assets/models";
 
 /// A string argument of at most `max` bytes.
 fn text(args: &Json, key: &str, max: usize) -> Result<Option<String>, String> {
@@ -72,14 +73,21 @@ pub fn call(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> To
 /// list an agent meets (shapes too).
 fn look_up(word: &str) -> Result<&'static Entry, String> {
     library::find(word).ok_or_else(|| {
-        let near = catalog_names::not_found(word, &catalog_names::sources());
-        format!("no kind is called '{word}': {near}")
+        let all = catalog_names::sources();
+        let near = catalog_names::nearest(word, &all, catalog_names::MAX_NEAREST);
+        let said = if near.is_empty() {
+            format!("nothing near it; look in {}", catalog_names::also(&all, ""))
+        } else {
+            near.iter().map(|n| format!("{} (a {}: {})", n.name, n.what, n.call)).collect::<Vec<_>>().join("; ")
+        };
+        // (The field first in quotes, so the error names it; the code at the end.)
+        format!("'name' names no kind: no kind is called \"{word}\"; nearest across the lists: {said} [error: not_found]")
     })
 }
 
 /// The snippets that use a kind once it is in the project.
 fn after_take(name: &str, seed: u64) -> Json {
-    let recipe = format!("recipes/{name}.kind.json");
+    let recipe = format!("models/{name}.kind.json");
     Json::obj([
         ("take", Json::from(format!("exemplar_take {{\"name\": \"{name}\"}}: a copy into {TAKE_FOLDER}/{name}.kind.json"))),
         ("build", Json::obj([("recipe", Json::from(recipe.as_str())), ("seed", Json::from(seed))])),
@@ -139,13 +147,14 @@ fn index() -> Json {
             .collect();
         Json::obj([
             ("kinds", Json::from(library::ENTRIES.len())),
-            ("plans", Json::arr(lines)),
+            // (The other lists first: an agent that wanted a shape is one call from it.)
             ("also", Json::from(format!("also: {}", catalog_names::also(&catalog_names::sources(), "exemplar_list")))),
+            ("plans", Json::arr(lines)),
             (
                 "ask",
                 Json::from(
                     "exemplar_get {\"name\": NAME}: one kind, its numbers and where each came from. With \"seed\": N, the specimen that seed draws (its numbers, bones, parts, clips). \
-                     exemplar_take {\"name\": NAME}: a copy into your project (assets/recipes/NAME.kind.json), then model_build {\"recipe\": \"recipes/NAME.kind.json\", \"seed\": N} \
+                     exemplar_take {\"name\": NAME}: a copy into your project (assets/models/NAME.kind.json, where the project keeps its models), then model_build {\"recipe\": \"models/NAME.kind.json\", \"seed\": N} \
                      or spawn {\"shape\": \"model\", \"recipe\": ..., \"seed\": N}: each seed is another specimen. exemplar_list {\"plan\" | \"word\" | \"role\"}: rows.",
                 ),
             ),
@@ -335,7 +344,7 @@ fn get_tool(args: &Json) -> Result<Json, String> {
 struct Copy {
     entry: &'static Entry,
     as_name: String,
-    /// Its project path (`assets/recipes/NAME.kind.json`).
+    /// Its project path (`assets/models/NAME.kind.json`).
     path: String,
     body: String,
     /// The library's kind had a base, now written into the copy.
@@ -356,9 +365,87 @@ fn copy_of(name: &str, as_name: Option<&str>) -> Result<Copy, String> {
     copy.base = None;
     copy.aliases.retain(|a| *a != as_name);
     copy.from = Some(entry.from());
-    let body = copy.to_json().to_pretty() + "
-";
+    let checked = checked_at_take(&r, &entry.from())?;
+    let own = u32::try_from(r.own().len()).unwrap_or(u32::MAX);
+    copy.taken = Some(Taken { library: format!("{:016x}", library::version()), base: r.base.clone(), checked, own });
+    let body = copy.to_json().to_pretty() + "\n";
     Ok(Copy { entry, path: format!("{TAKE_FOLDER}/{as_name}.kind.json"), as_name, body, based: r.base.is_some() })
+}
+
+/// The seeds a take writes and checks before it is written (the mean and these).
+const TAKE_SEEDS: [u64; 3] = [1, 2, 3];
+
+/// What a take checks of a kind, and says it checked in the copy: written at its mean and at
+/// [`TAKE_SEEDS`], each recipe parsed (its roles as materials of their hint colours) and its clips
+/// generated on its rig. A few dozen bones and parts a specimen: bounded by the format.
+fn checked_at_take(r: &Resolved, from: &str) -> Result<String, String> {
+    let materials: Vec<(String, Json)> = r.kind.roles.iter().map(|(n, h)| (n.clone(), Json::obj([("color", Json::from(h.as_str()))]))).collect();
+    let style = Style::parse(&Json::obj([("materials", Json::obj(materials))]).to_string()).map_err(|e| format!("the kind's roles as a style: {}", e.message))?;
+    for seed in std::iter::once(None).chain(TAKE_SEEDS.map(Some)) {
+        let at = seed.map_or("its mean".to_string(), |s| format!("seed {s}"));
+        let x = expand(r, seed, &AsNamed, from).map_err(|e| format!("the library's kind does not write at {at}: {e}"))?;
+        let recipe = specula_model::Recipe::parse(&x.recipe, &style).map_err(|e| format!("the library's kind writes a recipe that does not parse at {at}: {e}"))?;
+        if let Some(anims) = &x.anims {
+            let params = specula_model::BuildParams { seed, ..specula_model::BuildParams::new(&style) };
+            let rig = specula_model::recipe::build_rig_only(&recipe, &params).map_err(|e| format!("its rig at {at}: {e}"))?.ok_or_else(|| format!("its clips have no rig at {at}"))?;
+            specula_anim::Skeleton::from_rig(&rig).and_then(|s| specula_anim::AnimSet::load(anims, s)).map_err(|e| format!("its clips at {at}: {e}"))?;
+        }
+    }
+    Ok(format!("at the take: written at its mean and at seeds {}; each recipe parsed and its clips generated on its rig", TAKE_SEEDS.map(|s| s.to_string()).join(", ")))
+}
+
+/// The text of a tool's answer, as JSON.
+fn answer_json(out: &ToolOutput) -> Option<Json> {
+    out.content.iter().find_map(|c| match c {
+        specula_protocol::Content::Text(t) => Json::parse(t).ok(),
+        specula_protocol::Content::Image { .. } => None,
+    })
+}
+
+/// A take refused because the project's style resolves some of the kind's roles to nothing (a
+/// new project's style has none of them) gets the one call that adds them all, each to the
+/// preset nearest in colour to the role's hint: `project_patch` of the style the copy is checked
+/// against, at its version. Without it an agent learns one role a refusal (the check stops at
+/// the first). Nothing is written here: the agent makes the patch, and may choose other presets.
+fn with_roles_fix(tools: &Tools, session: &SessionInfo, out: ToolOutput, roles: &BTreeMap<String, String>) -> ToolOutput {
+    let Some(mut answer) = answer_json(&out) else { return out };
+    if !answer.to_string().contains("role_unresolved") {
+        return out;
+    }
+    // The style a recipe in the take folder is checked against: the nearest above it.
+    let mut found = None;
+    let mut dir = TAKE_FOLDER.to_string();
+    loop {
+        let path = format!("{dir}/style.json");
+        let read = crate::project_tools::call(tools, session, "project_read", &Json::obj([("path", Json::from(path.as_str()))]));
+        if !read.is_error {
+            found = answer_json(&read).map(|a| (path, a));
+            break;
+        }
+        match dir.rsplit_once('/') {
+            Some((up, _)) => dir = up.to_string(),
+            None => break,
+        }
+    }
+    let Some((path, read)) = found else { return out };
+    let (Some(text), Some(version)) = (read.get("text").and_then(Json::as_str), read.get("version").and_then(Json::as_u64)) else { return out };
+    let Ok(style) = Style::parse(text) else { return out };
+    let ops: Vec<Json> = roles
+        .iter()
+        .filter_map(|(role, hint)| style.role(role, Some(hint)).err().and_then(|m| m.nearest.into_iter().next()).map(|p| Json::obj([("set", Json::from(format!("roles.{role}"))), ("value", Json::from(p))])))
+        .collect();
+    if ops.is_empty() {
+        return out;
+    }
+    answer.set(
+        "fix",
+        Json::obj([
+            ("why", Json::from(format!("{path} resolves {} of the kind's roles to no preset: this one call names each to the preset nearest its hint colour (choose others if you like); then exemplar_take again", ops.len()))),
+            ("call", Json::from("project_patch")),
+            ("args", Json::obj([("path", Json::from(path.as_str())), ("expect_version", Json::from(version)), ("ops", Json::arr(ops))])),
+        ]),
+    );
+    ToolOutput::error(answer.to_string())
 }
 
 /// `exemplar_take`: the copy ([`copy_of`]) through `project_write`.
@@ -371,12 +458,10 @@ fn take_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOu
     let write = Json::obj([("path", Json::from(path.as_str())), ("text", Json::from(body.as_str())), ("expect_version", Json::from(expect))]);
     let out = crate::project_tools::call(tools, session, "project_write", &write);
     if out.is_error {
-        return Ok(out);
+        let roles = entry.kind().map(|k| k.roles).unwrap_or_default();
+        return Ok(with_roles_fix(tools, session, out, &roles));
     }
-    let answer = out.content.iter().find_map(|c| match c {
-        specula_protocol::Content::Text(t) => Json::parse(t).ok(),
-        specula_protocol::Content::Image { .. } => None,
-    });
+    let answer = answer_json(&out);
     let mut o = vec![("taken", Json::from(path.as_str())), ("from", Json::from(entry.from())), ("bytes", Json::from(body.len()))];
     if based {
         o.push(("base", Json::from("its base is written into the copy: one file holds the whole kind")));
@@ -386,7 +471,7 @@ fn take_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOu
             o.push((key, v.clone()));
         }
     }
-    let recipe = format!("recipes/{as_name}.kind.json");
+    let recipe = format!("models/{as_name}.kind.json");
     o.push(("build", Json::obj([("recipe", Json::from(recipe.as_str())), ("seed", Json::from(1))])));
     o.push(("next", Json::from(format!("model_build {{\"recipe\": \"{recipe}\", \"seed\": N}}: each seed another specimen (no seed: the mean); world_spawn {{\"shape\": \"model\", \"recipe\": \"{recipe}\", \"seed\": N}}; change the copy's numbers to change every specimen"))));
     Ok(ToolOutput::text(Json::obj(o).to_string()))
@@ -401,7 +486,7 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "exemplar_list".into(),
             description: format!(
-                "The library of sample assets: kinds (creatures, machines, plants...) made by code from measured numbers, each seed a different specimen \
+                "The library of sample assets: kinds (animals, creatures, machines, trees, plants...) made by code from measured numbers, each seed a different specimen \
                  (two seeds of a kind are two individuals). With nothing asked: every kind by plan on a few lines (under {MAX_INDEX_BYTES} bytes), the other \
                  lists (shapes), and how to ask. With plan, word or role, or rows: true: rows with each kind's size, roles, clips and the calls that use it; \
                  at most {} rows and {MAX_ROWS_BYTES} bytes a page, next_cursor for the next. Read-only.",
@@ -441,7 +526,7 @@ pub fn definitions() -> Vec<ToolDef> {
             name: "exemplar_take".into(),
             description: format!(
                 "Copies a kind of the library into the project, as {TAKE_FOLDER}/NAME.kind.json (its base, if any, written into it: one file), with where it \
-                 came from. Then model_build {{\"recipe\": \"recipes/NAME.kind.json\", \"seed\": N}} or a model entity with that recipe and seed builds a \
+                 came from. Then model_build {{\"recipe\": \"models/NAME.kind.json\", \"seed\": N}} (or model_build_all) or a model entity with that recipe and seed builds a \
                  specimen in the project's own style (its roles resolve to style.json's presets of the same name, or through style.json's \"roles\"). A \
                  copy, never a reference: the project's kind changes only when it is edited. Written through project_write (validated, claim-checked, \
                  journaled as you; expect_version 0, the default, means the file must not exist yet)."
@@ -514,6 +599,34 @@ pub fn expand_for_build(text: &str, library: &BTreeMap<String, String>, seed: Op
     let r = resolved(text, &|b| library.get(&format!("{b}.kind")).cloned())?;
     let x = expand(&r, seed, &ByStyle(style), from).map_err(|e| recipe_error(&e))?;
     Ok((x.recipe, x.anims))
+}
+
+/// The kinds a build's recipe folder holds, written as specimens for a scatter item that names a
+/// `kind` (`{"kind": "box_creature", "variants": 32}`: each variant's seed another specimen).
+/// `library` is the build's library (files by stem: a kind is `<name>.kind`, its base beside it).
+#[derive(Debug)]
+pub struct FolderKinds<'a> {
+    pub library: &'a BTreeMap<String, String>,
+    /// The recipe being built (what each specimen's text says it was written for).
+    pub from: &'a str,
+}
+
+impl specula_model::Specimens for FolderKinds<'_> {
+    fn specimen(&self, name: &str, seed: u64, style: &Style) -> Result<String, RecipeError> {
+        let text = self.library.get(&format!("{name}.kind")).ok_or_else(|| {
+            let kinds: Vec<&str> = self.library.keys().filter_map(|k| k.strip_suffix(".kind")).collect();
+            let near = specula_exemplaria::words::nearest(name, kinds.iter().copied(), 3);
+            RecipeError::new(
+                "",
+                ErrorCode::UnknownAsset,
+                format!(
+                    "no kind '{name}' beside this recipe (a kind is a {name}.kind.json in the recipe's folder: exemplar_take copies one from the library){}",
+                    if near.is_empty() { String::new() } else { format!("; nearest: {}", near.join(", ")) }
+                ),
+            )
+        })?;
+        expand_for_build(text, self.library, Some(seed), style, &format!("{} ({name})", self.from)).map(|(recipe, _)| recipe)
+    }
 }
 
 /// A kind checked as a recipe is at a spawn or a write: parsed, resolved over its base (found by

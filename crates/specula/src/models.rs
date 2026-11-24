@@ -644,7 +644,9 @@ type BuildFn = fn(&str, &BuildParams) -> Result<Model, RecipeError>;
 /// [`Outcome::Panicked`] instead of a dead worker.
 fn run(job: &Job, build: BuildFn) -> Outcome {
     let values: Vec<(&str, f64)> = job.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-    let params = BuildParams { values: &values, seed: job.seed, library: Some(&job.library), ..BuildParams::new(&job.style) };
+    // (A scatter item may name a kind of the recipe's folder: each variant a specimen.)
+    let kinds = crate::exemplar_tools::FolderKinds { library: &job.library, from: &job.recipe };
+    let params = BuildParams { values: &values, seed: job.seed, library: Some(&job.library), specimens: Some(&kinds), ..BuildParams::new(&job.style) };
     let built = specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| match &job.gltf {
         Some(path) => import_gltf(path),
         // A kind: its recipe and clips at this seed, written here on the worker.
@@ -1303,17 +1305,26 @@ impl Library {
         let info = self.recipes.get(&spec.recipe).filter(|i| i.content == key.0).ok_or("the recipe changed")?;
         let values: Vec<(&str, f64)> = spec.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
         let params = BuildParams { values: &values, seed: spec.seed, library: Some(&info.library), ..BuildParams::new(&info.style) };
-        let rig = specula_model::recipe::build_rig_only(&info.recipe, &params).map_err(|e| e.to_string())?.ok_or("the recipe has no rig")?;
+        // A kind's rig and clips are its specimen's at this seed (each seed its own bones), not
+        // its mean's; written as its build writes them (a few dozen bones: bounded by the format).
+        let (rig, anims) = if info.kind {
+            let (text, anims) = crate::exemplar_tools::expand_for_build(&info.text, &info.library, spec.seed, &info.style, &spec.recipe).map_err(|e| e.to_string())?;
+            let recipe = Recipe::parse(&text, &info.style).map_err(|e| e.to_string())?;
+            (specula_model::recipe::build_rig_only(&recipe, &params).map_err(|e| e.to_string())?, anims.map(Arc::<str>::from))
+        } else {
+            (specula_model::recipe::build_rig_only(&info.recipe, &params).map_err(|e| e.to_string())?, info.anims.clone())
+        };
+        let rig = rig.ok_or("the recipe has no rig")?;
         let mut h = StableHasher::with_seed(0x616e_696d_6261_7365);
         rig.hash_into(&mut h);
-        match &info.anims {
+        match &anims {
             Some(t) => {
                 h.write_u8(1);
                 h.write_str(t);
             }
             None => h.write_u8(0),
         }
-        Ok((h.finish(), BaseSource::Rig(rig, info.anims.clone())))
+        Ok((h.finish(), BaseSource::Rig(rig, anims)))
     }
 
     /// The named parts of a recipe the library has read (parsed already: no disk, no parse
@@ -1877,7 +1888,10 @@ impl Library {
                 continue;
             }
             let Some(Ok(t)) = files.get(&name).map(|f| &f.text) else { continue };
-            if let Ok(inner) = Recipe::parse(t, &style) {
+            if crate::exemplar_tools::is_kind(&name) {
+                // A kind a scatter item names: its base comes with it.
+                todo.extend(specula_exemplaria::Kind::parse(t).ok().and_then(|k| k.base).map(|b| format!("{b}.kind")));
+            } else if let Ok(inner) = Recipe::parse(t, &style) {
                 todo.extend(inner.includes());
             }
             library.insert(name, t.to_string());
@@ -5038,6 +5052,32 @@ mod tests {
                 assert_eq!(a, b, "{n}/{}", a.name);
             }
         }
+    }
+
+    /// A kind's write set is its specimen's at the entity's seed (rig and clips), the one its
+    /// build makes: not its mean's, and not a set without clips (a kind reads no anims file).
+    #[test]
+    fn a_kinds_write_set_is_its_specimens_at_the_seed() {
+        let kind = specula_exemplaria::library::entry("box_creature").unwrap().text;
+        let root = scratch("kindwrite", &[("box_creature.kind", kind)]);
+        std::fs::write(root.join(STYLE_FILE), r##"{"style":"t","materials":{"stone":{"color":"#808080"}},"roles":{"coat":"stone","claw":"stone","eye":"stone"}}"##).unwrap();
+        let mut lib = Library::new(&root, None);
+        let seeds = [7u64, 42];
+        let handles: Vec<u32> = seeds.iter().map(|s| lib.resolve(&ModelSpec::new("recipes/box_creature.kind.json").with_seed(*s)).unwrap().handle).collect();
+        settle(&mut lib);
+        let none = crate::anim::Assets::new();
+        let mut skeletons = Vec::new();
+        for (s, h) in seeds.iter().zip(handles) {
+            let quick = lib.write_set(h, &none).unwrap_or_else(|| panic!("seed {s}: no write set"));
+            let built = Arc::clone(lib.built(h).unwrap().anims.as_ref().unwrap());
+            assert_eq!(quick.skeleton, built.skeleton, "seed {s}");
+            assert!(quick.len() >= 3 && quick.len() == built.len(), "seed {s}: the kind's clips ({})", quick.len());
+            for ((_, a), (_, b)) in quick.clips().zip(built.clips()) {
+                assert_eq!(a, b, "seed {s}/{}", a.name);
+            }
+            skeletons.push(quick.skeleton.clone());
+        }
+        assert_ne!(skeletons[0], skeletons[1], "two seeds, two skeletons");
     }
 
     /// Review round 1, finding 2: world assets reach a graph write at once (they used to wait

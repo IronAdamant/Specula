@@ -163,7 +163,7 @@ fn the_plans_tables_are_sound() {
         }
         assert!(p.roles().len() <= crate::kind::MAX_ROLES);
         for m in p.motions() {
-            assert!(specula_anim_kinds().contains(&m.generator), "{}: {} is not a generator", p.name(), m.generator);
+            assert!(specula_anim::gen::KINDS.contains(&m.generator), "{}: {} is not a generator", p.name(), m.generator);
             for pat in m.patterns {
                 assert!(gaits::pattern(pat).is_some(), "{pat}");
             }
@@ -182,12 +182,6 @@ fn the_plans_tables_are_sound() {
         }
         e.resolved().unwrap();
     }
-}
-
-/// The generator kinds of `specula-anim` (`gen::KINDS`), as text: this crate does not depend on
-/// the anim library; the box_creature test generates every clip through it.
-fn specula_anim_kinds() -> [&'static str; 12] {
-    ["gait", "idle", "hover", "swing", "leap", "collapse", "wobble", "keys", "pose", "recoil", "breathe", "chain"]
 }
 
 #[test]
@@ -274,4 +268,19 @@ fn nearest_names_of_the_library() {
     assert_eq!(library::nearest("beast", 5), ["box_beast"]);
     assert!(library::nearest("qqqq", 5).is_empty());
     assert!(library::version() != 0);
+}
+
+/// A project's copy records its taking in the file itself (`taken`), and reads back as it was
+/// written; a version that is not the library's form is refused with its path.
+#[test]
+fn a_copy_records_its_taking_and_reads_back() {
+    let mut k = ENTRIES[0].kind().unwrap();
+    k.from = Some(ENTRIES[0].from());
+    k.taken = Some(crate::kind::Taken { library: format!("{:016x}", library::version()), base: Some("box_creature".into()), checked: "at the take: written at its mean".into(), own: 3 });
+    let text = k.to_json().to_pretty();
+    assert_eq!(Kind::parse(&text).unwrap(), k);
+    let bad = text.replace(&format!("{:016x}", library::version()), "not-a-version");
+    assert_eq!((parse_err(&bad).code, parse_err(&bad).path.as_str()), ("wrong_type", "taken.library"));
+    let extra = text.replace("\"own\": 3", "\"own\": 3, \"signed\": \"me\"");
+    assert_eq!(parse_err(&extra).path, "taken.signed");
 }

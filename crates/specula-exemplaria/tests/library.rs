@@ -40,26 +40,33 @@ fn specimens_are_the_same_bytes_on_every_machine() {
     assert!(wrong.is_empty(), "specimens moved (the rows as they are now):\n{}", wrong.join("\n"));
 }
 
+/// Every file under `exemplaria/`, at any depth, is a kind built into the engine, and every kind
+/// built in is a file there with the same bytes: the folder is the library's source and the
+/// engine answers from what was built from it (nothing beside the executable is read or can be
+/// swapped). A file of any other sort there (a note, a picture, a stray copy) fails, so it
+/// cannot be mistaken for part of the library.
 #[test]
-fn every_kind_file_has_its_line_and_every_line_its_file() {
+fn every_file_of_the_folder_is_built_in_and_nothing_built_in_is_missing() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../exemplaria");
     let mut on_disk = Vec::new();
-    for plan in std::fs::read_dir(&root).unwrap() {
-        let plan = plan.unwrap().path();
-        if !plan.is_dir() {
-            continue;
-        }
-        for f in std::fs::read_dir(&plan).unwrap() {
+    let mut todo = vec![root.clone()];
+    while let Some(dir) = todo.pop() {
+        for f in std::fs::read_dir(&dir).unwrap() {
             let f = f.unwrap().path();
-            let name = f.file_name().unwrap().to_string_lossy().to_string();
-            if name.ends_with(".kind.json") {
-                let rel = format!("{}/{name}", plan.file_name().unwrap().to_string_lossy());
-                let text = std::fs::read_to_string(&f).unwrap();
-                on_disk.push((rel, text));
+            if f.is_dir() {
+                todo.push(f);
+                continue;
             }
+            let rel = f.strip_prefix(&root).unwrap().components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect::<Vec<_>>().join("/");
+            let text = std::fs::read_to_string(&f).unwrap_or_else(|e| panic!("exemplaria/{rel} is not a kind file's text: {e}"));
+            on_disk.push((rel, text));
         }
     }
     on_disk.sort();
+    for (rel, _) in &on_disk {
+        let parts: Vec<&str> = rel.split('/').collect();
+        assert!(parts.len() == 2 && rel.ends_with(".kind.json"), "exemplaria/{rel}: the folder holds only <plan>/<name>.kind.json (a kind built into the engine)");
+    }
     let mut table: Vec<(String, String)> = library::ENTRIES.iter().map(|e| (e.path.to_string(), e.text.to_string())).collect();
     table.sort();
     let paths = |v: &[(String, String)]| v.iter().map(|x| x.0.clone()).collect::<Vec<_>>();

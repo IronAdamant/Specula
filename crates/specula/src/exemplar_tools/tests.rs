@@ -85,12 +85,12 @@ fn a_wrong_name_answers_with_the_nearest_across_the_lists() {
 #[test]
 fn the_copy_a_project_takes_is_one_file_that_validates_and_builds() {
     let c = copy_of("box_beast", None).unwrap();
-    assert_eq!((c.path.as_str(), c.as_name.as_str()), ("assets/recipes/box_creature.kind.json", "box_creature"));
+    assert_eq!((c.path.as_str(), c.as_name.as_str()), ("assets/models/box_creature.kind.json", "box_creature"));
     assert!(c.body.contains(&c.entry.from()) && c.body.ends_with('\n'));
     let k = Kind::parse(&c.body).unwrap();
     assert_eq!((k.base.as_ref(), k.from.as_deref()), (None, Some(c.entry.from().as_str())));
     let renamed = copy_of("box_creature", Some("pack_mule")).unwrap();
-    assert_eq!(renamed.path, "assets/recipes/pack_mule.kind.json");
+    assert_eq!(renamed.path, "assets/models/pack_mule.kind.json");
     assert!(Kind::parse(&renamed.body).unwrap().name == "pack_mule");
     assert!(copy_of("box_creature", Some("Pack Mule")).is_err());
     assert!(copy_of("nothing_here", None).unwrap_err().contains("no kind is called"));
@@ -148,4 +148,57 @@ fn every_argument_is_bounded() {
         }
         assert!(crate::authority::access(&d.name).is_some(), "{} declares its access", d.name);
     }
+}
+
+/// A scatter item that names a kind builds a specimen at each variant's seed (EXEMPLARIA.md,
+/// A.2: "a scatter item's variant seed"): 32 variants are 32 different recipes, the same
+/// recipe built twice is the same model, and the item is bounded as a scatter's are.
+#[test]
+fn a_scatter_of_a_kind_is_a_crowd_of_specimens_and_the_same_twice() {
+    use specula_model::Specimens;
+    /// Records every specimen written, as the build asks for them.
+    #[derive(Debug)]
+    struct Seen<'a>(FolderKinds<'a>, std::sync::Mutex<Vec<String>>);
+    impl Specimens for Seen<'_> {
+        fn specimen(&self, name: &str, seed: u64, style: &Style) -> Result<String, RecipeError> {
+            let t = self.0.specimen(name, seed, style)?;
+            self.1.lock().unwrap().push(t.clone());
+            Ok(t)
+        }
+    }
+    let style = Style::parse(STYLE).unwrap();
+    let mut files = BTreeMap::new();
+    files.insert("box_creature.kind".to_string(), library::entry("box_creature").unwrap().text.to_string());
+    let herd = |variants: u32| {
+        format!(
+            r#"{{"name": "herd", "parts": [{{"name": "herd", "material": "matte", "generate": {{"op": "scatter", "area": [[-20, -20], [20, -20], [20, 20], [-20, 20]], "min_distance": 2.5, "count": 64,
+                "items": [{{"kind": "box_creature", "variants": {variants}}}]}}}}]}}"#
+        )
+    };
+    let text = herd(specula_model::recipe::MAX_KIND_VARIANTS);
+    let build = |text: &str| {
+        let seen = Seen(FolderKinds { library: &files, from: "recipes/herd.json" }, std::sync::Mutex::new(Vec::new()));
+        let model = specula_model::build(text, &specula_model::BuildParams { library: Some(&files), specimens: Some(&seen), ..specula_model::BuildParams::new(&style) }).unwrap_or_else(|e| panic!("{e}"));
+        (model.hash, seen.1.into_inner().unwrap())
+    };
+    let (hash, written) = build(&text);
+    // (A build may make its parts more than once, a coarse pass among them: each time the same.)
+    assert!(!written.is_empty() && written.len() % 32 == 0, "every variant a specimen: {}", written.len());
+    let unlike: std::collections::BTreeSet<&String> = written.iter().collect();
+    assert_eq!(unlike.len(), 32, "32 seeds, 32 different recipes");
+    let (again, written_again) = build(&text);
+    assert_eq!((hash, &written), (again, &written_again), "the same recipe twice is the same crowd");
+    // Bounded: one variant past the most is refused, a kind beside no recipe is named with the
+    // nearest, a kind takes no params, and a build without the engine's specimens refuses it.
+    let over = specula_model::build(&herd(33), &specula_model::BuildParams { library: Some(&files), specimens: Some(&FolderKinds { library: &files, from: "t" }), ..specula_model::BuildParams::new(&style) });
+    assert!(over.is_err_and(|e| e.path.contains("variants")));
+    let wrong = text.replace("\"kind\": \"box_creature\"", "\"kind\": \"box_creatur\"");
+    let e = specula_model::build(&wrong, &specula_model::BuildParams { library: Some(&files), specimens: Some(&FolderKinds { library: &files, from: "t" }), ..specula_model::BuildParams::new(&style) }).unwrap_err();
+    assert!(e.code == ErrorCode::UnknownAsset && e.message.contains("nearest: box_creature") && e.path.contains("items[0].kind"), "{e:?}");
+    let with_params = text.replace("\"variants\"", "\"params\": {\"x\": [0, 1]}, \"variants\"");
+    assert!(specula_model::build(&with_params, &specula_model::BuildParams { library: Some(&files), specimens: Some(&FolderKinds { library: &files, from: "t" }), ..specula_model::BuildParams::new(&style) }).is_err_and(|e| e.path.contains("params")));
+    let alone = specula_model::build(&text, &specula_model::BuildParams { library: Some(&files), ..specula_model::BuildParams::new(&style) }).unwrap_err();
+    assert_eq!(alone.code, ErrorCode::UnknownAsset, "{alone:?}");
+    // The recipe names the kind as what it includes, so the model library reads its file.
+    assert_eq!(specula_model::Recipe::parse(&text, &style).unwrap().includes(), ["box_creature.kind"]);
 }
