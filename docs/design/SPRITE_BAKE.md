@@ -195,34 +195,83 @@ times; past that the bake ends `render_contended`, nothing written, its target g
 Held by a test that renders IDs on another target between every render of the bake and its
 landing.
 
-**Measured** (2026-11-24, a windowed engine at 1280x720 on the integrated GPU, Intel
-RaptorLake-S, `--no-activate`, a debug-profile build; the shambler's walk at 16 directions and 32
-frames, 512 cells, as jobs; the engine's own stall record, `engine.stall` in its trace):
+**Measured, the third build** (2026-11-24, a windowed engine at 1280x720 on the integrated GPU,
+Intel RaptorLake-S, `--no-activate`, a debug-profile build; the shambler's walk at 16 directions
+and 32 frames, 512 cells, as jobs; the engine's own stall record, `engine.stall` in its trace):
 
 | | cell 64, supersample 2 | cell 112, supersample 4 |
 |---|---|---|
 | the second builder's (a render and its readback waited for on the engine thread) | 20.2 s | `out_of_time` after 444 of 512 cells |
-| this build | 13.6 to 24.2 s over four runs | 18.6 to 27.4 s, never refused |
+| the third build | 13.6 to 24.2 s over four runs | 18.6 to 27.4 s, never refused |
 
 - The engine thread no longer waits for the GPU in a bake: the last landing's offscreen record
   says `wait_ms` 0.09 (the poll), `record_ms` 2.6, `submit_ms` 1.3, for a GPU time of 0.25 ms.
-- Steps of the bake over the render class's 30 ms: the second builder measured 47 (most 36-75
-  ms, the first 169 ms, which made the target). This build, on the same machine, 1 to 8 a bake
-  over five runs (31-58 ms; one of 125 ms), and **not zero**. What is left, by the frame
-  record's zones: the cell's submit (`sprite_bake.render`: recording the frame and the
-  driver's submit), whose thread CPU time was 4 to 28 ms in those steps; the pose's uploads
-  (`sprite_bake.pose`); once, the poll itself (`sprite_bake.poll`, 31-65 ms of wall time with
-  1-2 ms of CPU). The machine was building other lanes' code throughout (12 to 16 compilers
-  running): an engine left idle in a window beside the same load, with no bake at all, had 8 to
-  29 frames over budget in 46 s, up to 1,035 ms, with under 2 ms of CPU. So most of what is
-  left is not the bake's own work and cannot be told from the machine's on this run; the
-  steps whose CPU time itself passed about 20 ms (the 448-pixel ID frames' submit) are the
-  bake's, and are not explained.
-- The target a bake renders on was destroyed at its end in the first build of this lane (30
-  to 152 ms in the driver); it now goes back to the engine's cache of offscreen targets, and a
-  bake takes a cached target of its size when no capture's view is in flight.
-- `--strict-budget` (the engine ends with an error when any engine-thread stall passed its
-  budget) failed the run, exit 1, naming 65 stalls, among them the bake's steps above.
+- Steps over the render class's 30 ms: 1 to 8 a bake over five runs (the second builder: 47).
+- The target a bake renders on goes back to the engine's cache of offscreen targets (destroyed
+  at a bake's end in the first build of this lane, 30 to 152 ms in the driver).
+- `--strict-budget` failed that run, exit 1, naming 65 stalls, among them the bake's steps.
+
+**Review 1's measurement, and the fourth build's** (the same bake: shambler walk, 16 directions
+by 32 frames, cell 64, supersample 2, 512 cells; a windowed engine, `--no-activate`, debug
+profile, the validation layer off: `VK_LOADER_LAYERS_DISABLE=*validation*`). The reviewer, on
+the third build, integrated GPU: from a kept MCP session 13.1 s, `engine_ms` 2,708, longest step
+65 ms, no `gpu.flush_uploads` zone; **started by `specula call`** 54.4 s and 15.7 s, `engine_ms`
+5,924 and 3,317, longest step 398 and 123 ms, `gpu.flush_uploads` under `sprite_bake.render` of
+mean 28.5 ms, p95 171, max 368 a step (the model uploaded again for every cell: finding 1). The
+fourth build (2026-11-25, `C:/lv/lanes/bake/4/probe`, the same machine, other lanes building):
+
+| windowed, 512 cells | started by | the bake's own wall time | `engine_ms` | longest step | uploads of the build |
+|---|---|---|---|---|---|
+| integrated (RaptorLake-S) | `specula call`, 7 runs | 2.63 to 3.51 s | 273 to 534 | 5.4 to 47 ms | 1 in each |
+| integrated | one kept MCP session (curl), 3 runs | 2.68 to 2.99 s | 268 to 377 | 8 to 22 ms | 1 in each |
+| discrete (RTX 4090 Laptop) | `specula call`, 2 runs | 4.25 and 4.86 s | 437 and 674 | 30 and 28 ms | 1 in each |
+
+- **Started from a shell is now level with a kept session** (finding 1): one upload of the
+  build a bake, whatever its session did. Three `perf_capture`s of 600 frames across shell-started
+  bakes found `gpu.flush_uploads` under `sprite_bake.render` once a render (it is called on every
+  submit; with nothing to flush it is a few microseconds): mean 0.007 to 0.012 ms, p95 0.011 to
+  0.022, max 0.11 to 0.58 ms (the reviewer's: 28.5, 171, 368). `sprite_bake.render`: mean 0.53
+  to 0.79 ms, max 5.7 to 6.6.
+- That the whole bake is now about five times faster than the reviewer's kept-session run (13.1
+  s) is not only the pin: a landed cell is now read out of its readback in the step its poll finds
+  it done, where it used to wait in the readback (with its render on the GPU counted as flying)
+  until a worker slot was free. How much each change gave was not measured apart, and the
+  machine's load (other lanes' builds) differed between the two days.
+- **A textured model from a shell** (the ruined wall, whose stone is a texture graph): held by
+  the test gate past the pruning of its session's pin (8 s, clock paused), then let go: on the
+  third build's pin it ended `render_unavailable` ("the model's textures were released"; the
+  reviewer's finding from the code, run here on a build with the pin put back on the session);
+  on this build it bakes whole with one upload, on both adapters. The live check holds it.
+
+**The validation layer is most of what was "not explained"** (the reviewer's finding). The
+engine turns the Vulkan validation layer on wherever the Vulkan SDK is installed
+(`Validation::Auto`), as on this machine; it validates every submit on the engine thread. The
+reviewer, on the third build, headless discrete, 512 cells: `engine_ms` 3,557 to 3,982 with it,
+930 without; render self time mean 3.8 ms, max 12.8 with it. The fourth build, headless discrete,
+the same bake, three runs each: **with the layer `engine_ms` 1,498 to 1,680 (bake 2.27 to 2.50
+s), without it 210 to 254 (bake 0.80 to 1.07 s)**; longest step 15 to 22 ms with it, 9 to 21
+without. So the bake's own engine-thread cost is about 0.45 ms a cell; the layer adds about 2.7
+ms a cell. A machine without the SDK (a player's) never has it.
+
+**Other things looked at** (2026-11-25, finding 7):
+
+- **`world_load` during a bake** (headless, the bake held by the gate, then the world replaced
+  wholesale, then let go): the bake goes on and commits its two files into the loaded world's
+  journal, once with the files new (version 1) and once over files the bake had written before
+  (version 2: the project's files come from its folder on disk, which a world load does not
+  replace, so the bases still matched). Its pin and target are its own, so the load did not
+  disturb them.
+- **The largest model:** a recipe of 131,072 triangles (two tori of 512 by 64, the model
+  ceiling `MAX_MODEL_TRIANGLES`), still, 16 directions, cell 256, supersample 2 (512 render
+  pixels a side), windowed integrated: 1.35 s, `engine_ms` 143, longest step 58.8 ms (most likely the first
+  cell's, which uploads the 131,072-triangle build; not looked into further). Not done: a model at the bone ceiling (255, `rig::MAX_BONES`): no rig of that size
+  was to hand, and making one is a recipe of its own.
+- **Shutdown mid-bake** (`specula stop` while a 512-cell bake at supersample 4 rendered, 303
+  cells done; validation on): the engine exits 0 and says "shut down (0 validation errors)" on
+  both adapters; the bake's step job is answered `shutting_down` (`Engine::steps_shutting_down`,
+  its target landed and given back), and nothing of it is written.
+- **The windowed discrete adapter**: the table above, and the textured bake; no failure.
+- **The re-render loop**: bounded (above, "Cells whose ids are taken").
 
 ## The view: how far down the camera looks
 
@@ -366,3 +415,18 @@ and one undo. One tool call makes one commit (AGENTS rule 14).
   change of its own.
 - Root motion beyond the drift and `in_place` (a clip's travel is `distance_m`).
 - Vector 2D (`formae::draw` frame by frame) and a 2D skeleton: stage D2, not designed here.
+- A model at the bone ceiling (255 bones) was not baked (no rig of that size to hand).
+- A cancel once a bake has begun writing is refused, not honoured: the commit is one journal
+  entry the engine makes as the project's commit, and undoing it on a cancel would be a second
+  commit charged to the call (AGENTS rule 14). `world_undo` takes both files back.
+- What a cancelled bake's encode stored is taken back only while nothing else has put or read
+  the same bytes since (`ContentStore::withdraw`); a worker with no room for that job leaves the
+  content unreferenced, for the store's own pruning.
+- The forced cancel's board line names the forcer and the owner; the forced bake's owner is told
+  in the bake's answer, not by a message to it.
+- A bake asked by a caller with no name ends with its call (stopped at `wait_s`); there is no way
+  to hand such a bake to a name later.
+
+The sheets after review 1's mends are the second builder's in every pixel, on both adapters (the
+fourteen sheets of `C:/lv/lanes/bake/4/pictures`, compared as the third builder compared them:
+alpha and colour identical in every pixel; the frame data byte for byte the third builder's).
