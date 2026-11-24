@@ -342,15 +342,11 @@ impl Engine {
             return;
         }
         for (size, t) in std::mem::take(&mut self.steps.orphans) {
-            if self.gpu.offscreen_pending_target() == Some(t) {
-                match self.gpu.settle_offscreen_within(Some(Duration::ZERO)) {
-                    Ok(false) => {
-                        self.steps.orphans.push((size, t));
-                        continue;
-                    }
-                    // Done, or failed (the device's error is the next render's to say).
-                    Ok(true) | Err(_) => {}
-                }
+            // Still rendering: polled again later. Done, or failed (the device's error is the
+            // next render's to say): given back.
+            if self.gpu.offscreen_pending_target() == Some(t) && matches!(self.gpu.settle_offscreen_within(Some(Duration::ZERO)), Ok(false)) {
+                self.steps.orphans.push((size, t));
+                continue;
             }
             self.give_back_target(size, t);
         }
