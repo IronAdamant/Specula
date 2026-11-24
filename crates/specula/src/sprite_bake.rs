@@ -704,8 +704,11 @@ pub fn sheet_of(p: &plan::Plan, req: &Request, built: &crate::models::Built, lig
 /// `--as`): its identity is its session's id, which ends with the session, so a bake kept past
 /// its call could be read by nobody (review 1, finding 4: one such bake committed and its answer
 /// was unreadable). Such a caller's bake runs within its call or not at all.
-fn anonymous(owner: &str, session: &SessionInfo) -> bool {
-    owner == session.id
+/// (Told by whether it said hello, not by its key: a new identity is keyed by the session that
+/// introduced it, so a named agent's first session has a key equal to its id: found by the live
+/// check, 2026-11-25.)
+fn anonymous(session: &SessionInfo) -> bool {
+    !crate::authority::said_hello(&session.id)
 }
 
 /// The words that tell a caller with no name how to keep a bake past its call.
@@ -745,7 +748,7 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
         Call::List => return ToolOutput::text(tools.bakes.list(&owner, lead).to_string()),
         Call::Bake(r) => *r,
     };
-    let nameless = anonymous(&owner, session);
+    let nameless = anonymous(session);
     if nameless && !req.dry_run && req.wait_s == 0 {
         return err("needs_a_name", format!("wait_s 0 asks for a bake kept past its call, and {NAME_YOURSELF}; or give wait_s (up to {WAIT_S}) and the bake answers within its call"));
     }

@@ -1136,3 +1136,14 @@ fn a_cancel_while_the_atlas_is_encoded_writes_nothing_and_leaves_nothing_stored(
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// A caller is nameless when its session never said hello, not when its identity key is its
+/// session's id: a named agent's first session is keyed by its own id too (the live check met a
+/// named first call refused `needs_a_name`).
+#[test]
+fn a_caller_is_nameless_by_its_hello_not_by_its_key() {
+    let s = |id: &str| SessionInfo { id: id.into(), client_name: "t".into(), client_version: "0".into(), protocol_version: "0".into() };
+    assert!(anonymous(&s("sprite-nameless-session")));
+    crate::authority::publish_as("sprite-named-first-session", crate::authority::Authority::Agent, None);
+    assert!(!anonymous(&s("sprite-named-first-session")), "a named agent's first session is not nameless");
+}

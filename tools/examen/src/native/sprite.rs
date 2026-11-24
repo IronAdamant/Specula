@@ -67,7 +67,7 @@ pub fn sprite(cx: &mut Cx) -> Result<String, String> {
     }
     let port = cx.port;
     // The gate the held bakes below wait at (a test gate of the engine's: SPRITE_BAKE.md).
-    cx.engine_env("SPECULA_TEST_BAKE_HOLD", "held.png,enc.png@encoded,wr.png@writing");
+    cx.engine_env("SPECULA_TEST_BAKE_HOLD", "held.png,enc.png@encoded,wr.png@writing,wall.png");
     cx.start(&project, port, &["--lead", "lead"])?;
 
     // One bake: two files in one journal entry, and the frame data the 2D path plays.
@@ -235,15 +235,24 @@ pub fn sprite(cx: &mut Cx) -> Result<String, String> {
         }
     };
     let uploads = at(&windowed, "cost.uploads").and_then(Json::as_u64);
-    expect(at(&windowed, "cells").and_then(Json::as_u64) == Some(64) && uploads.is_some_and(|u| u <= 1), "the windowed bake started from a shell uploaded its model more than once (or did not end)", &windowed)?;
     let wcost = super::short(at(&windowed, "cost").unwrap_or(&Json::Null));
+    expect(at(&windowed, "cells").and_then(Json::as_u64) == Some(64) && uploads.is_some_and(|u| u <= 1), &format!("the windowed bake started from a shell uploaded its model more than once, or did not end (cost {wcost})"), &windowed)?;
     cx.say(format!("64 cells, windowed, from a shell: {wcost}"));
-    // A textured model (the ruined wall's stone is a texture graph): its textures leave the
-    // CPU when uploaded, so a second upload would fail (`render_unavailable` midway). From a
-    // shell, windowed, it bakes whole. (Its 16 cells end within the call's wait.)
-    let textured = cx.call(wport, ann, "sprite_bake", r#"{"recipe": "recipes/ruined_wall.json", "directions": 16, "cell": 48, "path": "assets/sprites/wall.png"}"#)?;
-    expect(at(&textured, "cells").and_then(Json::as_u64) == Some(16) && at(&textured, "cost.uploads").and_then(Json::as_u64).is_some_and(|u| u <= 1), "the textured bake from a shell did not bake whole with one upload", &textured)?;
-    cx.say(format!("textured, windowed, from a shell: {}", super::short(at(&textured, "cost").unwrap_or(&Json::Null))));
+    // A textured model (the ruined wall's stone is a texture graph): its textures leave the CPU
+    // when uploaded, so a second upload fails. Held by the gate (wall.png) while the clock is
+    // paused, from a shell whose session closed at once, for longer than the studio takes to
+    // prune a closed session's pin; then let go: it bakes whole, the model uploaded once. (With
+    // the pin its session's, this bake ended `render_unavailable`: "the model's textures were
+    // released", 2026-11-25.)
+    cx.call(wport, lead, "time_control", r#"{"action": "pause"}"#)?;
+    let held_wall = cx.call(wport, ann, "sprite_bake", r#"{"recipe": "recipes/ruined_wall.json", "directions": 16, "cell": 48, "path": "assets/sprites/wall.png", "wait_s": 0}"#)?;
+    let wall_job = at(&held_wall, "job").and_then(Json::as_u64).ok_or_else(|| format!("the held textured bake answered no job: {}", super::short(&held_wall)))?;
+    std::thread::sleep(Duration::from_secs(6));
+    cx.call(wport, lead, "time_control", r#"{"action": "resume"}"#)?;
+    let textured = cx.call(wport, ann, "sprite_bake", &format!(r#"{{"job": {wall_job}, "wait_s": 20}}"#))?;
+    let tcost = super::short(at(&textured, "cost").unwrap_or(&Json::Null));
+    expect(at(&textured, "cells").and_then(Json::as_u64) == Some(16) && at(&textured, "cost.uploads").and_then(Json::as_u64).is_some_and(|u| u <= 1), &format!("the textured bake from a shell did not bake whole with one upload (cost {tcost})"), &textured)?;
+    cx.say(format!("textured, windowed, from a shell, held past its session: {tcost}"));
     cx.stop(wport)?;
     Ok(format!("two files in one entry (journal {journal}) and one undo; the project's light; a held bake cancelled by its owner only, and by a lead's force; no bake kept for a caller with no name; a cancel honoured once encoded and refused too_late once writing; a claim that came while a bake ran refused its commit; 512 cells answered as a job ({cost}); a windowed bake from a shell uploaded its model once ({wcost})"))
 }

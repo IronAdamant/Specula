@@ -507,6 +507,13 @@ pub fn of_session(session_id: &str) -> Authority {
     PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map_or(Authority::Agent, |(_, a, _)| *a)
 }
 
+/// Whether session `session_id` said hello (it has an agent's identity, which a later session
+/// resumes), read from the caller thread (see [`PUBLISHED`]). A new identity is keyed by the
+/// session that introduced it, so a key equal to its session's id says nothing of this.
+pub fn said_hello(session_id: &str) -> bool {
+    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).contains_key(session_id)
+}
+
 /// The authority the operator's grants give: `a`, except that a lead nobody granted
 /// (`granted` false) counts as a plain agent.
 ///
