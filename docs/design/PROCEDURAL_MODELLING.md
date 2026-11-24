@@ -880,10 +880,13 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   2.6 and 2.7), a block the factor shows clear is filled only when its range over the block,
   worked out through the tree (`field_range`, with an ellipsoid's greatest bounded too), shows
   it clear as well; and pruning takes a loose child's span from that range, not from a factor
-  (both charged). Until 2026-11-24 a factor of 2 stood for the ellipsoid: a flat one with
-  blocks' middles on its middle plane was meshed with four blocks filled solid, and flat
-  ellipsoids of ratio 5 to 10 turned every way, long ones, and repetitions set off their
-  cells' middles came out wrong in about one build in twenty of a drawn set; none of the
+  (both charged: what each range evaluates, by its primitives' weights). Pruning of a column of changing proportions still goes by `column_wander`'s
+  allowance, which is held by test and not proved (DISTANCE_FIELDS 2.7). Until 2026-11-24 a
+  factor of 2 stood for the ellipsoid: a flat one with blocks' middles on its middle plane was
+  meshed with four blocks filled solid; of drawn trees turned every way, flat ellipsoids came
+  out wrong in 1 of 40 at a ratio of 5 and 8 of 40 at 10, long ones in 1 of 40 at 10, flat
+  ones joined or cut with balls in 1 of 120, and repetitions set off their cells' middles in
+  11 of 60; none of the
   repository's sculpts, figures or drawn trees moved. **A block that is sampled leaves out what cannot matter in it**: for the
   block, then for each half of it, then for each quarter, the tree is pruned of the children of its
   unions that are too far to touch the surface or its smoothing there (`sdf::prune`), exactly for

@@ -106,8 +106,9 @@ for each unit moved (each coordinate is divided by at least `e_min`), so the bal
 and `k₁` are of degree one in `x`, so `k₀ / k₁` depends only on the direction; at the middle
 `k₀` goes to nothing. ∎
 
-So `|f(x)| ≤ ρ · |s(x)|` everywhere, reached at the middle of a flat one (measured
-2026-11-24: 0.57 to 0.76 of `ρ` near the middle plane, for `ρ` from 2 to 100), and the
+So `|f(x)| ≤ ρ · |s(x)|` everywhere, and near the middle of a flat one it comes close (the
+most measured by sampling on 2026-11-24, so less than or equal to the true greatest: 0.90 of
+`ρ` at `ρ` = 2, 0.83 at 3, 0.82 at 5, 0.76 at 10, 0.60 at 25 and 0.57 at 100), and the
 slope is unbounded inside for every `ρ > 1` (measured: 5.5 at `ρ` = 1.5, 520 at 100); outside,
 far from a flat one, it reaches hundreds (950 at `ρ` = 100). **The modeller once took a
 factor of 2 for it**; 2.7 says what that cost.
@@ -121,7 +122,8 @@ ball of radius `R` about `c` it lies within `f(c) ± (L R + σ)`; and joins, mee
 smooth joins, swellings, shells and noise keep a factor (3.1, 5.3, 5.6; a constant moves
 nothing; noise of amount `a` adds `2a` to `σ`). **A field with no factor gives none**: by 2.6
 an ellipsoid's middle may read `e_max` deep at a point `e_min` from its surface, so a block
-there passes the test `|f(c)| > 2R + σ` with surface in it (an ellipsoid of half axes 0.5,
+there passes the mesher's test `|f(c)| > L R + σ + h` (with `L` = 2 and `h` a cell) with
+surface in it (an ellipsoid of half axes 0.5,
 0.02 and 0.5, meshed at 60 with a block's middle on its middle plane, came out 9,010
 triangles where it is 8,290: four blocks filled solid, a bulge each side). Nor is a ratio
 `|f| ≤ ρ |s|` enough for a tree: a swelling, a shell, a smooth join or noise moves the surface
@@ -137,9 +139,23 @@ tier 3). For the ellipsoid it uses 2.6 itself. Its least over the ball of radius
 over the ball (2.2). Where `t + r ≥ 0` the field is at most `t + r` (outside by 2.6 (1); and
 inside it is below nothing). Where `t + r < 0` the whole ball is inside, at least
 `−(t + r)` deep, and the field is at most `(t + r) / ρ` (by 2.6 (2): `−f ≥ (1 − k₀) e_min ≥
-−s / ρ`). The same holds a column whose breadth and depth change in different proportions,
-which far to one side changes faster than its factor (its own bound, with that allowance,
-is in `field_range`), and a repetition, whose field jumps at its cells' edges.
+−s / ρ`).
+
+**What is not proved here.** Two other parts have no factor either, and the modeller asks
+their range too, but their ranges rest on reasoning in the code, not on a statement of this
+page. A column whose breadth and depth change in different proportions changes, far to one
+side, faster than its factor (`column_lip`) by an allowance for each of its own radii out
+(`column_wander`); `field_range` bounds it by that allowance, and that bound is **held by a
+test** (`a_fields_range_over_a_ball_holds_every_value_in_it`, and the mesher's
+`every_primitives_factor_bounds_it_or_its_range_is_asked`), **not proved**. A repetition's
+field jumps at its cells' edges, and `field_range` goes to every copy a ball can reach (at most
+eight; past that it says nothing). And **pruning still takes such a column's span from
+`column_wander`'s allowance, not from a range** (`sdf::pruned`): the review of 2026-11-24
+found no tree where that is wrong, but it is not proved. What would close both: a proof that a
+column's field is within `L` times its signed distance with `L = sqrt(1 + (κ g)²)` (`g` the
+steepest growth of either radius along it, `κ = 2^(1/2 − 1/s)` for squareness `s`, how far a
+point of a superellipse moves when its radii do), including its rounded ends, and a range
+built on it for both the mesher and pruning.
 
 ## 3. Joining, meeting and cutting
 
