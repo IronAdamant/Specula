@@ -399,11 +399,17 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     every charge. Every mesh without a box given pays it (`SdfStats::reach_work`): the
     repository's sculpts by 0.01% to 6.9% of a mesh's work (1,200 to 53,000 units), the
     figure's parts by 0.08% to 0.48% (37,000 to 677,000); no mesh, box or answer moved. The
-    chain of 64 now takes about 0.13 s, and a cancel ends a mesh within a charge
-    (`the_reach_is_charged_what_it_does`, `a_cancel_or_the_limit_stops_the_reach_at_once`).
-    Every step of the search and of the reach is counted where it is done, by kind, and the
-    charge is held to each kind's count at its weight: a weight left out of the charge fails
-    the test.
+    reach of the chain of 64 now takes 0.024 s at squareness 2, 0.073 s at 5 and 0.087 s at
+    1.5 (the reach alone, release, the least of three runs on a machine busy with other
+    builds: the box lane's fourth review), and a cancel ends a mesh within a charge
+    (`the_reach_is_charged_what_it_does`, `a_cancel_or_the_limit_stops_the_reach_at_once`);
+    a cancel gives one error wherever it is seen, a limit with no measure and no limit
+    (`a_cancel_gives_one_error_wherever_it_is_seen`: the work done when a cancel comes is a
+    timing, not a fact of the recipe). Every step of the search, of the reach and of the
+    mesher's ranges is counted where it is done, by kind, and charged before it is done
+    (`every_step_is_charged_before_it_is_done`), and the charge is held to each kind's count
+    at its weight, the weights written out as numbers in the test: a weight left out of the
+    charge, or changed, fails the test.
     **What still grows, by count** (the same 1,200 boxes): of the reviewer's 600, **none**
     (the five balls, the turned ellipsoid and the empty meeting keep the old box); of the
     crate's own 600, **14**: the 4 where the old box cuts the solid off (a flat ellipsoid
@@ -911,8 +917,29 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   differ, a column whose proportions change, a repetition: [DISTANCE_FIELDS.md](DISTANCE_FIELDS.md),
   2.6 and 2.7), a block the factor shows clear is filled only when its range over the block,
   worked out through the tree (`field_range`, with an ellipsoid's greatest bounded too), shows
-  it clear as well; and pruning takes a loose child's span from that range, not from a factor
-  (both charged: what each range evaluates, by its primitives' weights). Pruning of a column of changing proportions still goes by `column_wander`'s
+  it clear as well; and pruning takes a loose child's span from that range, not from a factor.
+  Both are charged in the one scheme the box's search is (`Spent`: every node's frame, its
+  modifiers, its own range and its joins, by the weights of `did_shares`), a block's range
+  before it is taken, a prune's after, and shown in `SdfStats::range_work`. A tree whose
+  ranges are asked has its columns walked once first (`outline_columns`, each walk charged
+  before it and a cancel looked for), so a column's range reads its box and ratio from the
+  outline and costs a range, not a walk (the box lane's fourth review: unoutlined, every
+  block's range walked every column again, charged 384 units for up to 297,240). A prune
+  takes each loose child's range once: going down into a loose child it kept, it finds that
+  child's own children's ranges where the first walk noted them (taken over a ball a
+  ten-thousandth larger a frame, so they hold for the smaller one); on sixteen nested unions
+  of a flat ellipsoid and balls, meshed at 160, that took the ranges from 4.66 million node
+  visits to 0.51 million and the work from 1,527 million units (past the build's limit) to
+  455 million, the mesh the same. Charged so, the mesher's ranges cost what they take (a
+  range about two to three and a half evaluations' time, timed beside them in one run): more
+  than the mesher lane said, which had weighed a range as its primitives' evaluations alone.
+  Against the mesher lane's head, with every mesh the same to the byte: the repository's
+  sculpts 0.5% more work, the figures 1.4%, the drawn set 4.7% (one small tree 2.2 times),
+  the shield 13%, the stone 6%, the coin, leaf and pond nothing; against the box lane's, 145
+  meshes of the crate's and the reviewers' trees 3.7%. A union of 32 ellipsoids whose radii
+  differ costs 14% more than the mesher lane said, and the record's test recipe of 52 of them
+  passed the model's limit (1.59 thousand million units of 1.5; its ellipsoids are round now,
+  `the_record_never_refuses_a_build`). Pruning of a column of changing proportions still goes by `column_wander`'s
   allowance, which is held by test and not proved (DISTANCE_FIELDS 2.7). Until 2026-11-24 a
   factor of 2 stood for the ellipsoid: a flat one with blocks' middles on its middle plane was
   meshed with four blocks filled solid; of drawn trees turned every way, flat ellipsoids came

@@ -157,6 +157,20 @@ steepest growth of either radius along it, `κ = 2^(1/2 − 1/s)` for squareness
 point of a superellipse moves when its radii do), including its rounded ends, and a range
 built on it for both the mesher and pruning.
 
+**What the code adds to these ranges, and why it changes nothing above.** A column's range
+reads its box of level 0 and its ratio from one walk of its curve, made before any range is
+asked (`outline_columns`: the box's search and the mesher each make one), where it once walked
+the curve at every ask: the walk is the same function either way, so the outline changes what
+a range costs, never what it says. And a prune that goes down into a loose child it kept takes
+that child's own children's ranges from the walk that gave the child's (`sdf::pruned`, its
+noted ranges) instead of walking them again: that walk took them over a ball about the same
+middle (by the same steps as `local`), only larger (each frame widens the radius by a
+ten-thousandth), and a range over a ball holds over every smaller ball about its middle. So
+each is a range of this page asked of a larger ball: never tighter, never unsound. That the
+code does these two things as said is held by test (`the_mesher_walks_each_column_once`,
+`a_prune_takes_each_loose_childs_range_once`, and the meshes and ranges compared bit for bit
+with the two lanes before them), not by proof.
+
 ## 3. Joining, meeting and cutting
 
 Write `a ∧ b` for the lesser and `a ∨ b` for the greater of two numbers.
