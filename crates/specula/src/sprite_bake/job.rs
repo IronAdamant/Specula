@@ -146,6 +146,9 @@ pub(crate) const CLEAR: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
 /// A cell's render: its colour (sRGB RGBA) and its opaque ids.
 pub(crate) type Raw = (Vec<u8>, Vec<u32>);
 
+/// Tests: every landed cell's render, by cell.
+type Tap = Rc<RefCell<Vec<(usize, Raw)>>>;
+
 /// What a cell's resolve on its worker came to: whether the model is on the cell's outermost
 /// pixels, or why the cell could not be used.
 type Resolved = Result<bool, ToolOutput>;
@@ -198,7 +201,7 @@ pub(crate) struct BakeJob {
     engine_ms: f64,
     max_step_ms: f64,
     /// Tests: every landed cell's render, as it came back.
-    tap: Option<Rc<RefCell<Vec<(usize, Raw)>>>>,
+    tap: Option<Tap>,
 }
 
 impl BakeJob {
@@ -252,6 +255,7 @@ impl BakeJob {
     /// unless a capture's view is between its render and its landing (it may be on that target:
     /// a new one is made then); else a new one.
     fn acquire(e: &mut Engine, w: u32, h: u32) -> Result<TargetId, specula_gpu::GpuError> {
+        let _z = specula_core::profile::zone("sprite_bake.target");
         if e.captures.flight.is_none() && e.captures.step_flight.is_none() {
             if let Some(i) = e.targets.iter().position(|(size, _)| *size == (w, h)) {
                 return Ok(e.targets.remove(i).1);
@@ -540,10 +544,7 @@ impl BakeJob {
             let (rw, rh) = (plan.cell[0] * plan.supersample, plan.cell[1] * plan.supersample);
             let target = match self.target {
                 Some(t) => t,
-                None => match {
-                    let _z = specula_core::profile::zone("sprite_bake.target");
-                    Self::acquire(e, rw, rh)
-                } {
+                None => match Self::acquire(e, rw, rh) {
                     Ok(t) => *self.target.insert(t),
                     Err(g) => {
                         self.release(e);
@@ -606,7 +607,7 @@ impl BakeJob {
 
     /// Tests: every landed cell's render goes here too.
     #[cfg(test)]
-    pub(crate) fn tap(&mut self) -> Rc<RefCell<Vec<(usize, Raw)>>> {
+    pub(crate) fn tap(&mut self) -> Tap {
         Rc::clone(self.tap.get_or_insert_with(Rc::default))
     }
 
