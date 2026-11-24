@@ -122,7 +122,34 @@ size, cells, frames a clip) stay refusals before any work.
   cannot have finished, on any GPU, and to take a claim on a bake's path before it ends; it
   never depends on how fast the GPU is.
 
-MEASURED_WINDOW
+**Measured** (2026-11-24, a windowed engine at 1280x720 on the integrated GPU, Intel
+RaptorLake-S, `--no-activate`, a debug-profile build; the shambler's walk at 16 directions and 32
+frames, 512 cells, as jobs; the engine's own stall record, `engine.stall` in its trace):
+
+| | cell 64, supersample 2 | cell 112, supersample 4 |
+|---|---|---|
+| the second builder's (a render and its readback waited for on the engine thread) | 20.2 s | `out_of_time` after 444 of 512 cells |
+| this build | 13.6 to 24.2 s over four runs | 18.6 to 27.4 s, never refused |
+
+- The engine thread no longer waits for the GPU in a bake: the last landing's offscreen record
+  says `wait_ms` 0.09 (the poll), `record_ms` 2.6, `submit_ms` 1.3, for a GPU time of 0.25 ms.
+- Steps of the bake over the render class's 30 ms: the second builder measured 47 (most 36-75
+  ms, the first 169 ms, which made the target). This build, on the same machine, 1 to 8 a bake
+  over five runs (31-58 ms; one of 125 ms), and **not zero**. What is left, by the frame
+  record's zones: the cell's submit (`sprite_bake.render`: recording the frame and the
+  driver's submit), whose thread CPU time was 4 to 28 ms in those steps; the pose's uploads
+  (`sprite_bake.pose`); once, the poll itself (`sprite_bake.poll`, 31-65 ms of wall time with
+  1-2 ms of CPU). The machine was building other lanes' code throughout (12 to 16 compilers
+  running): an engine left idle in a window beside the same load, with no bake at all, had 8 to
+  29 frames over budget in 46 s, up to 1,035 ms, with under 2 ms of CPU. So most of what is
+  left is not the bake's own work and cannot be told from the machine's on this run; the
+  steps whose CPU time itself passed about 20 ms (the 448-pixel ID frames' submit) are the
+  bake's, and are not explained.
+- The target a bake renders on was destroyed at its end in the first build of this lane (30
+  to 152 ms in the driver); it now goes back to the engine's cache of offscreen targets, and a
+  bake takes a cached target of its size when no capture's view is in flight.
+- `--strict-budget` (the engine ends with an error when any engine-thread stall passed its
+  budget) failed the run, exit 1, naming 65 stalls, among them the bake's steps above.
 
 ## The view: how far down the camera looks
 

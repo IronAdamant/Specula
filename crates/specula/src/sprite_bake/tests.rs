@@ -409,10 +409,11 @@ fn frame_data_round_trips_and_the_2d_path_plays_each_strip_from_it() {
     let req = bake_of(r#"{"recipe": "recipes/shambler.json", "clips": ["walk", "death"], "directions": 4, "frames": 6, "cell": 64}"#);
     let p = plan(&shambler, shambler.anims.as_deref(), &req.ask).unwrap();
     let data = sheet_of(&p, &req, &shambler, "neutral");
-    let text = data.to_json().to_pretty();
+    let text = data.to_text();
     let back = SheetData::parse(&text).unwrap_or_else(|e| panic!("{}: {}", e.at, e.message));
     assert_eq!(back, data);
-    assert_eq!(back.to_json().to_pretty(), text, "the same text again");
+    assert_eq!(back.to_text(), text, "the same text again");
+    assert!(text.lines().filter(|l| l.trim_start().starts_with("{\"clip\"")).count() == data.strips.len(), "a strip a line");
     assert!(text.len() < crate::project::MAX_FILE_BYTES);
     let j = Json::parse(&text).unwrap();
     for (i, strip) in data.strips.iter().enumerate() {

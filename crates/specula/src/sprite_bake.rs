@@ -647,7 +647,7 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
 
 /// The answer: what was written (or would be), the atlas, what it cost. Bounded: at most
 /// [`MAX_LISTED`] strips are listed (the file has all of them).
-fn answer(p: &plan::Plan, data: &sheet::SheetData, req: &Request, baked: Option<(&job::Baked, usize)>, commit: Option<Json>, started: Instant) -> Json {
+fn answer(p: &plan::Plan, data: &sheet::SheetData, req: &Request, baked: Option<(&job::Cost, usize)>, commit: Option<Json>, started: Instant) -> Json {
     let r3 = |x: f64| Json::from((x * 1000.0).round() / 1000.0);
     let strips: Vec<Json> = data
         .strips

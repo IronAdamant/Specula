@@ -82,15 +82,21 @@ pub struct Bake {
     pub started: Instant,
 }
 
-/// The rendered atlas and what it cost.
-pub struct Baked {
-    pub rgba: Vec<u8>,
-    /// Cells with the model on their outermost pixels (never, when the fit holds).
-    pub touching: Vec<usize>,
+/// What a bake cost: its renders (a cell rendered again counts twice), the engine thread's
+/// time in its steps, and the most one step took.
+pub struct Cost {
     pub renders: usize,
-    /// The engine thread's time in this bake's steps, and the most one step took.
     pub engine_ms: f64,
     pub max_step_ms: f64,
+}
+
+/// Tests: the atlas once every cell is in it, and the cells with the model on their outermost
+/// pixels (never, when the fit holds).
+#[cfg(test)]
+pub struct Baked {
+    pub rgba: Vec<u8>,
+    pub touching: Vec<usize>,
+    pub renders: usize,
 }
 
 fn err(code: &str, message: impl Into<String>) -> ToolOutput {
@@ -178,6 +184,8 @@ pub(crate) struct BakeJob {
     session: String,
     call: u64,
     target: Option<TargetId>,
+    /// Its size (the cell times the supersample, a side).
+    target_size: (u32, u32),
     warm: bool,
     /// The next cell to submit, and the one on the GPU.
     next: usize,
@@ -199,6 +207,7 @@ impl BakeJob {
         e.pin_for_job(pin, session, bake.built.id);
         let [w, h] = bake.plan.atlas;
         let atlas = Arc::new(Mutex::new(vec![0u8; w as usize * h as usize * 4]));
+        let (cell, ss) = (bake.plan.cell, bake.plan.supersample);
         BakeJob {
             bake,
             look,
@@ -206,6 +215,7 @@ impl BakeJob {
             session: session.to_owned(),
             call,
             target: None,
+            target_size: (cell[0] * ss, cell[1] * ss),
             warm: false,
             next: 0,
             flying: None,
@@ -220,13 +230,34 @@ impl BakeJob {
         }
     }
 
-    /// The bake's own target and pin go (never while its render is on the GPU: the caller
-    /// lands it first, so destroying the target never waits).
+    /// The bake's target and pin go (never while its render is on the GPU: the caller lands it
+    /// first). The target goes back to the engine's cache of offscreen targets, so a bake
+    /// neither ends nor begins in the driver's freeing and making of a render graph's images
+    /// (a target destroyed at a bake's end held the windowed iGPU 30-152 ms); it is destroyed
+    /// only when the cache is full.
     fn release(&mut self, e: &mut Engine) {
         if let Some(t) = self.target.take() {
-            e.gpu.destroy_target(t);
+            let _z = specula_core::profile::zone("sprite_bake.release");
+            if e.targets.len() < crate::MAX_CACHED_TARGETS {
+                e.targets.push((self.target_size, t));
+            } else {
+                e.gpu.destroy_target(t);
+            }
         }
         e.studio_done(self.pin);
+    }
+
+    /// A target of `w` x `h` the bake holds alone while it runs: one of the engine's cached
+    /// targets of that size, taken out of the cache (so no capture renders on it meanwhile),
+    /// unless a capture's view is between its render and its landing (it may be on that target:
+    /// a new one is made then); else a new one.
+    fn acquire(e: &mut Engine, w: u32, h: u32) -> Result<TargetId, specula_gpu::GpuError> {
+        if e.captures.flight.is_none() && e.captures.step_flight.is_none() {
+            if let Some(i) = e.targets.iter().position(|(size, _)| *size == (w, h)) {
+                return Ok(e.targets.remove(i).1);
+            }
+        }
+        e.gpu.create_target(w, h)
     }
 
     fn offload(&self) -> Offload {
@@ -242,6 +273,7 @@ impl BakeJob {
         let cam = &plan.cameras[strip.direction];
         let mut draws: Vec<DrawItem> = Vec::new();
         let mut bones = Vec::new();
+        let pose = specula_core::profile::zone("sprite_bake.pose");
         e.models.refresh_ready(&mut e.gpu);
         if let Err(m) = e.models.posed_draws(&mut e.gpu, &self.bake.built, &plan.poses[cell.pose], &Mat4::IDENTITY, &mut bones, &mut draws) {
             if m.contains("still being built") {
@@ -249,6 +281,7 @@ impl BakeJob {
             }
             return Err(err("render_unavailable", m));
         }
+        drop(pose);
         let ids = vec![1u32; draws.len()];
         let reach = cam.eye.length() * 2.0 + 2.0;
         let frame = FrameDesc {
@@ -261,7 +294,11 @@ impl BakeJob {
             time_s: 0.0,
             ..Default::default()
         };
-        if let Err(g) = e.gpu.render_async(target, &frame, Some((&ids, &[]))) {
+        let rendered = {
+            let _z = specula_core::profile::zone("sprite_bake.render");
+            e.gpu.render_async(target, &frame, Some((&ids, &[])))
+        };
+        if let Err(g) = rendered {
             return Err(err("render_unavailable", crate::capture::gpu_failure("render", &g, e.windowed)));
         }
         Ok(true)
@@ -307,7 +344,7 @@ impl BakeJob {
         let plan = self.bake.plan.clone();
         let atlas = Arc::clone(&self.atlas);
         let (pixel_art, png_path) = (self.look.palette.is_some(), self.bake.req.path.clone());
-        let text = super::sheet_of(&plan, &self.bake.req, &self.bake.built, &self.look.light).to_json().to_pretty();
+        let text = super::sheet_of(&plan, &self.bake.req, &self.bake.built, &self.look.light).to_text();
         let store = self.bake.store.clone();
         let slot = Rc::new(RefCell::new(None));
         let back = Rc::clone(&slot);
@@ -378,9 +415,9 @@ impl BakeJob {
             }
         };
         let r = self.resolving.borrow();
-        let baked = Baked { rgba: Vec::new(), touching: r.touching.clone(), renders: self.renders, engine_ms: self.engine_ms, max_step_ms: self.max_step_ms };
+        let cost = Cost { renders: self.renders, engine_ms: self.engine_ms, max_step_ms: self.max_step_ms };
         let data = super::sheet_of(&self.bake.plan, &self.bake.req, &self.bake.built, &self.look.light);
-        let mut a = super::answer(&self.bake.plan, &data, &self.bake.req, Some((&baked, enc.png_bytes)), Some(commit), self.bake.started);
+        let mut a = super::answer(&self.bake.plan, &data, &self.bake.req, Some((&cost, enc.png_bytes)), Some(commit), self.bake.started);
         let mut notes = std::mem::take(&mut self.look.notes);
         if !r.touching.is_empty() {
             let mut t = r.touching.clone();
@@ -425,7 +462,11 @@ impl BakeJob {
         if let Some(at) = self.flying {
             let Some(target) = self.target else { unreachable!("a cell flies on the bake's target") };
             if e.gpu.offscreen_pending_target() == Some(target) {
-                match e.gpu.settle_offscreen_within(Some(Duration::ZERO)) {
+                let polled = {
+                    let _z = specula_core::profile::zone("sprite_bake.poll");
+                    e.gpu.settle_offscreen_within(Some(Duration::ZERO))
+                };
+                match polled {
                     Ok(false) => return Step::Wait,
                     Ok(true) => {}
                     Err(g) => {
@@ -447,7 +488,11 @@ impl BakeJob {
             if self.resolving.borrow().in_flight >= MAX_RESOLVING || e.workers_room(&self.owner, self.call, bytes).is_err() {
                 return Step::Wait;
             }
-            match e.gpu.read_landed(target) {
+            let landed = {
+                let _z = specula_core::profile::zone("sprite_bake.land");
+                e.gpu.read_landed(target)
+            };
+            match landed {
                 Ok(None) => return Step::Wait,
                 Ok(Some((colour, ids))) => {
                     self.flying = None;
@@ -495,7 +540,10 @@ impl BakeJob {
             let (rw, rh) = (plan.cell[0] * plan.supersample, plan.cell[1] * plan.supersample);
             let target = match self.target {
                 Some(t) => t,
-                None => match e.gpu.create_target(rw, rh) {
+                None => match {
+                    let _z = specula_core::profile::zone("sprite_bake.target");
+                    Self::acquire(e, rw, rh)
+                } {
                     Ok(t) => *self.target.insert(t),
                     Err(g) => {
                         self.release(e);
@@ -516,7 +564,11 @@ impl BakeJob {
                 }
             }
             let at = self.next;
-            return match self.submit(e, target, at) {
+            let submitted = {
+                let _z = specula_core::profile::zone("sprite_bake.submit");
+                self.submit(e, target, at)
+            };
+            return match submitted {
                 Ok(true) => {
                     self.bake.progress.set_phase(super::PHASE_RENDERING);
                     self.flying = Some(at);
@@ -563,7 +615,7 @@ impl BakeJob {
     pub(crate) fn rendered(&self) -> Option<Baked> {
         let r = self.resolving.borrow();
         let all = matches!(self.phase, Phase::Cells) && self.next == self.bake.plan.cells.len() && self.flying.is_none() && r.in_flight == 0 && r.failed.is_none();
-        all.then(|| Baked { rgba: self.atlas.lock().unwrap().clone(), touching: r.touching.clone(), renders: self.renders, engine_ms: self.engine_ms, max_step_ms: self.max_step_ms })
+        all.then(|| Baked { rgba: self.atlas.lock().unwrap().clone(), touching: r.touching.clone(), renders: self.renders })
     }
 
     fn cancelled(&mut self, e: &mut Engine) -> Step {

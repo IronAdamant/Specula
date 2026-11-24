@@ -218,6 +218,23 @@ impl SheetData {
         out
     }
 
+    /// The file's text: one field a line, and each strip (or the shadow) whole on a line of its
+    /// own, so the file reads a strip a line rather than a number a line.
+    pub fn to_text(&self) -> String {
+        let j = self.to_json();
+        let fields = j.as_object().unwrap_or(&[]);
+        let mut out = String::from("{\n");
+        for (i, (k, v)) in fields.iter().enumerate() {
+            let value = match v {
+                Json::Arr(items) if k == "strips" => format!("[\n{}\n  ]", items.iter().map(|s| format!("    {s}")).collect::<Vec<_>>().join(",\n")),
+                v => v.to_string(),
+            };
+            out.push_str(&format!("  {}: {value}{}\n", Json::from(k.as_str()), if i + 1 < fields.len() { "," } else { "" }));
+        }
+        out.push_str("}\n");
+        out
+    }
+
     /// Reads and checks a file's text (see the module docs).
     pub fn parse(text: &str) -> Result<SheetData, SheetError> {
         let j = Json::parse(text).map_err(|e| bad("", format!("not JSON: {e}")))?;
