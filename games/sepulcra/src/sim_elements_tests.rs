@@ -955,3 +955,170 @@ fn a_shove_never_enters_a_wall_and_stops_at_a_spawn() {
     let e = s.enemy(id).unwrap();
     assert_ne!(e.cell(), Some(at(&c, "top:9,17")), "never into the wall");
 }
+
+/// An enemy of `kind` frozen solid (for a long time) on `cell`.
+fn frozen_one(s: &mut State, kind: &str, cell: &str) -> EnemyId {
+    let c = Arc::clone(&s.content);
+    let gelu = c.stone(c.stone_kind("gelu").unwrap()).tiers[0].el;
+    let id = plant(s, kind, cell);
+    let i = idx(s, id);
+    let mut ev = Vec::new();
+    while !s.w.enemies[i].el.frozen(s.tick()) {
+        s.w.chill(&c, i, &gelu, &mut ev);
+    }
+    s.w.enemies[i].el.frozen_until = 100_000;
+    id
+}
+
+#[test]
+fn every_attack_decides_its_elements_from_the_enemy_before_the_hit() {
+    // The one rule (`Before`), through each stone's real hit with its real damage, on a shambler
+    // and on an exploder, both frozen: the hit shatters the ice, and its elements see the enemy as
+    // it was, frozen. Fire thaws it with steam (no fire, no fuse), frost adds no chill to the ice it
+    // broke, and no hit sets the frozen exploder off.
+    let c = with_fuel("");
+    for stone in ["warding", "rogus", "gelu", "rune_pillar", "fulmen", "saxum"] {
+        for kind in ["shambler", "tumidus"] {
+            let mut s = quiet(&c);
+            let id = frozen_one(&mut s, kind, "top:9,16");
+            let i = idx(&s, id);
+            s.w.enemies[i].hp = 1_000_000;
+            hold_still_but_shove(&mut s);
+            place(&mut s, stone, "top:10,15", 0);
+            let mut hit_tick = None;
+            for _ in 0..(10 * TICK_HZ) {
+                let ev = steps(&mut s, 1);
+                if ev.iter().any(|e| matches!(e, Event::Shattered { enemy, .. } if *enemy == id)) {
+                    hit_tick = Some(ev);
+                    break;
+                }
+            }
+            let ev = hit_tick.unwrap_or_else(|| panic!("{stone} on a {kind}: never hit"));
+            let label = format!("{stone} on a frozen {kind}");
+            assert!(!ev.iter().any(|e| matches!(e, Event::Ignited { enemy } if *enemy == id)), "{label}: set alight: {ev:?}");
+            assert!(!ev.iter().any(|e| matches!(e, Event::Frozen { enemy } if *enemy == id)), "{label}: frozen again at once: {ev:?}");
+            assert!(!detonated(&ev, id), "{label}: burst: {ev:?}");
+            let e = *s.enemy(id).expect("alive");
+            let t = s.tick();
+            assert!(!e.el.burning(t) && e.el.fuse_at == 0, "{label}: {:?}", e.el);
+            if stone == "rogus" {
+                assert!(ev.contains(&Event::Thawed { enemy: id, steam: true }), "{label}: thawed with steam: {ev:?}");
+                assert!(e.el.wet(t), "{label}: wet after the steam");
+            }
+            if stone == "gelu" {
+                assert_eq!(e.el.chill, 0, "{label}: no chill on the ice it broke");
+            }
+            // Nothing set it off later either (the stone and its shots gone).
+            s.w.projectiles.clear();
+            let mut sell = Vec::new();
+            s.apply(&Command::Sell { cell: at(&c, "top:10,15") }, &mut sell).unwrap();
+            let later = steps(&mut s, 3 * TICK_HZ);
+            assert!(!detonated(&later, id) && !later.iter().any(|e| matches!(e, Event::Ignited { enemy } if *enemy == id)), "{label}: later: {later:?}");
+        }
+    }
+}
+
+#[test]
+fn bursts_are_counted_when_they_go_off_and_the_counts_agree() {
+    let c = proving();
+    let text = include_str!("../data/proving/layouts/fire_earth.json");
+    let script = crate::script::Script::parse(text, &c, "fire_earth").expect("layout");
+    let (mut events, mut total) = (0u32, 0u32);
+    for seed in 1..=6 {
+        let mut n = 0u32;
+        let r = crate::script::run(Arc::clone(&c), seed, &script, None, |_, ev| n += ev.iter().filter(|e| matches!(e, Event::Detonated { .. })).count() as u32);
+        let counted: u32 = r.waves.iter().map(|w| w.detonated).sum();
+        assert_eq!(counted, n, "seed {seed}: the waves' count is the bursts that went off");
+        events += n;
+        total += counted;
+    }
+    assert!(events > 0 && events == total, "{events} bursts");
+}
+
+fn gust_content(cooldown: &str, push_s: &str) -> Result<Content, crate::error::DataError> {
+    proving_with(
+        "{ \"cost\": 90, \"range_m\": 6.5, \"cooldown_s\": 4.0, \"push_m\": 5.0, \"push_s\": 0.6 }",
+        &format!("{{ \"cost\": 90, \"range_m\": 6.5, \"cooldown_s\": {cooldown}, \"push_m\": 5.0, \"push_s\": {push_s} }}"),
+    )
+}
+
+#[test]
+fn a_gust_must_recharge_longer_than_its_push_lasts() {
+    for (cooldown, push) in [("0.6", "0.6"), ("0.034", "5.0"), ("0.5", "0.6")] {
+        let err = gust_content(cooldown, push).expect_err("refused");
+        let text = err.to_string();
+        assert!(text.contains("cooldown_s") && text.contains("longer than push_s"), "{cooldown} / {push}: {text}");
+    }
+    let c = gust_content("0.634", "0.6").expect("19 ticks against 18: accepted");
+    let t = c.stone(c.stone_kind("ventus").unwrap()).tiers[2];
+    assert_eq!((t.cooldown, t.el.push_ticks), (19, 18));
+}
+
+/// The tightest wind the content allows on one lone enemy: four tier-III cairns in a ring, each
+/// recharging one tick longer than its 5 m push lasts, with tier-III frost on it as well (slowed,
+/// chilled, frozen again and again). It gets through within the bound [`wind_bound`] derives from
+/// the rule (DESIGN.md, "Ventus", says how).
+#[test]
+fn the_tightest_wind_the_rules_allow_lets_a_lone_enemy_through() {
+    let c = Arc::new(gust_content("0.634", "0.6").expect("content"));
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "shambler", "top:9,19");
+    let i = idx(&s, id);
+    s.w.enemies[i].hp = 2_000_000_000;
+    let distance = s.w.enemies[i].remaining;
+    let cairns = ["top:8,14", "top:10,14", "top:8,16", "top:10,16"];
+    for cell in cairns {
+        place(&mut s, "ventus", cell, 2);
+    }
+    place(&mut s, "gelu", "top:10,15", 2);
+    let bound = wind_bound(&c, cairns.len() as u32, distance);
+    let mut ev = Vec::new();
+    let (mut gusts, mut ticks) = (0u32, 0u32);
+    while s.enemy(id).is_some() && ticks <= bound {
+        ev.clear();
+        s.step_into(&[], &mut ev);
+        ticks += 1;
+        gusts += ev.iter().filter(|e| matches!(e, Event::Gusted { .. })).count() as u32;
+    }
+    eprintln!("tightest wind: through after {ticks} ticks, {gusts} gusts; the bound is {bound} ticks");
+    assert!(s.enemy(id).is_none() && s.wave_stats()[0].leaked == 1, "still held after {ticks} ticks ({gusts} gusts), past the bound {bound}");
+    assert!(gusts > 100, "the cairns gusted at it: {gusts}");
+}
+
+/// The longest `k` tier-III cairns of the content above (recharge C ticks, push S mm on mass 1
+/// over P < C ticks, fade f) can keep one shambler from walking `distance` mm, with Gelu III on it
+/// too. A shoved enemy does not walk, and a shove of s mm holds it at most min(P, s) ticks; a
+/// cairn gusts at most once in any C ticks, so a window of C ticks holds at most k gusts, and the
+/// n-th shove the enemy takes is s_n = S / (1 + f n).
+/// - *Held every tick of a window* needs g gusts with g · min(P, s_n) >= C: never g = 1 (P < C, the
+///   rule), g = 2 while s_n >= C/2, 3 while s_n >= C/3, k while s_n >= C/k. Each such window spends
+///   g shoves, so there are at most n(2)/2 + (n(3) - n(2))/3 + ... + (n(k) - n(k-1))/k of them,
+///   where n(g) is the count of shoves after which s_n < C/g.
+/// - *Then* a window's k gusts hold it at most k · s_n < C ticks: it walks the rest, and once
+///   s_n < C/(2k) (at most (n(2k) - n(k))/k more windows of no loss) it walks at least C/2 ticks
+///   of each window at speed v and is pushed back at most C/2 mm: D / (v C/2 - C/2) windows more.
+/// - Frost keeps it frozen at most half the time (a freeze is shattered by the next bolt, within
+///   its 0.9 s, and a new one takes two more hits), so the sum is doubled.
+fn wind_bound(c: &Content, k: u32, distance: i32) -> u32 {
+    let t = c.stone(c.stone_kind("ventus").unwrap()).tiers[2];
+    let (cc, push, f) = (f64::from(t.cooldown), f64::from(t.el.push), f64::from(c.rules.elements.shove_fade) / 1000.0);
+    let walker = c.enemy(c.enemy_kind("shambler").unwrap());
+    let slow = f64::from(c.stone(c.stone_kind("gelu").unwrap()).tiers[2].slow) / 1000.0;
+    let v = f64::from(walker.speed) * (1.0 - slow);
+    let n = |g: u32| ((push * f64::from(g) / cc - 1.0) / f).max(0.0);
+    let mut held = n(2) / 2.0;
+    for g in 3..=k {
+        held += (n(g) - n(g - 1)) / f64::from(g);
+    }
+    let settle = (n(2 * k) - n(k)) / f64::from(k);
+    let walk = f64::from(distance) / (v * cc / 2.0 - cc / 2.0);
+    specula_core::dmath::ceil_f64(2.0 * cc * (held + settle + walk)) as u32
+}
+
+#[test]
+fn more_fuel_than_the_grass_budget_is_refused() {
+    let stones = PROVING_STONES_JSON.replace("\r\n", "\n");
+    let from = "\"fuel\": [\"grass\", \"top:9,14..top:9,16\", \"top:5,17..top:8,17\"]";
+    let err = Content::from_texts(SLAB_01_JSON, &stones.replacen(from, "\"fuel\": [\"top:0,2..top:19,2\", \"top:0,3..top:19,3\", \"top:0,4..top:19,4\", \"top:0,5..top:19,5\"]", 1), PROVING_ENEMIES_JSON, PROVING_WAVES_JSON).unwrap_err();
+    assert!(err.to_string().contains("elements.fuel") && err.to_string().contains(&crate::fuel::MAX_GRASS.to_string()), "{err}");
+}

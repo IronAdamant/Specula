@@ -322,7 +322,9 @@ pub struct WaveStats {
     pub pending: u32,
     /// Enemies of this wave on the slab now.
     pub alive: u32,
-    /// Exploding enemies that burst on a wall (no dust, no tombstone; elements only).
+    /// Bursts of this wave's exploding enemies that went off: on a wall (no dust, no tombstone)
+    /// or where one was killed (also counted in `killed`). Counted as each goes off, never after a
+    /// loss (elements only).
     pub detonated: u32,
 }
 
@@ -1244,20 +1246,23 @@ impl World {
         }
     }
 
-    fn hurt(&mut self, content: &Content, i: usize, dmg: i32, ev: &mut Vec<Event>) {
+    /// Hurts enemy `i`; returns the enemy as it was before the hit ([`elements::Before`]), which
+    /// is what the hit's elements are decided from.
+    fn hurt(&mut self, content: &Content, i: usize, dmg: i32, ev: &mut Vec<Event>) -> elements::Before {
+        let before = self.before(i);
         if dmg <= 0 || !self.enemies[i].alive {
-            return;
+            return before;
         }
         // A frozen enemy shatters on the next hit, with the frost's bonus (elements only).
-        let frozen = self.enemies[i].el.frozen(self.tick);
-        let dmg = if frozen { self.shatter(i, dmg, ev) } else { dmg };
+        let dmg = if before.frozen { self.shatter(i, dmg, ev) } else { dmg };
         let e = &mut self.enemies[i];
         e.hp -= dmg;
         if e.hp > 0 {
-            return;
+            return before;
         }
         // Ice that shatters takes the fuse with it: a frozen exploder dies without a blast.
-        self.kill(content, i, !frozen, ev);
+        self.kill(content, i, !before.frozen, ev);
+        before
     }
 
     /// Enemy `i` dies to the player's stones: dust, the wave's count, and (for an exploding
@@ -1331,9 +1336,9 @@ impl World {
     fn hit(&mut self, content: &Content, i: usize, projectile: ProjectileId, t: &Tier, ev: &mut Vec<Event>) {
         ev.push(Event::Hit { projectile, enemy: self.enemies[i].id, damage: t.damage });
         self.slow_enemy(i, t.slow, t.slow_ticks);
-        self.hurt(content, i, t.damage, ev);
+        let before = self.hurt(content, i, t.damage, ev);
         if !t.el.is_zero() {
-            self.hit_elements(content, i, &t.el, ev);
+            self.hit_elements(content, i, &t.el, before, ev);
         }
     }
 

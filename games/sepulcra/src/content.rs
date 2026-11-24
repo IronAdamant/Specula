@@ -649,13 +649,22 @@ fn check_tier(to: &Obj, attack: Attack, tier: &Tier) -> Result<(), DataError> {
             if el.push <= 0 || el.push_ticks == 0 {
                 return Err(to.err("push_m", ErrorCode::Invalid, "a gust needs push_m and push_s"));
             }
+            // A cairn that gusts again before its last push has ended holds an enemy in place
+            // (a shoved enemy does not walk): it pushes, then recharges (the owner's words).
+            if tier.cooldown <= el.push_ticks {
+                return Err(to.err(
+                    "cooldown_s",
+                    ErrorCode::Invalid,
+                    format!("a gust recharges after its push has ended: cooldown_s ({} ticks) must be longer than push_s ({} ticks)", tier.cooldown, el.push_ticks),
+                ));
+            }
         }
         Attack::Strike => {
             if tier.damage <= 0 {
                 return Err(to.err("damage", ErrorCode::Invalid, "a strike needs damage"));
             }
             if tier.cooldown < MIN_STRIKE_TICKS {
-                return Err(to.err("cooldown_s", ErrorCode::OutOfRange, "a strike's cooldown is at least 1/3 s (10 ticks): one stone never strikes more than three times a second"));
+                return Err(to.err("cooldown_s", ErrorCode::OutOfRange, "a strike's cooldown is at least 10 ticks (seconds are rounded to ticks at 30 a second, so 0.317 s is the least): one stone never strikes more than three times a second"));
             }
             if el.chain > 0 && el.chain_range <= 0 {
                 return Err(to.err("chain_m", ErrorCode::Invalid, "a chain needs chain_m"));
@@ -760,6 +769,10 @@ fn parse_elements(o: &Obj, map: &Map) -> Result<(Elements, Vec<CellId>), DataErr
     }
     fuel.sort();
     fuel.dedup();
+    // Every cell that burns is drawn as grass, and the app draws at most this many patches.
+    if fuel.len() > crate::fuel::MAX_GRASS {
+        return Err(o.err("fuel", ErrorCode::OutOfRange, format!("{} cells burn; at most {} (every cell that burns is drawn as grass)", fuel.len(), crate::fuel::MAX_GRASS)));
+    }
     Ok((el, fuel))
 }
 

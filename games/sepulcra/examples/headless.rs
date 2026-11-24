@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use sepulcra::content::Content;
-use sepulcra::script::{run, Recording, ReplayStatus, RunReport, Script};
+use sepulcra::script::{run, sweep_lines, Recording, ReplayStatus, RunReport, Script};
 use sepulcra::sim::{Event, Outcome};
 use sepulcra::TICK_HZ;
 
@@ -165,7 +165,8 @@ fn single(content: &Arc<Content>, script: &Script, args: &Args) -> Result<(), St
     let mut starts: Vec<(u32, i32, i32)> = Vec::new();
     let mut jumps = 0u32;
     let mut walls_broken = 0u32;
-    // The elements (proving ground): ignited, frozen, shattered, struck, gusts, heaves, detonated, fuel cells caught.
+    // The elements (proving ground): ignited, frozen, shattered, struck, gusts, heaves, bursts (the
+    // `Detonated` events: the same count as the waves' `detonated`), fuel cells caught.
     let mut el = [0u32; 8];
     let mut last_ascii = String::new();
     let t0 = Instant::now();
@@ -225,12 +226,16 @@ fn single(content: &Arc<Content>, script: &Script, args: &Args) -> Result<(), St
     );
     if content.elemental() {
         println!(
-            "elements: ignited {}, frozen {}, shattered {}, strikes {}, gusts {}, heaves {}, detonated {}, fuel cells caught {}",
+            "elements: ignited {}, frozen {}, shattered {}, strikes {}, gusts {}, heaves {}, bursts {}, fuel cells caught {}",
             el[0], el[1], el[2], el[3], el[4], el[5], el[6], el[7]
         );
     }
     for (i, r) in &report.skipped {
         println!("skipped layout entry {i}: {r}");
+    }
+    let w = report.waits;
+    if w.entries > 0 || w.never_applied > 0 {
+        println!("layout waits: {} entries waited (for dust or for one of the dead on the cell), the longest {} ticks; {} never applied", w.entries, w.longest, w.never_applied);
     }
     println!("final hash {:016x}", report.hash);
     let secs = elapsed.as_secs_f64();
@@ -262,56 +267,13 @@ fn sweep(content: &Arc<Content>, script: &Script, first: u64, n: u64, waves: Opt
     });
     let elapsed = t0.elapsed();
     reports.sort_by_key(|r| r.seed);
-    let won: Vec<&RunReport> = reports.iter().filter(|r| r.outcome == Outcome::Won).collect();
-    let lost: Vec<&RunReport> = reports.iter().filter(|r| r.outcome == Outcome::Lost).collect();
-    let mean = |v: &[f64]| if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 };
     println!("Sepulcra sweep: layout {:?}, seeds {}..{}, {} threads", script.name, first, first + n - 1, threads);
-    println!(
-        "won {} / lost {} / unfinished {}  (win rate {:.1}%)",
-        won.len(),
-        lost.len(),
-        reports.len() - won.len() - lost.len(),
-        100.0 * won.len() as f64 / reports.len().max(1) as f64
-    );
-    if !won.is_empty() {
-        let tombs: Vec<f64> = won.iter().map(|r| f64::from(r.tombstones)).collect();
-        println!(
-            "wins: tombstones left mean {:.2}, min {}, max {}; leaks mean {:.1}; game time mean {}",
-            mean(&tombs),
-            won.iter().map(|r| r.tombstones).min().unwrap_or(0),
-            won.iter().map(|r| r.tombstones).max().unwrap_or(0),
-            mean(&won.iter().map(|r| f64::from(r.leaks())).collect::<Vec<_>>()),
-            clock(mean(&won.iter().map(|r| f64::from(r.ticks)).collect::<Vec<_>>()) as u32)
-        );
+    // The summary's lines come from the library (`sweep_lines`), where a test holds that content
+    // without the elements gets the lines it got before them.
+    for line in sweep_lines(content, &reports) {
+        println!("{line}");
     }
-    if !lost.is_empty() {
-        let mut by_wave = vec![0u32; content.waves.len() + 1];
-        for r in &lost {
-            by_wave[usize::from(r.wave)] += 1;
-        }
-        let hist: Vec<String> = by_wave.iter().enumerate().filter(|(_, &c)| c > 0).map(|(w, c)| format!("w{w}:{c}")).collect();
-        println!("losses by wave: {}", hist.join(" "));
-    }
-    // Elemental content only (the proving ground): the shipped sweep prints, line for line,
-    // what it printed before the elements.
-    if content.elemental() {
-        let all = |f: &dyn Fn(&RunReport) -> f64| mean(&reports.iter().map(f).collect::<Vec<_>>());
-        println!(
-            "all runs: tombstones left mean {:.2}, kills mean {:.1}, leaks mean {:.1}, detonated mean {:.1}, game time mean {}",
-            all(&|r| f64::from(r.tombstones)),
-            all(&|r| f64::from(r.waves.iter().map(|w| w.killed).sum::<u32>())),
-            all(&|r| f64::from(r.leaks())),
-            all(&|r| f64::from(r.waves.iter().map(|w| w.detonated).sum::<u32>())),
-            clock(all(&|r| f64::from(r.ticks)) as u32)
-        );
-    }
-    let leaks_by_wave: Vec<String> = (0..content.waves.len())
-        .map(|w| format!("{:.1}", mean(&reports.iter().filter_map(|r| r.waves.get(w)).map(|s| f64::from(s.leaked)).collect::<Vec<_>>())))
-        .collect();
-    println!("mean leaks per wave: {}", leaks_by_wave.join(" "));
-    let stranded: Vec<u32> = reports.iter().map(RunReport::stranded).collect();
-    let stranded_runs = stranded.iter().filter(|&&s| s > 0).count() as u64;
-    println!("stranded enemies: {} in {} runs", stranded.iter().sum::<u32>(), stranded_runs);
+    let stranded_runs = reports.iter().filter(|r| r.stranded() > 0).count() as u64;
     let ticks: u64 = reports.iter().map(|r| u64::from(r.ticks)).sum();
     println!(
         "{} runs, {} game-minutes in {:.2} s wall ({:.1} ms per run per thread)",

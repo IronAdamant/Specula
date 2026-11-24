@@ -53,14 +53,21 @@ pub fn grass_drawn(map: &Map) -> Vec<CellId> {
     out
 }
 
-/// The grass the app draws for content whose fuel is `fuel`: the rock's-edge grass
-/// ([`grass_drawn`]) and every fuel cell (the dry grass laid on a lane is drawn as grass too,
-/// though no rock's edge would give it any), in cell order. Every fuel cell is in it.
+/// The grass the app draws for content whose fuel is `fuel`, at most [`MAX_GRASS`] patches, in
+/// cell order: **every fuel cell** (the dry grass laid on a lane is drawn as grass too, though no
+/// rock's edge would give it any; content with more fuel than [`MAX_GRASS`] is refused), then the
+/// rock's-edge grass that does not burn ([`grass_drawn`]: the graveyard's, and edge grass the
+/// content's fuel leaves out) while there is room, the rest dropped by the same hash as the
+/// edge grass's own thinning. On the shipped maps (no fuel) it is [`grass_drawn`] exactly.
 pub fn grass_shown(map: &Map, fuel: &[CellId]) -> Vec<CellId> {
-    let mut out = grass_drawn(map);
-    out.extend_from_slice(fuel);
+    let mut out: Vec<CellId> = fuel.to_vec();
     out.sort();
     out.dedup();
+    let mut rest: Vec<CellId> = grass_drawn(map).into_iter().filter(|c| out.binary_search(c).is_err()).collect();
+    rest.sort_by_key(|&id| (hash(id), id.0));
+    rest.truncate(MAX_GRASS.saturating_sub(out.len()));
+    out.extend(rest);
+    out.sort();
     out
 }
 
@@ -74,6 +81,23 @@ pub fn grass_cells(map: &Map) -> Vec<CellId> {
 mod tests {
     use super::*;
     use crate::content::SLAB_01_JSON;
+
+    #[test]
+    fn every_fuel_cell_is_shown_and_the_budget_holds() {
+        let shipped = crate::content::Content::builtin();
+        assert_eq!(grass_shown(&shipped.map, &shipped.fuel), grass_drawn(&shipped.map), "the shipped slab's grass is as it was");
+        let proving = crate::content::Content::proving();
+        let shown = grass_shown(&proving.map, &proving.fuel);
+        assert!(!proving.fuel.is_empty());
+        for f in &proving.fuel {
+            assert!(shown.binary_search(f).is_ok(), "fuel {} is drawn", proving.map.cell_name(*f));
+        }
+        assert!(shown.len() <= MAX_GRASS, "{} patches", shown.len());
+        assert!(shown.windows(2).all(|w| w[0] < w[1]), "in cell order");
+        // A slab all fuel (as many as the budget allows) leaves no room for the rest.
+        let many: Vec<CellId> = shipped.map.cells().iter().filter(|c| c.face == Face::Top).map(|c| c.id).take(MAX_GRASS).collect();
+        assert_eq!(grass_shown(&shipped.map, &many), many);
+    }
 
     #[test]
     fn grass_burns_on_fragments_only() {

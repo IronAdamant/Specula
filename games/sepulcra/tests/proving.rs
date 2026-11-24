@@ -134,3 +134,40 @@ fn damaged_proving_saves_are_errors_never_panics() {
     assert_eq!(State::from_bytes(Arc::clone(&shipped), &bytes).unwrap_err().code, "content_changed");
     assert_eq!(State::from_bytes(c, &State::new(shipped, 1).to_bytes()).unwrap_err().code, "content_changed");
 }
+
+/// The shipped sweep prints the lines it printed before the elements (the headless example's
+/// summary is `script::sweep_lines`): the same kinds of line, in the same order, and no "all
+/// runs" line; the proving ground's sweep has that one more.
+#[test]
+fn the_shipped_sweep_prints_the_lines_it_printed_before_the_elements() {
+    let kinds = |content: &Arc<Content>, layouts: &[(&str, &str)]| -> Vec<String> {
+        let mut reports = Vec::new();
+        for (name, text) in layouts {
+            let s = Script::parse(text, content, name).unwrap();
+            reports.push(run(Arc::clone(content), 1, &s, None, |_, _| {}));
+        }
+        assert!(reports.iter().any(|r| r.outcome == sepulcra::Outcome::Won) && reports.iter().any(|r| r.outcome == sepulcra::Outcome::Lost), "a win and a loss, so every kind of line shows");
+        sepulcra::script::sweep_lines(content, &reports).iter().map(|l| l.split(':').next().unwrap().split(' ').next().unwrap().to_owned()).collect()
+    };
+    let shipped = Arc::new(Content::builtin());
+    let got = kinds(&shipped, &[("centre", include_str!("../data/layouts/centre.json")), ("none", include_str!("../data/layouts/none.json"))]);
+    assert_eq!(got, ["won", "wins", "losses", "mean", "stranded"], "the lines of the sweep before the elements");
+    let proving = content();
+    let got = kinds(&proving, &[("baseline", LAYOUTS[0].1), ("wind", LAYOUTS[4].1)]);
+    assert_eq!(got, ["won", "wins", "losses", "all", "mean", "stranded"]);
+}
+
+/// A layout that waits says so: the wind holds a straggler on the south gate when the wind
+/// layout's wall there is due, and a run stopped early leaves entries never applied.
+#[test]
+fn a_run_says_how_its_layout_waited_and_what_it_never_applied() {
+    let c = content();
+    let wind = Script::parse(LAYOUTS[4].1, &c, "wind").unwrap();
+    let r = run(Arc::clone(&c), 1, &wind, None, |_, _| {});
+    assert!(r.waits.entries >= 1 && r.waits.longest >= 1, "{:?}", r.waits);
+    let short = run(Arc::clone(&c), 1, &wind, Some(1), |_, _| {});
+    assert!(short.waits.never_applied > 0, "stopped after wave 1, the later entries were never applied: {:?}", short.waits);
+    let all = Script::parse(LAYOUTS[0].1, &c, "baseline").unwrap();
+    let full = run(Arc::clone(&c), 1, &all, None, |_, _| {});
+    assert_eq!(full.waits.never_applied, 0, "a won run applied every entry: {:?}", full.waits);
+}

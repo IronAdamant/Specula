@@ -54,14 +54,20 @@ fn hash(c: CellId) -> u32 {
     (c.0 as u32).wrapping_mul(2_654_435_761).rotate_left(13) ^ 0x5e9c
 }
 
-/// The top-face cells that get grass: graveyard cells, and fragment cells at the rock's edge (a
-/// lane or the rim beside them), about two in three of those by hash, at most [`MAX_PATCHES`];
-/// then every cell of `fuel` (the content's burning cells; none on the shipped maps).
+/// The top-face cells that get grass, at most [`MAX_PATCHES`]: every cell of `fuel` (the
+/// content's burning cells; none on the shipped maps), then graveyard cells and fragment cells
+/// at the rock's edge (a lane or the rim beside them), about two in three of those by hash, while
+/// there is room; what does not fit is dropped by the same hash (grass that does not burn goes
+/// first, so what burns is always seen).
 pub fn cells(map: &Map, fuel: &[CellId]) -> Vec<CellId> {
-    let mut out = edge_cells(map);
-    out.extend_from_slice(fuel);
+    let mut out: Vec<CellId> = fuel.to_vec();
     out.sort();
     out.dedup();
+    let mut rest: Vec<CellId> = edge_cells(map).into_iter().filter(|c| out.binary_search(c).is_err()).collect();
+    rest.sort_by_key(|&id| (hash(id), id.0));
+    rest.truncate(MAX_PATCHES.saturating_sub(out.len()));
+    out.extend(rest);
+    out.sort();
     out
 }
 
@@ -155,6 +161,7 @@ mod tests {
         let proving = sepulcra::content::Content::proving();
         let drawn = cells(&proving.map, &proving.fuel);
         assert_eq!(drawn, sepulcra::fuel::grass_shown(&proving.map, &proving.fuel));
+        assert!(drawn.len() <= MAX_PATCHES, "the budget holds: {} patches", drawn.len());
         for f in &proving.fuel {
             assert!(drawn.contains(f), "fuel {} is drawn", proving.map.cell_name(*f));
         }

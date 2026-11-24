@@ -147,11 +147,27 @@ pub struct Player {
     next: usize,
     /// Entries skipped, with why.
     pub skipped: Vec<(usize, Rejection)>,
+    /// What the script waited for (an entry due but refused for dust or for one of the dead on
+    /// its cell): said in the report, never silent.
+    pub waits: Waits,
+    /// The entry waiting now, and the tick it first waited.
+    waiting: Option<(usize, u32)>,
+}
+
+/// How a script waited in a run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Waits {
+    /// Entries that waited at least one tick (for dust, or for one of the dead to leave a cell).
+    pub entries: u32,
+    /// The longest any entry waited, in ticks (one still waiting at the end counts to the end).
+    pub longest: u32,
+    /// Entries neither applied nor skipped when the run ended (waiting, or not due yet).
+    pub never_applied: u32,
 }
 
 impl Player {
     pub fn new(script: Script) -> Player {
-        Player { script, next: 0, skipped: Vec::new() }
+        Player { script, next: 0, skipped: Vec::new(), waits: Waits::default(), waiting: None }
     }
 
     /// Applies every entry that is due and affordable now (via [`State::apply`]) and returns
@@ -167,17 +183,40 @@ impl Player {
                 break;
             }
             match state.apply(&e.command, ev) {
-                Ok(()) => applied.push(e.command),
-                Err(Rejection::NotEnoughDust { .. }) => break,
-                // One of the dead on the cell moves on (or dies): a player waits for it, as for
-                // dust. (The wind can hold a straggler where a wall is due.)
-                Err(Rejection::EnemyInTheWay { .. }) => break,
+                // Short of dust, or one of the dead on the cell (it moves on or dies; the wind
+                // can hold a straggler where a wall is due): a player waits, and it is counted.
+                Err(Rejection::NotEnoughDust { .. } | Rejection::EnemyInTheWay { .. }) => {
+                    if self.waiting.is_none_or(|(k, _)| k != self.next) {
+                        self.waiting = Some((self.next, state.tick()));
+                        self.waits.entries += 1;
+                    }
+                    break;
+                }
                 Err(Rejection::GameOver) => break,
+                Ok(()) => applied.push(e.command),
                 Err(r) => self.skipped.push((self.next, r)),
             }
+            self.end_wait(state.tick());
             self.next += 1;
         }
         applied
+    }
+
+    fn end_wait(&mut self, tick: u32) {
+        if let Some((_, since)) = self.waiting.take() {
+            self.waits.longest = self.waits.longest.max(tick - since);
+        }
+    }
+
+    /// The waits so far, with an entry still waiting counted to `tick`, and the entries not
+    /// applied yet.
+    pub fn waits_at(&self, tick: u32) -> Waits {
+        let mut w = self.waits;
+        if let Some((_, since)) = self.waiting {
+            w.longest = w.longest.max(tick - since);
+        }
+        w.never_applied = (self.script.entries.len() - self.next.min(self.script.entries.len())) as u32;
+        w
     }
 
     pub fn finished(&self) -> bool {
@@ -197,7 +236,7 @@ impl Player {
     /// Carries on following `script` from entry `next` (a loaded save's).
     pub fn resume(script: Script, next: usize) -> Player {
         let next = next.min(script.entries.len());
-        Player { script, next, skipped: Vec::new() }
+        Player { script, next, skipped: Vec::new(), waits: Waits::default(), waiting: None }
     }
 }
 
@@ -407,6 +446,8 @@ pub struct RunReport {
     pub waves: Vec<WaveStats>,
     pub journal: Journal,
     pub skipped: Vec<(usize, Rejection)>,
+    /// How the script waited (for dust or for one of the dead on a cell), and what it never applied.
+    pub waits: Waits,
 }
 
 impl RunReport {
@@ -470,6 +511,65 @@ pub fn run(content: Arc<Content>, seed: u64, script: &Script, max_waves: Option<
         hash: state.hash(),
         waves: state.wave_stats().to_vec(),
         journal,
+        waits: player.waits_at(state.tick()),
         skipped: player.skipped,
     }
+}
+
+/// The lines of a sweep's summary over `reports` (one a seed, in seed order), without its header
+/// and its wall time: what the headless example prints. Content without the elements gets
+/// exactly the lines it got before the elements; elemental content gets one more ("all runs").
+pub fn sweep_lines(content: &Content, reports: &[RunReport]) -> Vec<String> {
+    let mut out = Vec::new();
+    let won: Vec<&RunReport> = reports.iter().filter(|r| r.outcome == Outcome::Won).collect();
+    let lost: Vec<&RunReport> = reports.iter().filter(|r| r.outcome == Outcome::Lost).collect();
+    let mean = |v: &[f64]| if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 };
+    let clock = |ticks: u32| {
+        let s = ticks / crate::fixed::TICK_HZ;
+        format!("{}:{:02}", s / 60, s % 60)
+    };
+    out.push(format!(
+        "won {} / lost {} / unfinished {}  (win rate {:.1}%)",
+        won.len(),
+        lost.len(),
+        reports.len() - won.len() - lost.len(),
+        100.0 * won.len() as f64 / reports.len().max(1) as f64
+    ));
+    if !won.is_empty() {
+        let tombs: Vec<f64> = won.iter().map(|r| f64::from(r.tombstones)).collect();
+        out.push(format!(
+            "wins: tombstones left mean {:.2}, min {}, max {}; leaks mean {:.1}; game time mean {}",
+            mean(&tombs),
+            won.iter().map(|r| r.tombstones).min().unwrap_or(0),
+            won.iter().map(|r| r.tombstones).max().unwrap_or(0),
+            mean(&won.iter().map(|r| f64::from(r.leaks())).collect::<Vec<_>>()),
+            clock(mean(&won.iter().map(|r| f64::from(r.ticks)).collect::<Vec<_>>()) as u32)
+        ));
+    }
+    if !lost.is_empty() {
+        let mut by_wave = vec![0u32; content.waves.len() + 1];
+        for r in &lost {
+            by_wave[usize::from(r.wave)] += 1;
+        }
+        let hist: Vec<String> = by_wave.iter().enumerate().filter(|(_, &c)| c > 0).map(|(w, c)| format!("w{w}:{c}")).collect();
+        out.push(format!("losses by wave: {}", hist.join(" ")));
+    }
+    if content.elemental() {
+        let all = |f: &dyn Fn(&RunReport) -> f64| mean(&reports.iter().map(f).collect::<Vec<_>>());
+        out.push(format!(
+            "all runs: tombstones left mean {:.2}, kills mean {:.1}, leaks mean {:.1}, bursts mean {:.1}, game time mean {}",
+            all(&|r| f64::from(r.tombstones)),
+            all(&|r| f64::from(r.waves.iter().map(|w| w.killed).sum::<u32>())),
+            all(&|r| f64::from(r.leaks())),
+            all(&|r| f64::from(r.waves.iter().map(|w| w.detonated).sum::<u32>())),
+            clock(all(&|r| f64::from(r.ticks)) as u32)
+        ));
+    }
+    let leaks_by_wave: Vec<String> = (0..content.waves.len())
+        .map(|w| format!("{:.1}", mean(&reports.iter().filter_map(|r| r.waves.get(w)).map(|s| f64::from(s.leaked)).collect::<Vec<_>>())))
+        .collect();
+    out.push(format!("mean leaks per wave: {}", leaks_by_wave.join(" ")));
+    let stranded: Vec<u32> = reports.iter().map(RunReport::stranded).collect();
+    out.push(format!("stranded enemies: {} in {} runs", stranded.iter().sum::<u32>(), stranded.iter().filter(|&&s| s > 0).count()));
+    out
 }

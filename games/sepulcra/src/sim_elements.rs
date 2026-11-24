@@ -64,6 +64,19 @@ fn mid_leap(e: &Enemy) -> bool {
     matches!(e.motion, Motion::Ground { progress, len, leap: true, .. } if len > 0 && progress > 0 && progress < len)
 }
 
+/// **The one rule of the elements on a hit:** what an element does to an enemy is decided from
+/// the enemy's state *before* the hit, never from what the hit's own damage left. A hit on a
+/// frozen enemy shatters the ice (its damage gains the frost's bonus), and the elements of that
+/// same hit see the enemy as it was, frozen: fire thaws it with steam (no fire, no fuse), frost
+/// adds no chill to the ice it has just broken, and a frozen exploder does not burst from that hit
+/// (if the hit kills it, it dies whole). Every path that hurts an enemy reads this first, in
+/// [`World::hurt`], and hands it on: a bolt or a lob (`hit`, then [`World::hit_elements`]), a
+/// pulse, a strike, a heave, a blast, a burn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Before {
+    pub frozen: bool,
+}
+
 fn blaze_event(e: BlazeEvent) -> Event {
     match e {
         BlazeEvent::Caught { cell } => Event::CellCaught { cell },
@@ -73,6 +86,11 @@ fn blaze_event(e: BlazeEvent) -> Event {
 }
 
 impl World {
+    /// Enemy `i` as the elements see it before a hit (see [`Before`]).
+    pub(super) fn before(&self, i: usize) -> Before {
+        Before { frozen: self.enemies[i].el.frozen(self.tick) }
+    }
+
     /// Frozen or staggered, the enemy stands this tick; shoved, it goes back. True when the
     /// elements took its move.
     pub(super) fn held_by_elements(&self, content: &Content, e: &mut Enemy, def: &EnemyDef) -> bool {
@@ -170,6 +188,12 @@ impl World {
 
     /// Sets enemy `i` alight (fire on a frozen enemy thaws it instead; the wet do not catch).
     fn ignite(&mut self, content: &Content, i: usize, burn: i32, ticks: u32, ev: &mut Vec<Event>) {
+        let before = self.before(i);
+        self.ignite_as(content, i, burn, ticks, before, ev);
+    }
+
+    /// [`World::ignite`], decided from the enemy as it was before the hit that carries the fire.
+    fn ignite_as(&mut self, content: &Content, i: usize, burn: i32, ticks: u32, before: Before, ev: &mut Vec<Event>) {
         let tick = self.tick;
         let wet = content.rules.elements.wet_ticks;
         let e = &mut self.enemies[i];
@@ -177,7 +201,7 @@ impl World {
         if !e.alive || def.flies() || burn <= 0 {
             return;
         }
-        if e.el.frozen(tick) {
+        if before.frozen {
             e.el.frozen_until = 0;
             e.el.chill = 0;
             e.el.wet_until = tick.saturating_add(wet);
@@ -212,9 +236,18 @@ impl World {
     }
 
     /// Frost on enemy `i`: its fire goes out, its chill rises (÷ its mass), and at 1000 it freezes.
+    /// (The rules chill only through a hit, [`World::chill_as`]; the tests chill directly.)
+    #[cfg(test)]
     fn chill(&mut self, content: &Content, i: usize, el: &TierEl, ev: &mut Vec<Event>) {
+        let before = self.before(i);
+        self.chill_as(content, i, el, before, ev);
+    }
+
+    /// [`World::chill`], decided from the enemy as it was before the hit (no chill on ice the
+    /// hit has just shattered).
+    fn chill_as(&mut self, content: &Content, i: usize, el: &TierEl, before: Before, ev: &mut Vec<Event>) {
         let tick = self.tick;
-        if !self.enemies[i].alive || self.enemies[i].el.frozen(tick) {
+        if !self.enemies[i].alive || before.frozen || self.enemies[i].el.frozen(tick) {
             return;
         }
         if self.enemies[i].el.burning(tick) {
@@ -232,17 +265,18 @@ impl World {
         }
     }
 
-    /// A projectile's elemental part, after its damage: fire catches, frost chills and lays
+    /// A projectile's elemental part, after its damage, decided from `before` (the enemy as it
+    /// was before the hit: [`Before`]): fire catches (or thaws the frozen), frost chills and lays
     /// rime on the cell (fire does not cross it while it lasts).
-    pub(super) fn hit_elements(&mut self, content: &Content, i: usize, el: &TierEl, ev: &mut Vec<Event>) {
+    pub(super) fn hit_elements(&mut self, content: &Content, i: usize, el: &TierEl, before: Before, ev: &mut Vec<Event>) {
         if !self.enemies[i].alive {
             return;
         }
         if el.burn > 0 {
-            self.ignite(content, i, el.burn, el.burn_ticks, ev);
+            self.ignite_as(content, i, el.burn, el.burn_ticks, before, ev);
         }
         if el.chill > 0 {
-            self.chill(content, i, el, ev);
+            self.chill_as(content, i, el, before, ev);
             if let Some(cell) = self.enemies[i].cell() {
                 let until = self.tick.saturating_add(content.rules.elements.wet_ticks);
                 self.cover(content, cell, until, ev);
@@ -281,11 +315,10 @@ impl World {
             let d = if e.el.wet(tick) { (i64::from(dmg) * (1000 + i64::from(el.wet_bonus)) / 1000).min(i64::from(i32::MAX)) as i32 } else { dmg };
             ev.push(Event::Struck { stone: cell, enemy: e.id, from, damage: d, link });
             struck.push(idx);
-            // Frozen when the strike lands, it cannot burst: the hit shatters the ice (and, if
-            // it dies of it, it dies whole), so whether it was frozen is read before the hurt.
-            let was_frozen = e.el.frozen(tick);
-            self.hurt(content, idx, d, ev);
-            if self.enemies[idx].alive && content.enemy(e.kind).burst.is_some() && !was_frozen {
+            // Frozen when the strike lands, it cannot burst ([`Before`]: the hit shatters the
+            // ice, and if it dies of it, it dies whole).
+            let before = self.hurt(content, idx, d, ev);
+            if self.enemies[idx].alive && content.enemy(e.kind).burst.is_some() && !before.frozen {
                 self.kill(content, idx, true, ev);
             }
             dmg = (i64::from(dmg) * i64::from(el.chain_keep) / 1000) as i32;
@@ -390,7 +423,6 @@ impl World {
         e.alive = false;
         let s = &mut self.wave_stats[usize::from(e.wave) - 1];
         s.alive -= 1;
-        s.detonated += 1;
         self.bursts.push(e.id);
     }
 
@@ -414,6 +446,9 @@ impl World {
                 })
                 .collect();
             ev.push(Event::Detonated { enemy: id, pos: e.pos, walls: gone.len() as u16, hit: hit.len().min(usize::from(u16::MAX)) as u16 });
+            // "Detonated" counts a burst that went off (on a wall or where it was killed), here
+            // and nowhere else, so it is never counted after a loss (no burst goes off then).
+            self.wave_stats[usize::from(e.wave) - 1].detonated += 1;
             for c in &gone {
                 self.walls.remove(c);
                 self.rubble.remove(c);
