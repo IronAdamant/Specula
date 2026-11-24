@@ -7720,6 +7720,22 @@ mod tests {
         }
     }
 
+    /// **The box's search asks an ellipsoid's range untightened; the mesher, tightened**
+    /// (review 2 of the mesher lane: the first thing the merge must not lose). In the middle of
+    /// a flat ellipsoid `field_range` (the search's) says nothing of how high the field goes,
+    /// and `field_range_as(.., tight)` (the mesher's and `pruned`'s) bounds it below nothing;
+    /// both give the same least. (Asked tightened, the search gave the same boxes when this was
+    /// seeded as a fault on 2026-11-24, since it ends at a solid ball either way, but it would
+    /// spend other asks than it was reviewed with, and no other test saw it.)
+    #[test]
+    fn the_search_asks_an_ellipsoid_untightened() {
+        let p = prepare(&prim(Prim::Ellipsoid { radii: [0.5, 0.02, 0.5] }), 1, &mut 0);
+        let (lo, hi) = field_range(&p, [0.0; 3], 0.005, &mut 1, &mut Spent::default());
+        let (tight_lo, tight_hi) = field_range_as(&p, [0.0; 3], 0.005, &mut 1, &mut Spent::default(), true);
+        assert_eq!((lo.to_bits(), hi), (tight_lo.to_bits(), UNKNOWN));
+        assert!(tight_hi < 0.0, "{tight_hi}");
+    }
+
     /// **A prune takes each loose child's range once** (review 2 of the mesher lane, finding
     /// 1: at each kept union the range was taken over the whole loose child, then the
     /// recursion walked its loose children again, so nested loose unions cost their depth
