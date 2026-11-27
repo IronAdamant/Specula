@@ -35,14 +35,26 @@
 //! speed can change. **Nor a wait for a worker against a deadline** (`Instant::now() <
 //! deadline`, or `elapsed()` under a bound of minutes): a minute is legal here and still ran
 //! out beside a release build (`specula-gpu`'s `wait_variants`, the same day). A wait for a
-//! worker ends on its event (a join: `Gpu::wait_for_pipelines`), not on a time.
+//! worker ends on its event (a join: `Gpu::wait_for_pipelines`, a channel, the build's own
+//! completion); where a bound must stay so that a hang names itself, it is the one shared
+//! `specula_core::HANG_BOUND` (ten minutes), with a message that says what was awaited, and
+//! never what decides a result ([`NAMED_ANYWHERE`]). Neither of these is a check yet: a
+//! review looks for them (the second lane of `m6-clock-tests` mended `light_tools`' model
+//! wait, which a busy machine ended by its 10 s limit).
 //!
 //! **A fixed sleep as synchronisation** is read by a second check here
-//! (`no_test_synchronises_by_sleeping`): a `thread::sleep` in test code that no loop encloses
-//! (a sleep in a loop is a poll's interval; what ends that wait is the condition it checks).
-//! Each one left is listed with why it decides nothing ([`SLEEPS_NOT_SYNC`]) or as found and
-//! not yet mended ([`SLEEPS_TO_MEND`]). It can't see a sleep in a helper a test calls from
-//! another file, nor tell a loop that only runs once.
+//! (`no_test_synchronises_by_sleeping`): a call of `std::thread::sleep` in test code (by its
+//! path, spaces allowed, or by name where the file imports it) that no poll's loop encloses.
+//! A poll's loop is `loop`, `while`, or a `for` its body can leave early; a sleep in it is the
+//! poll's interval (what ends that wait is the condition it checks). A `for` over one item or
+//! with no way out but its end, and a closure (whatever loop spawned it), are not polls. Test
+//! code is a `tests/` file, a test module's own file (by name, or declared `#[cfg(test)] mod
+//! name;`), or the items after a `#[cfg(test)]`; it reads `crates/`, `games/` and `tools/`.
+//! Each sleep left is listed, with how many its file has, as deciding nothing
+//! ([`SLEEPS_NOT_SYNC`]) or as found and not yet mended ([`SLEEPS_TO_MEND`]). It can't see a
+//! sleep in a helper a test calls from another file, a `while` whose condition is a time (a
+//! fixed wait written as a loop), nor a sleep renamed on import (`use std::thread::sleep as
+//! nap`).
 //!
 //! **Nor the other way round:** a test that needs the machine to be slow ("still running after
 //! a pump of 1 ms": the cause of CI's red on 2026-11-21, where a faster machine had finished),
@@ -61,7 +73,12 @@ const MIN_SECONDS: f64 = 5.0;
 const NAMED: &[(&str, &str, f64, &str)] = &[
     ("crates/specula-model/tests/hostile_recipes.rs", "TIME", 20.0, "a hostile recipe is refused or built within its budget, not in minutes"),
     ("crates/specula/tests/streaming_review.rs", "STUCK", 60.0, "streaming made no progress at all for a minute"),
+    ("crates/specula-sys/src/lib.rs", "STOPPED", 600.0, "a thread's own clock that never passed 20 ms of spinning (specula-sys has no specula-core for HANG_BOUND)"),
 ];
+
+/// Upper bounds given by a name that any file may use: (the name, its value in seconds, what
+/// it bounds). Written with or without its path (`specula_core::HANG_BOUND`).
+const NAMED_ANYWHERE: &[(&str, f64, &str)] = &[("HANG_BOUND", 600.0, "a wait for work a test is owed that has not ended: a hang that names itself, never what decides a result")];
 
 /// `specula_core::speed_budget`, and each copy of it, with `pub` and whitespace dropped.
 const SPEED_BUDGET: &str = "fn speed_budget(tight: std::time::Duration) -> std::time::Duration { if std::env::var_os(\"SPECULA_SPEED_TESTS\").is_some() { tight } else { tight.max(std::time::Duration::from_secs(5)) } }";
@@ -371,45 +388,49 @@ fn every_copy_of_speed_budget_is_the_same() {
     assert!(copies.iter().any(|c| c == "crates/specula-core/src/lib.rs"), "specula_core::speed_budget is gone: {copies:?}");
 }
 
-/// Sleeps in test code that are not inside a loop and are not synchronisation, each with why:
-/// (file, a piece of the sleep's line, why the time it sleeps decides nothing). A sleep that
-/// stands in for "the other thread has got there by now" is never listed here: it waits on
-/// the event instead (a channel, a join, a hook the code under test calls).
-const SLEEPS_NOT_SYNC: &[(&str, &str, &str)] = &[
-    ("crates/specula/src/capture.rs", "from_millis(30)", "a worker made late on purpose; the test waits on its condition variable for the result"),
-    ("crates/specula/src/lex_live.rs", "from_millis(self.0)", "a native hook's cost, inside the code under test: a busy machine only lengthens it"),
-    ("crates/specula/src/steps.rs", "from_millis(1)", "a job's slice made to cost time: a lower bound, which load only lengthens"),
-    ("crates/specula/src/ui_engine.rs", "sleep(self.cost)", "the Slow driver's frame cost: frames past the budget, which load only makes later"),
-    ("crates/specula/src/text_window.rs", "KEY_GUARD_GAP", "sleeps past the key guard's own window: a longer sleep is the same outcome"),
-    ("crates/specula/src/trace_engine.rs", "from_millis(60)", "makes a stall, or holds a lock, of at least 60 ms on purpose; the holder is waited for by a channel"),
-    ("crates/specula/src/workers.rs", "from_millis(30)", "a slow task; the order asserted is the serial lane's, which the design guarantees however long it sleeps"),
-    ("crates/specula-core/src/profile.rs", "from_millis(2)", "a zone's cost: a lower bound"),
-    ("crates/specula-gpu/src/heap.rs", "from_millis(400)", "a driver's slow allocation simulated, inside the code under test"),
-    ("crates/specula-sys/src/lib.rs", "from_millis(40)", "the subject: time asleep must not read as a thread's running time"),
-    ("crates/specula-sys/src/lib.rs", "from_millis(100)", "a signaller made late; the console close waits for its event"),
+/// Sleeps in test code that no poll's loop encloses and that are not synchronisation, each
+/// with why: (file, a piece of the sleep's line, how many such sleeps the file has, why the
+/// time it sleeps decides nothing). A sleep that stands in for "the other thread has got there
+/// by now" is never listed here: it waits on the event instead (a channel, a join, a hook the
+/// code under test calls). Nor is one after which a slow machine passes the test without
+/// testing it: that is [`SLEEPS_TO_MEND`]'s.
+const SLEEPS_NOT_SYNC: &[(&str, &str, usize, &str)] = &[
+    ("crates/specula/src/lex_live.rs", "from_millis(self.0)", 2, "a native hook's cost, inside the code under test: a busy machine only lengthens it"),
+    ("crates/specula/src/steps.rs", "from_millis(1)", 1, "a job's slice made to cost time: a lower bound, which load only lengthens"),
+    ("crates/specula/src/ui_engine.rs", "sleep(self.cost)", 1, "the Slow driver's frame cost: frames past the budget, which load only makes later"),
+    ("crates/specula/src/text_window.rs", "KEY_GUARD_GAP", 1, "sleeps past the key guard's own window: a longer sleep is the same outcome"),
+    ("crates/specula/src/trace_engine.rs", "from_millis(60)", 2, "a stall of at least 60 ms made on purpose (a lower bound), and a worker's hold of the lock; the lock's test asserts what the lock counted, made again until this thread did wait"),
+    ("crates/specula/src/workers.rs", "from_millis(30)", 1, "a slow task; the order asserted is the serial lane's, which the design guarantees however long it sleeps"),
+    ("crates/specula/tests/streaming_review.rs", "from_millis(1100)", 1, "past UPDATE_IDLE (1 s), so that a pass due by time runs first: a lower bound, which load only lengthens"),
+    ("crates/specula-core/src/profile.rs", "from_millis(2)", 1, "a zone's cost: a lower bound"),
+    ("crates/specula-gpu/src/heap.rs", "from_millis(400)", 1, "a driver's slow allocation simulated, inside the code under test"),
+    ("crates/specula-sys/src/lib.rs", "from_millis(40)", 1, "the subject: time asleep must not read as a thread's running time"),
     // File times: two writes kept apart so the second has a later time (the other way round:
     // a file system that keeps times by the second needs more; this guard's header).
-    ("crates/specula/src/disk.rs", "from_millis(30)", "file times apart (not synchronisation; see the header on file times)"),
-    ("crates/specula/src/models.rs", "from_millis(20)", "file times apart (not synchronisation; see the header on file times)"),
-    ("crates/specula/src/project.rs", "from_millis(20)", "file times apart (not synchronisation; see the header on file times)"),
-    ("crates/specula/tests/two_d_gpu.rs", "from_millis(30)", "file times apart (not synchronisation; see the header on file times)"),
-    ("crates/specula-logic/src/digest.rs", "from_millis(30)", "file times apart (not synchronisation; see the header on file times)"),
+    ("crates/specula/src/disk.rs", "from_millis(30)", 2, "file times apart (not synchronisation; see the header on file times)"),
+    ("crates/specula/src/gi.rs", "from_millis(30)", 1, "file times apart (not synchronisation; see the header on file times)"),
+    ("crates/specula/src/models.rs", "from_millis(20)", 9, "file times apart (not synchronisation; see the header on file times)"),
+    ("crates/specula/src/project.rs", "from_millis(20)", 5, "file times apart (not synchronisation; see the header on file times)"),
+    ("crates/specula/tests/two_d_gpu.rs", "from_millis(30)", 1, "file times apart (not synchronisation; see the header on file times)"),
+    ("crates/specula-logic/src/digest.rs", "from_millis(30)", 1, "file times apart (not synchronisation; see the header on file times)"),
 ];
 
-/// Sleeps found by this guard on 2026-11-24 that do stand in for an event, not yet mended:
-/// (file, a piece of the line, what is wrong). Each passes on a quiet machine; the list only
-/// keeps new ones out. Mend one and take it off (the guard says when an entry matches nothing).
-const SLEEPS_TO_MEND: &[(&str, &str, &str)] = &[
-    ("crates/specula/src/inputguard/tests.rs", "from_millis(50)", "the waiter is meant to be asleep before the event: if it is not yet, the wake-up path is not what was tested"),
-    ("crates/specula/src/inputguard/tests.rs", "from_millis(250)", "'the waits did not end': a loaded machine that had not run the waiters passes it without testing"),
-    ("crates/specula-audio/tests/backends.rs", "from_millis(100)", "'a 200 ms sound can't be over after 100 ms': a sleep that overruns by 100 ms on a busy machine fails it"),
-    ("crates/specula-audio/tests/backends.rs", "from_millis(400)", "frames consumed in real time, read after a fixed sleep"),
-    ("crates/specula-audio/tests/backends.rs", "from_millis(50)", "the backend's state read after a fixed time"),
-    ("crates/specula-audio/tests/backends.rs", "from_millis(600)", "the device's stats read after a fixed time"),
-    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(100)", "the server is meant to hold the silent and half-sent connections before it stops"),
-    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(300)", "'the server waits for the call' after 300 ms (passes without testing when slow), and the accept thread meant to have handed every connection to a worker"),
-    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(500)", "the call meant to have returned and begun its write"),
-    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(200)", "the queued connections meant to be queued"),
+/// Sleeps that stand in for an event, found and not yet mended: (file, a piece of the line,
+/// how many, what is wrong and why it is left). Each passes on a quiet machine, and passes
+/// without testing what it means to on a slow one (none of them can fail by load). The list
+/// only keeps new ones out; mend one and lower its count (the guard says when a count is
+/// more than the file has).
+///
+/// Left on 2026-11-24 (second lane of `m6-clock-tests`): each needs to see inside the server
+/// (whether its stop has reached its wait for a running call; how many connections its accept
+/// thread has handed to workers or queued for a 503), and these are `specula-protocol`'s
+/// integration tests, which see only its public API. The mend is a test seam in the crate (its
+/// own unit tests, or a hook the crate's tests reach), not a public accessor added for a test.
+const SLEEPS_TO_MEND: &[(&str, &str, usize, &str)] = &[
+    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(100)", 1, "the server is meant to have taken the silent and half-sent connections before it stops: if it has not, the stop is prompt without having had them"),
+    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(300)", 2, "'the server waits for the call that is running' after 300 ms (a stop that had not reached its wait yet passes it); and the 256 held connections meant to have been handed to workers before the queued ones come"),
+    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(500)", 1, "the call meant to have returned and begun its write: the test holds either side, so a slow machine tests the side it was not meant to"),
+    ("crates/specula-protocol/tests/mcp_http.rs", "from_millis(200)", 1, "the 40 connections over the limit meant to be queued for their 503 before the stop"),
 ];
 
 /// Whether the `r` at `i` begins a raw string's prefix: nothing of a name before it, or only
@@ -520,122 +541,431 @@ fn code_only(text: &str) -> String {
     out
 }
 
-/// Whether `header` (the code before a `{`, back to the last `;`, `{` or `}`) opens a loop's
-/// body: `loop`, `while`, `for` as words (not `impl X for Y`).
-fn opens_loop(header: &str) -> bool {
-    let words: Vec<&str> = header.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).collect();
-    !words.contains(&"impl") && words.iter().any(|w| matches!(*w, "loop" | "while" | "for"))
+/// `s` without its whitespace.
+fn squeezed(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-/// The lines (1-based) of `thread::sleep(` calls in test code that no loop encloses. Test code
-/// is a whole file when `whole` (a `tests/` file, a `tests.rs` or `*_tests.rs` module), else
-/// the items after a `#[cfg(test)]`. A sleep in a loop is a poll's interval (what ends the
-/// wait is the condition the loop checks); one outside every loop waits a fixed time, which
-/// is synchronisation by the machine's speed when an assertion after it reads what another
-/// thread or process did meanwhile.
-fn lone_sleeps(text: &str, whole: bool) -> Vec<usize> {
-    let code = code_only(text);
-    let lines: Vec<&str> = code.split('\n').collect();
-    let mut found = Vec::new();
-    // Per open brace: whether it opened a loop, and whether it opened a test region.
-    let mut stack: Vec<(bool, bool)> = Vec::new();
-    let mut header = String::new();
-    let mut pending_test = false;
-    for (n, line) in lines.iter().enumerate() {
-        let t = line.trim();
-        if t.starts_with("#[cfg(") && t.contains("test") && !t.contains("not(test") {
-            pending_test = true;
+/// Whether the words of `s` include `w`.
+fn has_word(s: &str, w: &str) -> bool {
+    s.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|x| x == w)
+}
+
+/// Whether a `use` in `code` (code only) brings `std::thread::sleep` in by name, so that a bare
+/// `sleep(` is it.
+fn imports_sleep(code: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut at = 0;
+    while let Some(k) = code[at..].find("use ") {
+        let i = at + k;
+        at = i + 4;
+        if code[..i].chars().next_back().is_some_and(ident) {
+            continue;
         }
-        for (i, c) in line.char_indices() {
-            if line[i..].starts_with("thread::sleep(") {
-                let in_test = whole || stack.iter().any(|&(_, test)| test);
-                if in_test && !stack.iter().any(|&(lp, _)| lp) && found.last() != Some(&(n + 1)) {
-                    found.push(n + 1);
+        let u = squeezed(code[i + 4..].split(';').next().unwrap_or(""));
+        let u = u.trim_start_matches("::");
+        if (u.starts_with("std::thread::") || u.starts_with("thread::") || (u.starts_with("std::{") && u.contains("thread::"))) && has_word(u, "sleep") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a `for` loop's iterator (`iter`: the header after its ` in `) has one item: a
+/// one-element array or `0..1` (a loop of one scenario waits as a straight line does).
+fn one_item(iter: &str) -> bool {
+    let s = squeezed(iter);
+    if matches!(s.as_str(), "0..1" | "0..=0") {
+        return true;
+    }
+    let Some(inner) = s.strip_prefix('[').or_else(|| s.strip_prefix("&[")).and_then(|r| r.strip_suffix(']')) else { return false };
+    let mut depth = 0i32;
+    for c in inner.chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            // A second item, or `[x; n]`.
+            ',' | ';' if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    !inner.is_empty()
+}
+
+/// What a `{` opens.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Opens {
+    /// A poll's loop: what ends it is a condition.
+    Loop,
+    /// A closure's body: its sleeps are its own, whatever loop made the closure.
+    Closure,
+    Other,
+}
+
+/// What a `{` whose `header` is the code before it (back to the last `;`, `{` or `}`) and whose
+/// `body` is the code inside it opens. A closure's header ends with its `|`. A loop is a poll
+/// only where what ends it is a condition: `loop` and `while`, and a `for` whose body can leave
+/// it early (`break` or `return`); a `for` over one item, or with no way out but its end, waits
+/// a fixed time where it sleeps. `for<'a>` (a bound) and `impl X for Y` are not loops.
+fn opens(header: &str, body: &str) -> Opens {
+    if squeezed(header).ends_with('|') {
+        return Opens::Closure;
+    }
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let words: Vec<&str> = header.split(|c: char| !ident(c)).filter(|w| !w.is_empty()).collect();
+    if words.contains(&"impl") {
+        return Opens::Other;
+    }
+    if words.iter().any(|w| matches!(*w, "loop" | "while")) {
+        return Opens::Loop;
+    }
+    let mut at = 0;
+    while let Some(k) = header[at..].find("for") {
+        let i = at + k;
+        at = i + 3;
+        let word = !header[..i].chars().next_back().is_some_and(ident) && !header[i + 3..].chars().next().is_some_and(ident);
+        if !word || header[i + 3..].trim_start().starts_with('<') {
+            continue;
+        }
+        let iter = header[i + 3..].split_once(" in ").map_or("", |(_, it)| it);
+        if one_item(iter) {
+            return Opens::Other;
+        }
+        return if has_word(body, "break") || has_word(body, "return") { Opens::Loop } else { Opens::Other };
+    }
+    Opens::Other
+}
+
+/// Whether the statement so far (`header`) has begun a closure with no braces, whose body the
+/// code after it is: `move ||`, `(|x|`, `, ||`, `= |x|`.
+fn closure_begun(header: &str) -> bool {
+    let s = squeezed(header);
+    s.contains("move|") || s.contains("(|") || s.contains(",|") || s.contains("=|")
+}
+
+/// For each `{` in `code`, the index of the `}` that closes it (`code.len()` when none does).
+fn closings(code: &[char]) -> Vec<usize> {
+    let mut close = vec![code.len(); code.len()];
+    let mut open = Vec::new();
+    for (i, c) in code.iter().enumerate() {
+        match c {
+            '{' => open.push(i),
+            '}' => {
+                if let Some(o) = open.pop() {
+                    close[o] = i;
                 }
             }
-            match c {
-                '{' => {
-                    let test = pending_test;
-                    stack.push((opens_loop(&header), test));
-                    if test {
-                        pending_test = false;
-                    }
-                    header.clear();
+            _ => {}
+        }
+    }
+    close
+}
+
+/// The lines (1-based) of the calls to `std::thread::sleep` in test code that no poll's loop
+/// encloses. A call is `thread::sleep(` (spaces around the `::` allowed) or, where the file
+/// brings it in by name (`use std::thread::sleep`), a bare `sleep(`. Test code is a whole file
+/// when `whole` (a `tests/` file, a test module's own file), else the items after a
+/// `#[cfg(test)]`. A sleep in a poll's loop is its interval (what ends the wait is the
+/// condition the loop checks); one in a closure is the closure's own, whatever loop spawned it;
+/// one anywhere else waits a fixed time, which is synchronisation by the machine's speed when
+/// an assertion after it reads what another thread or process did meanwhile.
+fn lone_sleeps(text: &str, whole: bool) -> Vec<usize> {
+    let code_text = code_only(text);
+    let bare = imports_sleep(&code_text);
+    let code: Vec<char> = code_text.chars().collect();
+    let close = closings(&code);
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut found = Vec::new();
+    // Per open brace: what it opened, and whether it opened a test region.
+    let mut stack: Vec<(Opens, bool)> = Vec::new();
+    let mut header = String::new();
+    // A `#[cfg(test)]` waiting for its item, and the brackets opened since it: a `,` outside
+    // them ends an item too (a field, a variant, an argument).
+    let mut pending_test = false;
+    let mut depth_since = 0i32;
+    let (mut line, mut line_start) = (1, true);
+    for i in 0..code.len() {
+        let c = code[i];
+        if line_start {
+            let rest: String = code[i..].iter().take_while(|&&ch| ch != '\n').collect();
+            let t = rest.trim();
+            if t.starts_with("#[cfg(") && has_word(t, "test") && !t.contains("not(test") {
+                pending_test = true;
+                depth_since = 0;
+            }
+            line_start = false;
+        }
+        if code[i..].starts_with(&['s', 'l', 'e', 'e', 'p']) && (i == 0 || !ident(code[i - 1])) && !code.get(i + 5).is_some_and(|&n| ident(n)) {
+            let called = code[i + 5..].iter().find(|ch| !ch.is_whitespace()) == Some(&'(');
+            let start = i.saturating_sub(40);
+            let before = squeezed(&code[start..i].iter().collect::<String>());
+            let via_thread = before.ends_with("thread::");
+            let by_name = bare && !before.ends_with("::") && !before.ends_with('.') && !before.ends_with("fn");
+            if called && (via_thread || by_name) {
+                let in_test = whole || stack.iter().any(|&(_, test)| test);
+                // The innermost loop or closure decides: a closure's sleep is its own.
+                let polled = !closure_begun(&header) && stack.iter().rev().find(|&&(o, _)| o != Opens::Other).is_some_and(|&(o, _)| o == Opens::Loop);
+                if in_test && !polled && found.last() != Some(&line) {
+                    found.push(line);
                 }
-                '}' => {
-                    stack.pop();
-                    header.clear();
-                }
-                ';' => {
-                    header.clear();
-                    // `#[cfg(test)] use ..;` or `mod x;`: the attribute is spent.
+            }
+        }
+        match c {
+            '\n' => {
+                line += 1;
+                line_start = true;
+                header.push(' ');
+            }
+            '{' => {
+                // (The body is read only for a `for`: whether it can leave early.)
+                let body: String = if has_word(&header, "for") { code[i + 1..close[i]].iter().collect() } else { String::new() };
+                stack.push((opens(&header, &body), pending_test));
+                pending_test = false;
+                header.clear();
+            }
+            '}' => {
+                stack.pop();
+                header.clear();
+            }
+            ';' => {
+                header.clear();
+                // `#[cfg(test)] use ..;` or `mod x;`: the attribute is spent.
+                pending_test = false;
+            }
+            '(' | '[' | '<' => {
+                depth_since += 1;
+                header.push(c);
+            }
+            // (`->` and `=>` close nothing.)
+            '>' if i > 0 && matches!(code[i - 1], '-' | '=') => header.push(c),
+            ')' | ']' | '>' => {
+                depth_since -= 1;
+                header.push(c);
+            }
+            ',' => {
+                if depth_since <= 0 {
                     pending_test = false;
                 }
-                _ => header.push(c),
+                header.push(c);
             }
+            _ => header.push(c),
         }
-        header.push(' ');
     }
     found
 }
 
+/// For each line of `text` (1-based, index 0 unused), whether it is test code: inside an item
+/// after a `#[cfg(test)]` (the same reading as [`lone_sleeps`]: an attribute is spent at its
+/// item's `{`, `;` or a `,` outside brackets).
+fn test_lines(text: &str) -> Vec<bool> {
+    let code: Vec<char> = code_only(text).chars().collect();
+    let mut out = vec![false, false];
+    let mut stack: Vec<bool> = Vec::new();
+    let (mut pending, mut depth, mut line_start) = (false, 0i32, true);
+    for (i, &c) in code.iter().enumerate() {
+        if line_start {
+            let rest: String = code[i..].iter().take_while(|&&ch| ch != '\n').collect();
+            let t = rest.trim();
+            if t.starts_with("#[cfg(") && has_word(t, "test") && !t.contains("not(test") {
+                pending = true;
+                depth = 0;
+            }
+            line_start = false;
+        }
+        let here = out.len() - 1;
+        out[here] |= stack.iter().any(|&t| t) || pending;
+        match c {
+            '\n' => {
+                out.push(false);
+                line_start = true;
+            }
+            '{' => {
+                stack.push(pending);
+                pending = false;
+            }
+            '}' => {
+                stack.pop();
+            }
+            ';' => pending = false,
+            '(' | '[' | '<' => depth += 1,
+            '>' if i > 0 && matches!(code[i - 1], '-' | '=') => {}
+            ')' | ']' | '>' => depth -= 1,
+            ',' if depth <= 0 => pending = false,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The test aids of `specula_core` (`HANG_BOUND`, `Watchdog`) are public only so that every
+/// crate's tests can reach them: no engine or game code uses them (a hang bound or an abort in
+/// the engine would be a behaviour of its own). Read in every source outside test code.
+#[test]
+fn the_test_aids_are_used_by_tests_only() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut paths = Vec::new();
+    for top in ["crates", "games", "tools"] {
+        rust_files(&root.join(top), &mut paths);
+    }
+    let files: Vec<(String, String)> = paths.iter().filter_map(|p| Some((p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/"), std::fs::read_to_string(p).ok()?))).collect();
+    let modules = test_module_files(&files);
+    let mut bad = Vec::new();
+    let mut defined = 0;
+    for (rel, text) in &files {
+        let name = rel.rsplit('/').next().unwrap_or("");
+        if rel.contains("/tests/") || rel.contains("/benches/") || rel.contains("/examples/") || name == "tests.rs" || name.ends_with("_tests.rs") || modules.contains(rel) || rel.ends_with("tests/clock_guard.rs") {
+            continue;
+        }
+        let tests = test_lines(text);
+        let code = code_only(text);
+        for (n, line) in code.lines().enumerate() {
+            let n = n + 1;
+            if tests.get(n).copied().unwrap_or(false) || !(has_word(line, "HANG_BOUND") || has_word(line, "Watchdog")) {
+                continue;
+            }
+            if rel == "crates/specula-core/src/lib.rs" {
+                // Their own definitions.
+                defined += 1;
+                continue;
+            }
+            bad.push(format!("{rel}:{n}: {}", line.trim()));
+        }
+    }
+    assert!(defined > 0, "specula_core's HANG_BOUND and Watchdog are gone: take this check off");
+    assert!(bad.is_empty(), "specula_core's test aids used outside test code:\n{}", bad.join("\n"));
+}
+
+#[test]
+fn test_lines_follow_cfg_test() {
+    let t = test_lines("fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() {}\n}\nstruct S {\n    #[cfg(test)]\n    n: u32,\n}\nfn c() {}\n");
+    assert_eq!((t[1], t[3], t[4], t[8], t[10]), (false, true, true, true, false), "{t:?}");
+}
+
+/// The files only tests compile, beyond `tests/` folders and test-module names: those a
+/// `#[cfg(test)] mod name;` declares, as `name.rs` or `name/mod.rs` beside the declaring
+/// module (`specula-formae`'s `tests_solid.rs` and `tests_raise.rs` are two).
+fn test_module_files(files: &[(String, String)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (rel, text) in files {
+        let code = code_only(text);
+        let lines: Vec<&str> = code.lines().map(str::trim).collect();
+        let (dir, file) = rel.rsplit_once('/').unwrap_or(("", rel.as_str()));
+        let own = if matches!(file, "lib.rs" | "main.rs" | "mod.rs") { dir.to_owned() } else { format!("{dir}/{}", file.trim_end_matches(".rs")) };
+        for (k, l) in lines.iter().enumerate() {
+            let Some(rest) = l.strip_prefix("#[cfg(test)]") else { continue };
+            let decl = if rest.trim().is_empty() { lines.get(k + 1).copied().unwrap_or("") } else { rest.trim() };
+            let decl = decl.strip_prefix("pub(crate) ").or_else(|| decl.strip_prefix("pub ")).unwrap_or(decl);
+            if let Some(name) = decl.strip_prefix("mod ").and_then(|n| n.strip_suffix(';')) {
+                out.push(format!("{own}/{}.rs", name.trim()));
+                out.push(format!("{own}/{}/mod.rs", name.trim()));
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn the_scanner_finds_sleeps_outside_loops() {
-    let text = "fn real() {\n    std::thread::sleep(d);\n}\n#[cfg(test)]\nmod tests {\n    fn t() {\n        loop {\n            std::thread::sleep(d);\n        }\n        while x {\n            if y { std::thread::sleep(d); }\n        }\n        let s = \"{\";\n        std::thread::sleep(d);\n        for _ in 0..3 { std::thread::sleep(d) }\n    }\n    impl A for B {\n        fn f() { std::thread::sleep(d); }\n    }\n}\n";
+    let text = "fn real() {\n    std::thread::sleep(d);\n}\n#[cfg(test)]\nmod tests {\n    fn t() {\n        loop {\n            std::thread::sleep(d);\n        }\n        while x {\n            if y { std::thread::sleep(d); }\n        }\n        let s = \"{\";\n        std::thread::sleep(d);\n        for _ in 0..3 { std::thread::sleep(d); if z { break } }\n    }\n    impl A for B {\n        fn f() { std::thread::sleep(d); }\n    }\n}\n";
     assert_eq!(lone_sleeps(text, false), [14, 18], "the sleep after the loops and the one in an impl: not the engine's, not a poll's");
     assert_eq!(lone_sleeps(text, true), [2, 14, 18], "a whole test file");
     // Braces in raw strings, character literals and comments are not blocks.
     let text = "#[cfg(all(test, windows))]\nmod t {\n    fn f() {\n        let j = r#\"{\"a\": [{\"b\": 1}]}\"#; let c = '{'; let q = '\\''; // }\n        /* } */ std::thread::sleep(d);\n        loop { let s = br\"}\"; std::thread::sleep(d); }\n    }\n}\n";
     assert_eq!(lone_sleeps(text, false), [5]);
-    assert!(opens_loop("let status = loop ") && opens_loop(" 'outer: for (i, x) in xs.iter().enumerate() ") && !opens_loop("impl Driver for Slow ") && !opens_loop("fn format_for(x: u32) "));
+    assert_eq!(opens("let status = loop ", ""), Opens::Loop);
+    assert_eq!(opens(" 'outer: while let Some(x) = it.next() ", ""), Opens::Loop);
+    assert_eq!(opens("impl Driver for Slow ", ""), Opens::Other);
+    assert_eq!(opens("fn format_for(x: u32) ", ""), Opens::Other);
+    assert_eq!(opens(" 'outer: for (i, x) in xs.iter().enumerate() ", "if i > 3 { break 'outer; }"), Opens::Loop);
+    assert_eq!(opens("let f = move |x: u32| ", ""), Opens::Closure);
+}
+
+/// The cases a review found the first scanner blind to (review 1 of `m6-clock-tests`, its
+/// `guardprobe` snippets), and its false positive: each is held here.
+#[test]
+fn the_scanner_sees_what_the_first_one_missed() {
+    let t = |body: &str| format!("#[cfg(test)]\nmod tests {{\n{body}\n}}\n");
+    // A sleep brought in by name, and one with spaces in its path.
+    assert_eq!(lone_sleeps(&t(" use std::thread::sleep;\n fn t() {\n  sleep(d);\n }"), false), [5]);
+    assert_eq!(lone_sleeps(&t(" use std::{thread::{self, sleep}, time::Duration};\n fn t() {\n  sleep(d);\n }"), false), [5], "in a nested group");
+    assert_eq!(lone_sleeps(&t(" fn t() {\n  std::thread:: sleep(d);\n  thread ::sleep (d);\n }"), false), [4, 5]);
+    // Not a sleep: a method of that name, and a file's own function where std's is not imported.
+    assert!(lone_sleeps(&t(" fn sleep(x: u32) {}\n fn t() {\n  w.sleep(d);\n  sleep(3);\n  let sleep = 1;\n }"), false).is_empty());
+    // A closure spawned in a loop sleeps on its own thread: the loop is not its poll.
+    assert_eq!(lone_sleeps(&t(" fn t() {\n  for i in 0..4 {\n   s.spawn(move || { std::thread::sleep(d); go(i) });\n  }\n  assert!(x);\n }"), false), [5]);
+    assert_eq!(lone_sleeps(&t(" fn t() {\n  loop {\n   s.spawn(move || std::thread::sleep(d));\n   if done() { break }\n  }\n }"), false), [5], "a closure with no braces too");
+    // A loop over one scenario, and a `for` with no way out but its end, wait a fixed time.
+    assert_eq!(lone_sleeps(&t(" fn t() {\n  for case in [a] {\n   start(case);\n   std::thread::sleep(d);\n   assert!(done(case));\n  }\n }"), false), [6]);
+    assert_eq!(lone_sleeps(&t(" fn t() {\n  for case in [a, b] {\n   start(case);\n   std::thread::sleep(d);\n   assert!(done(case));\n  }\n }"), false), [6], "one fixed wait a scenario");
+    assert!(lone_sleeps(&t(" fn t() {\n  for _ in 0..400 {\n   step();\n   if done() { break; }\n   std::thread::sleep(d);\n  }\n }"), false).is_empty(), "a poll by count: what ends it is its condition");
+    // A bound `for<'a>` is not a loop.
+    assert_eq!(lone_sleeps(&t(" fn t<F>(f: F) where F: for<'a> Fn(&'a u8) {\n  std::thread::sleep(d);\n  assert!(x);\n }"), false), [4]);
+    // `#[cfg(test)]` on a struct field (or a variant, an argument) is spent at its comma: the
+    // function after the struct is not test code.
+    assert!(lone_sleeps("struct A {\n #[cfg(test)]\n n: u32,\n}\nfn prod() {\n std::thread::sleep(d);\n}\n", false).is_empty(), "a production function after a test-only field");
+    assert!(lone_sleeps("struct A {\n #[cfg(test)]\n n: BTreeMap<u32, u64>,\n m: u8,\n}\nfn prod() {\n std::thread::sleep(d);\n}\n", false).is_empty());
+    assert_eq!(lone_sleeps("#[cfg(test)]\nfn helper<A, B>(a: A, b: B) {\n std::thread::sleep(d);\n}\n", false), [3], "commas inside an item's own brackets do not spend it");
+    // Lifetimes, escaped quotes and macros do not confuse it.
+    assert_eq!(lone_sleeps(&t(" fn t<'a>(x: &'a str) {\n  let s = \"a\\\"{\";\n  let v = vec![1];\n  std::thread::sleep(d);\n }"), false), [6]);
+    // A test module's own file, declared `#[cfg(test)] mod tests_solid;`.
+    let files = [("crates/f/src/lib.rs".to_owned(), "#[cfg(test)]\nmod tests_solid;\n#[cfg(test)] mod inner;\nmod real;\n".to_owned()), ("crates/f/src/a.rs".to_owned(), "#[cfg(test)]\npub(crate) mod deep;\n".to_owned())];
+    let mods = test_module_files(&files);
+    assert!(mods.contains(&"crates/f/src/tests_solid.rs".to_owned()) && mods.contains(&"crates/f/src/inner.rs".to_owned()) && mods.contains(&"crates/f/src/a/deep.rs".to_owned()) && !mods.iter().any(|m| m.contains("real")), "{mods:?}");
 }
 
 /// No test waits a fixed time for another thread or process to have done something: it waits
 /// on the event. (`launch_run`'s test slept 300 ms and then dropped a lock "while the command
 /// waits"; on a loaded machine the command had not reached the wait, found the folder free and
-/// started an engine: `not_started` where `in_use` was meant, 2026-11-24.)
+/// started an engine: `not_started` where `in_use` was meant, 2026-11-24.) Each entry of the
+/// lists says how many sleeps it covers in its file, so that one more of the same length there
+/// fails.
 #[test]
 fn no_test_synchronises_by_sleeping() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut files = Vec::new();
-    rust_files(&root.join("crates"), &mut files);
-    rust_files(&root.join("games"), &mut files);
+    let mut paths = Vec::new();
+    for top in ["crates", "games", "tools"] {
+        rust_files(&root.join(top), &mut paths);
+    }
+    let files: Vec<(String, String)> = paths
+        .iter()
+        .filter_map(|p| Some((p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/"), std::fs::read_to_string(p).ok()?)))
+        .filter(|(rel, _)| !rel.ends_with("tests/clock_guard.rs"))
+        .collect();
+    assert!(files.iter().any(|(r, _)| r.starts_with("tools/")) && files.len() > 200, "found {} files: has the layout changed?", files.len());
+    let modules = test_module_files(&files);
     let mut bad = Vec::new();
-    let mut used = vec![false; SLEEPS_NOT_SYNC.len()];
-    let mut to_mend_used = vec![false; SLEEPS_TO_MEND.len()];
-    for path in &files {
-        let rel = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        if rel.ends_with("tests/clock_guard.rs") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(path) else { continue };
+    let mut not_sync = vec![0usize; SLEEPS_NOT_SYNC.len()];
+    let mut to_mend = vec![0usize; SLEEPS_TO_MEND.len()];
+    for (rel, text) in &files {
         let name = rel.rsplit('/').next().unwrap_or("");
-        let whole = rel.contains("/tests/") || rel.contains("/benches/") || name == "tests.rs" || name.ends_with("_tests.rs");
+        let whole = rel.contains("/tests/") || rel.contains("/benches/") || name == "tests.rs" || name.ends_with("_tests.rs") || modules.contains(rel);
         let lines: Vec<&str> = text.lines().collect();
-        for n in lone_sleeps(&text, whole) {
+        for n in lone_sleeps(text, whole) {
             let line = lines[n - 1];
-            let listed = |list: &[(&str, &str, &str)]| list.iter().position(|(f, piece, _)| rel.ends_with(f) && line.contains(piece));
+            let listed = |list: &[(&str, &str, usize, &str)]| list.iter().position(|(f, piece, _, _)| rel.ends_with(f) && line.contains(piece));
             match (listed(SLEEPS_NOT_SYNC), listed(SLEEPS_TO_MEND)) {
-                (Some(i), _) => used[i] = true,
-                (None, Some(i)) => to_mend_used[i] = true,
+                (Some(i), _) => not_sync[i] += 1,
+                (None, Some(i)) => to_mend[i] += 1,
                 (None, None) => bad.push(format!("{rel}:{n}: {}", line.trim())),
             }
         }
     }
+    for (list, name, seen) in [(SLEEPS_NOT_SYNC, "SLEEPS_NOT_SYNC", &not_sync), (SLEEPS_TO_MEND, "SLEEPS_TO_MEND", &to_mend)] {
+        for (i, (file, piece, count, _)) in list.iter().enumerate() {
+            if seen[i] > *count {
+                bad.push(format!("{file}: {} sleeps match '{piece}', and {name} lists {count}: a new one", seen[i]));
+            }
+            assert!(seen[i] >= *count, "{name} lists {count} sleeps '{piece}' in {file}, and {} are there: mended? lower the count, or take the entry off at 0", seen[i]);
+        }
+    }
     assert!(
         bad.is_empty(),
-        "{} sleeps in test code outside any loop: a fixed wait for another thread or process passes on a quiet machine and fails on a busy one.\n\
+        "{} sleeps in test code outside any poll's loop: a fixed wait for another thread or process passes on a quiet machine and fails on a busy one.\n\
          Wait on the event (a channel, a join, a hook the code calls); if the sleep decides nothing, list it in SLEEPS_NOT_SYNC with why:\n{}",
         bad.len(),
         bad.join("\n")
     );
-    for (i, u) in used.iter().enumerate() {
-        assert!(u, "SLEEPS_NOT_SYNC lists '{}' in {}, which is no longer a sleep outside a loop", SLEEPS_NOT_SYNC[i].1, SLEEPS_NOT_SYNC[i].0);
-    }
-    for (i, u) in to_mend_used.iter().enumerate() {
-        assert!(u, "SLEEPS_TO_MEND lists '{}' in {}, which is no longer a sleep outside a loop: mended? take it off", SLEEPS_TO_MEND[i].1, SLEEPS_TO_MEND[i].0);
-    }
-    eprintln!("clock_guard: {} sleeps outside loops are listed as still to mend", SLEEPS_TO_MEND.len());
+    eprintln!("clock_guard: {} sleeps outside loops are listed as still to mend", SLEEPS_TO_MEND.iter().map(|e| e.2).sum::<usize>());
 }
 
 #[test]
@@ -676,6 +1006,7 @@ fn no_test_asserts_a_speed() {
                 match &b.seconds {
                     Ok(s) if *s >= MIN_SECONDS => {}
                     Ok(s) => bad.push(format!("{rel}:{line}: {} < {} ({s} s)", b.what, b.written)),
+                    Err(name) if NAMED_ANYWHERE.iter().any(|(nm, s, _)| *s >= MIN_SECONDS && name.rsplit("::").next() == Some(*nm)) => {}
                     Err(name) => match NAMED.iter().position(|(f, nm, _, _)| rel.ends_with(f) && nm == name) {
                         Some(i) if NAMED[i].2 >= MIN_SECONDS => named_used[i] = true,
                         _ => bad.push(format!("{rel}:{line}: {} < {name} (a bound this guard can't read: write the number, or list it in NAMED with its length)", b.what)),
