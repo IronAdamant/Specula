@@ -172,6 +172,13 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
       are byte for byte the same, and `--replay` verifies each.
 - [ ] A save mid-fire (`play_record`, then `play_replay`, or `State::to_bytes` in a test) continues
       the same: the tests `an_exploder_bursts_on_a_wall...` and the proving save test hold it.
+- [ ] Furor (DESIGN.md, "Furor"): no stock run reaches a wave's hour
+      (`no_stock_run_reaches_a_waves_hour`), and every drawn content ends inside its stated length
+      (`every_run_ends_inside_its_stated_length`; the release run:
+      `cargo test -p sepulcra --release --lib -- --ignored every_run_ends_inside_its_stated_length_at_length`).
+- [ ] Content the format takes that holds a lone one (Gelu with chill 1 and a 30 s freeze every
+      tick, no damage), played in the window: the one held stands frozen until twenty minutes after
+      its wave's last entry, then thaws and walks on, and nothing freezes it again.
 
 ### 12.2 Fire (Rogus) and fire's spread
 
@@ -227,24 +234,19 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
 - [ ] Fire on a frozen one thaws it at once (steam) instead of burning it, a Rogus lob included
       (its damage shatters the ice; it does not set the enemy alight, nor light a Tumidus's fuse).
 - [ ] Frost on a burning one puts it out; rime on a cell stops the grass fire there.
-- [ ] Frost must hurt: a Gelu tier that chills or freezes with no damage is refused (`damage`
-      named); with damage, a lone one under frost is killed or walks on, and content whose frost
-      could hold one past the run's cap is refused when it loads, naming both figures (DESIGN.md,
-      "Gelu": the stock proving stones' figure is 6,932 ticks, 20 % of the room).
+- [ ] Frost with no damage loads (it is legal now) and may hold a lone one long; with the stock
+      stones a lone one under frost is killed or walks on within minutes (DESIGN.md, "Gelu").
 - [ ] The colossus barely chills (mass 8); Gelu is weak against it.
 
 ### 12.5 Wind (Ventus): no damage, through the push, then recharge
 
 - [ ] With any of the dead in range, one alone included, a gust shoves them all back along their
       lane (runners farther, the colossus hardly at all); nobody loses a hit point to it.
-- [ ] A cairn whose recharge is not longer than its push is refused (`cooldown_s` named).
-- [ ] Repeated gusts cannot hold one for ever: each shove it takes is a quarter weaker than the
-      one before (`shove_fade` 0.25), from whichever cairn, it is not shoved again until a shove
-      has ended (a cairn keeps its charge meanwhile), and a lone one held by several cairns still
-      reaches the graveyard.
-- [ ] Content whose wind could keep a lone one from passing past the run's cap is refused when it
-      loads, naming both figures (DESIGN.md, "Ventus": the third review's push of 30 m over 5 s at
-      the slowest fade is refused: 57,218 ticks against 35,280).
+- [ ] Each shove one of the dead takes is a quarter weaker than the one before (`shove_fade`
+      0.25), from whichever cairn, and it is not shoved again until a shove has ended; a lone one
+      held by several stock cairns reaches the graveyard within minutes.
+- [ ] A cairn with nobody in range it can move (all still being shoved, in furor, or with their
+      shoves faded to nothing) does not gust: it keeps its charge, and fans no fire.
 - [ ] A leaper in mid-air is not stopped in the air: the gust's shove takes it when it lands.
 - [ ] The cairn then recharges: no second gust before its cooldown (6 s at tier I), whatever is in
       range; *(look)* a charge the player sees filling.
@@ -259,10 +261,21 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
       damage and a short stagger to all on them (*look:* spikes rising from the slab and sinking,
       a crack, a rumble, dust).
 - [ ] The heave puts out the fire on its cells (sand on flames).
-- [ ] A heave that staggers with no damage is refused (`damage` named): a stagger renewed by every
-      heave must cost HP.
 - [ ] From tier II, rubble rises on the farthest cell: a wall worth nothing that blocks and
       re-routes, that the dead break and Tumidus blasts, and that crumbles by itself (6 s, 8 s).
+- [ ] A heave on standing rubble does not mend it: half-broken rubble stays half broken and
+      crumbles when it was to.
+- [ ] Where rubble has gone, no rubble rises again while any of the dead that were on the slab
+      then still stand; once they have all gone it may.
+- [ ] *Rubble's health bar:* place a Saxum of tier II or III by a lane and let a wave reach it. A
+      bar shows 1.6 m over each rubble from the tick it rises, full: a dark back, a pale green
+      fill.
+- [ ] The bar empties from the right as the dead claw the rubble (`play_state`'s walls give its
+      hp and max_hp: the fill is that share of the bar, or less).
+- [ ] With nobody at it, the bar still empties as the rubble's life runs out (6 s at II, 8 s at
+      III), and is gone the tick the rubble crumbles or breaks.
+- [ ] The bar shows the lesser of health and life: rubble half broken with most of its life left
+      shows half; rubble untouched near its end shows almost nothing.
 
 ### 12.7 The exploding dead (Tumidus)
 

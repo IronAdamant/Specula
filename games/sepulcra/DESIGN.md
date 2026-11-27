@@ -412,7 +412,7 @@ them does:
   sweep then prints the elements' "all runs" line too).
 - *Saves and recordings:* the content hash changes, so every save a player has, every recording and
   every pinned replay of the shipped map is refused (`content_changed`, structured), and saves
-  become version 2. Planned: an old save is refused by name with what to do (start a new run; the
+  take the elements' layout (version 3). Planned: an old save is refused by name with what to do (start a new run; the
   game says so on its title rather than failing); recordings and pinned replays are recorded
   again.
 - *The Lex rules:* `--rules lex` and its parity tests (`tests/lex_parity.rs`, `tests/lex_saves.rs`,
@@ -473,60 +473,14 @@ What each does, in the rules' own terms (`src/sim_elements.rs`, `src/blaze.rs`):
   thaws after its time and leaves the enemy **wet** for 4 s. Frost on a burning enemy puts it out;
   frost lays rime on the target's cell, which the grass fire does not cross while it lasts. Good
   against the exploding dead and the colossus's escort; poor against the colossus itself (mass 8:
-  0.075 chill a hit at III) and alone against crowds. **Frost must hurt:** a tier that chills or
-  freezes and deals no damage is refused by name (the third review: such a tier, firing every
-  tick, kept a lone shambler frozen 199,738 of 200,000 ticks, since only a hit with damage
-  shatters the ice). **And frost is held under the run's cap when content loads**, as the wind
-  is, by a bound read from the rules. A hit of a chilling tier k on an enemy not frozen deals
-  its damage d_k (the shatter bonus is only for the frozen) and then, if the enemy lives, adds
-  q_k = chill_k x 1000 / mass (rounded down) to its chill; at 1000 it freezes for F_k ticks and
-  its chill goes back to 0. A hit on a frozen enemy adds no chill and shatters it; chill
-  otherwise only fades, and fire on ice zeroes it. So each freeze is brought by hits since the
-  last one whose q add to 1000, the last of the freezing tier, each dealing its damage to an
-  enemy that lived on: at least p_k = d_k + max(0, 1000 - q_k) x (d/q)min milli-HP, (d/q)min
-  the least damage per chill of any chilling tier, and all of them together less than HP (its
-  own times the largest wave scale; the killing hit chills nothing). The freezes, of whatever
-  tiers, are paid out of that one purse, so a lone enemy passes or dies within
-
-      ceil(L x 30 x 10^9 / (v x p x (1000 - s) x (1000 - r))) + max over k of floor((HP - 1) x (F_k + 1) / p_k)   ticks
-
-  (L, v and p as for the wind; s the strongest slow any stone gives and r the roots' slow,
-  permille; one tick more a freeze for the part-millimetre a freeze drops). That is
-  `Content::frost_hold`, and the loader refuses content in which it is longer, for any ground
-  enemy, than the run's cap leaves after the last wave's last enemy enters, naming both figures
-  and what to change (more damage on the chilling tiers, less chill, or a shorter `freeze_s`).
-  **A stone's recharge is not in it, and cannot be:** a frozen enemy inside its stone's range is
-  hit again within the recharge, which shatters it, but the rules do not keep it there (a bolt
-  homes and lands where its target has walked to, past the range of the stone that fired it;
-  a stone can be sold, or upgraded to a shorter range, mid-freeze), so each freeze is counted
-  whole. Where the recharge is shorter than the freeze the figure is loose by up to that ratio
-  (the stock stones: 1 s against 2 to 3 s). The walk is counted at the slowest slow and pace
-  over the longest lane, as before. The first form of this bound (every hit of the least damage
-  bringing a freeze of the longest) put the stock proving stones at 33,582 ticks of the 35,280,
-  95 % of the room. **Now the stock proving stones are at 6,932** (the shambler: 55 HP at the
-  largest scale 1.5, at most 4 freezes of Gelu II's 2.5 s, 379 ticks frozen, and 6,553 of walk
-  at the slowest slow and its cliff pace), **20 % of the room, a margin of 28,348**; the
-  colossus (1,875 HP, mass 8, so 0.05 to 0.075 chill a hit) 6,463, of which 1,364 frozen. No lone
-  enemy of the four ground kinds, at that HP, under Gelu I, II or III, walking through four
-  stones or set down amid eight that fire together, over three seeds, took longer than its
-  figure or stood frozen longer than its held part (with seed 1 the closest was a runner through four
-  Gelu I, 470 of its 1,209). **At the edge of refusal** (a Gelu III that freezes at once for
-  30 s and recharges a tick after the thaw, at the least damage the loader takes, 6.997) the
-  figure is the colossus's 35,279 ticks; set down amid the eight such stones one volley needs
-  to freeze it, placed together so they fire together, it stood frozen 29,667 of the figure's
-  30,180 held and was dead in 29,734: **within 1.19 of the figure**, the rest its walk, counted
-  whole though it hardly moved (one stone alone, or four it walks through, do not hold it).
-  The harshest frost the format takes (a hit every tick of 0.001 damage, chill 1, 30 s
-  freezes, 0.9 slow for 600 s) is **refused** (74,361,085 ticks for a shambler), and the
-  refusal is not empty: played anyway, its numbers put in by hand, four such stones let a lone
-  shambler through in 5,439 (each tick's four hits freeze, shatter, freeze and shatter it), but
-  two, the second placed a tick after the first, shatter and freeze it again every tick: it
-  never walked, and stood frozen 41,249 ticks, past the room, until their 0.002 a tick killed
-  it. One stone that hits a tick after each thaw for 11 of its 82.5 HP held one frozen 6,293
-  of the figure's 6,757 held (`ordinary_frost_is_inside_the_runs_cap_and_the_harshest_is_refused`,
-  `frost_with_damage_lets_a_lone_enemy_through_or_kills_it_within_its_bound`,
-  `the_stock_frost_holds_a_lone_enemy_within_its_figure_far_inside_the_runs_room`,
-  `at_the_edge_of_refusal_frost_holds_a_lone_enemy_near_its_figure`).
+  0.075 chill a hit at III) and alone against crowds. **What ends a freeze is the ice's own time, a hit that shatters it, or furor** (below, "Furor"):
+  a tier may chill and freeze with no damage at all (the third review's: chill 1, a 30 s freeze,
+  every tick, which once kept a lone shambler frozen 199,738 ticks of 200,000), and the loader no
+  longer refuses frost for how long it could hold; at its wave's hour the frozen thaw at once and
+  nothing chills them again. The stock stones hold nobody near it: the four ground kinds at the
+  largest wave scale's HP, under Gelu I, II and III, walking through four or set down amid eight
+  that fire together, over three seeds, are through or dead in minutes
+  (`the_stock_frost_lets_a_lone_enemy_through_or_kills_it_long_before_its_waves_hour`).
 - **Ventus (wind).** Deals nothing (the content refuses any damage, slow, burn or chill on a gust,
   and the wind hurts nobody on any path: what a fanned fire or a shove onto burning grass does is
   fire's). When any ground enemy is in range, one alone included (the owner: the enemy "gets
@@ -539,53 +493,19 @@ What each does, in the rules' own terms (`src/sim_elements.rs`, `src/blaze.rs`):
   lands. **The dead lean into the wind, and take one shove at a time:** each shove an enemy
   takes, from any cairn or blast, is `shove_fade` weaker than the one before (0.25 here: three
   quarters of it; a file that leaves it out gets 0.25, and it must lie between 0.05 and 1), and
-  one still being shoved is not shoved again until that shove has ended (a cairn with only such
-  enemies in range keeps its charge). **A cairn must recharge longer than its push lasts**
-  (`cooldown_s` greater than `push_s`, in ticks; refused by name otherwise): a shoved enemy does
-  not walk, so a cairn that gusted again before its last push ended held one in place (the second
-  review: a 1-tick recharge and a 5 s push kept a lone shambler at the edge of its range for 30
-  minutes and more). **What ends a hold is the fade, and the loader holds it under the run's cap**
-  (the third review: under the old fade, the n-th shove divided by 1 + n x 0.05, content the
-  format took, a push of 30 m over 5 s, held a lone shambler 399,108 ticks against a cap of
-  45,900). The n-th shove one enemy takes moves it s_n = P x k^n / m mm, rounded down at every
-  step as the rules round (`content::shove_mm`), where P is the strongest push any gust tier has,
-  k = 1 - `shove_fade` and m its mass; it stands t_n = ceil(s_n / ceil(s_n / T)) ticks of it (T
-  the push's ticks) and walks none of them; and it walks the ground back again, never more than
-  the shove took (pushed up another lane, its way is at most that much longer). So a lone enemy
-  passes within
-
-      ceil((L + sum of s_n) x 30 x 1000 / (v x p)) + sum of t_n   ticks,
-
-  summed over the shoves that move it at all (30 of them for a shambler here), where L is the
-  farthest lane cell from the graveyard on the open slab (40.1 m for a climber here, 26 m for a
-  walker), v its speed in mm/s and p its slowest pace (permille: its climb speed on cliffs, 0.6
-  for the shambler). The recharge does not enter: a cairn that recharges sooner only spends the
-  series sooner. That is `Content::wind_hold`, every term the rules' own rounding, and the loader
-  refuses content in which it is longer, for any ground enemy, than the run's cap leaves after
-  the last wave's last enemy enters (`RUN_GRACE_TICKS`, 20 minutes after the last wave begins:
-  35,280 ticks for the proving ground, whose last enemy enters 720 ticks in), naming both figures
-  and what to change (raise `shove_fade`, or lower `push_m` or `push_s`). For the stock content
-  the longest is the shambler's, **4,154 ticks** (2.3 minutes; 20.0 m of ground over 30 shoves,
-  398 ticks of them shoved). Measured on one lone enemy walking from the south-west gorge through
-  a ring of four tier-III cairns round `top:9,13`: the shambler 2,120 ticks (its figure counts its
-  whole way at its cliff pace), the bloated dead 1,684 of its 1,688, the colossus 2,401 of its
-  2,408, the runner 819 of its 1,242. The third review's extreme is **refused** (57,218 ticks
-  against 35,280); played anyway, its numbers put in by hand, the same shambler is through in
-  36,203, past the cap, as the figure says it may be. **At the edge of refusal** (a push of 14.1 m
-  over 5 s at the slowest fade, 0.05: 35,142 ticks against 35,280) it takes 26,361: the figure is
-  a third more than what a lone enemy shoved at every turn takes, that third its cliff pace
-  (`the_stock_wind_lets_a_lone_enemy_through_within_the_derived_series`,
-  `the_reviewers_extreme_wind_is_refused_and_held_by_its_series`,
-  `at_the_edge_of_refusal_the_derived_figure_is_within_twice_what_a_lone_enemy_takes`). **What the
-  series leaves to bounds of their own:** frost's freezes and earth's staggers (Gelu and Saxum:
-  each ended by the damage of the hits that bring it); stones' slows and the roots, which only
-  slow its walk (to no less than 0.1 x (1 - 0.15) of its pace here); and a leaper's chance leaps
-  (a runner rolls only when it walks onto a jump point, and each leap lengthens its way by at most
-  its ledge and `jump_detour`: at most once a jump point for each pass the wind sends it back
-  over, so at most 4 x (1 + 32) leaps for a runner here, and 15,762 ticks with its 1,242 of wind;
-  measured with a ring of cairns round each ledge over 20 seeds each, it took at most 1,173 ticks
-  and 3 leaps, and 12 of the 40 leapt:
-  `a_runners_chance_leaps_stay_within_their_stated_bound_under_the_wind`). Without the fade the first proving sweep found runs that never ended (a gust every 5 s
+  one still being shoved is not shoved again until that shove has ended. **A gust that can move
+  nobody is no gust:** with only enemies in range still being shoved, in furor, or whose series
+  has run out (their next shove from this push rounds to nothing), the cairn keeps its charge and
+  fans no fire (the fourth review: such a gust spent it;
+  `a_gust_at_the_dead_it_cannot_move_keeps_its_charge`). The fade and one shove at a time are
+  rules of play: the dead lean into the wind, and a shove runs its course. They are no longer
+  held as a bound: the loader does not refuse wind for how long it could hold a lone enemy, and a
+  cairn may recharge sooner than its push lasts (it then gusts at the others in range; the one
+  still shoved waits for its shove to end). The third review's extreme (a push of 30 m over 5 s at
+  the slowest fade, which once held a lone shambler 399,108 ticks) is legal, and furor ends it at
+  its wave's hour (below, "Furor"). The stock cairns hold nobody near that hour: a lone enemy of
+  each ground kind through a ring of four tier-III cairns is through in minutes
+  (`the_stock_wind_lets_a_lone_enemy_through_long_before_its_waves_hour`). Without the fade the first proving sweep found runs that never ended (a gust every 5 s
   pushed a wave's last shamblers back 4 m, as far as they walk in 5 s: 922 of 1,000 `fire_wind`
   runs unfinished at the time cap). Tests also hold that every wind layout ends and that
   content without the key still ends. Good for buying time, for keeping the dead in another stone's
@@ -594,15 +514,105 @@ What each does, in the rules' own terms (`src/sim_elements.rs`, `src/blaze.rs`):
 - **Saxum (earth): an upheaval.** Stone spikes erupt along the target's lane: its cell and the next
   cells of its route (2, 3, 4). Every ground enemy on them takes damage and is staggered (it stands
   0.8 to 1.2 s), and the fire on them is smothered (the burning dead put out, the fuel covered: sand
-  on flames). A heave that staggers must hurt (refused by name otherwise): every heave renews the
-  stagger, so one that dealt nothing could hold an enemy for ever; with damage it holds one for at
-  most ceil(HP / d) staggers. From tier II the spikes leave **rubble** on the farthest cell of the line a wall can
-  stand on: a wall worth nothing (no refund), with its own HP, that blocks and re-routes like the
-  player's walls, that the dead break and the exploding dead blast, and that crumbles by itself
-  after 6 or 8 s. The two other first thoughts were weighed and set aside: a *tremor* ring (a
-  slowing ring is the rune pillar's job already) and a *boulder* loosed down a lane (a rolling body
-  needs physics bodies in the rules, which the wind's design below defers; it is the natural
-  tier-III variant once that seam is handed over).
+  on flames). Every heave renews the stagger, and a heave may deal nothing (the fourth review's:
+  0.01 damage and a 10 s stagger every 9.9 s once held a lone shambler 200,000 ticks); what ends a
+  stagger renewed without end is furor (below). From tier II the spikes leave **rubble** on the
+  farthest cell of the line a wall can stand on: a wall worth nothing (no refund), with its own HP,
+  that blocks and re-routes like the player's walls, that the dead break and the exploding dead
+  blast, and that crumbles by itself after 6 or 8 s.
+  **Rubble is temporary, by its own rules** (the owner, 2026-11-28: "Add health bar to that stone
+  instead, rendering those stones in the path as temporary"; asked which they meant, rubble only,
+  and furor for the rest). It goes when the dead have broken it or when its life ends, whichever
+  comes first, and nothing gives either back: **a heave never raises rubble where a wall stands**,
+  so standing rubble keeps the health the dead have left it and the tick it crumbles. And **a cell
+  whose rubble has gone (broken, blasted, crumbled, taken down) takes no rubble again while any of
+  the dead living at that moment still stands**: the rules keep, for each such cell, the id the
+  next enemy would have had then (`World::spent`, saved and hashed), and refuse rubble on it while
+  any living enemy's id is below it. Whoever that rubble stopped or held up is among those dead, so
+  rubble never stands twice on a cell in front of the same enemy: in one enemy's life each cell
+  holds it up at most once, each time at most the lesser of the rubble's life and the time its
+  claws take to break it (HP divided by its `wall_dps`). Rubble by itself holds nobody for ever,
+  furor or not. The fourth review's case (a heave of no damage raising 2,000 HP of rubble for 60 s
+  every second, before a lone shambler that breaks 12 HP a second: it stood 100,000 ticks at full
+  health, 168 rubbles raised as each crumbled) now lets it through in **6,319 ticks** with furor
+  switched off: 12 rubbles, never two on a cell, each holding it at most 1,800 ticks, against 975
+  ticks for the same heave with no rubble
+  (`the_reviews_rubble_lets_a_lone_enemy_through_by_its_own_rule`,
+  `a_heave_never_restores_standing_rubble`, `a_cell_whose_rubble_went_takes_none_while_its_dead_stand`).
+  **Rubble shows its health**: the app draws a bar over its cell from the tick it rises, full, and
+  emptying as the dead break it or as its life runs out, showing the lesser of the two
+  (`RubbleStand::left_permille`; the app's `a_rubble_bar_shows_the_lesser_of_its_health_and_its_life`).
+  The app drew no bar before, so this one is its own look: a dark back and a pale green fill that
+  shrinks from the right, 1.6 m over the cell. The two other first thoughts were weighed and set
+  aside: a *tremor* ring (a slowing ring is the rune pillar's job already) and a *boulder* loosed
+  down a lane (a rolling body needs physics bodies in the rules, which the wind's design below
+  defers; it is the natural tier-III variant once that seam is handed over).
+
+### Furor: one rule for every hold
+
+Four reviews each found legal content that held a lone enemy for ever: the wind, then frost, then
+earth's stagger and its rubble and a slow under the wind. Each answer was a bound for one stone,
+checked when content loaded, and each left the next stone and every combination open; the fourth
+review measured the loader refusing content that was in fact harmless (364 of 364 refused wind
+contents, and 477 of 480 frost, finished inside the run's room). The class is one, **content can
+renew a hold without limit**, so it is closed once, in the rules (the lead and the owner,
+2026-11-28; it applies to every content, the shipped maps included, which never reach it):
+
+- **A wave's hour** is twenty minutes (`WAVE_HOUR_TICKS`, 36,000 ticks, the room a run has always
+  had) after its last entry. Any enemy of that wave still standing at its hour is **in furor** from
+  that tick (`Event::Furor`, once). It is decided by ticks alone, from the wave's start, which
+  every save and every hash already hold: furor has no state of its own, so a save taken in furor
+  loads in furor and steps alike, and no save layout changed for it.
+- **Nothing holds it.** It cannot be frozen, chilled, staggered, shoved (by a gust or a blast),
+  slowed by a stone or rooted; whatever holds or slows it at that tick ends at once (a freeze thaws,
+  without the wet). One function answers "can this enemy be held" (`World::can_hold`), and every
+  writer of a hold asks it: the chill and freeze (`chill_as`), the stagger (`heave`), the shove
+  (`shove`, for gusts and bursts; and a gust counts no such enemy, so it keeps its charge), the
+  stone's slow (`slow_enemy`), and the roots and slow in its pace (`speed_permille`).
+- **No rubble stands while any of the dead is in furor**: all of it crumbles at once, and no heave
+  raises any (the backstop; rubble's own rule above already makes it temporary). This is wider
+  than "in front of it" on purpose: with the slab open, its way is the open slab's.
+- **It calls no summons** (the colossus): what its wave was to bring has come by its hour, so no
+  enemy of a wave is born after it.
+- **Damage is unchanged**: it can still be killed, burnt and struck. Chance leaps are its own
+  nature and stay (bounded below). The walls the player builds stay too: they are the player's,
+  not content's.
+- What else stops or lengthens an enemy's way, and why it needs nothing more: a shove up another
+  lane (a shove, so ended); a stagger grounding lightning (a stagger); a frozen exploder that
+  cannot burst (a freeze); a stranded enemy (removed after 5 s, and validated content strands
+  nobody); a flyer's circling (its own number of hops, not renewable).
+
+**So a run's length is a sum the rules state** (`Content::run_bound`, and `script::run` stops at
+exactly that figure):
+
+    ticks = hour + walk + leaps + 1
+
+where `hour` is the latest hour of any wave on its schedule (the build time and the durations of
+the waves before it, its last entry, and 36,000: a wave called early only begins sooner); `walk`
+is the longest any kind then takes to go the rest of its way, unhindered: the farthest lane cell
+from the graveyard on the open slab plus one edge (it may stand between two cells or on a leap), at
+its own slowest pace (a climber's whole way at its climb speed), or for a flyer its most ring hops
+and its dive; and `leaps` is what a leaper's chance leaps can add with no shove to send it back:
+once at each jump point, each adding at most its ledge and its `jump_detour`. The one tick is the
+step that ends it. For the proving ground: 46,620 + 2,757 + 440 + 1 = **49,818 ticks** (27.7
+minutes); for the shipped map, 56,700 + 2,757 + 440 + 1 = 59,898. The only thing outside it is the
+player's own walls: a run whose walls of a million HP close every gate stops at exactly the figure
+(`a_run_that_cannot_end_stops_at_its_stated_length`).
+
+**What holds it, and what was removed.** A property test draws random legal content over the
+whole format, weighted on its extremes (no damage, the longest freeze and stagger, the slowest
+recharge and the fastest, the largest push, slows of 0.9 for 600 s, rubble of any health and life,
+up to twelve stones of mixed kinds along one lane), and plays on each a lone enemy of each kind and
+a whole wave: every run ends inside the figure, nobody left standing; the third and fourth
+reviews' extremes are fixed cases in it (`every_run_ends_inside_its_stated_length`; and a release
+run of a hundred times as many contents). A new stone that holds in a new way fails it until furor
+covers it. Removed with this: the loader's wind and frost checks and their figures
+(`check_wind`, `wind_hold`, `check_frost`, `frost_hold`), the refusal of a tier that chills,
+freezes or staggers with no damage, the rule that a cairn recharge longer than its push lasts (it
+served only the wind's bound; one shove at a time does its play's part), and their tests. Stock
+content never reaches a wave's hour: over three seeds of every proving and shipped layout no enemy
+enters furor, and the longest any wave's dead stood past its last entry was 4,170 ticks, under a
+ninth of the hour (`no_stock_run_reaches_a_waves_hour`).
 
 ### The exploding dead (Tumidus)
 
@@ -916,17 +926,12 @@ What it says, read honestly:
   than before (68.8 % from 77.4 %): a lone enemy is pushed back less often now, and so is less
   often kept in the rime stone's range. That is the shape of
   the owner's "non damage" stone; its numbers (range, push, recharge) are what to tune.
-- **A lone enemy is not held for ever, by three rules of the loader:** frost and earth that hold
-  must hurt (Gelu, Saxum above), frost is held under the run's cap by its own bound (Gelu), and
-  the wind is held by its own series: each shove of one enemy
-  is `shove_fade` weaker than the one before and comes only after the last has ended, so a lone
-  enemy passes within ceil((L + sum of s_n) x 30 x 1000 / (v x p)) + sum of t_n ticks, which the
-  loader refuses past the run's cap ("Ventus" above). Two claims made here before were false:
-  that the fade alone ends every hold (the second review: a cairn that recharges before its push
-  ends held one; refused since), and that "the tightest wind the content allows" was a ring of
-  four 5 m cairns with a bound of 51,752 ticks (the third review: the format took a 30 m push at
-  the slowest fade, which held one 399,108 ticks; what the loader allows is now what the series
-  allows). With one alone pushed, every run of every wind layout ended.
+- **A lone enemy is not held for ever, by one rule of the game: furor** ("Furor" above). Four
+  rounds of bounds held at load, one stone at a time, each found false by the next review (the
+  fade alone, a cairn that recharged before its push ended, a 30 m push at the slowest fade, frost
+  of no damage, earth of a thousandth of damage, rubble raised again as it crumbled, a slow under
+  the wind); they are gone. Every run of every layout ends, and no stock run comes near a wave's
+  hour.
 - **Earth's pairs kill the most** (155 kills: the rubble re-routes and the colossus summons more
   while it is held), and earth + fire runs longest of the 100 % layouts (6:57).
 - **The exploding dead rarely reach a wall** (at most 1.2 bursts on walls a run in the sweep of
