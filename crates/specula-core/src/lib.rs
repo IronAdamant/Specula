@@ -39,3 +39,46 @@ pub fn speed_budget(tight: std::time::Duration) -> std::time::Duration {
         tight.max(std::time::Duration::from_secs(5))
     }
 }
+
+/// How long a test waits for work it is owed (a model build, a GPU fence, a worker's answer)
+/// before it calls the wait a hang and says what it was waiting for. It never decides a
+/// result: a test waits on the thing itself (a join, a channel, the build's own completion),
+/// and this bound only turns a hang into a failure that names itself, well inside the gate's
+/// time limit for a step (45 minutes and more). Ten minutes: on a loaded machine a whole GPU
+/// test has taken eight, never one wait of this length (2026-11-24). It is the one bound for
+/// this, so that no test picks a short one of its own: 10, 20, 30 and 60 s stood before it,
+/// and the 60 ran out once.
+#[doc(hidden)]
+pub const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Tests only: ends the test process when a wait with no bound of its own (a join on a GPU
+/// pipeline build: a hung driver never returns) has not ended in [`HANG_BOUND`], saying what
+/// it was waiting for, so that the hang fails by name and not by the gate's time limit for a
+/// whole step. Armed before the wait, dropped after it. The message is a panic's (the standard
+/// hook prints it, on a thread of its own), and then the process aborts: a panic on that
+/// thread alone would end only it, and the waiting thread would go on hanging.
+#[doc(hidden)]
+pub struct Watchdog {
+    _disarm: std::sync::mpsc::Sender<()>,
+}
+
+impl Watchdog {
+    /// Arms a watchdog for the wait named `what`, of [`HANG_BOUND`].
+    pub fn arm(what: &str) -> Watchdog {
+        Watchdog::arm_for(what, HANG_BOUND)
+    }
+
+    /// Arms a watchdog of `bound` (its own tests use a short one).
+    pub fn arm_for(what: &str, bound: std::time::Duration) -> Watchdog {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let what = what.to_owned();
+        // (A watchdog that cannot start a thread watches nothing: the wait is as it was.)
+        let _ = std::thread::Builder::new().name("specula-watchdog".into()).spawn(move || {
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(bound) {
+                let _ = std::panic::catch_unwind(|| panic!("hung: {what} has not ended in {bound:?}"));
+                std::process::abort();
+            }
+        });
+        Watchdog { _disarm: tx }
+    }
+}
