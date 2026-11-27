@@ -328,9 +328,67 @@ pub struct Elements {
     pub gust_ticks: u32,
     /// Chill an enemy loses per tick (permille).
     pub chill_fade: i32,
-    /// The dead lean into the wind: the n-th shove an enemy takes is divided by 1 + n x this
-    /// (permille), so repeated gusts cannot hold one back for ever (the sweep found such a stall).
+    /// The dead lean into the wind: each shove an enemy takes, from any cairn or blast, is this
+    /// much (permille) weaker than the one before it ([`shove_mm`]), so the ground and the time
+    /// the wind can take from one enemy are sums of a geometric series, which the loader holds
+    /// under the run's cap ([`Content::wind_hold`]; the first sweep found a stall without it).
     pub shove_fade: i32,
+}
+
+/// How far the shove an enemy takes after `n` others moves it (mm): `push` (mm, on mass 1)
+/// divided by the enemy's `mass` (permille), times `keep` permille once for each shove before
+/// it, rounded down at every step (`keep` is 1000 less [`Elements::shove_fade`]). Once the share
+/// reaches 0 it stays 0: no shove moves that enemy again. The rules ([`crate::sim`]'s shove) and
+/// the loader's bound ([`Content::wind_hold`]) both read it, so the bound is the rules' series.
+pub fn shove_mm(push: i32, mass: i32, keep: i32, n: u16) -> i32 {
+    let mut share = SHOVE_WHOLE;
+    for _ in 0..n {
+        share = share * i64::from(keep) / 1000;
+        if share == 0 {
+            return 0;
+        }
+    }
+    shove_of(push, mass, share)
+}
+
+/// A whole shove's share, in millionths.
+const SHOVE_WHOLE: i64 = 1_000_000;
+
+fn shove_of(push: i32, mass: i32, share: i64) -> i32 {
+    (i64::from(push) * 1000 / i64::from(mass.max(1)) * share / SHOVE_WHOLE).min(i64::from(i32::MAX)) as i32
+}
+
+/// The ticks a shove of `s` mm over `push_ticks` takes: it moves `ceil(s / push_ticks)` mm a
+/// tick (at least 1) until it is spent, and the enemy walks none of them.
+pub fn shove_ticks(s: i32, push_ticks: u32) -> u32 {
+    if s <= 0 {
+        return 0;
+    }
+    let t = push_ticks.max(1) as i32;
+    let rate = (s + t - 1) / t;
+    ((s + rate - 1) / rate) as u32
+}
+
+/// A run stops this long after its last wave begins ([`crate::script::run`]'s cap), and the
+/// loader refuses wind that could keep one lone enemy from passing within it.
+pub const RUN_GRACE_TICKS: u32 = 20 * 60 * TICK_HZ;
+
+/// What the wind can cost one lone enemy of a kind ([`Content::wind_hold`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindHold {
+    pub kind: EnemyKind,
+    /// The longest way it can have to walk with no wind (mm): the farthest lane cell from the
+    /// graveyard on the open slab.
+    pub lane: i32,
+    /// The most ground every gust together can take from it (mm): the series' sum.
+    pub ground: i64,
+    /// The shoves that move it at all (after these, each rounds to 0 mm).
+    pub shoves: u32,
+    /// The most ticks it can stand being shoved (it walks none of them).
+    pub shoved: u64,
+    /// The most ticks it can take to pass: walking `lane + ground` at its slowest own speed,
+    /// plus `shoved`.
+    pub ticks: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -365,6 +423,7 @@ impl Content {
         let mut c = Content { map: map_v, stones: stone_defs, enemies: enemy_defs, waves: wave_defs, rules, fuel, uses_elements: false, hash: 0 };
         c.uses_elements = c.compute_elemental();
         check_elements(&c)?;
+        check_wind(&c)?;
         c.hash = content_hash(&c);
         Ok(c)
     }
@@ -386,6 +445,82 @@ impl Content {
         self.rules.elements.on
             || self.stones.iter().any(|s| s.attack.is_elemental() || s.tiers.iter().any(|t| !t.el.is_zero()))
             || self.enemies.iter().any(|e| e.mass != 1000 || e.sapper || e.burst.is_some())
+    }
+
+    /// What the wind can cost one lone enemy of `kind` (DESIGN.md, "Ventus"); `None` when no gust
+    /// moves it (a flyer: the wind shoves only along lanes; or content with no gust).
+    ///
+    /// The rules give the series. Across every cairn, one enemy's n-th shove moves it
+    /// s_n = [`shove_mm`] of a gust's push, so at most the strongest push any gust tier has; it
+    /// takes one shove at a time (a gust does not reach an enemy whose last shove has not
+    /// ended), stands for [`shove_ticks`] of it, and walks the ground back again, never more than
+    /// the shove took (pushed up another lane, its way is at most that much longer). So a lone
+    /// enemy passes within
+    ///
+    /// `ceil((lane + Σ s_n) · TICK_HZ · 1000 / (speed · pace)) + Σ ticks(s_n)` ticks,
+    ///
+    /// summed over the shoves that move it at all, where `lane` is the farthest lane cell from
+    /// the graveyard and `pace` its slowest own pace (permille: its climb speed on cliffs). The
+    /// cooldown does not enter: a cairn that recharges sooner only spends the series sooner.
+    /// Every term is the rules' own rounding, so this is the series, not an estimate. Left to
+    /// their own bounds (DESIGN.md): frost's freezes and earth's staggers (each ended by the
+    /// damage of the hits that bring them), stones' slows and roots (at most 0.9 and
+    /// `nature.slow`), and a leaper's chance leaps (each at most `jump_detour` and its ledge).
+    pub fn wind_hold(&self, kind: EnemyKind) -> Option<WindHold> {
+        let fields = crate::path::Fields::build(&self.map, &vec![false; self.map.cells().len()], self.rules.wall.breach_penalty);
+        self.wind_hold_on(&fields, kind)
+    }
+
+    fn wind_hold_on(&self, fields: &crate::path::Fields, kind: EnemyKind) -> Option<WindHold> {
+        let def = self.enemy(kind);
+        let gusts: Vec<(i32, u32)> = self
+            .stones
+            .iter()
+            .filter(|s| s.attack == Attack::Gust && s.targets.hits(false))
+            .flat_map(|s| s.tiers.iter().map(|t| (t.el.push, t.el.push_ticks)))
+            .collect();
+        if def.flies() || gusts.is_empty() {
+            return None;
+        }
+        let class = if def.climbs() { crate::path::Class::Climber } else { crate::path::Class::Walker };
+        let lane = (0..self.map.cells().len())
+            .map(|i| fields.remaining(class, def.leaps, CellId(i as u16)))
+            .filter(|&d| d != crate::path::UNREACHABLE)
+            .max()
+            .unwrap_or(0);
+        let keep = i64::from(1000 - self.rules.elements.shove_fade.clamp(0, 1000));
+        let (mut ground, mut shoved, mut shoves) = (0i64, 0u64, 0u32);
+        let mut share = SHOVE_WHOLE;
+        while share > 0 {
+            let s = gusts.iter().map(|&(push, _)| shove_of(push, def.mass, share)).max().unwrap_or(0);
+            if s <= 0 || shoves == u32::from(u16::MAX) {
+                break;
+            }
+            if keep >= 1000 {
+                // No fade: the series does not end (the parser never gives a gust this).
+                return Some(WindHold { kind, lane, ground: i64::MAX, shoves: u32::MAX, shoved: u64::MAX, ticks: u64::MAX });
+            }
+            ground += i64::from(s);
+            shoved += gusts.iter().map(|&(push, pt)| u64::from(shove_ticks(shove_of(push, def.mass, share), pt))).max().unwrap_or(0);
+            shoves += 1;
+            share = share * keep / 1000;
+        }
+        let pace = if def.climbs() { i64::from(def.climb_speed.clamp(1, 1000)) } else { 1000 };
+        let per = i64::from(def.speed.max(1)) * pace;
+        let walk = (i64::from(lane) + ground) * i64::from(TICK_HZ) * 1000;
+        let walk = ((walk + per - 1) / per) as u64;
+        Some(WindHold { kind, lane, ground, shoves, shoved, ticks: walk + shoved })
+    }
+
+    /// The longest [`Content::wind_hold`] of any enemy kind.
+    pub fn longest_wind_hold(&self) -> Option<WindHold> {
+        let fields = crate::path::Fields::build(&self.map, &vec![false; self.map.cells().len()], self.rules.wall.breach_penalty);
+        (0..self.enemies.len()).filter_map(|k| self.wind_hold_on(&fields, EnemyKind(k as u8))).max_by_key(|h| (h.ticks, std::cmp::Reverse(h.kind)))
+    }
+
+    /// Ticks after the last wave begins that its last enemy enters.
+    pub fn last_entry(&self) -> u32 {
+        self.waves.last().map_or(0, |w| w.groups.iter().map(|g| g.start + u32::from(g.count.saturating_sub(1)) * g.every).max().unwrap_or(0))
     }
 
     /// Is `cell` fuel?
@@ -684,6 +819,16 @@ fn check_tier(to: &Obj, attack: Attack, tier: &Tier) -> Result<(), DataError> {
             }
         }
     }
+    // What holds an enemy in place must hurt it: the frozen stand until a hit with damage
+    // shatters the ice, and the staggered until it ends, so a tier with no damage could hold a
+    // lone enemy for ever (review 3: frozen 199,738 of 200,000 ticks). With damage, every hit
+    // that freezes or staggers takes HP, so the enemy dies or walks on (DESIGN.md, "Gelu").
+    if (el.chill > 0 || el.freeze_ticks > 0) && tier.damage <= 0 {
+        return Err(to.err("damage", ErrorCode::Invalid, "a tier that chills or freezes must hurt (damage > 0): the frozen stand until a hit with damage shatters the ice"));
+    }
+    if el.stagger_ticks > 0 && tier.damage <= 0 {
+        return Err(to.err("damage", ErrorCode::Invalid, "a heave that staggers must hurt (damage > 0): the staggered stand while it lasts"));
+    }
     if el.chill > 0 && el.freeze_ticks == 0 {
         return Err(to.err("freeze_s", ErrorCode::Invalid, "chill needs freeze_s (how long a freeze lasts)"));
     }
@@ -742,9 +887,10 @@ fn parse_elements(o: &Obj, map: &Map) -> Result<(Elements, Vec<CellId>), DataErr
         lean: permille(o.num("lean", 0.0, 0.95)?),
         gust_ticks: ticks(o.num("gust_s", 0.0, 60.0)?),
         chill_fade: (1000 / fade as i32).max(1),
-        // Never 0: without it repeated gusts can hold the dead for ever (the first proving
-        // sweep's stall), so a file that leaves it out gets the proving ground's 0.5.
-        shove_fade: permille(o.num_or("shove_fade", 0.5, 0.05, 10.0)?),
+        // At least 0.05: without a fade repeated gusts can hold the dead for ever (the first
+        // proving sweep's stall), so a file that leaves it out gets the proving ground's 0.25;
+        // at 1 an enemy feels only its first shove.
+        shove_fade: permille(o.num_or("shove_fade", 0.25, 0.05, 1.0)?),
     };
     let mut fuel = Vec::new();
     for (i, f) in o.arr("fuel")?.iter().enumerate() {
@@ -769,10 +915,8 @@ fn parse_elements(o: &Obj, map: &Map) -> Result<(Elements, Vec<CellId>), DataErr
     }
     fuel.sort();
     fuel.dedup();
-    // Every cell that burns is drawn as grass, and the app draws at most this many patches.
-    if fuel.len() > crate::fuel::MAX_GRASS {
-        return Err(o.err("fuel", ErrorCode::OutOfRange, format!("{} cells burn; at most {} (every cell that burns is drawn as grass)", fuel.len(), crate::fuel::MAX_GRASS)));
-    }
+    // As many cells may burn as the slab has: what the app can draw of them is the app's
+    // budget, not a rule (it draws the fuel first and says what it leaves out).
     Ok((el, fuel))
 }
 
@@ -787,6 +931,28 @@ fn check_elements(c: &Content) -> Result<(), DataError> {
         }
     }
     Ok(())
+}
+
+/// The wind may push the dead back, never hold one for longer than a run lasts: the longest a
+/// lone enemy can take to pass under every gust ([`Content::wind_hold`]), counted from when the
+/// last wave's last enemy enters, must end within the run's cap ([`RUN_GRACE_TICKS`] after the
+/// last wave begins). Content past it is refused, naming both figures and what to change.
+fn check_wind(c: &Content) -> Result<(), DataError> {
+    let Some(h) = c.longest_wind_hold() else { return Ok(()) };
+    let room = u64::from(RUN_GRACE_TICKS.saturating_sub(c.last_entry()));
+    if h.ticks <= room {
+        return Ok(());
+    }
+    let name = &c.enemy(h.kind).id;
+    Err(DataError::new(
+        "stones.json",
+        "elements.shove_fade",
+        ErrorCode::OutOfRange,
+        format!(
+            "the wind could keep a lone {name} from passing for {} ticks ({} mm of ground over {} shoves, {} ticks of them shoved), past the {room} ticks the run's cap leaves after the last wave's last enemy enters: raise elements.shove_fade, or lower the gusts' push_m or push_s",
+            h.ticks, h.ground, h.shoves, h.shoved
+        ),
+    ))
 }
 
 fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
@@ -1133,6 +1299,9 @@ fn hash_of(c: &Content, props: bool) -> u64 {
     // The elements, only when the content has any: the shipped maps hash as before them.
     if c.elemental() {
         h.write_str("elements");
+        // Shoves fade geometrically and one at a time (the rules of 2026-11-28): content hashed
+        // under the earlier fade is not this content.
+        h.write_str("shove series");
         let e = &r.elements;
         h.write_bool(e.on);
         for v in [e.spread_ticks, e.cell_burn_ticks, e.catch_ticks, e.wet_ticks, e.gust_ticks] {

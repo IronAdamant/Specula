@@ -56,9 +56,6 @@ impl EnemyEl {
     }
 }
 
-/// The most shoves one enemy takes: after this many, no gust or blast moves it again.
-pub const MAX_SHOVES: u16 = u16::MAX;
-
 /// In the air between two cells of a leap edge (a climber's jump): no shove reaches it.
 fn mid_leap(e: &Enemy) -> bool {
     matches!(e.motion, Motion::Ground { progress, len, leap: true, .. } if len > 0 && progress > 0 && progress < len)
@@ -157,23 +154,24 @@ impl World {
         }
     }
 
-    /// Gives enemy `i` a shove of `push` mm (mass 1) over `ticks`. The n-th shove an enemy
-    /// takes is divided by 1 + n x `shove_fade`, and one shoved [`MAX_SHOVES`] times is not
-    /// moved again: no wind holds one of the dead for ever.
+    /// Gives enemy `i` a shove of `push` mm (mass 1) over `ticks`, if it is not being shoved
+    /// already: **one shove at a time** (a cairn's gust or a blast does not reach an enemy whose
+    /// last shove has not ended). Each shove an enemy takes is `shove_fade` weaker than the one
+    /// before ([`crate::content::shove_mm`]), so what the wind can take from one enemy is a
+    /// geometric series, which the loader holds under the run's cap ([`Content::wind_hold`]).
     fn shove(&mut self, content: &Content, i: usize, push: i32, ticks: u32) {
         let e = &mut self.enemies[i];
-        if e.el.shoves == MAX_SHOVES {
+        if e.el.shove > 0 {
             return;
         }
-        let mass = content.enemy(e.kind).mass.max(1);
-        let fade = 1000 + i64::from(content.rules.elements.shove_fade) * i64::from(e.el.shoves);
-        let s = (i64::from(push) * 1000 / i64::from(mass) * 1000 / fade) as i32;
+        let keep = 1000 - content.rules.elements.shove_fade;
+        let s = crate::content::shove_mm(push, content.enemy(e.kind).mass, keep, e.el.shoves);
         e.el.shoves = e.el.shoves.saturating_add(1);
         if s <= 0 {
             return;
         }
-        e.el.shove = e.el.shove.max(s);
-        e.el.shove_rate = (e.el.shove + ticks.max(1) as i32 - 1) / ticks.max(1) as i32;
+        e.el.shove = s;
+        e.el.shove_rate = (s + ticks.max(1) as i32 - 1) / ticks.max(1) as i32;
     }
 
     /// The hit that shatters a frozen enemy: the freeze ends, the hit gains its bonus.
@@ -342,13 +340,14 @@ impl World {
         true
     }
 
-    /// Wind: no damage. When any enemy is in range (one alone too: the owner's words are that
-    /// the enemy "gets pushed back in their lane"), every one in range is shoved back along its
-    /// path (÷ its mass), a burning one is fanned (its fire renewed), the wind lingers over the
-    /// area and leans the slab's fire, and the stone's charge is spent.
+    /// Wind: no damage. When any enemy in range can be shoved (one alone too: the owner's words
+    /// are that the enemy "gets pushed back in their lane"; one still being shoved cannot), every
+    /// such one is shoved back along its path (÷ its mass), a burning one is fanned (its fire
+    /// renewed), the wind lingers over the area and leans the slab's fire, and the stone's charge
+    /// is spent. With only enemies still being shoved in range, the cairn keeps its charge.
     pub(super) fn gust(&mut self, content: &Content, cell: CellId, c: &Cell, def: &StoneDef, t: &Tier, ev: &mut Vec<Event>) -> bool {
         let el = t.el;
-        let idx: Vec<usize> = (0..self.enemies.len()).filter(|&i| self.eligible(content, c, def, t, &self.enemies[i])).collect();
+        let idx: Vec<usize> = (0..self.enemies.len()).filter(|&i| self.enemies[i].el.shove == 0 && self.eligible(content, c, def, t, &self.enemies[i])).collect();
         if idx.is_empty() {
             return false;
         }

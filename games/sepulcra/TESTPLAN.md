@@ -187,7 +187,14 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
       It does not stop fire carried by the dead: a burning one that walks across lights the grass
       on the far side (DESIGN.md, "What burns on the slab").
 - [ ] Grass is drawn on every cell that burns, the dry stretches on the lanes included (a
-      placeholder patch there): no fire on what looks like bare stone.
+      placeholder patch there): no fire on what looks like bare stone. **What is drawn now:** the
+      proving ground's fuel is exactly the app's 72 patches (the rock's-edge grass less the
+      graveyard's, and the two dry stretches), so the graveyard has **no grass** on the proving
+      ground (it had 7 patches before the fuel filled the budget); *(look)* the graveyard's slabs
+      bare, every grass patch elsewhere on fuel. The shipped map's grass is as it was.
+- [ ] Content with more fuel than 72 cells loads (the rules hold no drawing budget): the app
+      draws 72 of them and its trace says `sepulcra.grass_dropped` (a warning) with how many burning
+      cells it left out.
 - [ ] Fire ends: a cell burns about 8 s and is spent (char), a burning one of the dead burns out
       after its time.
 - [ ] Headless: `elements:` in a single run's report counts ignitions, bursts and fuel cells caught
@@ -220,6 +227,8 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
 - [ ] Fire on a frozen one thaws it at once (steam) instead of burning it, a Rogus lob included
       (its damage shatters the ice; it does not set the enemy alight, nor light a Tumidus's fuse).
 - [ ] Frost on a burning one puts it out; rime on a cell stops the grass fire there.
+- [ ] Frost must hurt: a Gelu tier that chills or freezes with no damage is refused (`damage`
+      named); with damage, a lone one under frost is killed or walks on (DESIGN.md, "Gelu").
 - [ ] The colossus barely chills (mass 8); Gelu is weak against it.
 
 ### 12.5 Wind (Ventus): no damage, through the push, then recharge
@@ -227,8 +236,13 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
 - [ ] With any of the dead in range, one alone included, a gust shoves them all back along their
       lane (runners farther, the colossus hardly at all); nobody loses a hit point to it.
 - [ ] A cairn whose recharge is not longer than its push is refused (`cooldown_s` named).
-- [ ] Repeated gusts cannot hold one for ever: each later shove it takes is weaker, and a lone
-      one held by several cairns still reaches the graveyard.
+- [ ] Repeated gusts cannot hold one for ever: each shove it takes is a quarter weaker than the
+      one before (`shove_fade` 0.25), from whichever cairn, it is not shoved again until a shove
+      has ended (a cairn keeps its charge meanwhile), and a lone one held by several cairns still
+      reaches the graveyard.
+- [ ] Content whose wind could keep a lone one from passing past the run's cap is refused when it
+      loads, naming both figures (DESIGN.md, "Ventus": the third review's push of 30 m over 5 s at
+      the slowest fade is refused: 57,218 ticks against 35,280).
 - [ ] A leaper in mid-air is not stopped in the air: the gust's shove takes it when it lands.
 - [ ] The cairn then recharges: no second gust before its cooldown (6 s at tier I), whatever is in
       range; *(look)* a charge the player sees filling.
@@ -243,6 +257,8 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
       damage and a short stagger to all on them (*look:* spikes rising from the slab and sinking,
       a crack, a rumble, dust).
 - [ ] The heave puts out the fire on its cells (sand on flames).
+- [ ] A heave that staggers with no damage is refused (`damage` named): a stagger renewed by every
+      heave must cost HP.
 - [ ] From tier II, rubble rises on the farthest cell: a wall worth nothing that blocks and
       re-routes, that the dead break and Tumidus blasts, and that crumbles by itself (6 s, 8 s).
 

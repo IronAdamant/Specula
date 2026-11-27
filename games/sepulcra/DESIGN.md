@@ -428,7 +428,8 @@ them does:
   lightning effects are shown to a person; the engine's tests read Sepulcra's assets
   (`cargo test -p specula --lib`), so the new models and sounds must pass them.
 - *The grass:* fuel on map 1 changes what grass is drawn, within the app's budget of 72 patches
-  (every cell that burns is drawn first; see "What burns on the slab").
+  (every cell that burns is drawn first, and the proving ground's 72 fill it: see "What burns on
+  the slab").
 - *The owner's two open questions* (the blast's radius, fire on the roots of nature) decide numbers,
   and the wind's hold ("Ventus" below) is closed before the wind reaches players.
 
@@ -472,7 +473,20 @@ What each does, in the rules' own terms (`src/sim_elements.rs`, `src/blaze.rs`):
   thaws after its time and leaves the enemy **wet** for 4 s. Frost on a burning enemy puts it out;
   frost lays rime on the target's cell, which the grass fire does not cross while it lasts. Good
   against the exploding dead and the colossus's escort; poor against the colossus itself (mass 8:
-  0.075 chill a hit at III) and alone against crowds.
+  0.075 chill a hit at III) and alone against crowds. **Frost must hurt:** a tier that chills or
+  freezes and deals no damage is refused by name (the third review: such a tier, firing every
+  tick, kept a lone shambler frozen 199,738 of 200,000 ticks, since only a hit with damage
+  shatters the ice). With damage, a lone enemy is killed or walks on: every freeze starts with a
+  hit and every hit takes at least d (the least damage of a chilling tier), so it stands at most
+  ceil(HP / d) freezes of at most F ticks each (F the longest freeze), and it passes or dies
+  within its walk at the slowest slow plus ceil(HP / d) x (F + 1) ticks (one more a freeze for
+  the part-millimetre a freeze drops). For the harshest frost the format takes (a hit every tick
+  of 0.001 damage, chill 1, 30 s freezes, 0.9 slow for 600 s) that is 49,580,063 ticks for a
+  shambler (55 HP: 55,000 hits), and four such stones let it through in 5,439; one stone that
+  hits just after each thaw for a fifth of its HP holds it 4,083 ticks of its 7,012
+  (`frost_with_damage_lets_a_lone_enemy_through_or_kills_it_within_its_bound`). That bound is not
+  held to the run's cap by the loader, as the wind's is: frost of very little damage can still
+  keep a lone enemy past the cap, for a bounded time.
 - **Ventus (wind).** Deals nothing (the content refuses any damage, slow, burn or chill on a gust,
   and the wind hurts nobody on any path: what a fanned fire or a shove onto burning grass does is
   fire's). When any ground enemy is in range, one alone included (the owner: the enemy "gets
@@ -482,38 +496,64 @@ What each does, in the rules' own terms (`src/sim_elements.rs`, `src/blaze.rs`):
   fire; and the cairn's charge is spent. It cannot gust again until it has **recharged** (its
   cooldown, 6 s, 5 s, 4 s), and the charge is a number the HUD can draw filling
   (`State::charge`). A leaper in mid-air is not caught: the shove waits and takes it when it
-  lands. **The dead lean into the wind:** the n-th shove an enemy takes is divided by 1 + n ×
-  `shove_fade` (0.5 here; a file that leaves it out gets 0.5, and less than 0.05 is refused), and
-  `MAX_SHOVES`: one shoved 65,535 times is not moved again, a hard bound nobody should reach, not
-  what ends a hold. **A cairn must recharge longer than its push lasts** (`cooldown_s` greater
-  than `push_s`, in ticks; refused by name otherwise): a shoved enemy does not walk, so a cairn
-  that gusted again before its last push ended held one in place (the second review: a 1-tick
-  recharge and a 5 s push kept a lone shambler at the edge of its range for 30 minutes and more).
-  **What ends a hold is the fade, and it has a bound.** A shove of s mm holds the enemy at most
-  min(P, s) ticks (P the push's ticks), and a cairn gusts at most once in any C ticks (its
-  recharge), so with k cairns a window of C ticks holds at most k gusts. To keep the enemy from
-  walking for a whole window takes g gusts with g · min(P, s) at least C: never one (P < C, the
-  rule), two while s ≥ C/2, three while s ≥ C/3, and so on, and each such window spends g of the
-  shoves that shrink s. That caps the windows of full hold; after them, k gusts cover less than a
-  window, and once s < C/(2k) the enemy walks at least half of every window and is pushed back at
-  most C/2 mm in it. For the tightest wind the content allows on one lone shambler (four tier-III
-  cairns in a ring, each recharging 19 ticks against an 18-tick push of 5 m, and Gelu III on it as
-  well, which keeps it frozen at most half the time: a freeze is shattered by the next bolt and a
-  new one takes two more hits) the bound is **51,752 ticks (28.8 minutes)**; measured, it gets
-  through in **7,765 ticks (4.3 minutes, 1,134 gusts)**. The bound is longer than a run's own time
-  cap (20 minutes after the last wave), so such a wind can still leave a run unfinished in
-  principle; no layout of the proving ground comes near it. The test
-  `the_tightest_wind_the_rules_allow_lets_a_lone_enemy_through` computes the bound from the content
-  and holds the run to it. Without the fade the first proving sweep found runs that never ended (a
-  gust every 5 s pushed a wave's last shamblers back 4 m, as far as they walk in 5 s: 922 of 1,000
-  `fire_wind` runs unfinished at the time cap). Tests also hold that every wind layout ends and that
+  lands. **The dead lean into the wind, and take one shove at a time:** each shove an enemy
+  takes, from any cairn or blast, is `shove_fade` weaker than the one before (0.25 here: three
+  quarters of it; a file that leaves it out gets 0.25, and it must lie between 0.05 and 1), and
+  one still being shoved is not shoved again until that shove has ended (a cairn with only such
+  enemies in range keeps its charge). **A cairn must recharge longer than its push lasts**
+  (`cooldown_s` greater than `push_s`, in ticks; refused by name otherwise): a shoved enemy does
+  not walk, so a cairn that gusted again before its last push ended held one in place (the second
+  review: a 1-tick recharge and a 5 s push kept a lone shambler at the edge of its range for 30
+  minutes and more). **What ends a hold is the fade, and the loader holds it under the run's cap**
+  (the third review: under the old fade, the n-th shove divided by 1 + n x 0.05, content the
+  format took, a push of 30 m over 5 s, held a lone shambler 399,108 ticks against a cap of
+  45,900). The n-th shove one enemy takes moves it s_n = P x k^n / m mm, rounded down at every
+  step as the rules round (`content::shove_mm`), where P is the strongest push any gust tier has,
+  k = 1 - `shove_fade` and m its mass; it stands t_n = ceil(s_n / ceil(s_n / T)) ticks of it (T
+  the push's ticks) and walks none of them; and it walks the ground back again, never more than
+  the shove took (pushed up another lane, its way is at most that much longer). So a lone enemy
+  passes within
+
+      ceil((L + sum of s_n) x 30 x 1000 / (v x p)) + sum of t_n   ticks,
+
+  summed over the shoves that move it at all (30 of them for a shambler here), where L is the
+  farthest lane cell from the graveyard on the open slab (40.1 m for a climber here, 26 m for a
+  walker), v its speed in mm/s and p its slowest pace (permille: its climb speed on cliffs, 0.6
+  for the shambler). The recharge does not enter: a cairn that recharges sooner only spends the
+  series sooner. That is `Content::wind_hold`, every term the rules' own rounding, and the loader
+  refuses content in which it is longer, for any ground enemy, than the run's cap leaves after
+  the last wave's last enemy enters (`RUN_GRACE_TICKS`, 20 minutes after the last wave begins:
+  35,280 ticks for the proving ground, whose last enemy enters 720 ticks in), naming both figures
+  and what to change (raise `shove_fade`, or lower `push_m` or `push_s`). For the stock content
+  the longest is the shambler's, **4,154 ticks** (2.3 minutes; 20.0 m of ground over 30 shoves,
+  398 ticks of them shoved). Measured on one lone enemy walking from the south-west gorge through
+  a ring of four tier-III cairns round `top:9,13`: the shambler 2,120 ticks (its figure counts its
+  whole way at its cliff pace), the bloated dead 1,684 of its 1,688, the colossus 2,401 of its
+  2,408, the runner 819 of its 1,242. The third review's extreme is **refused** (57,218 ticks
+  against 35,280); played anyway, its numbers put in by hand, the same shambler is through in
+  36,203, past the cap, as the figure says it may be. **At the edge of refusal** (a push of 14.1 m
+  over 5 s at the slowest fade, 0.05: 35,142 ticks against 35,280) it takes 26,361: the figure is
+  a third more than what a lone enemy shoved at every turn takes, that third its cliff pace
+  (`the_stock_wind_lets_a_lone_enemy_through_within_the_derived_series`,
+  `the_reviewers_extreme_wind_is_refused_and_held_by_its_series`,
+  `at_the_edge_of_refusal_the_derived_figure_is_within_twice_what_a_lone_enemy_takes`). **What the
+  series leaves to bounds of their own:** frost's freezes and earth's staggers (Gelu and Saxum:
+  each ended by the damage of the hits that bring it); stones' slows and the roots, which only
+  slow its walk (to no less than 0.1 x (1 - 0.15) of its pace here); and a leaper's chance leaps
+  (a runner rolls only when it walks onto a jump point, and each leap lengthens its way by at most
+  its ledge and `jump_detour`: at most once a jump point for each pass the wind sends it back
+  over). Without the fade the first proving sweep found runs that never ended (a gust every 5 s
+  pushed a wave's last shamblers back 4 m, as far as they walk in 5 s: 922 of 1,000 `fire_wind`
+  runs unfinished at the time cap). Tests also hold that every wind layout ends and that
   content without the key still ends. Good for buying time, for keeping the dead in another stone's
   range, and for pushing a burning one back into the column; useless against flyers, nearly so
   against the colossus (3 m ÷ 8 is 0.37 m).
 - **Saxum (earth): an upheaval.** Stone spikes erupt along the target's lane: its cell and the next
   cells of its route (2, 3, 4). Every ground enemy on them takes damage and is staggered (it stands
   0.8 to 1.2 s), and the fire on them is smothered (the burning dead put out, the fuel covered: sand
-  on flames). From tier II the spikes leave **rubble** on the farthest cell of the line a wall can
+  on flames). A heave that staggers must hurt (refused by name otherwise): every heave renews the
+  stagger, so one that dealt nothing could hold an enemy for ever; with damage it holds one for at
+  most ceil(HP / d) staggers. From tier II the spikes leave **rubble** on the farthest cell of the line a wall can
   stand on: a wall worth nothing (no refund), with its own HP, that blocks and re-routes like the
   player's walls, that the dead break and the exploding dead blast, and that crumbles by itself
   after 6 or 8 s. The two other first thoughts were weighed and set aside: a *tremor* ring (a
@@ -607,8 +647,15 @@ rules burn and what the player sees are one list (`fuel::grass_shown`), held equ
 test on the shipped content and on the proving ground's, and held by a test of the rules' own
 (every fuel cell is in it). The app draws at most 72 patches: every cell that burns comes first,
 and grass that does not burn (the graveyard's, and edge grass a content's fuel leaves out) fills
-what room is left, the rest dropped by the same hash as the edge grass's own thinning; content
-with more than 72 cells of fuel is refused (`elements.fuel`). On the shipped map nothing changes.
+what room is left, the rest dropped by the same hash as the edge grass's own thinning. **The
+rules hold no budget of the app's drawing:** content may have more fuel than 72 cells; the app
+then draws 72 of them (the rest dropped by the same hash), no other grass, and says in a trace
+(`sepulcra.grass_dropped`, a warning, with the counts of fuel and grass left out and the budget)
+how many it left out; when only grass that does not burn makes way it says so at info level. The
+proving ground's fuel is exactly 72 cells (the rock's-edge grass less the graveyard's, and the
+two dry stretches), so it draws no graveyard grass: the graveyard's 16 cells make way. On the
+shipped map nothing changes (no fuel, nothing dropped). (The word `"grass"` in a fuel list is the
+rock's-edge rule as the app thins it, to 72 by hash: the one place that number is in the rules.)
 
 `src/blaze.rs` is the fire, behind its seam (below). Each fuel cell has a heat, fuel left, a phase
 (fuel, burning, spent) and a cover. Every spread step (0.5 s) each burning cell gives 0.35 of an
@@ -809,12 +856,16 @@ What it says, read honestly:
   waves it buys time the other stones do not use. Frost + wind does better than before (77.4 %
   from 71.2 %): pushing lone dead back keeps them in the rime stone's range. That is the shape of
   the owner's "non damage" stone; its numbers (range, push, recharge) are what to tune.
-- **A lone enemy is not held for ever, measured and bounded:** with one alone pushed, every run of
-  every wind layout ended (5,000 runs, and none of the 16,000 of all layouts unfinished at the time
-  cap). The first claim here, that the fade alone ends every hold, was false for a cairn that
-  recharges faster than its push lasts (the second review); such a cairn is now refused, and the
-  bound for the tightest wind the content allows is given under "Ventus" above (51,752 ticks;
-  7,765 measured).
+- **A lone enemy is not held for ever, by two rules of the loader:** frost and earth that hold
+  must hurt (Gelu, Saxum above), and the wind is held by its own series: each shove of one enemy
+  is `shove_fade` weaker than the one before and comes only after the last has ended, so a lone
+  enemy passes within ceil((L + sum of s_n) x 30 x 1000 / (v x p)) + sum of t_n ticks, which the
+  loader refuses past the run's cap ("Ventus" above). Two claims made here before were false:
+  that the fade alone ends every hold (the second review: a cairn that recharges before its push
+  ends held one; refused since), and that "the tightest wind the content allows" was a ring of
+  four 5 m cairns with a bound of 51,752 ticks (the third review: the format took a 30 m push at
+  the slowest fade, which held one 399,108 ticks; what the loader allows is now what the series
+  allows). With one alone pushed, every run of every wind layout ended.
 - **Earth's pairs kill the most** (155 kills: the rubble re-routes and the colossus summons more
   while it is held), and earth + fire runs longest of the 100 % layouts (6:57).
 - **The exploding dead rarely reach a wall** (at most 1.2 bursts on walls a run in the sweep of

@@ -115,7 +115,7 @@ fn w_enemy_el(w: &mut ByteWriter, x: &EnemyEl) {
 }
 
 fn r_enemy_el(r: &mut ByteReader<'_>) -> Result<EnemyEl, StateError> {
-    Ok(EnemyEl {
+    let el = EnemyEl {
         burn: amount(r, "burn", 0)?,
         chill: amount(r, "chill", 0)?,
         shatter: amount(r, "shatter", 0)?,
@@ -127,7 +127,13 @@ fn r_enemy_el(r: &mut ByteReader<'_>) -> Result<EnemyEl, StateError> {
         stagger_until: counter(r, "stagger_until")?,
         fuse_at: counter(r, "fuse_at")?,
         shoves: r.u16("shoves").map_err(decode)?,
-    })
+    };
+    // The rules set a burn and its end together and clear them together (catching, burning out,
+    // put out), so a save holding one without the other was not written by them.
+    if (el.burn == 0) != (el.burn_until == 0) {
+        return Err(invalid(r, format!("burn {} with burn_until {}: the two are set together", el.burn, el.burn_until)));
+    }
+    Ok(el)
 }
 
 fn w_elements(w: &mut ByteWriter, w0: &World) {

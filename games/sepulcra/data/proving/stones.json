@@ -6,7 +6,7 @@
   "wall": { "cost": 15, "hp": 300, "breach_penalty_m": 8.0 },
   "nature": { "from_wave": 5, "min_tier": 2, "radius_m": 2.9, "slow": 0.15 },
   "elements": {
-    "notes": "Fire moves on spread steps (spread_s). A burning enemy sets alight others within mob_reach_m and heats fuel within cell_reach_m; a burning fuel cell heats fuel within cell_reach_m (cell_heat a step, times 1 + lean along a gust's wind and 1 - lean against it) and sets alight ground enemies within cell_reach_m. What catches burns catch_dps for catch_s. Thawed enemies, and cells under frost or earth, stay wet wet_s. The dead lean into the wind: the n-th shove an enemy takes is divided by 1 + n x shove_fade. fuel: grass is the grass the app draws at the rock's edges; the rest is dry grass laid along lanes for the proving ground.",
+    "notes": "Fire moves on spread steps (spread_s). A burning enemy sets alight others within mob_reach_m and heats fuel within cell_reach_m; a burning fuel cell heats fuel within cell_reach_m (cell_heat a step, times 1 + lean along a gust's wind and 1 - lean against it) and sets alight ground enemies within cell_reach_m. What catches burns catch_dps for catch_s. Thawed enemies, and cells under frost or earth, stay wet wet_s. The dead lean into the wind: each shove an enemy takes is shove_fade weaker than the one before (0.25: three quarters of it), and one still being shoved is not shoved again until that shove ends. fuel: grass is the grass the app draws at the rock's edges; the rest is dry grass laid along lanes for the proving ground.",
     "spread_s": 0.5,
     "mob_reach_m": 1.2,
     "cell_reach_m": 2.9,
@@ -18,7 +18,7 @@
     "lean": 0.6,
     "gust_s": 4,
     "chill_fade_s": 4,
-    "shove_fade": 0.5,
+    "shove_fade": 0.25,
     "fuel": ["grass", "top:9,14..top:9,16", "top:5,17..top:8,17"]
   },
   "stones": [

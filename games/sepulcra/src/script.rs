@@ -479,7 +479,7 @@ impl RunReport {
 /// played out (the run stops just before wave `max_waves + 1` would start). A safety cap stops
 /// runs that stall (e.g. a boss that can never be killed) 20 minutes after the last wave.
 pub fn run(content: Arc<Content>, seed: u64, script: &Script, max_waves: Option<u16>, mut on_tick: impl FnMut(&State, &[Event])) -> RunReport {
-    let cap = content.scheduled_ticks() + 20 * 60 * crate::fixed::TICK_HZ;
+    let cap = content.scheduled_ticks() + crate::content::RUN_GRACE_TICKS;
     let mut state = State::new(content, seed);
     let mut player = Player::new(script.clone());
     let mut journal = Journal::new();

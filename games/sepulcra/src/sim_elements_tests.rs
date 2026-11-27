@@ -197,28 +197,62 @@ fn a_lone_enemy_held_by_gusts_still_gets_through() {
 }
 
 #[test]
-fn a_shove_reaches_nobody_after_its_last() {
+fn a_shove_reaches_nobody_once_the_series_has_run_out() {
     let c = with_fuel("");
     let mut s = quiet(&c);
     let id = plant(&mut s, "shambler", "top:9,15");
     let i = idx(&s, id);
-    s.w.enemies[i].el.shoves = MAX_SHOVES - 1;
-    // A push far past what content allows (30 km), so the fade alone does not bring it to 0.
+    let keep = 1000 - c.rules.elements.shove_fade;
+    // The last shove that still moves a 30 km push (far past what content allows), and the next.
+    let last = (0..u16::MAX).rev().find(|&n| crate::content::shove_mm(30_000_000, 1000, keep, n) > 0).expect("one moves it");
+    s.w.enemies[i].el.shoves = last;
     s.w.shove(&c, i, 30_000_000, 15);
-    assert!(s.w.enemies[i].el.shove > 0, "the last shove still moves it");
+    assert!(s.w.enemies[i].el.shove > 0, "the last shove of the series still moves it");
     s.w.enemies[i].el.shove = 0;
     s.w.shove(&c, i, 30_000_000, 15);
-    assert_eq!((s.w.enemies[i].el.shove, s.w.enemies[i].el.shoves), (0, MAX_SHOVES), "after it, nothing");
+    assert_eq!((s.w.enemies[i].el.shove, s.w.enemies[i].el.shoves), (0, last + 2), "after it, nothing");
+    assert!(last < 100, "the series ends within a hundred shoves at the proving fade: {last}");
+}
+
+#[test]
+fn an_enemy_being_shoved_is_not_shoved_again_until_it_ends() {
+    let c = with_fuel("");
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "shambler", "top:9,15");
+    let i = idx(&s, id);
+    s.w.shove(&c, i, 3_000, 15);
+    let (first, rate) = (s.w.enemies[i].el.shove, s.w.enemies[i].el.shove_rate);
+    assert_eq!((first, rate, s.w.enemies[i].el.shoves), (3_000, 200, 1));
+    // A second shove (a bigger push too) while the first runs: no change, and not counted.
+    s.w.shove(&c, i, 9_000, 30);
+    assert_eq!((s.w.enemies[i].el.shove, s.w.enemies[i].el.shove_rate, s.w.enemies[i].el.shoves), (first, rate, 1));
+    // A cairn keeps its charge while the only enemy in its range is still being shoved.
+    hold_still_but_shove(&mut s);
+    place(&mut s, "ventus", "top:10,15", 0);
+    let cell = at(&c, "top:10,15");
+    let ev = steps(&mut s, 1);
+    assert!(!ev.iter().any(|e| matches!(e, Event::Gusted { .. })), "no gust at one still being shoved: {ev:?}");
+    assert_eq!(s.charge(cell), Some(1000), "charged still");
+    let mut gusted = false;
+    for _ in 0..20 {
+        let ev = steps(&mut s, 1);
+        if ev.iter().any(|e| matches!(e, Event::Gusted { affected: 1, .. })) {
+            gusted = true;
+            break;
+        }
+    }
+    assert!(gusted, "it gusts once the first shove has ended");
+    assert_eq!(s.w.enemies[idx(&s, id)].el.shoves, 2);
 }
 
 #[test]
 fn content_without_a_shove_fade_gets_one_and_the_wind_layouts_end() {
     let stones = PROVING_STONES_JSON.replace("\r\n", "\n");
-    let without = stones.replace("    \"shove_fade\": 0.5,\n", "");
+    let without = stones.replace("    \"shove_fade\": 0.25,\n", "");
     assert_ne!(without, stones, "test fixture");
     let c = Arc::new(Content::from_texts(SLAB_01_JSON, &without, PROVING_ENEMIES_JSON, PROVING_WAVES_JSON).expect("content"));
-    assert_eq!(c.rules.elements.shove_fade, 500, "the default is the proving ground's 0.5");
-    let zero = stones.replace("\"shove_fade\": 0.5", "\"shove_fade\": 0");
+    assert_eq!(c.rules.elements.shove_fade, 250, "the default is the proving ground's 0.25");
+    let zero = stones.replace("\"shove_fade\": 0.25", "\"shove_fade\": 0");
     let err = Content::from_texts(SLAB_01_JSON, &zero, PROVING_ENEMIES_JSON, PROVING_WAVES_JSON).unwrap_err();
     assert!(err.to_string().contains("shove_fade"), "a fade of 0 brings the stall back: refused ({err})");
     let text = include_str!("../data/proving/layouts/fire_wind.json");
@@ -283,15 +317,18 @@ fn each_later_shove_is_weaker() {
     let mut s = quiet(&c);
     let id = plant(&mut s, "shambler", "top:9,15");
     let i = idx(&s, id);
-    let fade = c.rules.elements.shove_fade;
-    assert!(fade > 0);
+    let keep = i64::from(1000 - c.rules.elements.shove_fade);
+    assert_eq!(keep, 750, "each shove three quarters of the one before");
     let mut got = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..4 {
         s.w.enemies[i].el.shove = 0;
         s.w.shove(&c, i, 3_000, 15);
         got.push(s.w.enemies[i].el.shove);
     }
-    assert_eq!(got, vec![3_000, 3_000_000 / (1000 + fade), 3_000_000 / (1000 + 2 * fade)]);
+    // A fixed fraction of the one before, whichever cairn or blast gives it: 3000 x 0.75^n.
+    let want: Vec<i32> = (0..4).map(|n| (3_000 * keep.pow(n) / 1000i64.pow(n)) as i32).collect();
+    assert_eq!(got, want);
+    assert_eq!(got, vec![3_000, 2_250, 1_687, 1_265]);
 }
 
 /// Nothing but the shove moves them (a speed of zero): slows them to a stop.
@@ -1044,80 +1081,264 @@ fn gust_content(cooldown: &str, push_s: &str) -> Result<Content, crate::error::D
 
 #[test]
 fn a_gust_must_recharge_longer_than_its_push_lasts() {
-    for (cooldown, push) in [("0.6", "0.6"), ("0.034", "5.0"), ("0.5", "0.6")] {
+    // The rule is held in ticks: 0.61 s is longer than 0.6 s, but both are 18 ticks.
+    for (cooldown, push) in [("0.6", "0.6"), ("0.61", "0.6"), ("0.616", "0.6"), ("0.034", "5.0"), ("0.5", "0.6")] {
         let err = gust_content(cooldown, push).expect_err("refused");
         let text = err.to_string();
         assert!(text.contains("cooldown_s") && text.contains("longer than push_s"), "{cooldown} / {push}: {text}");
     }
-    let c = gust_content("0.634", "0.6").expect("19 ticks against 18: accepted");
+    let c = gust_content("0.617", "0.6").expect("19 ticks against 18: accepted");
     let t = c.stone(c.stone_kind("ventus").unwrap()).tiers[2];
     assert_eq!((t.cooldown, t.el.push_ticks), (19, 18));
 }
 
-/// The tightest wind the content allows on one lone enemy: four tier-III cairns in a ring, each
-/// recharging one tick longer than its 5 m push lasts, with tier-III frost on it as well (slowed,
-/// chilled, frozen again and again). It gets through within the bound [`wind_bound`] derives from
-/// the rule (DESIGN.md, "Ventus", says how).
-#[test]
-fn the_tightest_wind_the_rules_allow_lets_a_lone_enemy_through() {
-    let c = Arc::new(gust_content("0.634", "0.6").expect("content"));
-    let mut s = quiet(&c);
-    let id = plant(&mut s, "shambler", "top:9,19");
-    let i = idx(&s, id);
-    s.w.enemies[i].hp = 2_000_000_000;
-    let distance = s.w.enemies[i].remaining;
-    let cairns = ["top:8,14", "top:10,14", "top:8,16", "top:10,16"];
-    for cell in cairns {
+/// The proving ground with Ventus III replaced by `tier` and its fade by `fade`.
+fn wind_content(tier: &str, fade: &str) -> Result<Content, crate::error::DataError> {
+    let stones = PROVING_STONES_JSON.replace("\r\n", "\n");
+    let (from, to) = ("{ \"cost\": 90, \"range_m\": 6.5, \"cooldown_s\": 4.0, \"push_m\": 5.0, \"push_s\": 0.6 }", "\"shove_fade\": 0.25,");
+    assert_eq!((stones.matches(from).count(), stones.matches(to).count()), (1, 1), "test fixture");
+    let stones = stones.replacen(from, tier, 1).replacen(to, &format!("\"shove_fade\": {fade},"), 1);
+    Content::from_texts(SLAB_01_JSON, &stones, PROVING_ENEMIES_JSON, PROVING_WAVES_JSON)
+}
+
+/// A Ventus III that pushes `push_m` over 5 s and recharges one tick later.
+fn slow_gust(push_m: f64) -> String {
+    format!("{{ \"cost\": 90, \"range_m\": 6.5, \"cooldown_s\": 5.034, \"push_m\": {push_m:.1}, \"push_s\": 5.0 }}")
+}
+
+/// A lone enemy of `kind` set down on `from` with four tier-III cairns of `c` round `ring`'s
+/// centre: the ticks until it is through (it cannot be killed: the wind deals nothing), at most
+/// `limit`, and the gusts that shoved it.
+fn lone_under_wind(c: &Arc<Content>, kind: &str, from: &str, ring: [&str; 4], limit: u64) -> (u64, u32) {
+    let mut s = quiet(c);
+    let id = plant(&mut s, kind, from);
+    for cell in ring {
         place(&mut s, "ventus", cell, 2);
     }
-    place(&mut s, "gelu", "top:10,15", 2);
-    let bound = wind_bound(&c, cairns.len() as u32, distance);
     let mut ev = Vec::new();
-    let (mut gusts, mut ticks) = (0u32, 0u32);
-    while s.enemy(id).is_some() && ticks <= bound {
+    let (mut ticks, mut gusts) = (0u64, 0u32);
+    while s.enemy(id).is_some() && ticks <= limit {
         ev.clear();
         s.step_into(&[], &mut ev);
         ticks += 1;
         gusts += ev.iter().filter(|e| matches!(e, Event::Gusted { .. })).count() as u32;
     }
-    assert!(s.enemy(id).is_none() && s.wave_stats()[0].leaked == 1, "still held after {ticks} ticks ({gusts} gusts), past the bound {bound}");
-    assert!(gusts > 100, "the cairns gusted at it: {gusts}");
+    assert!(s.enemy(id).is_none(), "a lone {kind} still held after {ticks} ticks ({gusts} gusts), past {limit}");
+    assert_eq!(s.wave_stats()[0].leaked, 1, "the {kind} walked into the graveyard");
+    (ticks, gusts)
 }
 
-/// The longest `k` tier-III cairns of the content above (recharge C ticks, push S mm on mass 1
-/// over P < C ticks, fade f) can keep one shambler from walking `distance` mm, with Gelu III on it
-/// too. A shoved enemy does not walk, and a shove of s mm holds it at most min(P, s) ticks; a
-/// cairn gusts at most once in any C ticks, so a window of C ticks holds at most k gusts, and the
-/// n-th shove the enemy takes is s_n = S / (1 + f n).
-/// - *Held every tick of a window* needs g gusts with g · min(P, s_n) >= C: never g = 1 (P < C, the
-///   rule), g = 2 while s_n >= C/2, 3 while s_n >= C/3, k while s_n >= C/k. Each such window spends
-///   g shoves, so there are at most n(2)/2 + (n(3) - n(2))/3 + ... + (n(k) - n(k-1))/k of them,
-///   where n(g) is the count of shoves after which s_n < C/g.
-/// - *Then* a window's k gusts hold it at most k · s_n < C ticks: it walks the rest, and once
-///   s_n < C/(2k) (at most (n(2k) - n(k))/k more windows of no loss) it walks at least C/2 ticks
-///   of each window at speed v and is pushed back at most C/2 mm: D / (v C/2 - C/2) windows more.
-/// - Frost keeps it frozen at most half the time (a freeze is shattered by the next bolt, within
-///   its 0.9 s, and a new one takes two more hits), so the sum is doubled.
-fn wind_bound(c: &Content, k: u32, distance: i32) -> u32 {
-    let t = c.stone(c.stone_kind("ventus").unwrap()).tiers[2];
-    let (cc, push, f) = (f64::from(t.cooldown), f64::from(t.el.push), f64::from(c.rules.elements.shove_fade) / 1000.0);
-    let walker = c.enemy(c.enemy_kind("shambler").unwrap());
-    let slow = f64::from(c.stone(c.stone_kind("gelu").unwrap()).tiers[2].slow) / 1000.0;
-    let v = f64::from(walker.speed) * (1.0 - slow);
-    let n = |g: u32| ((push * f64::from(g) / cc - 1.0) / f).max(0.0);
-    let mut held = n(2) / 2.0;
-    for g in 3..=k {
-        held += (n(g) - n(g - 1)) / f64::from(g);
-    }
-    let settle = (n(2 * k) - n(k)) / f64::from(k);
-    let walk = f64::from(distance) / (v * cc / 2.0 - cc / 2.0);
-    specula_core::dmath::ceil_f64(2.0 * cc * (held + settle + walk)) as u32
-}
+/// Where the lone enemies of these tests walk: from the south-west gorge, along the lane to the
+/// south gate, through a ring of cairns round top:9,13 far enough from the gorge that a shove of
+/// up to about 11 m does not pin them at it.
+const GORGE: &str = "top:4,19";
+const RING: [&str; 4] = ["top:8,12", "top:10,12", "top:8,14", "top:10,14"];
 
+/// The loader's figure ([`Content::wind_hold`]) holds every lone enemy the stock proving content
+/// can make, and the loader holds the figure under the run's cap.
 #[test]
-fn more_fuel_than_the_grass_budget_is_refused() {
-    let stones = PROVING_STONES_JSON.replace("\r\n", "\n");
-    let from = "\"fuel\": [\"grass\", \"top:9,14..top:9,16\", \"top:5,17..top:8,17\"]";
-    let err = Content::from_texts(SLAB_01_JSON, &stones.replacen(from, "\"fuel\": [\"top:0,2..top:19,2\", \"top:0,3..top:19,3\", \"top:0,4..top:19,4\", \"top:0,5..top:19,5\"]", 1), PROVING_ENEMIES_JSON, PROVING_WAVES_JSON).unwrap_err();
-    assert!(err.to_string().contains("elements.fuel") && err.to_string().contains(&crate::fuel::MAX_GRASS.to_string()), "{err}");
+fn the_stock_wind_lets_a_lone_enemy_through_within_the_derived_series() {
+    let c = proving();
+    let longest = c.longest_wind_hold().expect("the proving ground has gusts");
+    assert!(longest.ticks + u64::from(c.last_entry()) <= u64::from(crate::content::RUN_GRACE_TICKS), "{longest:?}");
+    for kind in ["shambler", "runner", "tumidus", "colossus"] {
+        let k = c.enemy_kind(kind).unwrap();
+        let h = c.wind_hold(k).expect("a ground enemy");
+        let (ticks, gusts) = lone_under_wind(&c, kind, GORGE, RING, h.ticks);
+        assert!(ticks <= h.ticks && gusts > 0, "{kind}: {ticks} ticks, {gusts} gusts, derived {h:?}");
+        // A walker that does not climb, shoved at every turn and never pinned at its gorge, spends
+        // the whole series: it takes nearly the derived figure (on 2026-11-28: the bloated dead
+        // 1,684 of 1,688 ticks, the colossus 2,401 of 2,408; the shambler 2,120 of 4,154, its
+        // figure counting all its way at its cliff pace).
+        if matches!(kind, "tumidus" | "colossus") {
+            assert!(ticks * 100 >= h.ticks * 98, "{kind}: {ticks} of {}", h.ticks);
+        }
+    }
+    assert_eq!(c.wind_hold(c.enemy_kind("wraith").unwrap()), None, "the wind shoves nothing in the air");
+    // The series is the rules': every shove the rules give is a term of it, in order.
+    let k = c.enemy_kind("shambler").unwrap();
+    let push = c.stone(c.stone_kind("ventus").unwrap()).tiers[2].el.push;
+    let keep = 1000 - c.rules.elements.shove_fade;
+    let terms: Vec<i32> = (0..).map(|n| crate::content::shove_mm(push, c.enemy(k).mass, keep, n)).take_while(|&s| s > 0).collect();
+    let h = c.wind_hold(k).unwrap();
+    assert_eq!((terms.len() as u32, terms.iter().map(|&s| i64::from(s)).sum::<i64>()), (h.shoves, h.ground));
+    // (A runner's chance leaps are not in the series: DESIGN.md, "Ventus", bounds them apart.)
+}
+
+/// The reviewer's extreme (review 3: push 30 m over 5 s at the slowest fade held a lone shambler
+/// 399,108 ticks, past the run's cap) is refused by the loader, naming both figures and what to
+/// change; and played anyway (the numbers put in by hand), it is through within the figure.
+#[test]
+fn the_reviewers_extreme_wind_is_refused_and_held_by_its_series() {
+    let err = wind_content(&slow_gust(30.0), "0.05").expect_err("refused");
+    let text = err.to_string();
+    assert!(text.contains("elements.shove_fade") && text.contains("past the") && text.contains("push_m"), "{text}");
+    let mut c = wind_content(&slow_gust(5.0), "0.05").expect("a 5 m push is within the cap");
+    let v = c.stone_kind("ventus").unwrap();
+    c.stones[usize::from(v.0)].tiers[2].el.push = 30_000;
+    let c = Arc::new(c);
+    let h = c.wind_hold(c.enemy_kind("shambler").unwrap()).unwrap();
+    let room = u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
+    assert!(h.ticks > room && text.contains(&h.ticks.to_string()) && text.contains(&room.to_string()), "{text} / {h:?}");
+    let (ticks, _) = lone_under_wind(&c, "shambler", GORGE, RING, h.ticks);
+    assert!(ticks <= h.ticks, "{ticks} > {}", h.ticks);
+    // The ring of the review, at the shambler's own gorge: pinned there, it loses less.
+    let (ticks, _) = lone_under_wind(&c, "shambler", "top:9,19", ["top:8,14", "top:10,14", "top:8,16", "top:10,16"], h.ticks);
+    assert!(ticks <= h.ticks, "{ticks} > {}", h.ticks);
+}
+
+/// At the edge of refusal (the largest push at the slowest fade that the loader still takes),
+/// a lone shambler shoved at every turn takes at least half the derived figure: the bound is
+/// the rules' series, not a figure ten times too large. (What it leaves: the walk back is
+/// counted at the climbers' cliff pace, 0.6 of the pace on the lane it walks here.)
+#[test]
+fn at_the_edge_of_refusal_the_derived_figure_is_within_twice_what_a_lone_enemy_takes() {
+    let accepted = |tenths: u32| wind_content(&slow_gust(f64::from(tenths) / 10.0), "0.05").is_ok();
+    let (mut lo, mut hi) = (10u32, 300u32);
+    assert!(accepted(lo) && !accepted(hi), "the edge lies between 1 m and 30 m");
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if accepted(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let c = Arc::new(wind_content(&slow_gust(f64::from(lo) / 10.0), "0.05").unwrap());
+    let room = u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
+    let h = c.longest_wind_hold().unwrap();
+    assert!(h.ticks <= room && h.ticks * 10 > room * 9, "the edge: {h:?} against {room}");
+    assert_eq!(h.kind, c.enemy_kind("shambler").unwrap(), "the slowest walker under the wind");
+    let (ticks, gusts) = lone_under_wind(&c, "shambler", GORGE, RING, h.ticks);
+    assert!(ticks <= h.ticks && ticks * 2 >= h.ticks, "push {} m: {ticks} ticks ({gusts} gusts) against the derived {}", f64::from(lo) / 10.0, h.ticks);
+}
+
+/// Frost must hurt (review 3: a Gelu tier with no damage kept a lone shambler frozen 199,738 of
+/// 200,000 ticks); earth that staggers too.
+#[test]
+fn a_tier_that_chills_freezes_or_staggers_with_no_damage_is_refused() {
+    let gelu = "\"damage\": 14, \"projectile_mps\": 20, \"slow\": 0.35, \"slow_s\": 1.5, \"chill\": 0.6, \"freeze_s\": 3.0, \"shatter\": 2.0 }";
+    for (to, key) in [
+        ("\"damage\": 0, \"projectile_mps\": 20, \"slow\": 0.35, \"slow_s\": 1.5, \"chill\": 0.6, \"freeze_s\": 3.0, \"shatter\": 2.0 }", "chills or freezes"),
+        ("\"projectile_mps\": 20, \"chill\": 1.0, \"freeze_s\": 30 }", "chills or freezes"),
+    ] {
+        let err = proving_with(gelu, to).expect_err("refused");
+        assert!(err.to_string().contains("damage") && err.to_string().contains(key), "{err}");
+    }
+    let saxum = "\"damage\": 36, \"line\": 4, \"stagger_s\": 1.2,";
+    let err = proving_with(saxum, "\"damage\": 0, \"line\": 4, \"stagger_s\": 1.2,").expect_err("refused");
+    assert!(err.to_string().contains("damage") && err.to_string().contains("staggers"), "{err}");
+}
+
+/// The longest frost can keep a lone enemy of `hp` milli-HP from walking `lane` mm at `speed`
+/// mm/s, from the rules alone: every hit of a chilling tier takes at least `damage` milli-HP
+/// (frost must hurt), so at most ceil(hp / damage) hits land before it dies; a freeze begins only
+/// with a hit (on an enemy not frozen) and lasts at most `freeze` ticks, and the hit that
+/// shatters one ends it, so it stands at most ceil(hp / damage) freezes of `freeze` ticks, each
+/// costing one tick more of its walk (a freeze drops the part-millimetre it carried). Walking, it
+/// is slowed by at most `slow` permille.
+fn frost_bound(hp: i32, damage: i32, freeze: u32, lane: i32, speed: i32, slow: i32) -> u64 {
+    let hits = (i64::from(hp) + i64::from(damage) - 1) / i64::from(damage);
+    let per = i64::from(speed) * i64::from(1000 - slow);
+    let walk = (i64::from(lane) * i64::from(TICK_HZ) * 1000 + per - 1) / per;
+    (walk + hits * (i64::from(freeze) + 1)) as u64
+}
+
+/// A lone shambler under the first `stones` Gelu stones of [`RING`] at tier III: the ticks until
+/// it is through or dead, and whether it got through.
+fn lone_under_frost(c: &Arc<Content>, stones: usize, limit: u64) -> (u64, bool) {
+    let mut s = quiet(c);
+    let id = plant(&mut s, "shambler", GORGE);
+    for cell in &RING[..stones] {
+        place(&mut s, "gelu", cell, 2);
+    }
+    let mut ticks = 0u64;
+    while s.enemy(id).is_some() && ticks <= limit {
+        steps(&mut s, 1);
+        ticks += 1;
+    }
+    assert!(s.enemy(id).is_none(), "still held after {ticks} ticks, past the bound {limit}");
+    (ticks, s.wave_stats()[0].leaked == 1)
+}
+
+/// For the harshest frost the format still accepts (a hit a tick of the least damage, chill 1,
+/// a 30 s freeze, the most slow for the longest) a lone shambler is killed or passes within the
+/// bound the rules' HP, damage and thaw give ([`frost_bound`]); and with hits one tick after each
+/// thaw (the longest freeze each hit can bring) it takes most of that bound.
+#[test]
+fn frost_with_damage_lets_a_lone_enemy_through_or_kills_it_within_its_bound() {
+    let gelu = "{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 0.9, \"damage\": 14, \"projectile_mps\": 20, \"slow\": 0.35, \"slow_s\": 1.5, \"chill\": 0.6, \"freeze_s\": 3.0, \"shatter\": 2.0 }";
+    let harsh = "{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 0.034, \"damage\": 0.001, \"projectile_mps\": 1000, \"slow\": 0.9, \"slow_s\": 600, \"chill\": 1.0, \"freeze_s\": 30, \"shatter\": 0 }";
+    let c = Arc::new(proving_with(gelu, harsh).expect("the harshest frost the format takes"));
+    let t = c.stone(c.stone_kind("gelu").unwrap()).tiers[2];
+    assert_eq!((t.cooldown, t.damage, t.el.freeze_ticks, t.slow), (1, 1, 900, 900));
+    let shambler = c.enemy(c.enemy_kind("shambler").unwrap());
+    let lane = c.wind_hold(c.enemy_kind("shambler").unwrap()).unwrap().lane;
+    let pace = shambler.speed * shambler.climb_speed / 1000;
+    let bound = frost_bound(shambler.hp, t.damage, t.el.freeze_ticks, lane, pace, t.slow);
+    let (ticks, _) = lone_under_frost(&c, 4, bound);
+    assert!(ticks <= bound, "{ticks} > {bound}");
+    // One stone: a freeze as long as the format allows, hit again just after it thaws, each hit
+    // taking a fifth of its HP: it stands nearly every tick of five freezes, and dies.
+    let spaced = "{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 30.034, \"damage\": 11, \"projectile_mps\": 1000, \"chill\": 1.0, \"freeze_s\": 30, \"shatter\": 0 }";
+    let c = Arc::new(proving_with(gelu, spaced).unwrap());
+    let t = c.stone(c.stone_kind("gelu").unwrap()).tiers[2];
+    let bound = frost_bound(shambler.hp, t.damage, t.el.freeze_ticks, lane, pace, 0);
+    let (ticks, leaked) = lone_under_frost(&c, 1, bound);
+    assert!(!leaked && ticks <= bound && ticks * 2 >= bound, "{ticks} against {bound}");
+}
+
+/// The rules hold no budget of the app's drawing: more cells may burn than the app draws grass
+/// for (it draws the fuel first and says in a trace what it leaves out).
+#[test]
+fn more_fuel_than_the_app_draws_is_legal() {
+    let c = with_fuel("\"top:0,2..top:19,2\", \"top:0,3..top:19,3\", \"top:0,4..top:19,4\", \"top:0,5..top:19,5\"");
+    assert!(c.fuel.len() > crate::fuel::MAX_GRASS, "{} cells burn", c.fuel.len());
+}
+
+/// A burn of nothing is no fire, whatever its end says; and since the rules set a burn and its
+/// end together, a save holding one without the other is refused.
+#[test]
+fn a_burn_of_nothing_is_no_fire_and_no_save_holds_one() {
+    let nothing = EnemyEl { burn: 0, burn_until: 100, ..EnemyEl::default() };
+    assert!(!nothing.burning(0) && !nothing.burning(99));
+    assert!(EnemyEl { burn: 1, burn_until: 100, ..EnemyEl::default() }.burning(99));
+    let c = proving();
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "shambler", "top:9,15");
+    let i = idx(&s, id);
+    assert!(State::from_bytes(Arc::clone(&c), &s.to_bytes()).is_ok());
+    s.w.enemies[i].el = nothing;
+    let e = State::from_bytes(Arc::clone(&c), &s.to_bytes()).unwrap_err();
+    assert!(e.message.contains("burn_until"), "{e}");
+    s.w.enemies[i].el = EnemyEl { burn: 5, burn_until: 0, ..EnemyEl::default() };
+    assert!(State::from_bytes(Arc::clone(&c), &s.to_bytes()).is_err());
+}
+
+/// A layout entry refused because one of the dead stands on its cell waits, and is counted as one
+/// wait as long as the enemy stood there.
+#[test]
+fn a_layout_waits_for_one_of_the_dead_to_leave_a_cell() {
+    let c = with_fuel("");
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "shambler", "top:9,14");
+    hold_still(&mut s);
+    let text = "{ \"name\": \"wall\", \"commands\": [ { \"wave\": 0, \"wall\": \"top:9,14\" } ] }";
+    let mut p = crate::script::Player::new(crate::script::Script::parse(text, &c, "wall").expect("layout"));
+    let mut ev = Vec::new();
+    for _ in 0..10 {
+        assert!(p.drive(&mut s, &mut ev).is_empty(), "the wall waits while the shambler stands on its cell");
+        s.step_into(&[], &mut ev);
+    }
+    let i = idx(&s, id);
+    s.w.enemies[i].el.stagger_until = 0;
+    let mut t = 10u32;
+    while p.drive(&mut s, &mut ev).is_empty() {
+        s.step_into(&[], &mut ev);
+        t += 1;
+        assert!(t < 60 * TICK_HZ, "the wall never went up: {:?}", p.skipped);
+    }
+    assert!(p.skipped.is_empty(), "{:?}", p.skipped);
+    let w = p.waits_at(s.tick());
+    assert_eq!((w.entries, w.longest, w.never_applied), (1, t, 0), "{w:?}");
 }

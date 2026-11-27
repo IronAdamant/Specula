@@ -9,7 +9,9 @@
 
 use crate::map::{CellId, CellKind, Face, Map};
 
-/// The most grass patches on the slab (the app's `grass::MAX_PATCHES`).
+/// The most grass patches the app draws on the slab (its `grass::MAX_PATCHES`): the rock's-edge
+/// rule thins to it, so it is part of what the word `"grass"` names in a `fuel` list; it limits
+/// nothing else in the rules.
 pub const MAX_GRASS: usize = 72;
 
 fn hash(c: CellId) -> u32 {
@@ -53,16 +55,23 @@ pub fn grass_drawn(map: &Map) -> Vec<CellId> {
     out
 }
 
-/// The grass the app draws for content whose fuel is `fuel`, at most [`MAX_GRASS`] patches, in
-/// cell order: **every fuel cell** (the dry grass laid on a lane is drawn as grass too, though no
-/// rock's edge would give it any; content with more fuel than [`MAX_GRASS`] is refused), then the
-/// rock's-edge grass that does not burn ([`grass_drawn`]: the graveyard's, and edge grass the
-/// content's fuel leaves out) while there is room, the rest dropped by the same hash as the
-/// edge grass's own thinning. On the shipped maps (no fuel) it is [`grass_drawn`] exactly.
+/// The grass the app draws for content whose fuel is `fuel` (the app's `grass::pick`, held
+/// equal by its test), at most [`MAX_GRASS`] patches, in cell order: **the fuel first** (the dry
+/// grass laid on a lane is drawn as grass too, though no rock's edge would give it any), then
+/// the rock's-edge grass that does not burn ([`grass_drawn`]: the graveyard's, and edge grass the
+/// content's fuel leaves out) while there is room, the rest dropped by the same hash as the edge
+/// grass's own thinning. Content may have more fuel than that (the rules hold no budget of the
+/// app's drawing): then only fuel is drawn, the fuel past the budget dropped by the hash. On the
+/// shipped maps (no fuel) it is [`grass_drawn`] exactly.
 pub fn grass_shown(map: &Map, fuel: &[CellId]) -> Vec<CellId> {
     let mut out: Vec<CellId> = fuel.to_vec();
     out.sort();
     out.dedup();
+    if out.len() > MAX_GRASS {
+        out.sort_by_key(|&id| (hash(id), id.0));
+        out.truncate(MAX_GRASS);
+        out.sort();
+    }
     let mut rest: Vec<CellId> = grass_drawn(map).into_iter().filter(|c| out.binary_search(c).is_err()).collect();
     rest.sort_by_key(|&id| (hash(id), id.0));
     rest.truncate(MAX_GRASS.saturating_sub(out.len()));
@@ -97,6 +106,31 @@ mod tests {
         // A slab all fuel (as many as the budget allows) leaves no room for the rest.
         let many: Vec<CellId> = shipped.map.cells().iter().filter(|c| c.face == Face::Top).map(|c| c.id).take(MAX_GRASS).collect();
         assert_eq!(grass_shown(&shipped.map, &many), many);
+    }
+
+    /// The shipped slab's grass, counted again another way: by the cells' names (a neighbour off
+    /// the face has no name), with the counts of each step written out.
+    #[test]
+    fn the_shipped_slab_grows_the_grass_counted_again_by_name() {
+        let m = Map::parse(SLAB_01_JSON, "slab_01.json").unwrap();
+        let fragment = |c: i32, r: i32| m.cell_ref(&format!("top:{c},{r}")).is_some_and(|id| m.cell(id).kind == CellKind::Fragment);
+        let (mut yard, mut edge) = (Vec::new(), Vec::new());
+        for c in m.cells().iter().filter(|c| c.face == Face::Top) {
+            let (cc, rr) = (i32::from(c.col), i32::from(c.row));
+            match c.kind {
+                CellKind::Graveyard => yard.push(c.id),
+                CellKind::Fragment if !(fragment(cc + 1, rr) && fragment(cc - 1, rr) && fragment(cc, rr + 1) && fragment(cc, rr - 1)) => edge.push(c.id),
+                _ => {}
+            }
+        }
+        let thinned: Vec<CellId> = edge.iter().copied().filter(|&id| !hash(id).is_multiple_of(3)).collect();
+        assert_eq!((yard.len(), edge.len(), thinned.len()), (16, 177, 111), "the graveyard's 16, the rock's edge, two in three of it");
+        let mut all = yard;
+        all.extend(thinned);
+        all.sort_by_key(|&id| (hash(id), id.0));
+        all.truncate(MAX_GRASS);
+        all.sort();
+        assert_eq!(grass_drawn(&m), all);
     }
 
     #[test]

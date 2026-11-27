@@ -157,17 +157,48 @@ fn the_shipped_sweep_prints_the_lines_it_printed_before_the_elements() {
     assert_eq!(got, ["won", "wins", "losses", "all", "mean", "stranded"]);
 }
 
-/// A layout that waits says so: the wind holds a straggler on the south gate when the wind
-/// layout's wall there is due, and a run stopped early leaves entries never applied.
+/// A run stopped early leaves entries never applied, and a won run none. (How a layout waits, for
+/// dust and for one of the dead on a cell, is held below and in the rules' own tests: under the
+/// one-shove-at-a-time wind no wave-1 straggler stands on the south gate when the wind layout's
+/// wall there is due, as one did before.)
 #[test]
-fn a_run_says_how_its_layout_waited_and_what_it_never_applied() {
+fn a_run_says_what_its_layout_never_applied() {
     let c = content();
     let wind = Script::parse(LAYOUTS[4].1, &c, "wind").unwrap();
-    let r = run(Arc::clone(&c), 1, &wind, None, |_, _| {});
-    assert!(r.waits.entries >= 1 && r.waits.longest >= 1, "{:?}", r.waits);
     let short = run(Arc::clone(&c), 1, &wind, Some(1), |_, _| {});
     assert!(short.waits.never_applied > 0, "stopped after wave 1, the later entries were never applied: {:?}", short.waits);
     let all = Script::parse(LAYOUTS[0].1, &c, "baseline").unwrap();
     let full = run(Arc::clone(&c), 1, &all, None, |_, _| {});
     assert_eq!(full.waits.never_applied, 0, "a won run applied every entry: {:?}", full.waits);
+}
+
+/// One entry that waits a known number of ticks is one wait of that length: six cairns spend
+/// the starting dust, and the seventh waits for the dust to come (the wind kills nothing, so it
+/// comes only with a wave's income). How long, the run without the seventh says: the first tick
+/// it has the dust.
+#[test]
+fn one_entry_that_waits_a_known_time_is_one_wait_of_that_length() {
+    let c = content();
+    let cells = ["top:10,15", "top:8,12", "top:8,15", "top:12,8", "top:10,14", "top:8,14", "top:10,12"];
+    let text = |n: usize| {
+        let entries: Vec<String> = cells[..n].iter().map(|cell| format!("{{ \"wave\": 0, \"place\": \"ventus\", \"at\": \"{cell}\" }}")).collect();
+        format!("{{ \"name\": \"waits\", \"commands\": [{}] }}", entries.join(", "))
+    };
+    let (six, seven) = (Script::parse(&text(6), &c, "six").unwrap(), Script::parse(&text(7), &c, "seven").unwrap());
+    let cost = c.stone(c.stone_kind("ventus").unwrap()).tiers[0].cost;
+    let mut s = State::new(Arc::clone(&c), 1);
+    let mut p = Player::new(six);
+    let mut ev = Vec::new();
+    assert_eq!(p.drive(&mut s, &mut ev).len(), 6);
+    assert!(s.dust() < cost, "the seventh is short of dust: {}", s.dust());
+    let mut n = 0u32;
+    while s.dust() < cost {
+        s.step_into(&[], &mut ev);
+        ev.clear();
+        n += 1;
+    }
+    assert!(n > 100, "it waits a while: {n}");
+    let r = run(Arc::clone(&c), 1, &seven, None, |_, _| {});
+    assert!(r.skipped.is_empty(), "{:?}", r.skipped);
+    assert_eq!((r.waits.entries, r.waits.longest, r.waits.never_applied), (1, n, 0), "{:?}", r.waits);
 }
