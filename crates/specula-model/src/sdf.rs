@@ -2133,43 +2133,41 @@ type Searched = ((V3, V3), Spent);
 // where an evaluation took 1.6 to 5.8. Timed, so only a scale: what the tests hold is that
 // every step counted is charged ([`Spent`]).
 //
-// Timed again on 2026-11-28 where they are spent: in a release build that is not a test's
-// (the first timing was in test builds, where every range also counts its steps for [`Did`],
-// so they read high; review 1 of the merged sculpt). A probe outside the test profile timed a
-// ball's range of each kind against an evaluation of the same tree at the same 4,096 points
-// (balls of 1% to 15% of the tree's size, about and around it), each priced in that
-// evaluation's units: 22 trees (six primitives alone, an ellipsoid tight and not; unions of 4
-// and 32 ellipsoids, of 8 and 32 balls sharp and smooth; chains of sixteen unions of two;
-// columns at squareness 2, 3 and 5, of fixed and changing proportions; rounded shapes at
-// powers 2, 3 and 6), each built twice apart and the faster taken (one instance of the same
-// tree was timed up to three times slower than another in every round, by where its data
-// lay), eleven rounds in a shuffled order a run, eight runs, on a machine busy with other
-// builds. Each weight is the median:
-// - a frame: 134 (the runs' medians 102, 126, 128, 134, 135, 137, 137, 137; by primitive, a
-//   box's about 75, a ball's 80 to 100, an untightened ellipsoid's 95 to 135, a tightened
-//   one's 150 to 170, whose bound above takes most of the rest);
-// - a group's list: 300 (the chains of sixteen: 130 to 571 sharp, 152 to 695 smooth, 219 to
-//   522 of ellipsoids, the median of all 24 296; one group alone is lost in the noise,
-//   -1,900 to 900);
-// - a column's range past its frame and its evaluation: nothing (-31 to -81 in every run:
-//   with its outline in hand it costs less than its evaluation's weight, which is set at one
-//   and a half times the slowest evaluation);
-// - a rounded shape's: nothing (the runs' medians -39, -29, -19, -16, -12, -1, 38, 53).
-// The first weights were 160, 200, 96 and 200.
+// Timed again on 2026-11-28 where they are spent, in a release build that is not a test's
+// (in a test build every range also counts its steps for [`Did`], so it reads high), and **in
+// one unit for every tree**: a ball's evaluation (its weight, 54) priced once a run, its median
+// over the run (review 2 of the merged sculpt: each tree had been priced in its own
+// evaluation's units, 0.48 to 1.5 ns, which is where weights below nothing came from). A probe
+// (lane 3's `rtime3`) timed a ball's range of each kind and an evaluation of the same tree at
+// the same 4,096 points (balls of 1% to 15% of the tree's size, about and around it), eleven
+// rounds a run in a shuffled order, for 22 trees: six primitives alone, an ellipsoid tight
+// and not; unions of 4 and 32 ellipsoids, of 8 and 32 balls sharp and smooth; chains of
+// sixteen unions of two; columns at squareness 2, 3 and 5; rounded shapes at powers 2, 3 and
+// 6. A range's time past its evaluation's, in units, against what it is charged past it:
+// the frame from the six single primitives, then the group's list, a column's and a rounded
+// shape's range from what is left past their frames. **Each weight is the most any tree
+// measured in any of four runs, rounded up to ten** (`docs/design/PROCEDURAL_MODELLING.md`,
+// "How the weights of the ranges are timed", has every run's figures and the machine's load):
+// - a frame: 110 (the most of each run 106, 110, 100, 97; the medians 52 to 59);
+// - a group's list: 90 (chains of sixteen: 85, 86, 54, 60; a group alone measures below
+//   nothing, -2,360 to -96, its frames and joins being charged more than they take there);
+// - a column's range past its frame and evaluation: 100 (70, 97, 47, 44);
+// - a rounded shape's: 240 (139, 144, 68, 233).
+// Weighed before: 134, 300, 0 and 0 (timed in each tree's own units); first 160, 200, 96, 200.
 /// The work of taking a ball into a node's frame and its range out of it ([`Spent`]).
-const RANGE_FRAME: u64 = 134;
+const RANGE_FRAME: u64 = 110;
 /// The work of a group's list of its children's ranges, besides its joins ([`Spent`]).
-const RANGE_GROUP: u64 = 300;
-/// A column's range beyond its evaluation (an exponential and its distance from its box):
-/// measured within its evaluation's weight.
-const COLUMN_RANGE: u64 = 0;
-/// A rounded shape's range beyond its evaluation (its slack, a power: [`rounded_slack`]):
-/// measured within its evaluation's weight.
-const ROUNDED_RANGE: u64 = 0;
+const RANGE_GROUP: u64 = 90;
+/// A column's range beyond its frame and its evaluation (an exponential and its distance from
+/// its box).
+const COLUMN_RANGE: u64 = 100;
+/// A rounded shape's range beyond its frame and its evaluation (its slack, a power:
+/// [`rounded_slack`]).
+const ROUNDED_RANGE: u64 = 240;
 /// A flat ellipsoid's range in a ball from its value at the middle ([`ellipsoid_span`]), which
-/// [`pruned`] takes in place of walking its range: timed at 15.1 to 16.4 units of an
-/// evaluation of the same ellipsoid (three runs, two instances, the lower taken; as above).
-const QUICK_SPAN: u64 = 15;
+/// [`pruned`] takes in place of walking its range: timed where it is given, in the same unit,
+/// 12.3 and 12.6 at the most of two runs (two ellipsoids each), so 13.
+const QUICK_SPAN: u64 = 13;
 /// One support of a column's section in its walk ([`section_support`]): a root at a
 /// squareness of 2, three powers at any other.
 const SUPPORT_WORK: [u64; 2] = [24, 260];
@@ -7777,10 +7775,11 @@ mod tests {
         }
         let names: Vec<&str> = did_shares(&Did::NONE, 0).iter().map(|s| s.0).collect();
         let did: u64 = sum.iter().sum();
-        // (A kind the table weighs nothing, as a column's or a rounded shape's range past its
-        // evaluation, has no share to fall short by.)
-        // (Nor a kind only the mesher does: a flat ellipsoid's range from its middle in a prune.)
-        let weighed: Vec<bool> = did_shares(&Did::ONE, 1).iter().map(|s| s.1 > 0 && !s.0.starts_with("flat ellipsoids")).collect();
+        // (Every kind is done but one only the mesher does: a flat ellipsoid's range from its
+        // middle in a prune. A column's and a rounded shape's ranges are done whatever their
+        // weight: review 2 of the merged sculpt found them left out while they weighed nothing.)
+        let weighed: Vec<bool> = did_shares(&Did::ONE, 1).iter().map(|s| !s.0.starts_with("flat ellipsoids")).collect();
+        assert!(DOCUMENTED.with(|t| t.values().all(|w| *w > 0)), "a weight of nothing in the table: {:?}", DOCUMENTED.with(|t| t.clone()));
         let least = sum.iter().zip(&weighed).filter(|(_, w)| **w).map(|(s, _)| *s).min().unwrap();
         assert!(searched >= 10, "{searched} searches ran");
         assert!(least > 0, "a kind never done: {:?}", names.iter().zip(&sum).zip(&weighed).filter(|((_, s), w)| **s == 0 && **w).collect::<Vec<_>>());

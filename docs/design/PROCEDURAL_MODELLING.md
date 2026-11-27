@@ -440,12 +440,22 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
 
 #### The sculpt's weights
 
-What a sculpt's steps are charged, in work units (about a nanosecond each on the reference
-laptop). The tests read this table (`did_shares` in `crate::sdf`) and hold it to the code row
-by row (`the_weights_are_the_documents`), so a weight is changed here and in the code together,
-with its measurement, or a test fails. The evaluations' weights are each at least one and a half
-times the slowest time measured (`calibrate_sdf`); the ranges' are timed against an evaluation
-of the same tree at the same points, in a release build that is not a test's.
+What a sculpt's steps are charged, in work units. The tests read this table (`did_shares` in
+`crate::sdf`) and hold it to the code row by row (`the_weights_are_the_documents`), so a weight
+is changed here and in the code together, with its measurement, or a test fails; and no weight
+is nothing (`the_search_spends_no_more_than_it_is_charged`).
+
+**What is promised, and checked:** work done never passes work charged (every step is counted
+where it is done and held to its charge: `the_search_spends_no_more_than_it_is_charged`,
+`every_step_is_charged_before_it_is_done`, the reach's and the mesher's tests); and **over the
+trees of the whole-build probe a unit cost at most 2.0 ns on the reference laptop** (after the
+checklist below: how the weights of the ranges are timed). A unit is not one time for every
+step. The evaluations' weights were set in 2026-11 at one and a half times the slowest time
+`calibrate_sdf` measured of each kind (a ball 34 ns, a column of four sections), and that does
+not hold for every node: a column of eight sections at squareness 2 evaluates in 103 to 108 ns
+for its 86 units, at 5 in 464 to 472 for 318, a rounded shape at power 3 in 2,195 ns for its
+1,617 (review 2 of the merged sculpt), which is why whole builds of columns run near 2 ns a unit
+where balls run near 1.4 and flat ellipsoids 1.1.
 
 | Step | Units | What it is, and how it was set |
 |---|---|---|
@@ -472,10 +482,10 @@ of the same tree at the same points, in a release build that is not a test's.
 | a group | 8 | an evaluation of a group, besides its children |
 | a smooth join | 20 | a child of a smooth group, at each evaluation (twice in a range) |
 | a sharp join | 3 | a child of a sharp group, the same |
-| a range's frame | 134 | a ball taken into a node's frame and its range out of it (160 until it was timed outside a test build, 2026-11-28) |
-| a group's list in a range | 300 | a group's list of its children's ranges (200 until then) |
-| a column's range | 0 | a column's range past its evaluation, its outline in hand: timed within its evaluation's weight |
-| a rounded shape's range | 0 | a rounded shape's range past its evaluation (its slack): timed within its evaluation's weight |
+| a range's frame | 110 | a ball taken into a node's frame and its range out of it (160, then 134 when it was timed in each tree's own units) |
+| a group's list in a range | 90 | a group's list of its children's ranges (200, then 300) |
+| a column's range | 100 | a column's range past its frame and its evaluation, its outline in hand (96, then nothing) |
+| a rounded shape's range | 240 | a rounded shape's range past its frame and its evaluation, its slack (200, then nothing) |
 | a support by a root | 24 | a section's support in a column's walk, at squareness 2 |
 | a support by powers | 260 | the same at any other squareness |
 | a piece of a curve | 600 | a piece of a column's curve in its walk |
@@ -483,7 +493,7 @@ of the same tree at the same points, in a release build that is not a test's.
 | a child the reach gathers | 60 | a child of a group the reach asks |
 | a pair the reach meets | 20 | a pair of a smooth group's children in the reach |
 | a place of a column's table | 6 | a place of a column's table at a level the reach asks |
-| a flat ellipsoid's range from its middle | 15 | a prune's range of a flat ellipsoid the ball does not reach into, from its value at the middle (`ellipsoid_span`) |
+| a flat ellipsoid's range from its middle | 13 | a prune's range of an ellipsoid within twice of round the ball does not reach into, from its value at the middle (`ellipsoid_span`; 15 when timed in its own units) |
 
 **A new node** (a primitive or a modifier) joins the sculpt with every one of these, or a test
 cannot see its fault:
@@ -498,6 +508,16 @@ cannot see its fault:
   bound over every ball, an `own_range_cost` arm, and the range of parameters in which that
   bound is proved, held where the node is prepared (as a column's squareness is held at 2 or
   more: `column_square`);
+- for a modifier, a place in the two lists of modifiers that keep a short way out:
+  `plain` (in `crate::sdf`), which keeps a prune out of a group its children's distances no
+  longer bound, and the list `plain` inside `ellipsoid_span`, which gives a flat ellipsoid's
+  range from its middle only through a move, a turn, a mirror and a scale. Both are lists of
+  what stops them, so a modifier left out of either is taken as harmless there
+  (`a_flat_ellipsoids_range_from_its_middle_holds_its_field` holds the second's present
+  modifiers, and only those);
+- a change to the ellipsoid's field, or to its range in `inner_range`, made in
+  `ellipsoid_span` too: a prune takes a flat ellipsoid's range there a second way, with its
+  own margin for the arithmetic it is computed in (its doc says which roundings it covers);
 - a `reach_within` or `prim_reach` arm, charged per node;
 - if it walks anything, a walk charged before it in `outline_columns` and in the reach, kept
   once a node (as `Outline` is), and a `Did` counter where the work is done, after its charge;
@@ -505,6 +525,56 @@ cannot see its fault:
   `every_primitives_factor_bounds_it_or_its_range_is_asked` (its factor and range, over its
   whole range of parameters) and `a_skipped_block_or_a_pruned_child_loses_no_surface` (the
   mesh against the tree sampled whole). The tests see only the nodes they are given.
+
+**How the weights of the ranges are timed** (2026-11-28; the probe is lane 3's `rtime3`, kept
+in its scratch folder and mounted into `crate::sdf` for a release build that is not a test's):
+
+- **One unit for every tree:** a ball's evaluation (weight 54) at its own 4,096 points, priced
+  before and after each round, its median over the run giving the run's nanoseconds a unit.
+  (They were priced before in each tree's own evaluation units, 0.48 to 1.5 ns, so a tree of
+  columns and one of balls disagreed about a nanosecond, and weights came out below nothing.)
+- 22 trees (six primitives alone, an ellipsoid tight and not; unions of 4 and 32 ellipsoids, of
+  8 and 32 balls sharp and smooth; three chains of sixteen unions of two; four columns at
+  squareness 2, 3 and 5; rounded shapes at powers 2, 3 and 6), each with a ball's range and an
+  evaluation at the same 4,096 points (balls of 1% to 15% of the tree's size, about and around
+  it), eleven rounds a run in a shuffled order. Of each tree, its range's time past its
+  evaluation's (medians), in units, against what the range is charged past the evaluation. The
+  frame is what a single primitive's range takes past its evaluation; a group's list, a
+  column's and a rounded shape's range, what is left past their frames at the frame measured.
+- **Each weight is the most any tree measured in any run, rounded up to ten** (the span's, to a
+  unit). Four runs, minutes apart; the first two timed the span where it is not given (an
+  ellipsoid further from round than `QUICK_SHORT` allows), so only their other figures count:
+
+  | Run | ns a unit | load (processor, build processes) | frame | group's list | column | rounded | span |
+  |---|---|---|---|---|---|---|---|
+  | 1 | 1.087 | 64-70%, 19 | 106 | 85 | 70 | 139 | (7.0) |
+  | 2 | 1.003 | 70%, 20 | 110 | 86 | 97 | 144 | (5.7) |
+  | 3 | 1.030 | 48-55%, 11-13 | 100 | 54 | 47 | 68 | 12.3 |
+  | 4 | 1.828 | 40-100%, 11-16 | 97 | 60 | 44 | 233 | 12.6 |
+  | set | | | 110 | 90 | 100 | 240 | 13 |
+
+  The medians over the trees are far lower (frame 52 to 59; a group alone -2,360 to -96, its
+  frames and joins charged more than they take there; column 6 to 46; rounded 62 to 110): a
+  weight is the dearest tree's, so that no tree's range costs more than it is charged. The
+  machine was never quiet (other lanes building): the one unit takes most of the load out (a
+  ball's evaluation slows with the rest); the spread between runs is what is left.
+- **The whole-build probe** (`rt3 trees`, res 64, the box found, best of five, at 64-70% load):
+  24 columns of changing proportions at squareness 2, 1.968 ns a unit; at 5, 1.945; 24 at 3 of
+  fixed proportions, 1.929; 24 rounded shapes at power 3, 1.789; 24 rounded discs at 6, 1.162;
+  24 balls, 1.480; 24 flat ellipsoids, 1.107; columns in rounded groups, repeated, 1.588.
+  Review 2 measured the same trees at 0.77 to 1.45 on a quieter machine. A build at the limit
+  (1.5e9 units) is so about 3 s here at the most.
+- What a range costs can still move with the build: in some builds the compiler packs two scalar
+  operations of a range into one instruction whose unused lanes hold leftovers, which read as
+  subnormal floats and cost a microcode assist on this machine (up to about three times a
+  sphere's range on single calls: review 2's "slow twin"). No value and no mesh byte depends on it.
+- **A flat ellipsoid's range from its middle is no dearer than the walk on the trees measured,
+  not in general**: within `QUICK_SHORT` of round, review 2's 459 trees of flat, needle and
+  round ellipsoids and 228 more cost no more with it than with every range walked (past the
+  span's own weight a time), and 0.2% to 0.4% less in all; with needles let through (a `short`
+  of 50) two of them cost 2.2% and 9.5% more, and with a `short` up to 6 one cost 0.8% more.
+  Its bounds are up to `short` looser than the distance's, so a tree can keep a child the walk
+  lets go: the test holds the two trees that showed it.
 
 - **A part thinner than a cell meshes with edges that four triangles share** (looked into on
   2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
