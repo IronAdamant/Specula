@@ -329,17 +329,16 @@ pub struct Elements {
     /// Chill an enemy loses per tick (permille).
     pub chill_fade: i32,
     /// The dead lean into the wind: each shove an enemy takes, from any cairn or blast, is this
-    /// much (permille) weaker than the one before it ([`shove_mm`]), so the ground and the time
-    /// the wind can take from one enemy are sums of a geometric series, which the loader holds
-    /// under the run's cap ([`Content::wind_hold`]; the first sweep found a stall without it).
+    /// much (permille) weaker than the one before it ([`shove_mm`]): the dead lean into it, so
+    /// what the wind takes from one enemy is a geometric series that ends (the first sweep found
+    /// a stall without it). What ends any hold for good is furor (DESIGN.md, "Furor").
     pub shove_fade: i32,
 }
 
 /// How far the shove an enemy takes after `n` others moves it (mm): `push` (mm, on mass 1)
 /// divided by the enemy's `mass` (permille), times `keep` permille once for each shove before
 /// it, rounded down at every step (`keep` is 1000 less [`Elements::shove_fade`]). Once the share
-/// reaches 0 it stays 0: no shove moves that enemy again. The rules ([`crate::sim`]'s shove) and
-/// the loader's bound ([`Content::wind_hold`]) both read it, so the bound is the rules' series.
+/// reaches 0 it stays 0: no shove moves that enemy again (a gust at it then keeps its charge).
 pub fn shove_mm(push: i32, mass: i32, keep: i32, n: u16) -> i32 {
     let mut share = SHOVE_WHOLE;
     for _ in 0..n {
@@ -357,21 +356,6 @@ const SHOVE_WHOLE: i64 = 1_000_000;
 fn shove_of(push: i32, mass: i32, share: i64) -> i32 {
     (i64::from(push) * 1000 / i64::from(mass.max(1)) * share / SHOVE_WHOLE).min(i64::from(i32::MAX)) as i32
 }
-
-/// The ticks a shove of `s` mm over `push_ticks` takes: it moves `ceil(s / push_ticks)` mm a
-/// tick (at least 1) until it is spent, and the enemy walks none of them.
-pub fn shove_ticks(s: i32, push_ticks: u32) -> u32 {
-    if s <= 0 {
-        return 0;
-    }
-    let t = push_ticks.max(1) as i32;
-    let rate = (s + t - 1) / t;
-    ((s + rate - 1) / rate) as u32
-}
-
-/// A run stops this long after its last wave begins ([`crate::script::run`]'s cap), and the
-/// loader refuses wind that could keep one lone enemy from passing within it.
-pub const RUN_GRACE_TICKS: u32 = 20 * 60 * TICK_HZ;
 
 /// **A wave's hour** (DESIGN.md, "Furor"): this many ticks after the wave's last entry, any of its
 /// dead still standing are in furor, and nothing holds them. Twenty minutes, the room a run has
@@ -398,45 +382,6 @@ impl WaveDef {
     pub fn entry_span(&self) -> u32 {
         self.groups.iter().map(|g| g.start.saturating_add(u32::from(g.count.saturating_sub(1)).saturating_mul(g.every))).max().unwrap_or(0)
     }
-}
-
-/// What frost can cost one lone enemy of a kind ([`Content::frost_hold`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FrostHold {
-    pub kind: EnemyKind,
-    /// Its most HP (milli-HP: its own times the largest wave scale).
-    pub hp: i64,
-    /// The tier whose freezes hold it longest for the HP they take: the least milli-HP the hits
-    /// that bring one of its freezes take (its own hit and the chill the others must add,
-    /// rounded up), the most such freezes `hp` pays for, and its freeze (ticks).
-    pub cost: i64,
-    pub freezes: u64,
-    pub freeze: u32,
-    /// Its longest walk at the slowest slow (ticks).
-    pub walk: u64,
-    /// The most ticks frost can hold it: what its HP pays for, at the dearest tier's rate
-    /// ([`Content::frost_hold`]).
-    pub held: u64,
-    /// The most ticks it can take to pass or die under frost: `walk + held`.
-    pub ticks: u64,
-}
-
-/// What the wind can cost one lone enemy of a kind ([`Content::wind_hold`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WindHold {
-    pub kind: EnemyKind,
-    /// The longest way it can have to walk with no wind (mm): the farthest lane cell from the
-    /// graveyard on the open slab.
-    pub lane: i32,
-    /// The most ground every gust together can take from it (mm): the series' sum.
-    pub ground: i64,
-    /// The shoves that move it at all (after these, each rounds to 0 mm).
-    pub shoves: u32,
-    /// The most ticks it can stand being shoved (it walks none of them).
-    pub shoved: u64,
-    /// The most ticks it can take to pass: walking `lane + ground` at its slowest own speed,
-    /// plus `shoved`.
-    pub ticks: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -471,8 +416,6 @@ impl Content {
         let mut c = Content { map: map_v, stones: stone_defs, enemies: enemy_defs, waves: wave_defs, rules, fuel, uses_elements: false, hash: 0 };
         c.uses_elements = c.compute_elemental();
         check_elements(&c)?;
-        check_wind(&c)?;
-        check_frost(&c)?;
         c.hash = content_hash(&c);
         Ok(c)
     }
@@ -494,66 +437,6 @@ impl Content {
         self.rules.elements.on
             || self.stones.iter().any(|s| s.attack.is_elemental() || s.tiers.iter().any(|t| !t.el.is_zero()))
             || self.enemies.iter().any(|e| e.mass != 1000 || e.sapper || e.burst.is_some())
-    }
-
-    /// What the wind can cost one lone enemy of `kind` (DESIGN.md, "Ventus"); `None` when no gust
-    /// moves it (a flyer: the wind shoves only along lanes; or content with no gust).
-    ///
-    /// The rules give the series. Across every cairn, one enemy's n-th shove moves it
-    /// s_n = [`shove_mm`] of a gust's push, so at most the strongest push any gust tier has; it
-    /// takes one shove at a time (a gust does not reach an enemy whose last shove has not
-    /// ended), stands for [`shove_ticks`] of it, and walks the ground back again, never more than
-    /// the shove took (pushed up another lane, its way is at most that much longer). So a lone
-    /// enemy passes within
-    ///
-    /// `ceil((lane + Σ s_n) · TICK_HZ · 1000 / (speed · pace)) + Σ ticks(s_n)` ticks,
-    ///
-    /// summed over the shoves that move it at all, where `lane` is the farthest lane cell from
-    /// the graveyard and `pace` its slowest own pace (permille: its climb speed on cliffs). The
-    /// cooldown does not enter: a cairn that recharges sooner only spends the series sooner.
-    /// Every term is the rules' own rounding, so this is the series, not an estimate. Left to
-    /// their own bounds (DESIGN.md): frost's freezes and earth's staggers (each ended by the
-    /// damage of the hits that bring them), stones' slows and roots (at most 0.9 and
-    /// `nature.slow`), and a leaper's chance leaps (each at most `jump_detour` and its ledge).
-    pub fn wind_hold(&self, kind: EnemyKind) -> Option<WindHold> {
-        let fields = crate::path::Fields::build(&self.map, &vec![false; self.map.cells().len()], self.rules.wall.breach_penalty);
-        self.wind_hold_on(&fields, kind)
-    }
-
-    fn wind_hold_on(&self, fields: &crate::path::Fields, kind: EnemyKind) -> Option<WindHold> {
-        let def = self.enemy(kind);
-        let gusts: Vec<(i32, u32)> = self
-            .stones
-            .iter()
-            .filter(|s| s.attack == Attack::Gust && s.targets.hits(false))
-            .flat_map(|s| s.tiers.iter().map(|t| (t.el.push, t.el.push_ticks)))
-            .collect();
-        if def.flies() || gusts.is_empty() {
-            return None;
-        }
-        let lane = self.longest_lane(fields, def);
-        let keep = i64::from(1000 - self.rules.elements.shove_fade.clamp(0, 1000));
-        let (mut ground, mut shoved, mut shoves) = (0i64, 0u64, 0u32);
-        let mut share = SHOVE_WHOLE;
-        while share > 0 {
-            let s = gusts.iter().map(|&(push, _)| shove_of(push, def.mass, share)).max().unwrap_or(0);
-            if s <= 0 || shoves == u32::from(u16::MAX) {
-                break;
-            }
-            if keep >= 1000 {
-                // No fade: the series does not end (the parser never gives a gust this).
-                return Some(WindHold { kind, lane, ground: i64::MAX, shoves: u32::MAX, shoved: u64::MAX, ticks: u64::MAX });
-            }
-            ground += i64::from(s);
-            shoved += gusts.iter().map(|&(push, pt)| u64::from(shove_ticks(shove_of(push, def.mass, share), pt))).max().unwrap_or(0);
-            shoves += 1;
-            share = share * keep / 1000;
-        }
-        let pace = if def.climbs() { i64::from(def.climb_speed.clamp(1, 1000)) } else { 1000 };
-        let per = i64::from(def.speed.max(1)) * pace;
-        let walk = (i64::from(lane) + ground) * i64::from(TICK_HZ) * 1000;
-        let walk = ((walk + per - 1) / per) as u64;
-        Some(WindHold { kind, lane, ground, shoves, shoved, ticks: walk + shoved })
     }
 
     /// **A run's length, as a sum the rules state** (DESIGN.md, "Furor"): no run of this content
@@ -621,100 +504,6 @@ impl Content {
             .filter(|&d| d != crate::path::UNREACHABLE)
             .max()
             .unwrap_or(0)
-    }
-
-    /// What frost can cost one lone enemy of `kind` (DESIGN.md, "Gelu"); `None` when no chilling
-    /// tier reaches it (a flyer: a freeze holds only the walking; or content with no frost).
-    ///
-    /// The rules (`World::chill_as`, `World::hurt`): a hit of a chilling tier k on an enemy not
-    /// frozen first deals its damage d_k (no bonus: the shatter bonus is only for the frozen),
-    /// then, if the enemy lives, adds q_k = floor(chill_k · 1000 / mass) to its chill; at 1000 the
-    /// enemy freezes for F_k ticks and its chill goes back to 0. A hit on a frozen enemy adds no
-    /// chill and shatters it; chill only fades otherwise (and fire on ice zeroes it). So each
-    /// freeze is brought by hits since the last one whose q add to 1000, the last of them of the
-    /// freezing tier k, every one of them dealing its damage to an enemy that lived on: they take
-    /// at least p_k = d_k + max(0, 1000 − q_k) · (d/q)min milli-HP, (d/q)min the least damage per
-    /// chill of any chilling tier, and all of them together less than `hp` (its own HP times the
-    /// largest wave scale; the killing hit chills nothing). A freeze holds it at most F_k ticks
-    /// and one more of its walk (a freeze drops the part-millimetre it carried). So the ticks it
-    /// stands frozen are at most
-    ///
-    /// `held = max over k of floor((hp − 1) · (F_k + 1) / p_k)`
-    ///
-    /// (the freezes, of whatever tiers, are paid for out of one purse of HP: their sum is at most
-    /// the purse times the best rate of any tier). Walking, it is slowed by at most the strongest
-    /// slow any stone gives and the roots' slow, at its slowest own pace. So it passes or dies
-    /// within
-    ///
-    /// `ceil(lane · TICK_HZ · 10^9 / (speed · pace · (1000 − slow) · (1000 − roots))) + held` ticks.
-    ///
-    /// Not in it, and why: **a stone's recharge.** A frozen enemy inside its stone's range is hit
-    /// again within the recharge (and that hit shatters it), but the rules do not keep it there:
-    /// a bolt homes on its target and lands where the enemy has walked to, past the range of the
-    /// stone that fired it, and a stone can be sold or upgraded to a shorter range mid-freeze.
-    /// So a freeze is counted whole (F_k), and the figure is loose by up to F_k over the recharge
-    /// where the recharge is the shorter. Several stones that fire together (placed in one tick
-    /// round an enemy) bring a freeze with one volley and the next on the tick it thaws, and come
-    /// near the figure (`at_the_edge_of_refusal_frost_holds_a_lone_enemy_near_its_figure`). The
-    /// wind's ground is not in it either ([`Content::wind_hold`] bounds that apart).
-    pub fn frost_hold(&self, kind: EnemyKind) -> Option<FrostHold> {
-        let fields = crate::path::Fields::build(&self.map, &vec![false; self.map.cells().len()], self.rules.wall.breach_penalty);
-        self.frost_hold_on(&fields, kind)
-    }
-
-    fn frost_hold_on(&self, fields: &crate::path::Fields, kind: EnemyKind) -> Option<FrostHold> {
-        let def = self.enemy(kind);
-        let mass = i64::from(def.mass.max(1));
-        // Each chilling tier that reaches the walking: its damage d, the chill q one of its hits
-        // adds to this kind (the rules' own rounding), and its freeze F.
-        let chilling: Vec<(i128, i128, u32)> = self
-            .stones
-            .iter()
-            .filter(|s| s.targets.hits(false))
-            .flat_map(|s| s.tiers.iter())
-            .filter(|t| t.el.chill > 0 || t.el.freeze_ticks > 0)
-            .map(|t| (i128::from(t.damage.max(1)), i128::from(i64::from(t.el.chill) * 1000 / mass), t.el.freeze_ticks))
-            .collect();
-        if def.flies() || chilling.is_empty() {
-            return None;
-        }
-        let scale = self.waves.iter().map(|w| w.hp_scale).max().unwrap_or(1000).max(1000);
-        let hp = i64::from(def.hp) * i64::from(scale) / 1000;
-        // The least damage per chill, (d/q)min = dq / qq; a tier whose hit adds no chill to this
-        // kind never brings a freeze.
-        let freezing: Vec<(i128, i128, u32)> = chilling.into_iter().filter(|&(_, q, _)| q > 0).collect();
-        let (dq, qq) = freezing.iter().map(|&(d, q, _)| (d, q)).min_by(|a, b| (a.0 * b.1).cmp(&(b.0 * a.1))).unwrap_or((1, 1));
-        // Per tier, in units of 1/qq milli-HP: p_k = d_k + max(0, 1000 − q_k) · dq / qq.
-        let purse = i128::from(hp - 1).max(0);
-        let price = |d: i128, q: i128| d * qq + (1000 - q).max(0) * dq;
-        let best = freezing.iter().map(|&(d, q, f)| (purse * (i128::from(f) + 1) * qq / price(d, q), price(d, q), f)).max_by_key(|&(h, _, f)| (h, f));
-        let held = best.map_or(0, |(h, _, _)| h.min(i128::from(u64::MAX)) as u64);
-        let (cost, freezes, freeze) = best.map_or((0, 0, 0), |(_, p, f)| ((p + qq - 1) / qq, purse * qq / p, f));
-        let slow = self.stones.iter().filter(|s| s.targets.hits(false)).flat_map(|s| s.tiers.iter()).map(|t| t.slow).max().unwrap_or(0).clamp(0, 999);
-        let roots = self.rules.nature.slow.clamp(0, 999);
-        let pace = if def.climbs() { i128::from(def.climb_speed.clamp(1, 1000)) } else { 1000 };
-        let lane = self.longest_lane(fields, def);
-        let per = i128::from(def.speed.max(1)) * pace * i128::from(1000 - slow) * i128::from(1000 - roots);
-        let walk = i128::from(lane) * i128::from(TICK_HZ) * 1_000_000_000;
-        let walk = ((walk + per - 1) / per) as u64;
-        Some(FrostHold { kind, hp, cost: cost as i64, freezes: freezes as u64, freeze, walk, held, ticks: walk.saturating_add(held) })
-    }
-
-    /// The longest [`Content::frost_hold`] of any enemy kind.
-    pub fn longest_frost_hold(&self) -> Option<FrostHold> {
-        let fields = crate::path::Fields::build(&self.map, &vec![false; self.map.cells().len()], self.rules.wall.breach_penalty);
-        (0..self.enemies.len()).filter_map(|k| self.frost_hold_on(&fields, EnemyKind(k as u8))).max_by_key(|h| (h.ticks, std::cmp::Reverse(h.kind)))
-    }
-
-    /// The longest [`Content::wind_hold`] of any enemy kind.
-    pub fn longest_wind_hold(&self) -> Option<WindHold> {
-        let fields = crate::path::Fields::build(&self.map, &vec![false; self.map.cells().len()], self.rules.wall.breach_penalty);
-        (0..self.enemies.len()).filter_map(|k| self.wind_hold_on(&fields, EnemyKind(k as u8))).max_by_key(|h| (h.ticks, std::cmp::Reverse(h.kind)))
-    }
-
-    /// Ticks after the last wave begins that its last enemy enters.
-    pub fn last_entry(&self) -> u32 {
-        self.waves.last().map_or(0, |w| w.groups.iter().map(|g| g.start + u32::from(g.count.saturating_sub(1)) * g.every).max().unwrap_or(0))
     }
 
     /// Is `cell` fuel?
@@ -978,15 +767,6 @@ fn check_tier(to: &Obj, attack: Attack, tier: &Tier) -> Result<(), DataError> {
             if el.push <= 0 || el.push_ticks == 0 {
                 return Err(to.err("push_m", ErrorCode::Invalid, "a gust needs push_m and push_s"));
             }
-            // A cairn that gusts again before its last push has ended holds an enemy in place
-            // (a shoved enemy does not walk): it pushes, then recharges (the owner's words).
-            if tier.cooldown <= el.push_ticks {
-                return Err(to.err(
-                    "cooldown_s",
-                    ErrorCode::Invalid,
-                    format!("a gust recharges after its push has ended: cooldown_s ({} ticks) must be longer than push_s ({} ticks)", tier.cooldown, el.push_ticks),
-                ));
-            }
         }
         Attack::Strike => {
             if tier.damage <= 0 {
@@ -1012,16 +792,6 @@ fn check_tier(to: &Obj, attack: Attack, tier: &Tier) -> Result<(), DataError> {
                 return Err(to.err("damage", ErrorCode::Invalid, "a tier must deal damage or slow"));
             }
         }
-    }
-    // What holds an enemy in place must hurt it: the frozen stand until a hit with damage
-    // shatters the ice, and the staggered until it ends, so a tier with no damage could hold a
-    // lone enemy for ever (review 3: frozen 199,738 of 200,000 ticks). With damage, every hit
-    // that freezes or staggers takes HP, so the enemy dies or walks on (DESIGN.md, "Gelu").
-    if (el.chill > 0 || el.freeze_ticks > 0) && tier.damage <= 0 {
-        return Err(to.err("damage", ErrorCode::Invalid, "a tier that chills or freezes must hurt (damage > 0): the frozen stand until a hit with damage shatters the ice"));
-    }
-    if el.stagger_ticks > 0 && tier.damage <= 0 {
-        return Err(to.err("damage", ErrorCode::Invalid, "a heave that staggers must hurt (damage > 0): the staggered stand while it lasts"));
     }
     if el.chill > 0 && el.freeze_ticks == 0 {
         return Err(to.err("freeze_s", ErrorCode::Invalid, "chill needs freeze_s (how long a freeze lasts)"));
@@ -1125,49 +895,6 @@ fn check_elements(c: &Content) -> Result<(), DataError> {
         }
     }
     Ok(())
-}
-
-/// The wind may push the dead back, never hold one for longer than a run lasts: the longest a
-/// lone enemy can take to pass under every gust ([`Content::wind_hold`]), counted from when the
-/// last wave's last enemy enters, must end within the run's cap ([`RUN_GRACE_TICKS`] after the
-/// last wave begins). Content past it is refused, naming both figures and what to change.
-fn check_wind(c: &Content) -> Result<(), DataError> {
-    let Some(h) = c.longest_wind_hold() else { return Ok(()) };
-    let room = u64::from(RUN_GRACE_TICKS.saturating_sub(c.last_entry()));
-    if h.ticks <= room {
-        return Ok(());
-    }
-    let name = &c.enemy(h.kind).id;
-    Err(DataError::new(
-        "stones.json",
-        "elements.shove_fade",
-        ErrorCode::OutOfRange,
-        format!(
-            "the wind could keep a lone {name} from passing for {} ticks ({} mm of ground over {} shoves, {} ticks of them shoved), past the {room} ticks the run's cap leaves after the last wave's last enemy enters: raise elements.shove_fade, or lower the gusts' push_m or push_s",
-            h.ticks, h.ground, h.shoves, h.shoved
-        ),
-    ))
-}
-
-/// Frost may hold the dead, never for longer than a run lasts: the longest a lone enemy can take
-/// to pass or die under frost ([`Content::frost_hold`]), counted from when the last wave's last
-/// enemy enters, must end within the run's cap, as the wind's must ([`check_wind`]).
-fn check_frost(c: &Content) -> Result<(), DataError> {
-    let Some(h) = c.longest_frost_hold() else { return Ok(()) };
-    let room = u64::from(RUN_GRACE_TICKS.saturating_sub(c.last_entry()));
-    if h.ticks <= room {
-        return Ok(());
-    }
-    let name = &c.enemy(h.kind).id;
-    Err(DataError::new(
-        "stones.json",
-        "stones",
-        ErrorCode::OutOfRange,
-        format!(
-            "frost could keep a lone {name} from passing or dying for {} ticks ({} ticks frozen: its {} milli-HP pay for {} freezes of {} ticks, each brought by at least {} milli-HP of chilling hits; and {} ticks of walk at the slowest slow), past the {room} ticks the run's cap leaves after the last wave's last enemy enters: give the chilling tiers more damage, less chill, or a shorter freeze_s",
-            h.ticks, h.held, h.hp, h.freezes, h.freeze, h.cost, h.walk
-        ),
-    ))
 }
 
 fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {

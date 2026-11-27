@@ -245,6 +245,33 @@ fn an_enemy_being_shoved_is_not_shoved_again_until_it_ends() {
     assert_eq!(s.w.enemies[idx(&s, id)].el.shoves, 2);
 }
 
+/// The fourth review's item 5: a gust at the dead it can no longer move (their series run out,
+/// or in furor) is no gust: the cairn keeps its charge, and nobody's fire is fanned.
+#[test]
+fn a_gust_at_the_dead_it_cannot_move_keeps_its_charge() {
+    let c = with_fuel("");
+    let cell = at(&c, "top:10,15");
+    let keep = 1000 - c.rules.elements.shove_fade;
+    let push = c.stone(c.stone_kind("ventus").unwrap()).tiers[0].el.push;
+    for case in ["series run out", "in furor"] {
+        let mut s = quiet(&c);
+        let id = plant(&mut s, "shambler", "top:9,15");
+        hold_still_but_shove(&mut s);
+        let i = idx(&s, id);
+        if case == "series run out" {
+            s.w.enemies[i].el.shoves = (0..u16::MAX).find(|&n| crate::content::shove_mm(push, 1000, keep, n) == 0).unwrap();
+        } else {
+            s.w.tick = s.w.hour_of(&c, 1).unwrap();
+        }
+        (s.w.enemies[i].el.burn, s.w.enemies[i].el.burn_until) = (10, s.w.tick + 5);
+        place(&mut s, "ventus", "top:10,15", 0);
+        let ev = steps(&mut s, 3);
+        assert!(!ev.iter().any(|e| matches!(e, Event::Gusted { .. })), "{case}: no gust: {ev:?}");
+        assert_eq!(s.charge(cell), Some(1000), "{case}: charged still");
+        assert!(s.enemy(id).is_none_or(|e| e.el.burn_until <= s.w.tick + 5), "{case}: no fire fanned");
+    }
+}
+
 #[test]
 fn content_without_a_shove_fade_gets_one_and_the_wind_layouts_end() {
     let stones = PROVING_STONES_JSON.replace("\r\n", "\n");
@@ -1072,26 +1099,6 @@ fn bursts_are_counted_when_they_go_off_and_the_counts_agree() {
     assert!(events > 0 && events == total, "{events} bursts");
 }
 
-fn gust_content(cooldown: &str, push_s: &str) -> Result<Content, crate::error::DataError> {
-    proving_with(
-        "{ \"cost\": 90, \"range_m\": 6.5, \"cooldown_s\": 4.0, \"push_m\": 5.0, \"push_s\": 0.6 }",
-        &format!("{{ \"cost\": 90, \"range_m\": 6.5, \"cooldown_s\": {cooldown}, \"push_m\": 5.0, \"push_s\": {push_s} }}"),
-    )
-}
-
-#[test]
-fn a_gust_must_recharge_longer_than_its_push_lasts() {
-    // The rule is held in ticks: 0.61 s is longer than 0.6 s, but both are 18 ticks.
-    for (cooldown, push) in [("0.6", "0.6"), ("0.61", "0.6"), ("0.616", "0.6"), ("0.034", "5.0"), ("0.5", "0.6")] {
-        let err = gust_content(cooldown, push).expect_err("refused");
-        let text = err.to_string();
-        assert!(text.contains("cooldown_s") && text.contains("longer than push_s"), "{cooldown} / {push}: {text}");
-    }
-    let c = gust_content("0.617", "0.6").expect("19 ticks against 18: accepted");
-    let t = c.stone(c.stone_kind("ventus").unwrap()).tiers[2];
-    assert_eq!((t.cooldown, t.el.push_ticks), (19, 18));
-}
-
 /// The proving ground with Ventus III replaced by `tier` and its fade by `fade`.
 fn wind_content(tier: &str, fade: &str) -> Result<Content, crate::error::DataError> {
     let stones = PROVING_STONES_JSON.replace("\r\n", "\n");
@@ -1108,24 +1115,25 @@ fn slow_gust(push_m: f64) -> String {
 
 /// A lone enemy of `kind` set down on `from` with four tier-III cairns of `c` round `ring`'s
 /// centre: the ticks until it is through (it cannot be killed: the wind deals nothing), at most
-/// `limit`, and the gusts that shoved it.
-fn lone_under_wind(c: &Arc<Content>, kind: &str, from: &str, ring: [&str; 4], limit: u64) -> (u64, u32) {
+/// `limit`, the gusts that shoved it, and whether it entered furor.
+fn lone_under_wind(c: &Arc<Content>, kind: &str, from: &str, ring: [&str; 4], limit: u64) -> (u64, u32, bool) {
     let mut s = quiet(c);
     let id = plant(&mut s, kind, from);
     for cell in ring {
         place(&mut s, "ventus", cell, 2);
     }
     let mut ev = Vec::new();
-    let (mut ticks, mut gusts) = (0u64, 0u32);
+    let (mut ticks, mut gusts, mut furor) = (0u64, 0u32, false);
     while s.enemy(id).is_some() && ticks <= limit {
         ev.clear();
         s.step_into(&[], &mut ev);
         ticks += 1;
         gusts += ev.iter().filter(|e| matches!(e, Event::Gusted { .. })).count() as u32;
+        furor |= ev.iter().any(|e| matches!(e, Event::Furor { .. }));
     }
     assert!(s.enemy(id).is_none(), "a lone {kind} still held after {ticks} ticks ({gusts} gusts), past {limit}");
     assert_eq!(s.wave_stats()[0].leaked, 1, "the {kind} walked into the graveyard");
-    (ticks, gusts)
+    (ticks, gusts, furor)
 }
 
 /// Where the lone enemies of these tests walk: from the south-west gorge, along the lane to the
@@ -1134,100 +1142,16 @@ fn lone_under_wind(c: &Arc<Content>, kind: &str, from: &str, ring: [&str; 4], li
 const GORGE: &str = "top:4,19";
 const RING: [&str; 4] = ["top:8,12", "top:10,12", "top:8,14", "top:10,14"];
 
-/// The loader's figure ([`Content::wind_hold`]) holds every lone enemy the stock proving content
-/// can make, and the loader holds the figure under the run's cap.
+/// The stock wind holds nobody near a wave's hour: a lone enemy of each ground kind, shoved at
+/// every turn by a ring of four tier-III cairns, is through in minutes, never in furor.
 #[test]
-fn the_stock_wind_lets_a_lone_enemy_through_within_the_derived_series() {
+fn the_stock_wind_lets_a_lone_enemy_through_long_before_its_waves_hour() {
     let c = proving();
-    let longest = c.longest_wind_hold().expect("the proving ground has gusts");
-    assert!(longest.ticks + u64::from(c.last_entry()) <= u64::from(crate::content::RUN_GRACE_TICKS), "{longest:?}");
+    let hour = u64::from(quiet(&c).w.hour_of(&c, 1).unwrap());
     for kind in ["shambler", "runner", "tumidus", "colossus"] {
-        let k = c.enemy_kind(kind).unwrap();
-        let h = c.wind_hold(k).expect("a ground enemy");
-        let (ticks, gusts) = lone_under_wind(&c, kind, GORGE, RING, h.ticks);
-        assert!(ticks <= h.ticks && gusts > 0, "{kind}: {ticks} ticks, {gusts} gusts, derived {h:?}");
-        // A walker that does not climb, shoved at every turn and never pinned at its gorge, spends
-        // the whole series: it takes nearly the derived figure (on 2026-11-28: the bloated dead
-        // 1,684 of 1,688 ticks, the colossus 2,401 of 2,408; the shambler 2,120 of 4,154, its
-        // figure counting all its way at its cliff pace).
-        if matches!(kind, "tumidus" | "colossus") {
-            assert!(ticks * 100 >= h.ticks * 98, "{kind}: {ticks} of {}", h.ticks);
-        }
+        let (ticks, gusts, furor) = lone_under_wind(&c, kind, GORGE, RING, hour);
+        assert!(ticks * 10 < hour && gusts > 0 && !furor, "{kind}: {ticks} ticks, {gusts} gusts, furor {furor}, hour {hour}");
     }
-    assert_eq!(c.wind_hold(c.enemy_kind("wraith").unwrap()), None, "the wind shoves nothing in the air");
-    // The series is the rules': every shove the rules give is a term of it, in order.
-    let k = c.enemy_kind("shambler").unwrap();
-    let push = c.stone(c.stone_kind("ventus").unwrap()).tiers[2].el.push;
-    let keep = 1000 - c.rules.elements.shove_fade;
-    let terms: Vec<i32> = (0..).map(|n| crate::content::shove_mm(push, c.enemy(k).mass, keep, n)).take_while(|&s| s > 0).collect();
-    let h = c.wind_hold(k).unwrap();
-    assert_eq!((terms.len() as u32, terms.iter().map(|&s| i64::from(s)).sum::<i64>()), (h.shoves, h.ground));
-    // (A runner's chance leaps are not in the series: DESIGN.md, "Ventus", bounds them apart.)
-}
-
-/// The reviewer's extreme (review 3: push 30 m over 5 s at the slowest fade held a lone shambler
-/// 399,108 ticks, past the run's cap) is refused by the loader, naming both figures and what to
-/// change; and played anyway (the numbers put in by hand), it is through within the figure.
-#[test]
-fn the_reviewers_extreme_wind_is_refused_and_held_by_its_series() {
-    let err = wind_content(&slow_gust(30.0), "0.05").expect_err("refused");
-    let text = err.to_string();
-    assert!(text.contains("elements.shove_fade") && text.contains("past the") && text.contains("push_m"), "{text}");
-    let mut c = wind_content(&slow_gust(5.0), "0.05").expect("a 5 m push is within the cap");
-    let v = c.stone_kind("ventus").unwrap();
-    c.stones[usize::from(v.0)].tiers[2].el.push = 30_000;
-    let c = Arc::new(c);
-    let h = c.wind_hold(c.enemy_kind("shambler").unwrap()).unwrap();
-    let room = u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
-    assert!(h.ticks > room && text.contains(&h.ticks.to_string()) && text.contains(&room.to_string()), "{text} / {h:?}");
-    let (ticks, _) = lone_under_wind(&c, "shambler", GORGE, RING, h.ticks);
-    assert!(ticks <= h.ticks, "{ticks} > {}", h.ticks);
-    // The ring of the review, at the shambler's own gorge: pinned there, it loses less.
-    let (ticks, _) = lone_under_wind(&c, "shambler", "top:9,19", ["top:8,14", "top:10,14", "top:8,16", "top:10,16"], h.ticks);
-    assert!(ticks <= h.ticks, "{ticks} > {}", h.ticks);
-}
-
-/// At the edge of refusal (the largest push at the slowest fade that the loader still takes),
-/// a lone shambler shoved at every turn takes at least half the derived figure: the bound is
-/// the rules' series, not a figure ten times too large. (What it leaves: the walk back is
-/// counted at the climbers' cliff pace, 0.6 of the pace on the lane it walks here.)
-#[test]
-fn at_the_edge_of_refusal_the_derived_figure_is_within_twice_what_a_lone_enemy_takes() {
-    let accepted = |tenths: u32| wind_content(&slow_gust(f64::from(tenths) / 10.0), "0.05").is_ok();
-    let (mut lo, mut hi) = (10u32, 300u32);
-    assert!(accepted(lo) && !accepted(hi), "the edge lies between 1 m and 30 m");
-    while hi - lo > 1 {
-        let mid = (lo + hi) / 2;
-        if accepted(mid) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    let c = Arc::new(wind_content(&slow_gust(f64::from(lo) / 10.0), "0.05").unwrap());
-    let room = u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
-    let h = c.longest_wind_hold().unwrap();
-    assert!(h.ticks <= room && h.ticks * 10 > room * 9, "the edge: {h:?} against {room}");
-    assert_eq!(h.kind, c.enemy_kind("shambler").unwrap(), "the slowest walker under the wind");
-    let (ticks, gusts) = lone_under_wind(&c, "shambler", GORGE, RING, h.ticks);
-    assert!(ticks <= h.ticks && ticks * 2 >= h.ticks, "push {} m: {ticks} ticks ({gusts} gusts) against the derived {}", f64::from(lo) / 10.0, h.ticks);
-}
-
-/// Frost must hurt (review 3: a Gelu tier with no damage kept a lone shambler frozen 199,738 of
-/// 200,000 ticks); earth that staggers too.
-#[test]
-fn a_tier_that_chills_freezes_or_staggers_with_no_damage_is_refused() {
-    let gelu = "\"damage\": 14, \"projectile_mps\": 20, \"slow\": 0.35, \"slow_s\": 1.5, \"chill\": 0.6, \"freeze_s\": 3.0, \"shatter\": 2.0 }";
-    for (to, key) in [
-        ("\"damage\": 0, \"projectile_mps\": 20, \"slow\": 0.35, \"slow_s\": 1.5, \"chill\": 0.6, \"freeze_s\": 3.0, \"shatter\": 2.0 }", "chills or freezes"),
-        ("\"projectile_mps\": 20, \"chill\": 1.0, \"freeze_s\": 30 }", "chills or freezes"),
-    ] {
-        let err = proving_with(gelu, to).expect_err("refused");
-        assert!(err.to_string().contains("damage") && err.to_string().contains(key), "{err}");
-    }
-    let saxum = "\"damage\": 36, \"line\": 4, \"stagger_s\": 1.2,";
-    let err = proving_with(saxum, "\"damage\": 0, \"line\": 4, \"stagger_s\": 1.2,").expect_err("refused");
-    assert!(err.to_string().contains("damage") && err.to_string().contains("staggers"), "{err}");
 }
 
 /// Where the frost tests' Gelu stones stand.
@@ -1236,8 +1160,7 @@ enum Frost {
     /// The first n of [`RING`]; the enemy is set down on [`GORGE`] and walks through them.
     Ring(usize),
     /// The n buildable cells nearest [`AMID`], where the enemy is set down, all placed in the
-    /// tick it is: they fire together, so one volley brings a freeze and the next lands on the
-    /// tick after it thaws when the recharge is one tick longer than the freeze.
+    /// tick it is: they fire together.
     Round(usize),
 }
 
@@ -1252,15 +1175,17 @@ fn nearest_build_cells(c: &Content, cell: &str, n: usize) -> Vec<CellId> {
     near.iter().take(n).map(|x| x.id).collect()
 }
 
-/// A lone `kind` with the HP the figure counts (its own times the largest wave scale) under Gelu
-/// stones of `tier` stood as `at`, played from `seed`: the ticks until it is through or dead (at
-/// most `limit`), the ticks it stood frozen, and whether it got through.
+/// A lone `kind` at the HP of the largest wave scale under Gelu stones of `tier` stood as `at`,
+/// played from `seed`: the ticks until it is through or dead (at most `limit`), the ticks it
+/// stood frozen, and whether it entered furor.
 fn lone_under_frost(c: &Arc<Content>, kind: &str, at_: Frost, tier: u8, seed: u64, limit: u64) -> (u64, u64, bool) {
     let mut s = State::new(Arc::clone(c), seed);
     s.w.next_wave_tick = None;
     s.w.wave = 1;
     s.w.wave_stats[0].started_at = Some(0);
-    let hp = c.frost_hold(c.enemy_kind(kind).unwrap()).expect("a ground enemy under frost").hp as i32;
+    let k = c.enemy_kind(kind).unwrap();
+    let scale = c.waves.iter().map(|w| w.hp_scale).max().unwrap_or(1000).max(1000);
+    let hp = (i64::from(c.enemy(k).hp) * i64::from(scale) / 1000) as i32;
     let (from, cells): (&str, Vec<CellId>) = match at_ {
         Frost::Ring(n) => (GORGE, RING[..n].iter().map(|x| at(c, x)).collect()),
         Frost::Round(n) => (AMID, nearest_build_cells(c, AMID, n)),
@@ -1269,179 +1194,82 @@ fn lone_under_frost(c: &Arc<Content>, kind: &str, at_: Frost, tier: u8, seed: u6
     let i = idx(&s, id);
     (s.w.enemies[i].hp, s.w.enemies[i].max_hp) = (hp, hp);
     let gelu = c.stone_kind("gelu").unwrap();
-    let range = c.stone(gelu).tiers[usize::from(tier)].range;
     let mut ev = Vec::new();
     s.w.dust = 1_000_000;
     for cell in cells {
-        if matches!(at_, Frost::Round(_)) {
-            let d2 = c.map.cell(cell).pos.dist2(s.w.enemies[i].pos);
-            assert!(d2 <= i64::from(range) * i64::from(range), "{cell:?} is out of range of the enemy it is to hit");
-        }
         s.apply(&Command::PlaceStone { cell, stone: gelu }, &mut ev).expect("placed");
         for _ in 0..tier {
             s.apply(&Command::Upgrade { cell }, &mut ev).expect("upgraded");
         }
     }
-    let (mut ticks, mut frozen) = (0u64, 0u64);
+    let (mut ticks, mut frozen, mut furor) = (0u64, 0u64, false);
     while s.enemy(id).is_some() && ticks <= limit {
-        steps(&mut s, 1);
+        ev.clear();
+        s.step_into(&[], &mut ev);
         ticks += 1;
+        furor |= ev.iter().any(|e| matches!(e, Event::Furor { .. }));
         if s.enemy(id).is_some_and(|e| e.el.frozen(s.tick())) {
             frozen += 1;
         }
     }
-    assert!(s.enemy(id).is_none(), "a lone {kind} ({at_:?}, tier {tier}, seed {seed}) still held after {ticks} ticks, past the bound {limit}");
-    (ticks, frozen, s.wave_stats()[0].leaked == 1)
-}
-
-/// The proving ground with Gelu III's numbers put in by hand (content the loader would refuse):
-/// recharge, damage (milli-HP), slow (permille) and its ticks, and the freeze's ticks; chill 1,
-/// no shatter bonus, a bolt as fast as the format allows.
-fn gelu_by_hand(cooldown: u32, damage: i32, slow: (i32, u32), freeze: u32) -> Arc<Content> {
-    let mut c = Content::proving();
-    let g = usize::from(c.stone_kind("gelu").unwrap().0);
-    let t = &mut c.stones[g].tiers[2];
-    (t.cooldown, t.damage, t.slow, t.slow_ticks, t.projectile_speed) = (cooldown, damage, slow.0, slow.1, crate::fixed::mm(1000.0) / TICK_HZ as i32);
-    (t.el.chill, t.el.freeze_ticks, t.el.shatter) = (1000, freeze, 0);
-    Arc::new(c)
+    assert!(s.enemy(id).is_none(), "a lone {kind} ({at_:?}, tier {tier}, seed {seed}) still held after {ticks} ticks, past {limit}");
+    (ticks, frozen, furor)
 }
 
 /// Gelu III as the proving ground's stones.json writes it.
 const GELU_III: &str = "{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 0.9, \"damage\": 14, \"projectile_mps\": 20, \"slow\": 0.35, \"slow_s\": 1.5, \"chill\": 0.6, \"freeze_s\": 3.0, \"shatter\": 2.0 }";
 
-/// Frost is held under the run's cap when content loads, as the wind is: ordinary frost is far
-/// inside it (the stock proving stones under half the room; the shipped stones have no frost),
-/// and the harshest frost the format takes (a hit every tick of 0.001 damage, chill 1, a 30 s
-/// freeze, the most slow for the longest) is refused, naming both figures and what to change.
+/// The stock frost holds nobody near a wave's hour: the four ground kinds at the largest wave
+/// scale's HP, under Gelu I, II and III, walking through four or set down amid eight that fire
+/// together, over three seeds, are through or dead in minutes, never in furor.
 #[test]
-fn ordinary_frost_is_inside_the_runs_cap_and_the_harshest_is_refused() {
-    let room = |c: &Content| u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
-    let p = Content::proving();
-    let h = p.longest_frost_hold().expect("the proving ground has frost");
-    let margin = format!("proving: frost {} ticks ({h:?}) against a room of {}: margin {}, the figure {}% of the room", h.ticks, room(&p), room(&p) as i64 - h.ticks as i64, h.ticks * 100 / room(&p));
-    assert!(h.ticks * 2 < room(&p), "{margin}");
-    let shipped = Content::builtin();
-    assert_eq!(shipped.longest_frost_hold(), None, "shipped: no chilling tier, so no frost to hold (room {})", room(&shipped));
-    assert_eq!(shipped.longest_wind_hold(), None, "shipped: no gust either");
-    let harsh = "{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 0.034, \"damage\": 0.001, \"projectile_mps\": 1000, \"slow\": 0.9, \"slow_s\": 600, \"chill\": 1.0, \"freeze_s\": 30, \"shatter\": 0 }";
-    let text = proving_with(GELU_III, harsh).expect_err("refused").to_string();
-    let by_hand = gelu_by_hand(1, 1, (900, 18_000), 900);
-    let h = by_hand.longest_frost_hold().unwrap();
-    assert!(text.contains("frost could keep") && text.contains(&h.ticks.to_string()) && text.contains(&room(&by_hand).to_string()), "{text} / {h:?}");
-    assert!(text.contains("more damage") && text.contains("freeze_s"), "{text}");
-}
-
-/// The stock proving stones: the figure is under half the run's room (the margin in the
-/// message), and no lone enemy the tests can make takes longer than its figure or stands frozen
-/// longer than its held part: the four ground kinds, at the largest wave scale's HP, under Gelu
-/// I, II and III, walking through a ring of four or set down amid eight that fire together, over
-/// three seeds.
-#[test]
-fn the_stock_frost_holds_a_lone_enemy_within_its_figure_far_inside_the_runs_room() {
+fn the_stock_frost_lets_a_lone_enemy_through_or_kills_it_long_before_its_waves_hour() {
     let c = proving();
-    let room = u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
-    let h = c.longest_frost_hold().expect("the proving ground has frost");
-    let margin = format!("stock: {} ticks ({}) against a room of {room}: margin {}, {}% of the room; {h:?}", h.ticks, c.enemy(h.kind).id, room - h.ticks.min(room), h.ticks * 100 / room);
-    assert!(h.ticks * 2 < room, "{margin}");
-    let (mut most, mut most_frozen) = ((0u64, 1u64, String::new()), (0u64, 1u64, String::new()));
+    let hour = u64::from(quiet(&c).w.hour_of(&c, 1).unwrap());
+    let mut most = (0u64, String::new());
     for kind in ["shambler", "runner", "tumidus", "colossus"] {
-        let hk = c.frost_hold(c.enemy_kind(kind).unwrap()).unwrap();
         for tier in 0..3u8 {
             for at_ in [Frost::Ring(4), Frost::Round(8)] {
                 for seed in 1..=3 {
-                    let (ticks, frozen, _) = lone_under_frost(&c, kind, at_, tier, seed, hk.ticks);
-                    let what = format!("{kind} {at_:?} tier {} seed {seed}", tier + 1);
-                    assert!(ticks <= hk.ticks && frozen <= hk.held, "{what}: {ticks} ticks, {frozen} frozen, against {hk:?} ({margin})");
-                    if ticks * most.1 > most.0 * hk.ticks {
-                        most = (ticks, hk.ticks, what.clone());
-                    }
-                    if frozen * most_frozen.1 > most_frozen.0 * hk.held.max(1) {
-                        most_frozen = (frozen, hk.held.max(1), what);
+                    let (ticks, frozen, furor) = lone_under_frost(&c, kind, at_, tier, seed, hour);
+                    let what = format!("{kind} {at_:?} tier {} seed {seed}: {ticks} ticks, {frozen} frozen", tier + 1);
+                    assert!(!furor && ticks * 4 < hour, "{what}; hour {hour}");
+                    if ticks > most.0 {
+                        most = (ticks, what);
                     }
                 }
             }
         }
     }
-    // What the figure leaves (recorded in DESIGN.md, "Gelu"): the walk counted at the slowest
-    // slow and pace, and each freeze counted whole though the stock recharge is shorter.
-    assert!(most.0 * 20 >= most.1 && most_frozen.0 > 0, "closest: {most:?}; most frozen: {most_frozen:?}; {margin}");
+    assert!(most.0 > 0, "{most:?}");
 }
 
-/// A Gelu III that freezes at once (chill 1) for 30 s and recharges one tick after the thaw, with
-/// a bolt as fast as the format allows, dealing `damage` milli-HP.
-fn spaced_gelu(damage: u32) -> String {
-    format!("{{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 30.034, \"damage\": {:.3}, \"projectile_mps\": 1000, \"chill\": 1.0, \"freeze_s\": 30, \"shatter\": 0 }}", f64::from(damage) / 1000.0)
-}
-
-/// At the edge of refusal (the least damage of [`spaced_gelu`] the loader still takes), the enemy
-/// the figure is longest for, set down amid as many such stones as one volley needs to freeze it
-/// (placed together, so they fire together), stands frozen nearly all the figure's held part and
-/// takes within a stated factor of the whole figure: the bound is the rules', not ten times it.
+/// A leaper's chance leaps with no shoves (DESIGN.md, "Furor": the run's `leaps` term): it rolls
+/// only when it walks onto a jump point, so it leaps at most once at each, and its whole way takes
+/// no longer than the run's walk and leaps. Over twenty seeds from each gorge, some leap.
 #[test]
-fn at_the_edge_of_refusal_frost_holds_a_lone_enemy_near_its_figure() {
-    let accepted = |damage: u32| proving_with(GELU_III, &spaced_gelu(damage)).is_ok();
-    let (mut lo, mut hi) = (1u32, 100_000u32);
-    assert!(!accepted(lo) && accepted(hi), "the edge lies between 0.001 and 100 damage");
-    while hi - lo > 1 {
-        let mid = (lo + hi) / 2;
-        if accepted(mid) {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
-    let c = Arc::new(proving_with(GELU_III, &spaced_gelu(hi)).unwrap());
-    let room = u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
-    let h = c.longest_frost_hold().unwrap();
-    let kind = c.enemy(h.kind).id.clone();
-    assert!(h.ticks <= room && h.ticks * 100 > room * 99, "the edge, {hi} milli-HP a hit: {h:?} against {room}");
-    let per_hit = 1000 * 1000 / i64::from(c.enemy(h.kind).mass.max(1));
-    let n = ((1000 + per_hit - 1) / per_hit) as usize;
-    let (ticks, frozen, leaked) = lone_under_frost(&c, &kind, Frost::Round(n), 2, 1, h.ticks);
-    let what = format!("{kind} amid {n} stones of {hi} milli-HP: {ticks} ticks, {frozen} frozen, against {h:?}");
-    assert!(!leaked && ticks <= h.ticks && frozen <= h.held, "{what}");
-    assert!(frozen * 100 >= h.held * 95 && ticks * 5 >= h.ticks * 4, "{what}");
-}
-
-/// DESIGN.md, "Ventus": a runner's chance leaps are not in the wind's series, and are bounded
-/// apart: it rolls only when it walks onto a jump point, so at most once a jump point for each
-/// pass the wind sends it back over (jump points x (1 + shoves) leaps), and each leap lengthens its
-/// way by at most its ledge and `jump_detour`. Measured over seeds, with a ring of tier-III
-/// cairns round each of the slab's two ledges, against that bound.
-#[test]
-fn a_runners_chance_leaps_stay_within_their_stated_bound_under_the_wind() {
+fn a_runners_chance_leaps_stay_within_the_runs_stated_leaps() {
     let c = proving();
-    let k = c.enemy_kind("runner").unwrap();
-    let def = c.enemy(k);
-    let wind = c.wind_hold(k).unwrap();
-    let jumps: Vec<CellId> = c.map.cells().iter().map(|x| x.id).filter(|&id| !c.map.jump_partners(id).is_empty()).collect();
-    assert_eq!(jumps.len(), 4, "two ledges, a jump point at each end");
-    let ledge = jumps.iter().flat_map(|&a| c.map.jump_partners(a).iter().map(move |&p| (a, p))).map(|(a, p)| c.map.jump_cost(a, p)).max().unwrap();
-    let most_leaps = jumps.len() as u64 * (1 + u64::from(wind.shoves));
-    let per = i64::from(def.speed);
-    let per_leap = ((i64::from(ledge) + i64::from(def.jump_detour)) * i64::from(TICK_HZ) + per - 1) / per;
-    let bound = wind.ticks + most_leaps * per_leap as u64;
+    let b = c.run_bound();
+    let jumps = c.map.cells().iter().filter(|x| !c.map.jump_partners(x.id).is_empty()).count() as u64;
+    assert_eq!(jumps, 4, "two ledges, a jump point at each end");
     let mut leapt = 0u32;
-    for (gorge, ring) in [("top:4,19", ["top:3,14", "top:5,14", "top:3,15", "top:5,15"]), ("top:15,19", ["top:14,15", "top:16,15", "top:14,16", "top:16,16"])] {
+    for gorge in ["top:4,19", "top:15,19"] {
         for seed in 1..=20 {
             let mut s = State::new(Arc::clone(&c), seed);
             s.w.next_wave_tick = None;
             s.w.wave = 1;
             s.w.wave_stats[0].started_at = Some(0);
             let id = plant(&mut s, "runner", gorge);
-            for cell in ring {
-                place(&mut s, "ventus", cell, 2);
-            }
             let mut ev = Vec::new();
             let (mut ticks, mut leaps) = (0u64, 0u64);
-            while s.enemy(id).is_some() && ticks <= bound {
+            while s.enemy(id).is_some() && ticks <= b.walk + b.leaps {
                 ev.clear();
                 s.step_into(&[], &mut ev);
                 ticks += 1;
                 leaps += ev.iter().filter(|e| matches!(e, Event::Jumped { enemy, .. } if *enemy == id)).count() as u64;
             }
-            assert!(s.enemy(id).is_none() && s.wave_stats()[0].leaked == 1, "{gorge} seed {seed}: still held after {ticks} ticks, past {bound}");
-            assert!(ticks <= bound && leaps <= most_leaps, "{gorge} seed {seed}: {ticks} ticks, {leaps} leaps, against {bound} and {most_leaps}");
+            assert!(s.enemy(id).is_none() && leaps <= jumps, "{gorge} seed {seed}: {ticks} ticks, {leaps} leaps, against {} and {jumps}", b.walk + b.leaps);
             leapt += u32::from(leaps > 0);
         }
     }

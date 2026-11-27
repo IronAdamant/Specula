@@ -207,7 +207,7 @@ impl World {
     /// already: **one shove at a time** (a cairn's gust or a blast does not reach an enemy whose
     /// last shove has not ended). Each shove an enemy takes is `shove_fade` weaker than the one
     /// before ([`crate::content::shove_mm`]), so what the wind can take from one enemy is a
-    /// geometric series, which the loader holds under the run's cap ([`Content::wind_hold`]).
+    /// geometric series that ends; and none reaches an enemy in furor ([`World::can_hold`]).
     fn shove(&mut self, content: &Content, i: usize, push: i32, ticks: u32) {
         if !self.can_hold(content, &self.enemies[i]) {
             return;
