@@ -800,8 +800,10 @@ pairs one of each.
 ### What the sweeps say
 
 `cargo run -p sepulcra --example headless --release -- --ground proving --layout all --sweep 1000`
-(seeds 1–1000, 2026-11-25, after the second review's mends: fire on the frozen thaws them by every
-path, a cairn recharges longer than its push, bursts are counted when they go off). Tombstones out
+(seeds 1–1000, 2026-11-28, after the third review's mends: each shove of one enemy a quarter
+weaker than the one before and none before the last has ended; before them, 2026-11-25, the
+second review's: fire on the frozen thaws them by every path, a cairn recharges longer than its
+push, bursts are counted when they go off). Tombstones out
 of 20; kills are of every enemy spawned (the colossus summons, so the count varies); "bursts" counts
 every burst that went off, on a wall or where the exploder was killed (each wave's `detonated`).
 No run stranded an enemy and every run ended.
@@ -812,24 +814,37 @@ No run stranded an enemy and every run ended.
 | fire | 1000 | 18.60 | 1.4 | 127.6 | 12.0 | 6:40 |
 | lightning | 1000 | 19.93 | 0.1 | 126.9 | 12.0 | 6:39 |
 | frost | 972 | 6.51 | 10.7 | 124.6 | 11.8 | 6:38 |
-| wind | 1 | 0.00 | 17.3 | 71.5 | 5.7 | 5:44 |
-| earth | 1000 | 19.03 | 1.0 | 123.2 | 12.0 | 6:40 |
+| wind | 217 | 0.43 | 15.7 | 88.0 | 7.2 | 5:54 |
+| earth | 1000 | 19.03 | 1.0 | 123.1 | 12.0 | 6:40 |
 | fire + lightning | 1000 | 19.80 | 0.2 | 128.8 | 12.0 | 6:39 |
 | fire + frost | 1000 | 9.60 | 6.4 | 130.6 | 12.0 | 6:40 |
-| fire + wind | 923 | 3.65 | 12.4 | 125.7 | 12.0 | 6:47 |
+| fire + wind | 972 | 4.48 | 11.5 | 127.1 | 12.0 | 6:49 |
 | fire + earth | 1000 | 18.52 | 1.5 | 155.0 | 12.0 | 6:57 |
 | lightning + frost | 1000 | 10.47 | 5.5 | 131.4 | 12.0 | 6:40 |
-| lightning + wind | 981 | 4.51 | 11.5 | 127.3 | 12.0 | 6:49 |
+| lightning + wind | 994 | 5.38 | 10.6 | 128.3 | 12.0 | 6:50 |
 | lightning + earth | 1000 | 19.50 | 0.5 | 154.1 | 12.0 | 6:53 |
-| frost + wind | 774 | 8.78 | 9.6 | 120.6 | 11.4 | 6:38 |
-| frost + earth | 1000 | 18.01 | 1.9 | 155.8 | 11.9 | 7:21 |
-| wind + earth | 991 | 12.53 | 6.9 | 126.3 | 11.4 | 6:39 |
+| frost + wind | 688 | 8.57 | 9.8 | 119.2 | 11.3 | 6:35 |
+| frost + earth | 1000 | 18.01 | 1.9 | 155.8 | 11.9 | 7:22 |
+| wind + earth | 994 | 12.67 | 6.8 | 127.9 | 11.5 | 6:40 |
 
-Against the sweep of 2026-11-24 (after the first review's mends) every figure is the same to the
-last digit but the bursts, which counted bursts on walls only then (0.0 to 1.2 a run) and count
-every burst now: twelve exploders come in the proving ground's waves, and in nearly every run all
-of them burst. Fire thawing the frozen by every path moved no figure of the table (the runs'
-hashes did move).
+Against the sweep of 2026-11-25 (after the second review's mends) **only the layouts with wind
+moved, and earth's and frost + earth's by a hair**: wind 1 → 217 won (tombstones 0.00 → 0.43),
+fire + wind 923 → 972, lightning + wind 981 → 994, frost + wind 774 → 688, wind + earth 991 →
+994; earth's kills 123.2 → 123.1 and frost + earth's game time 7:21 → 7:22. Why: the wind's new
+rules (each shove a quarter weaker than the one before, where the old fade divided the n-th by
+1 + n x 0.5; and no shove of an enemy still being shoved, so a cairn keeps its charge for one it
+can push). The two layouts without a cairn moved by the bursts' shoves, which follow the same two
+rules (a Tumidus's blast pushes the dead around it 1 m).
+
+Against the sweep of 2026-11-24 (after the first review's mends) every figure of 2026-11-25 was
+the same to the last digit but the bursts, which counted bursts on walls only then (0.0 to 1.2 a
+run) and count every burst now: twelve exploders come in the proving ground's waves, and in
+nearly every run all of them burst. Fire thawing the frozen by every path moved no figure of the
+table, and **no proving run takes that path**: the third review counted no fire hit on a frozen
+enemy in 1,200 runs of the six layouts with fire or frost (seeds 1 to 200), so what holds the
+mend is the unit test through the real hit
+(`every_attack_decides_its_elements_from_the_enemy_before_the_hit`). The runs' hashes moved then
+because the bursts' count is part of the hash (each wave's `detonated`), not by fire.
 
 Against the sweep before the first review's mends (commit `f39b9770`): the layouts without wind
 were the same to the last figure except frost (973 won before, 972 since). That is **seed 395**,
@@ -849,12 +864,14 @@ What it says, read honestly:
   replaces); **frost alone is weak** (10.7 leaks, most in wave 1's packed column and wave 5's
   colossus, which mass 8 makes nearly unfreezable), as its row says; frost's own payoff (thaw then
   strike, freeze then shatter) does not make up for it in these waves.
-- **Wind alone loses, now almost always** (1 win in 1,000): two cairns that deal nothing in place
-  of two wardings leave three wardings to do all the killing, and a cairn that gusts at one
-  straggler has spent its charge when the column comes. Paired with a damage stone it mostly holds
-  (lightning + wind 98.1 %, wind + earth 99.1 %, fire + wind 92.3 %) but costs tombstones: in these
-  waves it buys time the other stones do not use. Frost + wind does better than before (77.4 %
-  from 71.2 %): pushing lone dead back keeps them in the rime stone's range. That is the shape of
+- **Wind alone mostly loses** (217 wins in 1,000; 1 before the third review's mends): two cairns
+  that deal nothing in place of two wardings leave three wardings to do all the killing, and a
+  cairn that gusts at one straggler has spent its charge when the column comes (now less often:
+  it keeps its charge while the one in range is still being shoved). Paired with a damage stone it
+  mostly holds (lightning + wind 99.4 %, wind + earth 99.4 %, fire + wind 97.2 %) but costs
+  tombstones: in these waves it buys time the other stones do not use. Frost + wind does worse
+  than before (68.8 % from 77.4 %): a lone enemy is pushed back less often now, and so is less
+  often kept in the rime stone's range. That is the shape of
   the owner's "non damage" stone; its numbers (range, push, recharge) are what to tune.
 - **A lone enemy is not held for ever, by two rules of the loader:** frost and earth that hold
   must hurt (Gelu, Saxum above), and the wind is held by its own series: each shove of one enemy
@@ -882,8 +899,8 @@ What it says, read honestly:
   are unchanged).
 
 Single runs of seed 1, the elements' counts (`--layout NAME --seed 1`): fire 155 ignitions and 31
-fuel cells caught; lightning 309 strikes; frost 34 freezes and 32 shatters; wind 87 gusts; earth
-81 heaves and 5 walls (rubble) broken; fire + wind 124 ignitions, 25 gusts; lightning + frost 215
+fuel cells caught; lightning 309 strikes; frost 34 freezes and 32 shatters; wind 90 gusts; earth
+81 heaves and 5 walls (rubble) broken; fire + wind 121 ignitions, 40 gusts; lightning + frost 215
 strikes, 10 freezes.
 
 The shipped map's sweep (`--layout all --sweep 1000`) prints, line for line, what it printed
