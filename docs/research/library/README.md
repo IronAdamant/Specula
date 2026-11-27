@@ -377,3 +377,42 @@ R7-5b do not.
     anchor it to. That table, not the delivery's summary, is where a lane starts.
   - *Not checkable from the pack* (read online by the researcher and not saved, or packed as a
     refusal page): listed in each check. Those are not typed in as checked.
+
+## Round eight: geometry and the mathematics behind it (2026-11-27; section A)
+
+Asked for in [LIBRARY_RESEARCH_BRIEF_ROUND8.md](../LIBRARY_RESEARCH_BRIEF_ROUND8.md), because four
+lanes of the libraries were held up by geometry and not by programming. **Section A (soft edges on
+raised figures) was delivered the same evening**; sections B (a creature's body as one surface),
+C (effects by mathematics) and D (turned and moulded forms) are still to come.
+
+| File | What it answers |
+|---|---|
+| [R8-A1](R8-A1-straight-skeleton-definition-events.md) | The straight skeleton: its definition, every kind of event, what is proved and under which assumption |
+| [R8-A2](R8-A2-robust-straight-skeleton.md) | Doing it robustly: how implementations order events that tie; the known faults of a widely copied one |
+| [R8-A3](R8-A3-offsets-round-mitre.md) | Offsets with round and mitred joins; the mitre limit |
+| [R8-A4](R8-A4-snap-rounding-link-condition-foldover.md) | Merging points that are too close without breaking a mesh: snap rounding's guarantees, the link condition for an edge contraction, the fold-over test |
+| [R8-A5](R8-A5-exact-predicates-shewchuk.md) | Exact answers from floating point: the orientation and in-circle predicates' error bounds |
+| [R8-A6](R8-A6-capping-holes-fist-cdt-flips.md) | Capping a figure with holes: robust ear clipping, constrained Delaunay, why edge flips terminate |
+| [R8-A7](R8-A7-local-feature-size-least-edge.md) | Predicting a mesh's least edge before building it: local feature size |
+| [as delivered](R8-README-as-delivered.md), [substitutes](R8-blocked-downloads-ALTERNATIVES.md) | The delivery's own overview, and which sources were replaced by a labelled substitute |
+
+- **Each file has a second checker's file beside it** (`.verify.md`), by the same researcher, row by
+  row; the delivery counts 223 checked rows and 18 fixes applied.
+- **What it says for the lane that asked** (the lead's reading of R8-A4; the lane derives and tests
+  what it uses): merge near points only along an edge of the mesh, never two points that merely lie
+  close; before a merge, the link condition (it rules out a change of topology); after choosing
+  where the merged point goes, an exact orientation test on every triangle of the changed fan (it
+  rules out a fold, with no threshold); a merge that fails either is not made, and running out of
+  legal merges is expected. Snap rounding lets an orientation go to zero and never lets it flip.
+- **Marked by the researcher as its own derivations, not a source's:** the planar form of the
+  fold-over test and why it suffices for one fan; the reading of snap rounding as weakly
+  orientation-preserving; in R8-A7, an inset edge's length against the inset, a round join's chord,
+  and "no collision while the inset is under half the least local feature size". These are derived
+  again here before they are used.
+- **Not obtained** (each file lists its own): Guibas and Marimont's original paper (its properties
+  are cited through three later papers that restate them), the journal text of FIST, Lawson's 1977
+  paper, a legal copy of the 1998 straight-skeleton implementation paper.
+- **Edited after delivery, by a few words only:** a person's first name replaced by "the owner" in
+  one file, and the phrases naming a time zone taken out. **Nothing of it has been checked against
+  its sources here** (the delivery holds no source files, only the text); it is where to read and
+  what to cite.
