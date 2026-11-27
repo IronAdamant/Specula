@@ -50,11 +50,20 @@
 //! with no way out but its end, and a closure (whatever loop spawned it), are not polls. Test
 //! code is a `tests/` file, a test module's own file (by name, or declared `#[cfg(test)] mod
 //! name;`), or the items after a `#[cfg(test)]`; it reads `crates/`, `games/` and `tools/`.
-//! Each sleep left is listed, with how many its file has, as deciding nothing
-//! ([`SLEEPS_NOT_SYNC`]) or as found and not yet mended ([`SLEEPS_TO_MEND`]). It can't see a
-//! sleep in a helper a test calls from another file, a `while` whose condition is a time (a
-//! fixed wait written as a loop), nor a sleep renamed on import (`use std::thread::sleep as
-//! nap`).
+//! A `for` leaves early only by a `break` of its own (one in a nested loop is that loop's,
+//! unless labelled) or a `return` outside a closure's braces; a `while` that only counts
+//! (`while n < 5 { ..; n += 1 }`, with no way out but the count) is a fixed wait too. Code
+//! under `#[cfg(..)]` is test code only where the predicate needs `test` (`all(test, ..)`;
+//! never inside a `not(..)`). Each sleep left is listed, with how many its file has, as
+//! deciding nothing ([`SLEEPS_NOT_SYNC`]) or as found and not yet mended ([`SLEEPS_TO_MEND`]).
+//! An entry is a file and a piece of the line, counted: **a new sleep with the same piece in
+//! the same file can replace a mended one in the same commit** and the count still holds;
+//! reviews look at a changed entry's lines. **Known blind spots:** a sleep in a helper a test
+//! calls from another file; a `while` whose condition is a time (a fixed wait written as a
+//! loop); a counted `loop` (`loop { n += 1; if n == 5 { break } sleep(d) }`: its `break` reads
+//! as a poll's); a `return` in a closure with no braces (`|y| return y`) inside a `for`; and a
+//! sleep renamed on import (`use std::thread::sleep as nap`). `std::thread` brought in under
+//! another name (`use std::thread as th; th::sleep(d)`) is seen.
 //!
 //! **Nor the other way round:** a test that needs the machine to be slow ("still running after
 //! a pump of 1 ms": the cause of CI's red on 2026-11-21, where a faster machine had finished),
@@ -76,9 +85,45 @@ const NAMED: &[(&str, &str, f64, &str)] = &[
     ("crates/specula-sys/src/lib.rs", "STOPPED", 600.0, "a thread's own clock that never passed 20 ms of spinning (specula-sys has no specula-core for HANG_BOUND)"),
 ];
 
-/// Upper bounds given by a name that any file may use: (the name, its value in seconds, what
-/// it bounds). Written with or without its path (`specula_core::HANG_BOUND`).
-const NAMED_ANYWHERE: &[(&str, f64, &str)] = &[("HANG_BOUND", 600.0, "a wait for work a test is owed that has not ended: a hang that names itself, never what decides a result")];
+/// Upper bounds given by a name that any file may use: (the path, its value in seconds, what
+/// it bounds). Written with its path, or by its last name where the file imports exactly that
+/// path ([`names_the_path`]): a test's own `const HANG_BOUND` of 50 ms is not it.
+const NAMED_ANYWHERE: &[(&str, f64, &str)] = &[("specula_core::HANG_BOUND", 600.0, "a wait for work a test is owed that has not ended: a hang that names itself, never what decides a result")];
+
+/// Whether `name` (a bound as written) is `path`: the path itself (a leading `::` allowed), or
+/// its last name where a `use` in `text` brings in exactly that path (`use a::B;`, or `B` in a
+/// group `use a::{.., B, ..};`).
+fn names_the_path(name: &str, path: &str, text: &str) -> bool {
+    let name = squeezed(name);
+    let name = name.trim_start_matches("::");
+    if name == path {
+        return true;
+    }
+    let Some((prefix, last)) = path.rsplit_once("::") else { return false };
+    if name != last {
+        return false;
+    }
+    let code = code_only(text);
+    let mut at = 0;
+    while let Some(k) = code[at..].find("use ") {
+        let i = at + k;
+        at = i + 4;
+        if code[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let u = squeezed(code[i + 4..].split(';').next().unwrap_or(""));
+        let u = u.trim_start_matches("::");
+        if u == path {
+            return true;
+        }
+        if let Some(group) = u.strip_prefix(&format!("{prefix}::{{")).and_then(|g| g.strip_suffix('}')) {
+            if group.split(',').any(|item| item == last) {
+                return true;
+            }
+        }
+    }
+    false
+}
 
 /// `specula_core::speed_budget`, and each copy of it, with `pub` and whitespace dropped.
 const SPEED_BUDGET: &str = "fn speed_budget(tight: std::time::Duration) -> std::time::Duration { if std::env::var_os(\"SPECULA_SPEED_TESTS\").is_some() { tight } else { tight.max(std::time::Duration::from_secs(5)) } }";
@@ -605,8 +650,9 @@ enum Opens {
 /// What a `{` whose `header` is the code before it (back to the last `;`, `{` or `}`) and whose
 /// `body` is the code inside it opens. A closure's header ends with its `|`. A loop is a poll
 /// only where what ends it is a condition: `loop` and `while`, and a `for` whose body can leave
-/// it early (`break` or `return`); a `for` over one item, or with no way out but its end, waits
-/// a fixed time where it sleeps. `for<'a>` (a bound) and `impl X for Y` are not loops.
+/// it early (`break` or `return` of its own: [`leaves_early`]); a `for` over one item, or with
+/// no way out but its end, and a `while` that only counts ([`counted_while`]), wait a fixed time
+/// where they sleep. `for<'a>` (a bound) and `impl X for Y` are not loops.
 fn opens(header: &str, body: &str) -> Opens {
     if squeezed(header).ends_with('|') {
         return Opens::Closure;
@@ -614,6 +660,9 @@ fn opens(header: &str, body: &str) -> Opens {
     let ident = |c: char| c.is_alphanumeric() || c == '_';
     let words: Vec<&str> = header.split(|c: char| !ident(c)).filter(|w| !w.is_empty()).collect();
     if words.contains(&"impl") {
+        return Opens::Other;
+    }
+    if words.contains(&"while") && counted_while(header, body) {
         return Opens::Other;
     }
     if words.iter().any(|w| matches!(*w, "loop" | "while")) {
@@ -631,9 +680,137 @@ fn opens(header: &str, body: &str) -> Opens {
         if one_item(iter) {
             return Opens::Other;
         }
-        return if has_word(body, "break") || has_word(body, "return") { Opens::Loop } else { Opens::Other };
+        return if leaves_early(body) { Opens::Loop } else { Opens::Other };
     }
     Opens::Other
+}
+
+/// Whether a block's `header` (the code before its `{`) starts a loop of any kind.
+fn is_loop_header(header: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let words: Vec<&str> = header.split(|c: char| !ident(c)).filter(|w| !w.is_empty()).collect();
+    !words.contains(&"impl") && words.iter().any(|w| matches!(*w, "loop" | "while" | "for")) && !squeezed(header).contains("for<")
+}
+
+/// Whether a loop's `body` (code only) can leave the loop before its end: a `return`, or a
+/// `break` of its own. A `break` inside a nested loop is that loop's (unless it names a label),
+/// and nothing inside a closure's braces leaves the loop (review 2 of `m6-clock-tests`).
+fn leaves_early(body: &str) -> bool {
+    let c: Vec<char> = body.chars().collect();
+    let close = closings(&c);
+    exits(&c, &close, 0, c.len(), false)
+}
+
+fn exits(c: &[char], close: &[usize], from: usize, to: usize, nested_loop: bool) -> bool {
+    let (mut header, mut flat) = (String::new(), String::new());
+    let mut i = from;
+    while i < to {
+        match c[i] {
+            '{' => {
+                let end = close[i].min(to);
+                let closure = squeezed(&header).ends_with('|');
+                if !closure && exits(c, close, i + 1, end, nested_loop || is_loop_header(&header)) {
+                    return true;
+                }
+                header.clear();
+                flat.push(' ');
+                i = end + 1;
+                continue;
+            }
+            ';' | '}' => {
+                header.clear();
+                flat.push(' ');
+            }
+            ch => {
+                header.push(ch);
+                flat.push(ch);
+            }
+        }
+        i += 1;
+    }
+    has_word(&flat, "return") || if nested_loop { squeezed(&flat).contains("break'") } else { has_word(&flat, "break") }
+}
+
+/// Whether a `while` (its `header` and `body`) only counts: its condition compares a name with
+/// a number (`n < 5`) and its body adds to that name, with no way out but the count. Such a
+/// loop waits a fixed time where it sleeps, as a `for` over a range with no `break` does.
+fn counted_while(header: &str, body: &str) -> bool {
+    let s = squeezed(header);
+    let Some((_, cond)) = s.split_once("while") else { return false };
+    let Some(k) = cond.find(['<', '!']) else { return false };
+    let (name, rest) = cond.split_at(k);
+    let number = rest.trim_start_matches(['<', '!', '=']);
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    !name.is_empty() && name.chars().all(ident) && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit() || c == '_') && squeezed(body).contains(&format!("{name}+=")) && !leaves_early(body)
+}
+
+/// Whether the `#[cfg(..)]` at the head of `line` (trimmed) holds only in test builds: its
+/// predicate is `test`, an `all(..)` with one such part, or an `any(..)` of only such parts. A
+/// `not(..)` never is (`#[cfg(not(any(test, feature = "x")))]` is production code).
+fn cfg_is_test(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("#[cfg(") else { return false };
+    let mut depth = 1;
+    let end = rest.char_indices().find(|&(_, c)| {
+        depth += match c {
+            '(' => 1,
+            ')' => -1,
+            _ => 0,
+        };
+        depth == 0
+    });
+    let Some((end, _)) = end else { return false };
+    implies_test(&squeezed(&rest[..end]))
+}
+
+fn implies_test(pred: &str) -> bool {
+    if pred == "test" {
+        return true;
+    }
+    let parts = |inner: &str| -> Vec<String> {
+        let (mut out, mut cur, mut depth) = (Vec::new(), String::new(), 0);
+        for c in inner.chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push(std::mem::take(&mut cur));
+                    continue;
+                }
+                _ => {}
+            }
+            cur.push(c);
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    };
+    if let Some(inner) = pred.strip_prefix("all(").and_then(|r| r.strip_suffix(')')) {
+        return parts(inner).iter().any(|p| implies_test(p));
+    }
+    if let Some(inner) = pred.strip_prefix("any(").and_then(|r| r.strip_suffix(')')) {
+        let ps = parts(inner);
+        return !ps.is_empty() && ps.iter().all(|p| implies_test(p));
+    }
+    false
+}
+
+/// The names `std::thread` is brought in under by a `use .. as` (`use std::thread as th;`), so
+/// that `th::sleep(` is the sleep.
+fn thread_aliases(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(k) = code[at..].find("use ") {
+        let i = at + k;
+        at = i + 4;
+        let u: Vec<&str> = code[i + 4..].split(';').next().unwrap_or("").split_whitespace().collect();
+        if let [path, "as", alias] = u.as_slice() {
+            if path.trim_start_matches("::") == "std::thread" {
+                out.push((*alias).to_owned());
+            }
+        }
+    }
+    out
 }
 
 /// Whether the statement so far (`header`) has begun a closure with no braces, whose body the
@@ -672,6 +849,7 @@ fn closings(code: &[char]) -> Vec<usize> {
 fn lone_sleeps(text: &str, whole: bool) -> Vec<usize> {
     let code_text = code_only(text);
     let bare = imports_sleep(&code_text);
+    let aliases = thread_aliases(&code_text);
     let code: Vec<char> = code_text.chars().collect();
     let close = closings(&code);
     let ident = |c: char| c.is_alphanumeric() || c == '_';
@@ -689,7 +867,7 @@ fn lone_sleeps(text: &str, whole: bool) -> Vec<usize> {
         if line_start {
             let rest: String = code[i..].iter().take_while(|&&ch| ch != '\n').collect();
             let t = rest.trim();
-            if t.starts_with("#[cfg(") && has_word(t, "test") && !t.contains("not(test") {
+            if cfg_is_test(t) {
                 pending_test = true;
                 depth_since = 0;
             }
@@ -699,7 +877,8 @@ fn lone_sleeps(text: &str, whole: bool) -> Vec<usize> {
             let called = code[i + 5..].iter().find(|ch| !ch.is_whitespace()) == Some(&'(');
             let start = i.saturating_sub(40);
             let before = squeezed(&code[start..i].iter().collect::<String>());
-            let via_thread = before.ends_with("thread::");
+            let via_alias = |a: &String| before.strip_suffix(&format!("{a}::")).is_some_and(|b| !b.chars().next_back().is_some_and(ident));
+            let via_thread = before.ends_with("thread::") || aliases.iter().any(via_alias);
             let by_name = bare && !before.ends_with("::") && !before.ends_with('.') && !before.ends_with("fn");
             if called && (via_thread || by_name) {
                 let in_test = whole || stack.iter().any(|&(_, test)| test);
@@ -717,8 +896,8 @@ fn lone_sleeps(text: &str, whole: bool) -> Vec<usize> {
                 header.push(' ');
             }
             '{' => {
-                // (The body is read only for a `for`: whether it can leave early.)
-                let body: String = if has_word(&header, "for") { code[i + 1..close[i]].iter().collect() } else { String::new() };
+                // (The body is read only for a `for` or a `while`: whether it can leave early.)
+                let body: String = if has_word(&header, "for") || has_word(&header, "while") { code[i + 1..close[i]].iter().collect() } else { String::new() };
                 stack.push((opens(&header, &body), pending_test));
                 pending_test = false;
                 header.clear();
@@ -766,7 +945,7 @@ fn test_lines(text: &str) -> Vec<bool> {
         if line_start {
             let rest: String = code[i..].iter().take_while(|&&ch| ch != '\n').collect();
             let t = rest.trim();
-            if t.starts_with("#[cfg(") && has_word(t, "test") && !t.contains("not(test") {
+            if cfg_is_test(t) {
                 pending = true;
                 depth = 0;
             }
@@ -913,6 +1092,43 @@ fn the_scanner_sees_what_the_first_one_missed() {
     assert!(mods.contains(&"crates/f/src/tests_solid.rs".to_owned()) && mods.contains(&"crates/f/src/inner.rs".to_owned()) && mods.contains(&"crates/f/src/a/deep.rs".to_owned()) && !mods.iter().any(|m| m.contains("real")), "{mods:?}");
 }
 
+/// The cases the second review found (review 2 of `m6-clock-tests`, its `scan/probe.rs`
+/// snippets): the four it missed, its false positive, and a bound that only borrowed the name.
+#[test]
+fn the_scanner_sees_what_the_second_review_found() {
+    let t = |body: &str| format!("#[cfg(test)]\nmod tests {{\n{body}\n}}\n");
+    // (a) A `for` whose only `break` is a nested loop's waits a fixed time a scenario; a
+    // labelled break, or a `return`, inside the nested loop still leaves it.
+    assert_eq!(lone_sleeps(&t(" fn t() {\n  for case in [a, b] {\n   start(case);\n   std::thread::sleep(d);\n   for x in xs { if x { break } }\n   assert!(done(case));\n  }\n }"), false), [6]);
+    assert!(lone_sleeps(&t(" fn t() {\n  'o: for case in [a, b] {\n   std::thread::sleep(d);\n   for x in xs { if x { break 'o; } }\n  }\n }"), false).is_empty());
+    assert!(lone_sleeps(&t(" fn t() {\n  for case in [a, b] {\n   std::thread::sleep(d);\n   while y { if x { return; } }\n  }\n }"), false).is_empty());
+    // (b) A `return` inside a closure in the body is the closure's.
+    assert_eq!(lone_sleeps(&t(" fn t() {\n  for case in [a, b] {\n   let f = |y| { return y; };\n   std::thread::sleep(d);\n   assert!(f(case));\n  }\n }"), false), [6]);
+    // (c) A counted `while` with no way out but its count waits a fixed time; one that can
+    // leave early is a poll by count.
+    assert_eq!(lone_sleeps(&t(" fn t() {\n  let mut n = 0;\n  while n < 5 {\n   std::thread::sleep(d);\n   n += 1;\n  }\n }"), false), [6]);
+    assert!(lone_sleeps(&t(" fn t() {\n  while n < 400 {\n   if done() { break }\n   std::thread::sleep(d);\n   n += 1;\n  }\n }"), false).is_empty());
+    assert!(lone_sleeps(&t(" fn t() {\n  while !done() {\n   std::thread::sleep(d);\n  }\n }"), false).is_empty(), "a poll's while");
+    // (c) A counted `loop` is a known blind spot (the header): what ends it is a condition, and
+    // the scanner does not tell a count from a poll there. When it learns to, this is [7].
+    assert!(lone_sleeps(&t(" fn t() {\n  loop {\n   n += 1;\n   if n == 5 { break }\n   std::thread::sleep(d);\n  }\n }"), false).is_empty());
+    // (c) `std::thread` brought in under another name.
+    assert_eq!(lone_sleeps(&t(" use std::thread as th;\n fn t() {\n  th::sleep(d);\n  smooth::sleep(d);\n }"), false), [5]);
+    // The false positive: `not(..)` around `any(test, ..)` is production code.
+    assert!(lone_sleeps("#[cfg(not(any(test, feature = \"x\")))]\nfn prod() {\n std::thread::sleep(d);\n}\n", false).is_empty());
+    let lines = test_lines("#[cfg(not(any(test, feature = \"x\")))]\nfn prod() {\n x();\n}\n#[cfg(all(test, windows))]\nfn t() {}\n");
+    assert_eq!((lines[2], lines[6]), (false, true), "{lines:?}");
+    assert!(cfg_is_test("#[cfg(test)]") && cfg_is_test("#[cfg(all(windows, test))] mod t;") && cfg_is_test("#[cfg(any(test, all(test, unix)))]"));
+    assert!(!cfg_is_test("#[cfg(not(test))]") && !cfg_is_test("#[cfg(any(test, feature = \"x\"))]") && !cfg_is_test("#[cfg(feature = \"test\")]") && !cfg_is_test("#[cfg_attr(test, ignore)]"));
+    // A bound named `HANG_BOUND` is the core's only by its path or an import of exactly it.
+    let core = "specula_core::HANG_BOUND";
+    assert!(names_the_path("specula_core::HANG_BOUND", core, "") && names_the_path("::specula_core::HANG_BOUND", core, ""));
+    assert!(!names_the_path("HANG_BOUND", core, "const HANG_BOUND: Duration = Duration::from_millis(50);"), "a test's own constant");
+    assert!(!names_the_path("my::HANG_BOUND", core, ""));
+    assert!(names_the_path("HANG_BOUND", core, "use specula_core::HANG_BOUND;") && names_the_path("HANG_BOUND", core, "use specula_core::{speed_budget, HANG_BOUND};"));
+    assert!(!names_the_path("HANG_BOUND", core, "use other::HANG_BOUND;"));
+}
+
 /// No test waits a fixed time for another thread or process to have done something: it waits
 /// on the event. (`launch_run`'s test slept 300 ms and then dropped a lock "while the command
 /// waits"; on a loaded machine the command had not reached the wait, found the folder free and
@@ -1006,7 +1222,7 @@ fn no_test_asserts_a_speed() {
                 match &b.seconds {
                     Ok(s) if *s >= MIN_SECONDS => {}
                     Ok(s) => bad.push(format!("{rel}:{line}: {} < {} ({s} s)", b.what, b.written)),
-                    Err(name) if NAMED_ANYWHERE.iter().any(|(nm, s, _)| *s >= MIN_SECONDS && name.rsplit("::").next() == Some(*nm)) => {}
+                    Err(name) if NAMED_ANYWHERE.iter().any(|(path, s, _)| *s >= MIN_SECONDS && names_the_path(name, path, &text)) => {}
                     Err(name) => match NAMED.iter().position(|(f, nm, _, _)| rel.ends_with(f) && nm == name) {
                         Some(i) if NAMED[i].2 >= MIN_SECONDS => named_used[i] = true,
                         _ => bad.push(format!("{rel}:{line}: {} < {name} (a bound this guard can't read: write the number, or list it in NAMED with its length)", b.what)),
