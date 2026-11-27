@@ -111,6 +111,35 @@ struct WallView {
     bucket: u8,
 }
 
+/// A rubble's health bar (transient presentation, `/live/bars/<cell>`): its group, its fill, and
+/// the hundredth of full it shows.
+#[derive(Clone)]
+struct BarView {
+    group: u64,
+    fill: u64,
+    shown: i32,
+}
+
+/// The rubble bar's size (metres) and its height above the cell: over the rubble, under a
+/// stone's muzzle, flat so the slab's camera reads it from above.
+const BAR_W: f32 = 1.2;
+const BAR_H: f32 = 0.08;
+const BAR_D: f32 = 0.22;
+const BAR_Y: f32 = 1.6;
+
+/// What a rubble's bar shows (0..1): the lesser of the health and the life it has left, as the
+/// rules count them ([`sepulcra::RubbleStand::left_permille`]).
+pub fn bar_fraction(r: &sepulcra::RubbleStand, tick: u32) -> f32 {
+    r.left_permille(tick) as f32 / 1000.0
+}
+
+/// The bar's fill for `fraction` of full: its width and the x of its centre, so it empties from
+/// the right end towards the left.
+pub fn bar_fill(fraction: f32) -> (f32, f32) {
+    let w = BAR_W * fraction.clamp(0.0, 1.0);
+    (w, -BAR_W / 2.0 + w / 2.0)
+}
+
 #[derive(Clone, Copy)]
 struct Fx {
     id: u64,
@@ -145,6 +174,9 @@ pub struct Scene {
     fx_g: u64,
     stones: BTreeMap<CellId, StoneView>,
     walls: BTreeMap<CellId, WallView>,
+    /// Rubble health bars, by cell (under `/live/bars`).
+    bars_g: u64,
+    bars: BTreeMap<CellId, BarView>,
     roots: BTreeMap<CellId, u64>,
     enemies: BTreeMap<EnemyId, Mob>,
     corpses: Vec<Corpse>,
@@ -208,6 +240,7 @@ impl Scene {
         let (stones_g, walls_g, roots_g, tombs_g) = (sub(world, units, "stones"), sub(world, units, "walls"), sub(world, units, "roots"), sub(world, units, "tombstones"));
         let live = ents::transient_group(world, agent, "live", Layer::World, &["game", "transient"]);
         let (enemies_g, bolts_g, fx_g) = (sub(world, live, "enemies"), sub(world, live, "bolts"), sub(world, live, "fx"));
+        let bars_g = sub(world, live, "bars");
         let vfx = effects::Effects::new(world, agent, live);
         let ui = ents::transient_group(world, agent, "cursor", Layer::Ui, &["ui"]);
         let cursor_part = Part::cube("cell", Vec3::ZERO, Vec3::ONE, highlight::VALID.color).glow(highlight::VALID.emissive);
@@ -230,6 +263,8 @@ impl Scene {
             fx_g,
             stones: BTreeMap::new(),
             walls: BTreeMap::new(),
+            bars_g,
+            bars: BTreeMap::new(),
             roots: BTreeMap::new(),
             enemies: BTreeMap::new(),
             corpses: Vec::new(),
@@ -293,6 +328,7 @@ impl Scene {
         self.sync_stones(world, state);
         self.props.sync(world, &self.agent, state);
         self.sync_walls(world, state);
+        self.sync_bars(world, state);
         self.sync_roots(world, state);
         self.sync_tombstones(world, state);
     }
@@ -383,6 +419,43 @@ impl Scene {
             spec.color = color;
             let id = ents::spawn(world, &self.agent, spec);
             self.walls.insert(cell, WallView { id, bucket });
+        }
+    }
+
+    /// A health bar over every standing rubble (DESIGN.md, "Saxum": the owner's "health bar to
+    /// that stone"): it shows from the tick the rubble rises, full, and empties as the dead
+    /// break it or as its life runs out, whichever leaves less ([`bar_fraction`]); it goes with
+    /// the rubble. The app draws no other bar, so this one is its own: a dark back, a pale green
+    /// fill that shrinks from the right.
+    fn sync_bars(&mut self, world: &mut GameWorld<'_>, state: &State) {
+        let map = &state.content().map;
+        let gone: Vec<CellId> = self.bars.keys().copied().filter(|c| !state.rubble().any(|r| r.cell == *c)).collect();
+        for c in gone {
+            if let Some(v) = self.bars.remove(&c) {
+                ents::delete(world, v.group);
+            }
+        }
+        for r in state.rubble() {
+            let f = bar_fraction(&r, state.tick());
+            let shown = (f * 100.0).round() as i32;
+            let (w, x) = bar_fill(f);
+            let (pos, scale) = (Vec3::new(x, 0.02, 0.0), Vec3::new(w.max(0.001), BAR_H, BAR_D));
+            match self.bars.get_mut(&r.cell) {
+                Some(v) if v.shown == shown => {}
+                Some(v) => {
+                    ents::place(world, &self.agent, v.fill, Some(pos), None, Some(scale));
+                    v.shown = shown;
+                }
+                None => {
+                    let (anchor, _) = self.geo.anchor(map, r.cell);
+                    let name = map.cell_name(r.cell);
+                    let props = Json::obj([("cell", Json::from(name.as_str())), ("max_hp", Json::from(r.max_hp / 1000))]);
+                    let group = ents::group(world, &self.agent, Some(self.bars_g), &name, anchor + Vec3::new(0.0, BAR_Y, 0.0), Vec3::ZERO, &["rubble_bar"], props);
+                    ents::part_named(world, &self.agent, group, "back", &Part::cube("", Vec3::ZERO, Vec3::new(BAR_W + 0.06, BAR_H, BAR_D + 0.06), FISSURE).rough(1.0));
+                    let fill = ents::part_named(world, &self.agent, group, "fill", &Part::cube("", pos, scale, GRAVE_GLOW).glow(0.8));
+                    self.bars.insert(r.cell, BarView { group, fill, shown });
+                }
+            }
         }
     }
 
@@ -994,6 +1067,49 @@ mod tests {
     use super::*;
     use sepulcra::content::Content;
     use std::sync::Arc;
+
+    /// A rubble's bar shows what the rules say is left of it: the lesser of its health (its
+    /// wall's HP of its full HP) and its life (the ticks to its crumbling of the ticks it was
+    /// raised for), from the tick it rises to the tick it goes; and the fill is that share of the
+    /// bar, emptying from the right.
+    #[test]
+    fn a_rubble_bar_shows_the_lesser_of_its_health_and_its_life() {
+        let content = Arc::new(Content::proving());
+        let mut s = State::new(Arc::clone(&content), 3);
+        let saxum = content.stone_kind("saxum").unwrap();
+        let cell = content.map.cell_ref("top:10,15").unwrap();
+        let mut ev = Vec::new();
+        s.apply(&sepulcra::Command::PlaceStone { cell, stone: saxum }, &mut ev).unwrap();
+        for _ in 0..2 {
+            s.apply(&sepulcra::Command::Upgrade { cell }, &mut ev).unwrap();
+        }
+        let life = content.stone(saxum).tiers[2].el.rubble_ticks;
+        let (mut raised, mut seen, mut damaged) = (BTreeMap::new(), 0u32, 0u32);
+        for _ in 0..(120 * sepulcra::TICK_HZ) {
+            let tick = s.tick();
+            for e in s.step(&[]) {
+                if let Event::RubbleRaised { cell } = e {
+                    raised.insert(cell, tick);
+                }
+            }
+            for r in s.rubble() {
+                let w = s.wall(r.cell).expect("rubble is a wall");
+                let health = w.hp as f64 / w.max_hp as f64;
+                let rose = raised[&r.cell];
+                let left = f64::from(rose + life - s.tick()) / f64::from(life);
+                let want = health.min(left);
+                let got = f64::from(bar_fraction(&r, s.tick()));
+                assert!((got - want).abs() <= 0.0011, "{}: bar {got}, want {want} (health {health}, life {left})", content.map.cell_name(r.cell));
+                let (width, x) = bar_fill(got as f32);
+                assert!((f64::from(width) - got * f64::from(BAR_W)).abs() < 1e-4 && (x - width / 2.0 + BAR_W / 2.0).abs() < 1e-4);
+                seen += 1;
+                damaged += u32::from(w.hp < w.max_hp);
+            }
+        }
+        assert!(!raised.is_empty() && seen > 0 && damaged > 0, "rubble rose ({raised:?}), was seen ({seen}) and was broken into ({damaged})");
+        assert_eq!(bar_fill(1.0), (BAR_W, 0.0));
+        assert_eq!(bar_fill(0.0).0, 0.0);
+    }
 
     /// The cursor and the range dots wear the `looks::highlight` glows (colour and emissive),
     /// whatever they showed before: the colour check in `looks::tests` only holds if these are
