@@ -252,7 +252,8 @@ fn tangent_joins_and_many_sides_follow_the_smooth_angle() {
 
 /// The faceted forms outside the polyhedra at their defaults: (name, (library points, library
 /// faces, the modeller's vertices, its triangles)).
-const COUNTS: &[(&str, (usize, usize, usize, usize))] = &[("gem", (25, 33, 112, 46)), ("crystal", (14, 18, 60, 24)), ("chamfered_box", (24, 26, 96, 44))];
+type Counts = (usize, usize, usize, usize);
+const COUNTS: &[(&str, Counts)] = &[("gem", (25, 33, 112, 46)), ("crystal", (14, 18, 60, 24)), ("chamfered_box", (24, 26, 96, 44))];
 
 /// Each form that is not faceted, as its model was at 939185c7: (name, digest at the recipe's
 /// default smooth angle, digest at 60).
