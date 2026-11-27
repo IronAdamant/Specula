@@ -405,12 +405,12 @@ the working branch.
 | By hand, 2026-11-21 and 22 (`m6-una`): the carrying slab and its mend, the corrected pages, a run that speaks a brief and is read on its way, `Cx::param`, `specula tune` and `find`, the save that keeps waiting events, `--sounds`, `search_check` | merged, gated | a first review; `search_check` shown to fail on a seeded fault (the engine before the save's mend failed it on a builder's game, which is the evidence so far) |
 | Sculpt mesher: a vertex for each sheet through a cell | merged; twelve meshes changed by a few triangles | a first review; close-ups of the changed places |
 | Sculpt's box (a reach passed down the tree) | merged; **review said do not merge**: the box also grows on ordinary sculpts with nothing stretched | the mend, stopped mid-work in `C:/sr-k30` (`d8b7a407` and one uncommitted file) |
-| Rounded shape's field (`roundness`) | merged; tenth review: the field is sound; "the sure way cannot fail" is false at its 64-step cap, and three rules are held by no test | small mends (`.swarmnotes/m6/part4/reviews/weights-review3.md`) |
+| Rounded shape's field (`roundness`) | merged; tenth review: the field is sound; "the sure way cannot fail" is false at its 64-step cap, and three rules are held by no test | small mends (`.swarmwork/m6/part4/reviews/weights-review3.md`) |
 | Faceting from the recipe | fifth round merged | its review |
 | Shape language, the silhouette measure | seventh version merged | its seventh review; the owner: "Rounds continue" |
 | Light report (`perf_light`) | fifth round merged | its review; one run that fell to 27 calls a second is unexplained |
 | Shape library, stages 1a to 5a | merged; Claude reviewed each stage | 5b (the form as a sculpt node), stage 4 (more families) |
-| A project's catalogue and the orientation an agent is given unasked | builder stopped: 18 uncommitted files in `C:/sf-formae` | finish or restart (brief: `.swarmnotes/m6/part4/formae/brief-orient.md`) |
+| A project's catalogue and the orientation an agent is given unasked | builder stopped: 18 uncommitted files in `C:/sf-formae` | finish or restart (brief: `.swarmwork/m6/part4/formae/brief-orient.md`) |
 
 **Until a reviewer says merge:** give no style a `max_facet_deg`; do not give `roundness` to a
 shape that is thin along one axis; no preset asks for a shape language.
@@ -503,8 +503,12 @@ ROADMAP M6 has the fourteen parts and their order; nothing in it may be cut and 
 - `C:/sf-formae` and `C:/sr-k30`: stopped work, uncommitted (above). `C:/sp-audit`: the audit
   worktree. `C:/sr-k29`: the mesher's, merged, removable when the owner is at the machine.
 - `C:/lev-props*`: the comparison's runs. `C:/lv/`: scratch projects of the by-hand work.
-- Notes that are not tracked: `.swarmnotes/m6/part4/` (briefs, review reports,
+- Working files that are not tracked: `.swarmwork/m6/part4/` (briefs, review reports,
   `blind/FINDINGS.md`, `STUMBLES.md`, `FIXES.md`). Pictures: `gallery-full/part4/`.
+  Since 2026-11-27 `.swarmnotes/` holds Relatum notes only (the owner's notes tool lints every
+  file in it): the lanes' rules and decisions (`m6/part4/lanes-2026-11-24/`), the token rule
+  (`m6/part4/economy`) and M5's handoff notes. Everything else that used to sit there (briefs,
+  review reports, the comparison runs' folders) is in `.swarmwork/`, at the same paths.
 - **A build can fail here for memory, with words about something else** ("crate `specula`
   required to be available in rlib format", missing methods, internal compiler errors). The
   cause is one line: "The paging file is too small" (os error 1455; the page file is 4.7 GB).
@@ -801,7 +805,7 @@ Nothing is open (2026-11-20).
 moves the meshes of three approved props (`grave_rock`, `statue_angel`, `statue_mourner`)
 and three of the fidelity set by a few triangles each, was decided on 2026-11-20: "You can
 mend the mesher. Yes it'll take long but the fix needs to be now." A fresh agent is making
-the mend (`.swarmnotes/m6/part4/mesher/brief.md`), with the six shown before and after in
+the mend (`.swarmwork/m6/part4/mesher/brief.md`), with the six shown before and after in
 the engine and checked by a model that did not take the pictures.)
 
 (An empty folder a reviewer made by mistake, `C:\sr-k2t`, was removed on 2026-11-20 at the
