@@ -853,7 +853,8 @@ pairs one of each.
 ### What the sweeps say
 
 `cargo run -p sepulcra --example headless --release -- --ground proving --layout all --sweep 1000`
-(seeds 1–1000, 2026-11-28, after the third review's mends: each shove of one enemy a quarter
+(seeds 1–1000, 2026-11-28, after the fourth review's: rubble temporary by its own rules, and furor;
+before them, after the third review's mends: each shove of one enemy a quarter
 weaker than the one before and none before the last has ended; before them, 2026-11-25, the
 second review's: fire on the frozen thaws them by every path, a cairn recharges longer than its
 push, bursts are counted when they go off). Tombstones out
@@ -868,17 +869,28 @@ No run stranded an enemy and every run ended.
 | lightning | 1000 | 19.93 | 0.1 | 126.9 | 12.0 | 6:39 |
 | frost | 972 | 6.51 | 10.7 | 124.6 | 11.8 | 6:38 |
 | wind | 217 | 0.43 | 15.7 | 88.0 | 7.2 | 5:54 |
-| earth | 1000 | 19.03 | 1.0 | 123.1 | 12.0 | 6:40 |
+| earth | 1000 | 19.03 | 1.0 | 128.7 | 12.0 | 6:40 |
 | fire + lightning | 1000 | 19.80 | 0.2 | 128.8 | 12.0 | 6:39 |
 | fire + frost | 1000 | 9.60 | 6.4 | 130.6 | 12.0 | 6:40 |
 | fire + wind | 972 | 4.48 | 11.5 | 127.1 | 12.0 | 6:49 |
-| fire + earth | 1000 | 18.52 | 1.5 | 155.0 | 12.0 | 6:57 |
+| fire + earth | 1000 | 18.49 | 1.5 | 144.6 | 12.0 | 6:40 |
 | lightning + frost | 1000 | 10.47 | 5.5 | 131.4 | 12.0 | 6:40 |
 | lightning + wind | 994 | 5.38 | 10.6 | 128.3 | 12.0 | 6:50 |
-| lightning + earth | 1000 | 19.50 | 0.5 | 154.1 | 12.0 | 6:53 |
+| lightning + earth | 1000 | 19.47 | 0.5 | 144.2 | 12.0 | 6:40 |
 | frost + wind | 688 | 8.57 | 9.8 | 119.2 | 11.3 | 6:35 |
-| frost + earth | 1000 | 18.01 | 1.9 | 155.8 | 11.9 | 7:22 |
-| wind + earth | 994 | 12.67 | 6.8 | 127.9 | 11.5 | 6:40 |
+| frost + earth | 1000 | 17.98 | 2.0 | 141.3 | 11.9 | 6:40 |
+| wind + earth | 987 | 12.51 | 6.9 | 126.4 | 11.4 | 6:39 |
+
+Against the sweep of the third review's mends (2026-11-28, `a9395c73`) **only the five layouts
+with earth moved**, and only by rubble's new rule: a cell whose rubble has gone takes none again
+while any of the dead living then still stand. In these waves the dead come in streams, so a cell
+near a Saxum is spent for most of a wave, and less rubble rises. Earth alone kills more (123.1
+to 128.7 a run), its pairs fewer (fire + earth 155.0 to 144.6, lightning + earth 154.1 to 144.2,
+frost + earth 155.8 to 141.3), and the pairs' runs are no longer longer than the rest (6:57, 6:53
+and 7:22 to 6:40). Kills count the shamblers the colossus calls, which follow how long it stands on
+the slab; why earth alone went the other way was not traced run by run. Wind + earth lost a little (994 to 987 won), by the same rule; how, run by run, was not traced. No figure of a layout without earth moved, so neither furor (no stock run
+reaches a wave's hour) nor the gust that now keeps its charge at the dead it cannot move changed
+a stock run; tombstones moved by 0.03 at most outside wind + earth.
 
 Against the sweep of 2026-11-25 (after the second review's mends) **only the layouts with wind
 moved, and earth's and frost + earth's by a hair**: wind 1 → 217 won (tombstones 0.00 → 0.43),
@@ -932,8 +944,9 @@ What it says, read honestly:
   of no damage, earth of a thousandth of damage, rubble raised again as it crumbled, a slow under
   the wind); they are gone. Every run of every layout ends, and no stock run comes near a wave's
   hour.
-- **Earth's pairs kill the most** (155 kills: the rubble re-routes and the colossus summons more
-  while it is held), and earth + fire runs longest of the 100 % layouts (6:57).
+- **Earth's pairs kill the most** (141 to 145 kills: the rubble re-routes, and the colossus
+  summons more while it is held up), though less than when rubble rose again and again on one
+  cell (155, and runs of 6:57 to 7:22, before rubble was temporary).
 - **The exploding dead rarely reach a wall** (at most 1.2 bursts on walls a run in the sweep of
   2026-11-24, which counted those alone; most of the twelve bursts a run now are of exploders
   killed by a stone): the walls on the middle lane and the south gate stand inside the wardings'
