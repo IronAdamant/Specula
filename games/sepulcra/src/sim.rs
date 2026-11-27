@@ -911,10 +911,13 @@ impl World {
 
     fn summon(&mut self, content: &Content, ev: &mut Vec<Event>) {
         let mut calls = Vec::new();
-        for e in &mut self.enemies {
+        for i in 0..self.enemies.len() {
+            let e = self.enemies[i];
+            // An enemy in furor calls no more: what its wave was to bring has come by its hour,
+            // so no enemy of a wave is born after it (a run's length stays the sum DESIGN states).
             if let (true, Some(s), Some(cell)) = (e.alive, content.enemy(e.kind).summon, e.cell()) {
-                if self.tick >= e.next_summon {
-                    e.next_summon = self.tick + s.every;
+                if self.tick >= e.next_summon && !self.in_furor(content, &e) {
+                    self.enemies[i].next_summon = self.tick + s.every;
                     calls.push((s, cell, e.wave));
                 }
             }
@@ -960,10 +963,12 @@ impl World {
 
     fn speed_permille(&self, content: &Content, e: &Enemy, climbing: bool) -> i64 {
         let mut f = 1000i64;
-        if e.is_slowed(self.tick) {
+        // Slowed and rooted only while it can be held (not in furor: [`World::can_hold`]).
+        let held = self.can_hold(content, e);
+        if held && e.is_slowed(self.tick) {
             f = f * i64::from(1000 - e.slow) / 1000;
         }
-        if let Some(c) = e.cell() {
+        if let (true, Some(c)) = (held, e.cell()) {
             if self.rooted[c.index()] {
                 f = f * i64::from(1000 - content.rules.nature.slow) / 1000;
             }
@@ -989,6 +994,9 @@ impl World {
             }
             let mut e = self.enemies[i];
             let def = content.enemy(e.kind);
+            if self.in_furor(content, &e) {
+                self.furor(content, &mut e, ev);
+            }
             match e.motion {
                 Motion::Ground { .. } => self.move_ground(content, &mut e, def, ev),
                 Motion::Air { .. } => self.move_air(content, &mut e, def, ev),
@@ -1234,7 +1242,7 @@ impl World {
                     for i in 0..self.enemies.len() {
                         if self.eligible(content, c, def, &t, &self.enemies[i]) {
                             n = n.saturating_add(1);
-                            self.slow_enemy(i, t.slow, t.slow_ticks);
+                            self.slow_enemy(content, i, t.slow, t.slow_ticks);
                             self.hurt(content, i, t.damage, ev);
                         }
                     }
@@ -1275,12 +1283,13 @@ impl World {
         }
     }
 
-    fn slow_enemy(&mut self, i: usize, permille: i32, ticks: u32) {
+    /// A stone's slow on enemy `i` (none once it is in furor: [`World::can_hold`]).
+    fn slow_enemy(&mut self, content: &Content, i: usize, permille: i32, ticks: u32) {
         let tick = self.tick;
-        let e = &mut self.enemies[i];
-        if permille <= 0 || !e.alive {
+        if permille <= 0 || !self.enemies[i].alive || !self.can_hold(content, &self.enemies[i]) {
             return;
         }
+        let e = &mut self.enemies[i];
         if tick >= e.slow_until || permille >= e.slow {
             e.slow = permille;
             e.slow_until = e.slow_until.max(tick + ticks);
@@ -1376,7 +1385,7 @@ impl World {
 
     fn hit(&mut self, content: &Content, i: usize, projectile: ProjectileId, t: &Tier, ev: &mut Vec<Event>) {
         ev.push(Event::Hit { projectile, enemy: self.enemies[i].id, damage: t.damage });
-        self.slow_enemy(i, t.slow, t.slow_ticks);
+        self.slow_enemy(content, i, t.slow, t.slow_ticks);
         let before = self.hurt(content, i, t.damage, ev);
         if !t.el.is_zero() {
             self.hit_elements(content, i, &t.el, before, ev);

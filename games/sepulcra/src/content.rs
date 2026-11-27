@@ -373,6 +373,20 @@ pub fn shove_ticks(s: i32, push_ticks: u32) -> u32 {
 /// loader refuses wind that could keep one lone enemy from passing within it.
 pub const RUN_GRACE_TICKS: u32 = 20 * 60 * TICK_HZ;
 
+/// **A wave's hour** (DESIGN.md, "Furor"): this many ticks after the wave's last entry, any of its
+/// dead still standing are in furor, and nothing holds them. Twenty minutes, the room a run has
+/// always had after its last wave begins: the stock proving runs and the shipped runs end far
+/// inside it (their longest wave stands under three minutes after its last entry), so no stock
+/// result moves, and a wave that lasts twenty minutes past its last entry is a hold, not play.
+pub const WAVE_HOUR_TICKS: u32 = 20 * 60 * TICK_HZ;
+
+impl WaveDef {
+    /// Ticks after the wave begins that its last enemy enters.
+    pub fn entry_span(&self) -> u32 {
+        self.groups.iter().map(|g| g.start.saturating_add(u32::from(g.count.saturating_sub(1)).saturating_mul(g.every))).max().unwrap_or(0)
+    }
+}
+
 /// What frost can cost one lone enemy of a kind ([`Content::frost_hold`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrostHold {

@@ -1331,61 +1331,6 @@ fn ordinary_frost_is_inside_the_runs_cap_and_the_harshest_is_refused() {
     assert!(text.contains("more damage") && text.contains("freeze_s"), "{text}");
 }
 
-/// Played anyway (its numbers put in by hand), the harshest frost lets a lone shambler through
-/// or kills it within the derived figure ([`Content::frost_hold`]), and its refusal is not empty:
-/// two such stones, the second placed a tick after the first, shatter and freeze it again every
-/// tick, so it never walks and stands frozen past the run's room until their 0.002 a tick has
-/// killed it. And one stone that hits just after each thaw holds it frozen for nearly the whole
-/// of the figure's held part.
-#[test]
-fn frost_with_damage_lets_a_lone_enemy_through_or_kills_it_within_its_bound() {
-    let c = gelu_by_hand(1, 1, (900, 18_000), 900);
-    let room = u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
-    let k = c.enemy_kind("shambler").unwrap();
-    let h = c.frost_hold(k).unwrap();
-    // 55 HP at the largest wave scale, 1.5; every hit of 0.001 brings a freeze of 30 s.
-    assert_eq!((h.hp, h.cost, h.freezes, h.freeze, h.held), (82_500, 1, 82_499, 900, 82_499 * 901), "{h:?}");
-    for seed in 1..=3 {
-        let (ticks, frozen, _) = lone_under_frost(&c, "shambler", Frost::Ring(4), 2, seed, h.ticks);
-        assert!(ticks <= h.ticks && frozen <= h.held, "{ticks} ticks, {frozen} frozen, against {h:?}");
-    }
-    let mut s = quiet(&c);
-    let id = plant(&mut s, "shambler", AMID);
-    let i = idx(&s, id);
-    (s.w.enemies[i].hp, s.w.enemies[i].max_hp) = (h.hp as i32, h.hp as i32);
-    let gelu = c.stone_kind("gelu").unwrap();
-    let mut ev = Vec::new();
-    s.w.dust = 1_000_000;
-    let (mut ticks, mut frozen, mut walked) = (0u64, 0u64, 0u64);
-    for (n, cell) in nearest_build_cells(&c, AMID, 2).into_iter().enumerate() {
-        if n == 1 {
-            steps(&mut s, 1);
-            ticks += 1;
-        }
-        s.apply(&Command::PlaceStone { cell, stone: gelu }, &mut ev).expect("placed");
-        s.apply(&Command::Upgrade { cell }, &mut ev).expect("upgraded");
-        s.apply(&Command::Upgrade { cell }, &mut ev).expect("upgraded");
-    }
-    let start = s.enemy(id).unwrap().pos;
-    while s.enemy(id).is_some() && ticks <= h.ticks {
-        steps(&mut s, 1);
-        ticks += 1;
-        match s.enemy(id) {
-            Some(e) if e.el.frozen(s.tick()) => frozen += 1,
-            Some(e) if e.pos != start => walked += 1,
-            _ => {}
-        }
-    }
-    assert!(s.enemy(id).is_none() && s.wave_stats()[0].leaked == 0, "killed where it stood");
-    assert!(frozen > room && walked == 0 && ticks <= h.ticks, "two harsh stones held a lone shambler {frozen} ticks ({walked} walked, {ticks} in all) against a room of {room}: {h:?}");
-    // One stone: a 30 s freeze, hit again on the tick after it thaws, each hit 11 of its 82.5 HP.
-    let c = gelu_by_hand(901, 11_000, (0, 0), 900);
-    let h = c.frost_hold(k).unwrap();
-    let (ticks, frozen, leaked) = lone_under_frost(&c, "shambler", Frost::Round(1), 2, 1, h.ticks);
-    assert!(!leaked && ticks <= h.ticks && frozen <= h.held, "{ticks} ticks, {frozen} frozen, against {h:?}");
-    assert!(frozen * 10 >= h.held * 9, "frozen {frozen} of the figure's held {}: {h:?}", h.held);
-}
-
 /// The stock proving stones: the figure is under half the run's room (the margin in the
 /// message), and no lone enemy the tests can make takes longer than its figure or stands frozen
 /// longer than its held part: the four ground kinds, at the largest wave scale's HP, under Gelu
@@ -1683,4 +1628,160 @@ fn the_reviews_rubble_lets_a_lone_enemy_through_by_its_own_rule() {
     assert!(r.gone && r.leaked && r.furor == 0, "{r:?}");
     assert_eq!(r.most_on_a_cell, 1, "{r:?}");
     assert!(r.ticks <= control.ticks + u64::from(r.raised) * each, "{r:?} against {} + {} x {each}", control.ticks, r.raised);
+}
+
+// ---- Furor (DESIGN.md, "Furor"): one rule for every hold ----
+
+/// The proving ground's first wave: fourteen shamblers, one every 0.9 s (27 ticks), so its
+/// last enters 351 ticks after it begins, and its hour is twenty minutes after that.
+#[test]
+fn a_waves_hour_is_twenty_minutes_after_its_last_entry() {
+    let c = proving();
+    assert_eq!(c.waves[0].entry_span(), 13 * 27);
+    let s = quiet(&c);
+    assert_eq!(s.w.hour_of(&c, 1), Some(351 + 20 * 60 * TICK_HZ));
+    assert_eq!(s.w.hour_of(&c, 2), None, "wave 2 has not begun");
+    // A wave called at another tick has its hour from that tick.
+    let mut s = quiet(&c);
+    s.w.wave_stats[0].started_at = Some(500);
+    assert_eq!(s.w.hour_of(&c, 1), Some(500 + 351 + crate::content::WAVE_HOUR_TICKS));
+}
+
+/// A shambler of wave 1 held every way at once, one tick before its wave's hour.
+fn held_at_the_hour(c: &Arc<Content>) -> (State, EnemyId, u32) {
+    let mut s = quiet(c);
+    let hour = s.w.hour_of(c, 1).unwrap();
+    s.w.tick = hour - 1;
+    let id = plant(&mut s, "shambler", "top:9,15");
+    let i = idx(&s, id);
+    let far = hour + 10_000;
+    let e = &mut s.w.enemies[i];
+    (e.slow, e.slow_until) = (900, far);
+    (e.el.frozen_until, e.el.shatter, e.el.chill, e.el.stagger_until) = (far, 500, 400, far);
+    (e.el.shove, e.el.shove_rate) = (50_000, 1);
+    (s, id, hour)
+}
+
+/// At its wave's hour an enemy still standing is in furor: whatever holds or slows it ends at
+/// once, said once, and it walks on at its own pace.
+#[test]
+fn at_its_waves_hour_whatever_holds_an_enemy_ends_at_once() {
+    let c = proving();
+    let (mut s, id, hour) = held_at_the_hour(&c);
+    let start = s.enemy(id).unwrap().pos;
+    let ev = steps(&mut s, 1);
+    assert_eq!(s.tick(), hour, "the tick before its hour has been played");
+    let e = *s.enemy(id).unwrap();
+    assert!(e.el.frozen(s.tick()) && e.pos == start && !ev.iter().any(|x| matches!(x, Event::Furor { .. })), "held the tick before: {ev:?}");
+    let ev = steps(&mut s, 1);
+    assert_eq!(ev.iter().filter(|x| matches!(x, Event::Furor { enemy } if *enemy == id)).count(), 1, "{ev:?}");
+    assert!(ev.contains(&Event::Thawed { enemy: id, steam: false }), "the ice goes: {ev:?}");
+    let e = *s.enemy(id).unwrap();
+    assert!(s.w.in_furor(&c, &e));
+    assert_eq!((e.slow_until, e.el.frozen_until, e.el.chill, e.el.stagger_until, e.el.shove), (0, 0, 0, 0, 0), "{e:?}");
+    assert!(e.pos != start, "it walked on that tick");
+    let ev = steps(&mut s, 10);
+    assert!(!ev.iter().any(|x| matches!(x, Event::Furor { .. })), "said once only");
+}
+
+/// Every writer of a hold asks [`World::can_hold`]: on an enemy in furor a freeze, a chill, a
+/// shove (a gust's or a blast's), a stone's slow and the roots do nothing; a heave hurts it but
+/// does not stagger it.
+#[test]
+fn no_writer_of_a_hold_holds_an_enemy_in_furor() {
+    let c = proving();
+    let (mut s, id, _) = held_at_the_hour(&c);
+    steps(&mut s, 2);
+    let i = idx(&s, id);
+    assert!(s.w.in_furor(&c, &s.w.enemies[i]));
+    let mut ev = Vec::new();
+    let gelu = c.stone(c.stone_kind("gelu").unwrap()).tiers[2].el;
+    let frost = TierEl { chill: 1000, freeze_ticks: 900, ..gelu };
+    s.w.chill(&c, i, &frost, &mut ev);
+    assert_eq!((s.w.enemies[i].el.chill, s.w.enemies[i].el.frozen_until), (0, 0), "no chill, no freeze");
+    s.w.shove(&c, i, 30_000, 30);
+    assert_eq!(s.w.enemies[i].el.shove, 0, "no shove");
+    s.w.slow_enemy(&c, i, 900, 18_000);
+    assert_eq!(s.w.enemies[i].slow_until, 0, "no slow");
+    let e = s.w.enemies[i];
+    assert_eq!(s.w.speed_permille(&c, &e, false), 1000, "no slow and no roots in its pace");
+    // A heave: hurt, not staggered.
+    let hp = s.w.enemies[i].hp;
+    let cell = nearest_build_cells(&c, "top:9,15", 1)[0];
+    s.w.dust = 100_000;
+    s.apply(&Command::PlaceStone { cell, stone: c.stone_kind("saxum").unwrap() }, &mut ev).unwrap();
+    let ev = steps(&mut s, 1);
+    assert!(ev.iter().any(|x| matches!(x, Event::Heaved { affected: 1, .. })), "{ev:?}");
+    let e = *s.enemy(id).unwrap();
+    assert!(e.hp < hp && e.el.stagger_until == 0, "{e:?}");
+    // And the same writers do hold an enemy that is not in furor (the control).
+    let mut s = quiet(&c);
+    let j = plant(&mut s, "shambler", "top:9,15");
+    let j = idx(&s, j);
+    let mut ev = Vec::new();
+    s.w.chill(&c, j, &frost, &mut ev);
+    s.w.slow_enemy(&c, j, 900, 18_000);
+    assert!(s.w.enemies[j].el.frozen_until > 0 && s.w.enemies[j].slow_until > 0);
+    s.w.enemies[j].el.frozen_until = 0;
+    s.w.shove(&c, j, 30_000, 30);
+    assert!(s.w.enemies[j].el.shove > 0);
+    let e = s.w.enemies[j];
+    assert!(s.w.speed_permille(&c, &e, false) < 1000);
+}
+
+/// While any of the dead is in furor no rubble stands and none rises; an enemy in furor calls
+/// no summons.
+#[test]
+fn furor_crumbles_rubble_raises_none_and_calls_no_summons() {
+    let c = proving();
+    let (mut s, id, hour) = held_at_the_hour(&c);
+    let i = idx(&s, id);
+    (s.w.enemies[i].hp, s.w.enemies[i].max_hp) = (50_000_000, 50_000_000);
+    let rubble = at(&c, "top:9,17");
+    s.w.walls.insert(rubble, Wall { hp: 100_000_000, max_hp: 100_000_000, cost: 0 });
+    s.w.rubble.insert(rubble, (hour - 2, hour + 100_000));
+    s.w.set_blocked(&c, rubble, true);
+    let cell = nearest_build_cells(&c, "top:9,15", 1)[0];
+    s.w.dust = 100_000;
+    let mut ev = Vec::new();
+    s.apply(&Command::PlaceStone { cell, stone: c.stone_kind("saxum").unwrap() }, &mut ev).unwrap();
+    s.apply(&Command::Upgrade { cell }, &mut ev).unwrap();
+    s.apply(&Command::Upgrade { cell }, &mut ev).unwrap();
+    let ev = steps(&mut s, 2);
+    assert!(ev.contains(&Event::WallCrumbled { cell: rubble }), "{ev:?}");
+    let ev = steps(&mut s, 10 * TICK_HZ);
+    assert!(ev.iter().any(|x| matches!(x, Event::Heaved { .. })) && !ev.iter().any(|x| matches!(x, Event::RubbleRaised { .. })), "heaves, no rubble: {ev:?}");
+    assert_eq!(s.rubble().count(), 0);
+    let _ = id;
+    // A colossus in furor, its next call due: none comes.
+    let mut s = quiet(&c);
+    let hour = s.w.hour_of(&c, 1).unwrap();
+    s.w.tick = hour;
+    let big = plant(&mut s, "colossus", "top:9,13");
+    let i = idx(&s, big);
+    s.w.enemies[i].next_summon = hour;
+    let ev = steps(&mut s, 30 * TICK_HZ);
+    assert!(!ev.iter().any(|x| matches!(x, Event::Spawned { .. })), "{ev:?}");
+    // The control: the same colossus before its hour calls two.
+    let mut s = quiet(&c);
+    let big = plant(&mut s, "colossus", "top:9,13");
+    let i = idx(&s, big);
+    s.w.enemies[i].next_summon = 0;
+    let ev = steps(&mut s, 1);
+    assert_eq!(ev.iter().filter(|x| matches!(x, Event::Spawned { .. })).count(), 2, "{ev:?}");
+}
+
+/// Furor is decided by ticks alone: a save in furor loads in furor and steps exactly like the
+/// game it was taken from.
+#[test]
+fn a_save_in_furor_loads_in_furor_and_steps_alike() {
+    let c = proving();
+    let (mut s, id, _) = held_at_the_hour(&c);
+    steps(&mut s, 3);
+    let mut loaded = State::from_bytes(Arc::clone(&c), &s.to_bytes()).expect("loads");
+    assert!(loaded.w.in_furor(&c, loaded.enemy(id).unwrap()));
+    for _ in 0..200 {
+        let (a, b) = (s.step(&[]), loaded.step(&[]));
+        assert_eq!((a, s.hash()), (b, loaded.hash()));
+    }
 }

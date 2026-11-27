@@ -13,7 +13,7 @@
 
 use super::*;
 use crate::blaze::{dir, BlazeEvent, Zone};
-use crate::content::TierEl;
+use crate::content::{TierEl, WAVE_HOUR_TICKS};
 
 /// What the elements did to an enemy. All zero on the shipped maps. Ticks are absolute
 /// (`0`: not set), so a save holds them as they are.
@@ -83,6 +83,55 @@ fn blaze_event(e: BlazeEvent) -> Event {
 }
 
 impl World {
+    // ---- Furor: one rule for every hold (DESIGN.md, "Furor"), on all content ----
+
+    /// The tick wave `wave` (1-based) reaches its hour: [`WAVE_HOUR_TICKS`] after its last entry
+    /// (`None` before it begins). Its start is in every save and every hash, so furor needs no
+    /// state of its own.
+    pub(super) fn hour_of(&self, content: &Content, wave: u16) -> Option<u32> {
+        let w = usize::from(wave).checked_sub(1)?;
+        let start = self.wave_stats.get(w)?.started_at?;
+        Some(start.saturating_add(content.waves.get(w)?.entry_span()).saturating_add(WAVE_HOUR_TICKS))
+    }
+
+    /// Is `e` in furor: has its wave's hour come with it still standing? Decided by ticks alone.
+    pub(super) fn in_furor(&self, content: &Content, e: &Enemy) -> bool {
+        #[cfg(test)]
+        if self.no_furor {
+            return false;
+        }
+        self.hour_of(content, e.wave).is_some_and(|h| self.tick >= h)
+    }
+
+    /// **The one question every writer of a hold asks:** may `e` be frozen, chilled, staggered,
+    /// shoved, slowed or rooted now? Not once it is in furor. (Rubble, the one hold with health
+    /// of its own, asks [`World::furor_anywhere`]: none stands or rises while any enemy is in
+    /// furor.)
+    pub(super) fn can_hold(&self, content: &Content, e: &Enemy) -> bool {
+        !self.in_furor(content, e)
+    }
+
+    /// Is any of the dead in furor?
+    pub(super) fn furor_anywhere(&self, content: &Content) -> bool {
+        self.enemies.iter().any(|e| e.alive && self.in_furor(content, e))
+    }
+
+    /// An enemy in furor, at the start of its move: whatever holds or slows it ends at once (a
+    /// freeze thaws, without the wet; a stagger, a shove and a slow end). On its wave's hour
+    /// itself it is said ([`Event::Furor`]).
+    pub(super) fn furor(&self, content: &Content, e: &mut Enemy, ev: &mut Vec<Event>) {
+        let tick = self.tick;
+        if self.hour_of(content, e.wave) == Some(tick) {
+            ev.push(Event::Furor { enemy: e.id });
+        }
+        if e.el.frozen(tick) {
+            ev.push(Event::Thawed { enemy: e.id, steam: false });
+        }
+        (e.slow, e.slow_until) = (0, 0);
+        let x = &mut e.el;
+        (x.chill, x.frozen_until, x.shatter, x.stagger_until, x.shove, x.shove_rate) = (0, 0, 0, 0, 0, 0);
+    }
+
     /// Enemy `i` as the elements see it before a hit (see [`Before`]).
     pub(super) fn before(&self, i: usize) -> Before {
         Before { frozen: self.enemies[i].el.frozen(self.tick) }
@@ -160,6 +209,9 @@ impl World {
     /// before ([`crate::content::shove_mm`]), so what the wind can take from one enemy is a
     /// geometric series, which the loader holds under the run's cap ([`Content::wind_hold`]).
     fn shove(&mut self, content: &Content, i: usize, push: i32, ticks: u32) {
+        if !self.can_hold(content, &self.enemies[i]) {
+            return;
+        }
         let e = &mut self.enemies[i];
         if e.el.shove > 0 {
             return;
@@ -245,7 +297,7 @@ impl World {
     /// hit has just shattered).
     fn chill_as(&mut self, content: &Content, i: usize, el: &TierEl, before: Before, ev: &mut Vec<Event>) {
         let tick = self.tick;
-        if !self.enemies[i].alive || before.frozen || self.enemies[i].el.frozen(tick) {
+        if !self.enemies[i].alive || before.frozen || self.enemies[i].el.frozen(tick) || !self.can_hold(content, &self.enemies[i]) {
             return;
         }
         if self.enemies[i].el.burning(tick) {
@@ -344,10 +396,15 @@ impl World {
     /// are that the enemy "gets pushed back in their lane"; one still being shoved cannot), every
     /// such one is shoved back along its path (÷ its mass), a burning one is fanned (its fire
     /// renewed), the wind lingers over the area and leans the slab's fire, and the stone's charge
-    /// is spent. With only enemies still being shoved in range, the cairn keeps its charge.
+    /// is spent. With only enemies it cannot move in range (still being shoved, in furor, or with
+    /// their series run out), the cairn keeps its charge.
     pub(super) fn gust(&mut self, content: &Content, cell: CellId, c: &Cell, def: &StoneDef, t: &Tier, ev: &mut Vec<Event>) -> bool {
         let el = t.el;
-        let idx: Vec<usize> = (0..self.enemies.len()).filter(|&i| self.enemies[i].el.shove == 0 && self.eligible(content, c, def, t, &self.enemies[i])).collect();
+        let keep = 1000 - content.rules.elements.shove_fade;
+        // Only those this gust can move: not being shoved, not in furor, and with their series not
+        // run out (their next shove from this push is more than nothing).
+        let movable = |e: &Enemy| e.el.shove == 0 && self.can_hold(content, e) && crate::content::shove_mm(el.push, content.enemy(e.kind).mass, keep, e.el.shoves) > 0;
+        let idx: Vec<usize> = (0..self.enemies.len()).filter(|&i| movable(&self.enemies[i]) && self.eligible(content, c, def, t, &self.enemies[i])).collect();
         if idx.is_empty() {
             return false;
         }
@@ -395,7 +452,9 @@ impl World {
             }
             n = n.saturating_add(1);
             self.extinguish(i, ev);
-            self.enemies[i].el.stagger_until = self.enemies[i].el.stagger_until.max(tick.saturating_add(el.stagger_ticks));
+            if self.can_hold(content, &self.enemies[i]) {
+                self.enemies[i].el.stagger_until = self.enemies[i].el.stagger_until.max(tick.saturating_add(el.stagger_ticks));
+            }
             self.hurt(content, i, t.damage, ev);
         }
         let until = tick.saturating_add(content.rules.elements.wet_ticks);
@@ -405,7 +464,8 @@ impl World {
         // Rubble is temporary: it rises only on a cell with no wall (so a heave never restores a
         // standing rubble's health or life) and none of the dead on it, and never again on a cell
         // whose rubble has gone while one of the dead living then still stands ([`World::barred`]).
-        if el.rubble_hp > 0 {
+        // And none while any of the dead is in furor (the backstop).
+        if el.rubble_hp > 0 && !self.furor_anywhere(content) {
             let spot = line.iter().rev().copied().find(|&l| {
                 map.cell(l).kind.wallable() && !self.walls.contains_key(&l) && !self.enemies.iter().any(|e| e.alive && e.touches(l)) && !self.barred(l)
             });
@@ -533,7 +593,9 @@ impl World {
                 self.kill(content, i, true, ev);
             }
         }
-        let crumbled: Vec<CellId> = self.rubble.iter().filter(|(_, &(_, until))| tick >= until).map(|(c, _)| *c).collect();
+        // Rubble crumbles at the end of its life, and all of it while any of the dead is in furor.
+        let all = !self.rubble.is_empty() && self.furor_anywhere(content);
+        let crumbled: Vec<CellId> = self.rubble.iter().filter(|(_, &(_, until))| all || tick >= until).map(|(c, _)| *c).collect();
         for c in crumbled {
             self.rubble_gone(c);
             if self.walls.remove(&c).is_some() {
