@@ -44,4 +44,6 @@ mod tests;
 #[cfg(test)]
 mod tests_build;
 #[cfg(test)]
+mod tests_reach;
+#[cfg(test)]
 mod tests_table;

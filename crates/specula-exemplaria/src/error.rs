@@ -29,10 +29,19 @@ pub struct Error {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Broken {
     pub relation: String,
-    /// Each of its numbers at the worst seed the reach found, in the plan's order of its terms.
+    /// The body at which the reach found the relation least, as a seed draws it: the size (on its
+    /// step), then each trait the relation's numbers follow (its residual, a fraction), then each
+    /// of its numbers with a spread of its own (`<number>.own`, in spreads, at the end of its
+    /// window there).
+    pub at: Vec<(String, f64)>,
+    /// Each of its numbers at that body (before rounding), in the plan's order of its terms.
     pub values: Vec<(String, f64)>,
-    /// The relation's sum there (after the allowance for rounding), and the least it may be.
+    /// The relation's sum at that body (after the allowance for rounding), and the least it may be.
     pub sum: f64,
+    /// The check's bound on the least over every seed (after the allowance for rounding and for
+    /// floating point): under `margin`, which is why the kind is refused. Equal to `sum` but for a
+    /// billionth, except where a measured range narrows a residual (the one place it is a bound).
+    pub bound: f64,
     pub margin: f64,
 }
 
@@ -79,8 +88,10 @@ impl Error {
         }
         if let Some(b) = &self.relation {
             o.push(("relation", Json::from(b.relation.as_str())));
+            o.push(("at", Json::obj(b.at.iter().map(|(n, v)| (n.as_str(), Json::from(*v))))));
             o.push(("values", Json::obj(b.values.iter().map(|(n, v)| (n.as_str(), Json::from(*v))))));
             o.push(("worst", Json::from(b.sum)));
+            o.push(("worst_bound", Json::from(b.bound)));
             o.push(("least", Json::from(b.margin)));
         }
         Json::obj(o)

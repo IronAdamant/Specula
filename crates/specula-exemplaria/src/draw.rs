@@ -525,13 +525,27 @@ impl Resolved {
         Ok(x)
     }
 
-    /// Whether a relation holds at every seed: its sum at the worst corner of every residual its
-    /// numbers depend on, less what rounding each number to its step can take off, is at least
-    /// its margin. Exact where every term is a product of factors each moved by one residual (the
-    /// sum is then linear along each residual, so its least is at a corner). Where it is not, a
-    /// bound that is never above the least: a number with a measured range enters at the larger
-    /// of its range's end and its unnarrowed value (two sums, the larger kept), and terms of
-    /// different exponents each take their own worse end of the size.
+    /// Whether a relation holds at every seed: its least over every seed, less what rounding each
+    /// number to its step can take off, is at least its margin.
+    ///
+    /// - **The residuals at their corners.** For one size, every term is a product of factors each
+    ///   moved by one residual, so the sum is linear along each residual and its least is at a
+    ///   corner of their windows (exact).
+    /// - **The size as one number.** At each corner the sum is a sum of powers of the size, and its
+    ///   least over the size's window is found by [`least_over_size`]: at an end, or at a
+    ///   stationary point bracketed to a billionth of the size and bounded there term by term
+    ///   (sound, and within about a billionth of the terms of the least). So the size of the trunk
+    ///   and the size of a girth in one sum are the same size.
+    /// - **A number with a measured range** narrows its own residual's window by its value; it
+    ///   enters at its range's end or at its unnarrowed value (two sums, the larger kept: each is
+    ///   never above the least, so the larger is not either). This is the one place the check is a
+    ///   bound and not exact.
+    /// - **Floating point**: the least found is lowered by a millionth of a millionth of the
+    ///   terms' size before it is compared (the draw's arithmetic is good to a few units in the
+    ///   last place, ten thousand times less).
+    ///
+    /// A refusal names a body a seed can draw: the size (on its step) and the residuals at which
+    /// the sum was least, its numbers there, and their sum ([`Broken`]).
     fn relation_holds(&self, rel: &RelationDef, laws: &[NumberLaw], law: &SizeLaw, sizes: [f64; 2]) -> Result<(), Error> {
         let plan = self.plan;
         let terms: Vec<(usize, f64)> = rel.terms.iter().map(|(name, c)| (plan.numbers().iter().position(|n| n.name == *name).expect("a relation names the plan's numbers (a test holds it)"), *c)).collect();
@@ -545,77 +559,102 @@ impl Resolved {
         }
         let own: Vec<usize> = terms.iter().enumerate().filter(|(_, (i, _))| laws[*i].own_spread() > 0.0).map(|(k, _)| k).collect();
         let ranged: Vec<usize> = own.iter().copied().filter(|k| laws[terms[*k].0].range.is_some()).collect();
-        let same_exponent = terms.windows(2).all(|w| laws[w[0].0].exponent == laws[w[1].0].exponent);
         let spreads: Vec<f64> = traits.iter().map(|t| self.trait_spread(t)).collect();
         let allowance: f64 = terms.iter().map(|(i, c)| c.abs() * plan.numbers()[*i].unit.step() / 2.0).sum();
-        // For each choice of how the ranged terms enter, the least sum over every corner.
-        let mut best: Option<(f64, Vec<f64>)> = None;
-        for choice in corners(ranged.len()) {
-            let mut least: Option<(f64, Vec<f64>)> = None;
-            for c in corners(traits.len() + own.len()) {
-                let r: Vec<f64> = (0..traits.len()).map(|i| trait_residual(if c >> i & 1 == 1 { CLIP_SPREADS } else { -CLIP_SPREADS }, spreads[i])).collect();
-                let trait_r = |t: &str| traits.iter().position(|x| *x == t).map_or(0.0, |i| r[i]);
-                // Each term's value at each end of the size.
-                let at = |size: f64| -> Vec<f64> {
-                    terms
-                        .iter()
-                        .enumerate()
-                        .map(|(k, (i, coef))| {
-                            let l = &laws[*i];
-                            let base = l.base(size, law.mean, &trait_r);
-                            match own.iter().position(|o| *o == k) {
-                                None => l.value(base, 0.0),
-                                Some(j) => {
-                                    let up = c >> (traits.len() + j) & 1 == 1;
-                                    let z = if up { CLIP_SPREADS } else { -CLIP_SPREADS };
-                                    match ranged.iter().position(|q| *q == k) {
-                                        // A range's end: the low end where the term counts for the sum, the high
-                                        // where against it (the residual's own corner does not matter then).
-                                        Some(q) if choice >> q & 1 == 1 => {
-                                            let [lo, hi] = l.range.expect("ranged");
-                                            if *coef > 0.0 {
-                                                lo
-                                            } else {
-                                                hi
-                                            }
-                                        }
-                                        _ => l.value(base, z),
+        let trait_corner = |c: usize| -> Vec<f64> { (0..traits.len()).map(|i| trait_residual(if c >> i & 1 == 1 { CLIP_SPREADS } else { -CLIP_SPREADS }, spreads[i])).collect() };
+        // Each term (its coefficient times its number) at `size`, at corner `c` of the residuals
+        // (`r`: the traits' residuals there), with the ranged terms entering as `choice` says.
+        let at = |choice: usize, c: usize, r: &[f64], size: f64| -> Vec<f64> {
+            let trait_r = |t: &str| traits.iter().position(|x| *x == t).map_or(0.0, |i| r[i]);
+            terms
+                .iter()
+                .enumerate()
+                .map(|(k, (i, coef))| {
+                    let l = &laws[*i];
+                    let base = l.base(size, law.mean, &trait_r);
+                    coef * match own.iter().position(|o| *o == k) {
+                        None => l.value(base, 0.0),
+                        Some(j) => {
+                            let up = c >> (traits.len() + j) & 1 == 1;
+                            let z = if up { CLIP_SPREADS } else { -CLIP_SPREADS };
+                            match ranged.iter().position(|q| *q == k) {
+                                // A range's end: the low end where the term counts for the sum, the high
+                                // where against it (the residual's own corner does not matter then).
+                                Some(q) if choice >> q & 1 == 1 => {
+                                    let [lo, hi] = l.range.expect("ranged");
+                                    if *coef > 0.0 {
+                                        lo
+                                    } else {
+                                        hi
                                     }
                                 }
+                                _ => l.value(base, z),
                             }
-                        })
-                        .collect()
-                };
-                let (a, b) = (at(sizes[0]), at(sizes[1]));
-                let sum = |v: &[f64]| terms.iter().zip(v).map(|((_, c), x)| c * x).sum::<f64>();
-                let (s, values) = if same_exponent {
-                    if sum(&a) <= sum(&b) {
-                        (sum(&a), a)
-                    } else {
-                        (sum(&b), b)
+                        }
                     }
-                } else {
-                    let v: Vec<f64> = terms.iter().enumerate().map(|(k, (_, c))| if c * a[k] <= c * b[k] { a[k] } else { b[k] }).collect();
-                    (sum(&v), v)
-                };
-                if least.as_ref().is_none_or(|(x, _)| s < *x || s.is_nan()) {
-                    least = Some((s, values));
+                })
+                .collect()
+        };
+        // For each choice of how the ranged terms enter, the least over every corner and the size
+        // (worst after rounding, the size, the corner); a choice that holds is enough.
+        let mut best: Option<(f64, f64, usize, usize)> = None;
+        for choice in corners(ranged.len()) {
+            // How each term follows the size: a range's end does not.
+            let exponents: Vec<f64> = terms.iter().enumerate().map(|(k, (i, _))| if ranged.iter().position(|q| *q == k).is_some_and(|q| choice >> q & 1 == 1) { 0.0 } else { laws[*i].exponent }).collect();
+            let mut least: Option<(f64, f64, usize)> = None;
+            for c in corners(traits.len() + own.len()) {
+                let r = trait_corner(c);
+                let f = |size: f64| at(choice, c, &r, size);
+                let ends = [f(sizes[0]), f(sizes[1])];
+                let roundoff = ROUNDOFF * ends[0].iter().zip(&ends[1]).map(|(a, b)| a.abs().max(b.abs())).sum::<f64>();
+                let (bound, size) = least_over_size(&f, &exponents, sizes, ends, rel.margin + allowance + roundoff);
+                let worst = bound - allowance - roundoff;
+                if least.is_none_or(|(x, _, _)| worst < x || worst.is_nan()) {
+                    least = Some((worst, size, c));
                 }
             }
             let least = least.expect("at least one corner");
-            if best.as_ref().is_none_or(|(x, _)| least.0 > *x) {
-                best = Some(least);
+            if least.0 >= rel.margin {
+                return Ok(());
+            }
+            if best.is_none_or(|b| least.0 > b.0) {
+                best = Some((least.0, least.1, choice, least.2));
             }
         }
-        let (sum, values) = best.expect("at least one choice");
-        let worst = sum - allowance;
-        if worst >= rel.margin {
-            return Ok(());
+        let (bound, size, choice, c) = best.expect("at least one choice");
+        // The body there, as a seed draws it: the size on its step, each trait at its corner, each
+        // own residual at the end of its window (narrowed by a measured range) the corner names.
+        let def = plan.size();
+        let size = round(size, def.unit).clamp(sizes[0], sizes[1]);
+        let r = trait_corner(c);
+        let trait_r = |t: &str| traits.iter().position(|x| *x == t).map_or(0.0, |i| r[i]);
+        let mut at_body: Vec<(String, f64)> = vec![(def.name.to_string(), size)];
+        at_body.extend(traits.iter().zip(&r).map(|(t, x)| (t.to_string(), *x)));
+        let mut values: Vec<f64> = Vec::new();
+        for (k, (i, coef)) in terms.iter().enumerate() {
+            let l = &laws[*i];
+            let base = l.base(size, law.mean, &trait_r);
+            let v = match own.iter().position(|o| *o == k) {
+                None => l.value(base, 0.0),
+                Some(j) => {
+                    let up = match ranged.iter().position(|q| *q == k) {
+                        Some(q) if choice >> q & 1 == 1 => *coef < 0.0,
+                        _ => c >> (traits.len() + j) & 1 == 1,
+                    };
+                    let [a, b] = l.window(base);
+                    let z = if up { b } else { a };
+                    at_body.push((format!("{}.own", plan.numbers()[*i].name), z));
+                    l.value(base, z)
+                }
+            };
+            values.push(v);
         }
+        let worst = terms.iter().zip(&values).map(|((_, c), x)| c * x).sum::<f64>() - allowance;
         let names: Vec<&str> = terms.iter().map(|(i, _)| plan.numbers()[*i].name).collect();
         let unit = plan.numbers()[terms[0].0].unit;
         let formula = terms.iter().map(|(i, c)| format!("{c:+} {}", plan.numbers()[*i].name)).collect::<Vec<_>>().join(" ");
         let shown = names.iter().zip(&values).map(|(n, v)| format!("{n} {} {}", round(*v, unit), unit.name())).collect::<Vec<_>>().join(", ");
+        let at_shown = at_body.iter().map(|(n, v)| format!("{n} {v}")).collect::<Vec<_>>().join(", ");
         // The kind's own field nearest the cause: a number of the relation it sets, else a trait
         // it sets that moves one of them, else its size.
         let path = names
@@ -624,21 +663,138 @@ impl Resolved {
             .map(|n| format!("numbers.{n}"))
             .or_else(|| traits.iter().find(|t| self.kind.vary.contains_key(**t)).map(|t| format!("vary.{t}.spread")))
             .unwrap_or_else(|| law.spread_path.clone());
-        Err(Error::new(
-            "outside_plan",
-            path,
+        let message = if worst < rel.margin {
             format!(
-                "a seed of this kind could give {shown}, which breaks the plan {}'s relation {} ({formula} must be at least {} {}; here {:.4} after rounding): {}",
+                "a seed of this kind could give {shown} (at {at_shown}), which breaks the plan {}'s relation {} ({formula} must be at least {} {}; here {:.4} after rounding): {}",
                 plan.name(),
                 rel.name,
                 rel.margin,
                 unit.name(),
                 worst,
                 rel.about
-            ),
-        )
-        .with_relation(Broken { relation: rel.name.to_string(), values: names.iter().map(|n| n.to_string()).zip(values).collect(), sum: worst, margin: rel.margin }))
+            )
+        } else {
+            // (Only where a measured range narrows a residual: the bound there is below the least.)
+            format!(
+                "the plan {}'s relation {} ({formula} must be at least {} {}) cannot be shown to hold at every seed of this kind: a measured range narrows a residual, and the bound on its least is {bound:.6} after rounding; the nearest body found, {shown} (at {at_shown}), gives {worst:.6}: narrow the range's number, or widen its range: {}",
+                plan.name(),
+                rel.name,
+                rel.margin,
+                unit.name(),
+                rel.about
+            )
+        };
+        Err(Error::new("outside_plan", path, message).with_relation(Broken {
+            relation: rel.name.to_string(),
+            at: at_body,
+            values: names.iter().map(|n| n.to_string()).zip(values).collect(),
+            sum: worst,
+            bound,
+            margin: rel.margin,
+        }))
     }
+}
+
+/// Around a stationary point of a relation's sum the size is cut until a piece is this share of
+/// the size wide (a billionth).
+const BRACKET: f64 = 1e-9;
+/// The most pieces the size is cut into at one corner of a relation: past it each piece left is
+/// bounded term by term (sound; never reached by the plan's relations, a backstop on the work).
+const MAX_PIECES: usize = 4096;
+/// The outward margin for floating point, as a share of the size of a relation's terms: the
+/// draw's arithmetic is good to a few units in the last place (about 1e-16), ten thousand times
+/// less than this.
+const ROUNDOFF: f64 = 1e-12;
+
+/// The term-by-term bound of a sum over a piece of the size: each term at its own worse end
+/// (each term is a constant times a power of the size, so its least on a piece is at an end).
+fn term_by_term(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x.min(*y)).sum()
+}
+
+/// The least of a relation's sum over the size in `[s0, s1]`, at one corner of its residuals.
+/// `terms(s)` gives each term at size `s` (its coefficient times its number), each a constant
+/// times a power of the size (`exponents`: 0 for a term the size does not move); `ends` is
+/// `terms` at `s0` and `s1`. Returns a value never above the least (a bound) and the size of the
+/// least value it evaluated (a size the kind can draw). Where every piece's term-by-term bound is
+/// at least `enough`, the value returned is at least `enough` and is not refined further.
+///
+/// - **One exponent** among the terms the size moves: the sum is that power times a constant,
+///   plus a constant, so it is monotone and its least is at an end (exact).
+/// - **Several**: the least is at an end or at a stationary point (with two or three terms there
+///   are at most two). The window is halved until, on each piece, the sign of the sum's
+///   derivative is proved: its terms (`exponent × term / size`) are each a power of the size, so
+///   each is least and most at the piece's ends, and a sum of their least above zero (by more
+///   than [`ROUNDOFF`] of their size) proves the sum rises there, its least at the piece's low
+///   end. A piece where no sign is proved holds a stationary point: it is halved until it is a
+///   [`BRACKET`] of the size wide and then bounded term by term. That bound is sound whatever the
+///   floating point did in finding the point, and is within about a billionth of the terms of the
+///   least (a term moves by its exponent times the piece's width over the size across the piece).
+/// - Every value a piece's end gives is a value of the sum at a size inside the window, so the
+///   least of those is a body's, and the bound is the least of them and of the brackets' bounds.
+fn least_over_size(terms: &dyn Fn(f64) -> Vec<f64>, exponents: &[f64], [s0, s1]: [f64; 2], ends: [Vec<f64>; 2], enough: f64) -> (f64, f64) {
+    let sum = |v: &[f64]| v.iter().sum::<f64>();
+    let [v0, v1] = ends;
+    // The least value evaluated and its size; the bound (never above the least).
+    let mut low = (sum(&v0), s0);
+    let mut bound = low.0;
+    fn lower(bound: &mut f64, x: f64) {
+        if x < *bound || x.is_nan() {
+            *bound = x;
+        }
+    }
+    let seen = |low: &mut (f64, f64), bound: &mut f64, s: f64, x: f64| {
+        if x < low.0 || x.is_nan() {
+            *low = (x, s);
+        }
+        lower(bound, x);
+    };
+    if s1 <= s0 {
+        return (bound, s0);
+    }
+    seen(&mut low, &mut bound, s1, sum(&v1));
+    let mut moving: Vec<f64> = Vec::new();
+    for e in exponents {
+        if *e != 0.0 && !moving.contains(e) {
+            moving.push(*e);
+        }
+    }
+    if moving.len() <= 1 {
+        return (bound, low.1);
+    }
+    let slope = |s: f64, v: &[f64]| -> Vec<f64> { v.iter().zip(exponents).map(|(x, e)| e * x / s).collect() };
+    let mut stack = vec![(s0, v0, s1, v1)];
+    let mut pieces = 0usize;
+    while let Some((p, vp, q, vq)) = stack.pop() {
+        let each = term_by_term(&vp, &vq);
+        if each >= enough {
+            // (Nothing here can take the least under `enough`.)
+            lower(&mut bound, each);
+            continue;
+        }
+        let (dp, dq) = (slope(p, &vp), slope(q, &vq));
+        let (mut lo, mut hi, mut scale) = (0.0, 0.0, 0.0);
+        for (a, b) in dp.iter().zip(&dq) {
+            lo += a.min(*b);
+            hi += a.max(*b);
+            scale += a.abs().max(b.abs());
+        }
+        if lo > ROUNDOFF * scale || hi < -ROUNDOFF * scale {
+            // Monotone: its least is at an end, a value seen already.
+            continue;
+        }
+        pieces += 1;
+        if q - p <= BRACKET * q || pieces >= MAX_PIECES {
+            lower(&mut bound, each);
+            continue;
+        }
+        let m = 0.5 * (p + q);
+        let vm = terms(m);
+        seen(&mut low, &mut bound, m, sum(&vm));
+        stack.push((m, vm.clone(), q, vq));
+        stack.push((p, vp, m, vm));
+    }
+    (bound, low.1)
 }
 
 /// The backstop of the relations: each, in the plan's order, kept by moving its yielding number
@@ -698,5 +854,28 @@ mod tests {
         assert!((pow(2.0, 0.5) - std::f64::consts::SQRT_2).abs() < 1e-15);
         assert_eq!(hold(f64::NAN, [1.0, 2.0]), 1.0);
         assert_eq!(hold(f64::INFINITY, [1.0, 2.0]), 2.0);
+    }
+
+    /// The least of a sum of powers of the size over a window, where it is at a stationary point
+    /// between the ends (where each term at its own worse end would be far below it).
+    #[test]
+    fn the_least_over_the_size_is_found_between_its_ends() {
+        let least = |f: &dyn Fn(f64) -> Vec<f64>, e: &[f64], w: [f64; 2], enough: f64| least_over_size(f, e, w, [f(w[0]), f(w[1])], enough);
+        // (s - 1)² + 0.5 on [0.5, 2]: 0.5 at s = 1 (term by term: -2.25).
+        let f = |s: f64| vec![s * s, -2.0 * s, 1.5];
+        let (b, s) = least(&f, &[2.0, 1.0, 0.0], [0.5, 2.0], f64::INFINITY);
+        assert!(b <= 0.5 && b > 0.5 - 1e-8 && (s - 1.0).abs() < 1e-4, "{b} at {s}");
+        // s⁴/4 - s³ + s² on [0.5, 3]: a most at 1 and a least of 0 at 2, the ends 0.14 and 2.25.
+        let f = |s: f64| vec![pow(s, 4.0) / 4.0, -pow(s, 3.0), s * s];
+        let (b, s) = least(&f, &[4.0, 3.0, 2.0], [0.5, 3.0], f64::INFINITY);
+        // (The bracket bounded term by term: within a billionth or two of the terms, 16 here.)
+        assert!(b <= 1e-15 && b > -3e-8 && (s - 2.0).abs() < 1e-4, "{b} at {s}");
+        // Monotone with two exponents: the least at an end, exactly.
+        let f = |s: f64| vec![0.32 * s, -0.1518 * pow(s / 0.55, 1.05)];
+        let (b, s) = least(&f, &[1.0, 1.05], [0.325, 0.775], f64::INFINITY);
+        assert_eq!((b, s), (f(0.325).iter().sum::<f64>(), 0.325));
+        // Enough already: the window is not looked into, and what is returned is at least enough.
+        let f = |s: f64| vec![s * s, -2.0 * s, 1.5];
+        assert!(least(&f, &[2.0, 1.0, 0.0], [0.5, 2.0], -3.0).0 >= -3.0);
     }
 }
