@@ -588,8 +588,9 @@ impl Resolved {
     /// **Its work is bounded as it is done**: the corners it would visit (each choice of how the
     /// ranged terms enter, times the corners of the residuals) are refused past
     /// [`MAX_RELATION_CORNERS`] before any is visited, and every evaluation of the relation's
-    /// terms at a size is counted into `work`, refused past `max_work` at the end of the corner
-    /// that passed it (a corner makes at most [`MAX_PIECES`] + 2 evaluations).
+    /// terms at a size is counted into `work` before it is made, and the one that would pass
+    /// `max_work` is not made: the kind is refused with its count, `max_work + 1`. So the work
+    /// done never passes the ceiling, inside a corner's search of the size as between corners.
     fn relation_holds(&self, rel: &RelationDef, laws: &[NumberLaw], law: &SizeLaw, sizes: [f64; 2], work: &mut u64, max_work: u64) -> Result<(), Error> {
         let plan = self.plan;
         let terms: Vec<(usize, f64)> = rel.terms.iter().map(|(name, c)| (plan.numbers().iter().position(|n| n.name == *name).expect("a relation names the plan's numbers (a test holds it)"), *c)).collect();
@@ -653,16 +654,14 @@ impl Resolved {
             let mut least: Option<(f64, f64, usize)> = None;
             for c in corners(traits.len() + own.len()) {
                 let r = trait_corner(c);
-                let made = std::cell::Cell::new(0u64);
-                let f = |size: f64| {
-                    made.set(made.get() + 1);
-                    at(choice, c, &r, size)
+                let f = |size: f64| at(choice, c, &r, size);
+                // (The evaluations left under the ceiling: the search stops before passing it.)
+                let before = max_work.saturating_sub(*work);
+                let mut left = before;
+                let Some((worst, size)) = corner_least(&f, &exponents, sizes, rel.margin, allowance, &mut left) else {
+                    return Err(dear("evaluations", max_work.saturating_add(1), max_work));
                 };
-                let (worst, size) = corner_least(&f, &exponents, sizes, rel.margin, allowance);
-                *work += made.get();
-                if *work > max_work {
-                    return Err(dear("evaluations", *work, max_work));
-                }
+                *work += before - left;
                 if least.is_none_or(|(x, _, _)| worst < x || worst.is_nan()) {
                     least = Some((worst, size, c));
                 }
@@ -771,11 +770,17 @@ const ROUNDOFF: f64 = 1e-12;
 /// the relation's `margin`: the bound of [`least_over_size`], less the rounding `allowance` and the
 /// floating-point margin ([`ROUNDOFF`] of the terms' size at the window's ends). Returns it and the
 /// size of the least value evaluated. The relation holds at that corner when it is at least `margin`.
-fn corner_least(f: &dyn Fn(f64) -> Vec<f64>, exponents: &[f64], sizes: [f64; 2], margin: f64, allowance: f64) -> (f64, f64) {
+/// `left`: the evaluations of `f` it may make, less those it made; `None` when it would need more
+/// (the one past them not made).
+fn corner_least(f: &dyn Fn(f64) -> Vec<f64>, exponents: &[f64], sizes: [f64; 2], margin: f64, allowance: f64, left: &mut u64) -> Option<(f64, f64)> {
+    if *left < 2 {
+        return None;
+    }
+    *left -= 2;
     let ends = [f(sizes[0]), f(sizes[1])];
     let roundoff = ROUNDOFF * ends[0].iter().zip(&ends[1]).map(|(a, b)| a.abs().max(b.abs())).sum::<f64>();
-    let (bound, size) = least_over_size(f, exponents, sizes, ends, margin + allowance + roundoff);
-    (bound - allowance - roundoff, size)
+    let (bound, size) = least_over_size(f, exponents, sizes, ends, margin + allowance + roundoff, left)?;
+    Some((bound - allowance - roundoff, size))
 }
 
 /// The term-by-term bound of a sum over a piece of the size: each term at its own worse end
@@ -804,7 +809,7 @@ fn term_by_term(a: &[f64], b: &[f64]) -> f64 {
 ///   least (a term moves by its exponent times the piece's width over the size across the piece).
 /// - Every value a piece's end gives is a value of the sum at a size inside the window, so the
 ///   least of those is a body's, and the bound is the least of them and of the brackets' bounds.
-fn least_over_size(terms: &dyn Fn(f64) -> Vec<f64>, exponents: &[f64], [s0, s1]: [f64; 2], ends: [Vec<f64>; 2], enough: f64) -> (f64, f64) {
+fn least_over_size(terms: &dyn Fn(f64) -> Vec<f64>, exponents: &[f64], [s0, s1]: [f64; 2], ends: [Vec<f64>; 2], enough: f64, left: &mut u64) -> Option<(f64, f64)> {
     let sum = |v: &[f64]| v.iter().sum::<f64>();
     let [v0, v1] = ends;
     // The least value evaluated and its size; the bound (never above the least).
@@ -822,7 +827,7 @@ fn least_over_size(terms: &dyn Fn(f64) -> Vec<f64>, exponents: &[f64], [s0, s1]:
         lower(bound, x);
     };
     if s1 <= s0 {
-        return (bound, s0);
+        return Some((bound, s0));
     }
     seen(&mut low, &mut bound, s1, sum(&v1));
     let mut moving: Vec<f64> = Vec::new();
@@ -832,7 +837,7 @@ fn least_over_size(terms: &dyn Fn(f64) -> Vec<f64>, exponents: &[f64], [s0, s1]:
         }
     }
     if moving.len() <= 1 {
-        return (bound, low.1);
+        return Some((bound, low.1));
     }
     let slope = |s: f64, v: &[f64]| -> Vec<f64> { v.iter().zip(exponents).map(|(x, e)| e * x / s).collect() };
     let mut stack = vec![(s0, v0, s1, v1)];
@@ -861,12 +866,16 @@ fn least_over_size(terms: &dyn Fn(f64) -> Vec<f64>, exponents: &[f64], [s0, s1]:
             continue;
         }
         let m = 0.5 * (p + q);
+        if *left == 0 {
+            return None;
+        }
+        *left -= 1;
         let vm = terms(m);
         seen(&mut low, &mut bound, m, sum(&vm));
         stack.push((m, vm.clone(), q, vq));
         stack.push((p, vp, m, vm));
     }
-    (bound, low.1)
+    Some((bound, low.1))
 }
 
 /// The backstop of the relations: each, in the plan's order, kept by moving its yielding number
@@ -908,6 +917,36 @@ impl Kind {
 mod tests {
     use super::*;
 
+    /// No ceiling on a search's evaluations.
+    fn unlimited() -> u64 {
+        u64::MAX
+    }
+
+    /// The search that used to pass the ceiling by a whole corner: a sum whose slope no piece can
+    /// prove (`s - s^(1 + 1e-13)` on `[0.5, 2]`: its two slope terms cancel to within the
+    /// floating-point margin everywhere), so the window is cut until its cap of 4,096 pieces (2,061
+    /// evaluations: a piece at the bracket's width costs none), twice the ceiling. Given fewer, it makes exactly as many as it is
+    /// given and no more, and says it could not finish; given enough, it finishes.
+    #[test]
+    fn a_search_cut_into_every_piece_stops_at_its_ceiling() {
+        let made = std::cell::Cell::new(0u64);
+        let f = |s: f64| {
+            made.set(made.get() + 1);
+            vec![s, -pow(s, 1.0 + 1e-13)]
+        };
+        let e = [1.0, 1.0 + 1e-13];
+        let mut left = unlimited();
+        assert!(corner_least(&f, &e, [0.5, 2.0], 1e9, 0.0, &mut left).is_some());
+        let whole = made.get();
+        assert!(whole > 2 * MAX_REACH_WORK && unlimited() - left == whole, "{whole} evaluations");
+        for given in [0u64, 1, 2, 3, 100, 1_024, whole - 1] {
+            made.set(0);
+            let mut left = given;
+            assert!(corner_least(&f, &e, [0.5, 2.0], 1e9, 0.0, &mut left).is_none(), "{given}");
+            assert!(made.get() <= given && made.get() == given - left, "given {given}: made {}, left {left}", made.get());
+        }
+    }
+
     #[test]
     fn residuals_are_standard_truncated_and_fixed() {
         let n = 20_000;
@@ -932,7 +971,7 @@ mod tests {
     /// between the ends (where each term at its own worse end would be far below it).
     #[test]
     fn the_least_over_the_size_is_found_between_its_ends() {
-        let least = |f: &dyn Fn(f64) -> Vec<f64>, e: &[f64], w: [f64; 2], enough: f64| least_over_size(f, e, w, [f(w[0]), f(w[1])], enough);
+        let least = |f: &dyn Fn(f64) -> Vec<f64>, e: &[f64], w: [f64; 2], enough: f64| least_over_size(f, e, w, [f(w[0]), f(w[1])], enough, &mut unlimited()).unwrap();
         // (s - 1)² + 0.5 on [0.5, 2]: 0.5 at s = 1 (term by term: -2.25).
         let f = |s: f64| vec![s * s, -2.0 * s, 1.5];
         let (b, s) = least(&f, &[2.0, 1.0, 0.0], [0.5, 2.0], f64::INFINITY);
@@ -968,11 +1007,11 @@ mod tests {
         let w = [1.0, 3.0];
         let least = 4.0 + 8.0 - k;
         let (size, slopes) = (4.0 + 8.0 + k, 2.0 * 4.0 + 8.0);
-        let (b, s) = least_over_size(&f, &e, w, [f(w[0]), f(w[1])], m);
+        let (b, s) = least_over_size(&f, &e, w, [f(w[0]), f(w[1])], m, &mut unlimited()).unwrap();
         assert!(least - b >= 1e-12 * size, "the bound {b} is not below the least {least} by more than floating point");
         assert!(least - b <= 2.0 * BRACKET * slopes, "the bound {b} is {} under the least {least}", least - b);
         assert!((s - 2.0).abs() < 1e-6, "the least evaluated at {s}");
-        let (worst, _) = corner_least(&f, &e, w, m, 0.0);
+        let (worst, _) = corner_least(&f, &e, w, m, 0.0, &mut unlimited()).unwrap();
         assert!(worst < m, "{worst}");
     }
 
@@ -990,7 +1029,7 @@ mod tests {
                 k = 2.25 + 16.0 / 1.5 - (m + a + 1e-12 * (2.25 + 16.0 + k) + shift);
             }
             let f = move |s: f64| vec![s * s, 16.0 / s, -k];
-            let (worst, s) = corner_least(&f, &e, w, m, a);
+            let (worst, s) = corner_least(&f, &e, w, m, a, &mut unlimited()).unwrap();
             assert_eq!(s, 1.5);
             assert_eq!(worst >= m, holds, "{shift:e} from the edge: {worst} against {m}");
         }

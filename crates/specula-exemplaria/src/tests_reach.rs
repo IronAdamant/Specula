@@ -389,8 +389,13 @@ fn many(numbers: &str) -> Resolved {
 /// The reach at its ceiling is cheap enough for the engine thread: on the plan of thirteen
 /// traits (the dearest evaluation: thirteen factors a number), a kind whose relation is least
 /// inside the size's window, so the reach would search the size at each of its 8,192 corners, is
-/// refused `reach_too_dear` having done [`crate::draw::MAX_REACH_WORK`] evaluations (and at most
-/// one corner's more), in under 2 ms.
+/// refused `reach_too_dear` having done exactly [`crate::draw::MAX_REACH_WORK`] evaluations (the
+/// one past them counted and not made: the bound of the work is this count, here and in
+/// `draw::tests::a_search_cut_into_every_piece_stops_at_its_ceiling`), in under 5 ms.
+///
+/// The time is a budget of about five times the quiet time, not twice: a budget under twice
+/// the quiet time failed two gates on 2026-11-28 for the machine's load alone (`specula-studio`,
+/// 400 ms against 220 quiet). It catches an evaluation that has become several times dearer.
 ///
 /// Measured on the development laptop (2026-11-28, quiet; the tests' own build and `--release`
 /// alike, the crate being built at opt-level 2 in both), `EXEMPLARIA_SHOW_REACH=1`: at the
@@ -402,13 +407,13 @@ fn many(numbers: &str) -> Resolved {
 #[test]
 #[allow(clippy::disallowed_methods, reason = "a speed budget measures wall-clock time; nothing drawn reads it")]
 fn the_reach_at_its_ceiling_is_cheap() {
-    const MS: u64 = 2;
+    const MS: u64 = 5;
     let r = many(r#", "numbers": {"outer": {"share": 1.0, "exponent": 2.0, "own": "x"}, "inner": {"share": 2.0, "own": "x"}}"#);
     let start = std::time::Instant::now();
     let e = r.reach_within(crate::draw::MAX_REACH_WORK).unwrap_err();
     let took = start.elapsed();
     let w = e.work.as_ref().unwrap_or_else(|| panic!("{e}"));
-    assert!(e.code == "reach_too_dear" && w.what == "evaluations" && w.done > w.ceiling && w.done <= w.ceiling + 4_098, "{e}");
+    assert!(e.code == "reach_too_dear" && w.what == "evaluations" && w.done == w.ceiling + 1, "{e}");
     if std::env::var_os("EXEMPLARIA_SHOW_REACH").is_some() {
         let start = std::time::Instant::now();
         let all = r.reach_within(u64::MAX).map(|x| x.1).map_err(|e| e.message);
