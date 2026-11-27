@@ -400,8 +400,11 @@ that lane's.
 4. **The 2D baker** whenever a lane is free after S0: it takes any recipe, so it needs no plan.
 5. **Chains, birds, winged quadrupeds, arthropods** on the quadruped's legs and the new generators.
 6. **Plants, landforms, water** beside them: they touch other files.
-7. **People last**, after the figure's six mends (part 4's lane), then the people's kinds and the walk
-   from measured curves.
+7. **The base person comes with S1; the rest of people last** (the owner, 2026-11-28:
+   [FABRICA.md](FABRICA.md)): the `body` shape is built with a person from the corpus as its first test,
+   and the figure's mends are made there, not in a lane of their own. People's kinds, faces, hair and the
+   walk from measured curves still come after the animals, once the base looks right; faces and hands are
+   sculpted onto the base at its anchors (FORMAE.md's forms as sculpt nodes).
 
 ### Stages
 

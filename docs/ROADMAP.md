@@ -1047,6 +1047,10 @@ at once.
   reviews, research and full verification rounds, **the laptop's list runs well into the new year: February
   at the earliest**, and the Mac's part comes after that. Said to the owner on 2026-11-16, who accepts it
   ("I need this done right, not rushed").
+- **Within parts 4 and 5, the order a body is made in** (the owner, 2026-11-28:
+  [design/FABRICA.md](design/FABRICA.md)): numbers, the skeleton inside as the rig, one base surface, detail
+  sculpted on, one mesh. The `body` shape comes next after the sculpt branch, with a person as its first
+  test; the form as a sculpt node comes before faces and hands. A plan as data is noted there, not designed.
 - **Why this order** (Claude's, within "everything else to be done together"): what M6's first focus item
   asks for comes first (3); the form tools come before the library that is built with them (4, then 5);
   the game takes from both (7). The shader language and the renderer's inner interface serve the Mac and

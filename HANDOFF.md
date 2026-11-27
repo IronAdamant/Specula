@@ -16,10 +16,10 @@ rounds.
 - **Where the lanes stand (2026-11-28, early morning). Read this before the table of
   2026-11-24 below, which it overtakes.** The owner, 2026-11-27: "Complete everything as before
   but do not push into part 5. I want libraries set up"; agents are Opus and Sonnet with a
-  stated effort, used leanly (lanes' rule 18; the Relatum note `m6/part4/economy`); **at 80% of
+  stated effort, used leanly (lanes' rule 18; the Relatum note `m6/part4/economy`); **at 90% (raised from 80% on 2026-11-28) of
   the weekly usage, pause and advise** (the lead cannot read the meter: the owner gives
   readings; 22% at 22:17 on 2026-11-27, about 3% an hour with ten agents; start nothing new
-  past 65%).
+  past 80%).
   - **Merged, gated and pushed (`origin/main` is `f165302b`):** the fire simulation
     (`specula-elementa`), the timing tests' two rounds, the 2D sprite baker, the shape
     library's stage 4. **The full gate passed on `f165302b`** (3,756 tests, repeats, slow
@@ -525,6 +525,11 @@ ROADMAP M6 has the fourteen parts and their order; nothing in it may be cut and 
   hair, all by code, as base templates an agent starts from by name. The shape library must be
   found cheaply by an agent and its forms become sculpt primitives; a project's own recipes get
   a catalogue; the engine tells an agent where everything is, unasked.
+- **The order a person or a creature is made in** (2026-11-28; [docs/design/FABRICA.md](docs/design/FABRICA.md)):
+  numbers, then the skeleton (which is the rig), then one base surface round it, then detail sculpted on
+  at named places, then one mesh; a resize is a change of numbers. The `body` stage is built with a
+  person as its first test, and the figure's mends are made there. Noted and not designed: a plan as
+  data ("procedurally generated generator"), drawn out of three plans written by hand first.
 - **For M6 and noted, not designed:** a storyline tree, reputation, an RPG set-up, captions,
   quests, music, all optional data; speech only as the project really has it; Sepulcra ships
   with its three maps, and its balance stays risky; remote agents get no native code, window
