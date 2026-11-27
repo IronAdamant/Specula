@@ -12,7 +12,11 @@ use super::*;
 use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
 /// Bumped when the layout changes; older layouts get a migration in [`State::from_bytes`].
-pub const STATE_VERSION: u32 = 2;
+/// 3: rubble keeps the tick it rose, and the cells whose rubble has gone are saved (a version 2
+/// save loads with each rubble's life counted from its load and no cell spent).
+pub const STATE_VERSION: u32 = 3;
+/// The elements' layout before rubble was temporary by its own rules (still read).
+const STATE_VERSION_2: u32 = 2;
 /// The layout of content without the elements (the shipped maps), still written for it: a save of
 /// the shipped game is byte for byte what it was before the elements existed.
 pub const STATE_VERSION_PLAIN: u32 = 1;
@@ -138,9 +142,15 @@ fn r_enemy_el(r: &mut ByteReader<'_>) -> Result<EnemyEl, StateError> {
 
 fn w_elements(w: &mut ByteWriter, w0: &World) {
     w.len_u32(w0.rubble.len());
-    for (c, t) in &w0.rubble {
+    for (c, &(raised, until)) in &w0.rubble {
         w.u16(c.0);
-        w.u32(*t);
+        w.u32(raised);
+        w.u32(until);
+    }
+    w.len_u32(w0.spent.len());
+    for (c, bar) in &w0.spent {
+        w.u16(c.0);
+        w.u32(*bar);
     }
     let b = &w0.blaze;
     w.len_u32(b.cells.len());
@@ -161,14 +171,32 @@ fn w_elements(w: &mut ByteWriter, w0: &World) {
     }
 }
 
-fn r_elements(r: &mut ByteReader<'_>, content: &Content, b: &Bounds) -> Result<(BTreeMap<CellId, u32>, Blaze), StateError> {
+/// What the elements' part of a save holds besides the enemies' own: rubble, spent cells, fire.
+type ElementsPart = (BTreeMap<CellId, (u32, u32)>, BTreeMap<CellId, EnemyId>, Blaze);
+
+fn r_elements(r: &mut ByteReader<'_>, content: &Content, b: &Bounds, version: u32, tick: u32) -> Result<ElementsPart, StateError> {
     use crate::blaze::{FireCell, Phase, Zone, MAX_ZONES};
     let d = decode;
-    let n = r.count("rubble", b.cells, 6).map_err(d)?;
+    let v2 = version == STATE_VERSION_2;
+    let n = r.count("rubble", b.cells, if v2 { 6 } else { 10 }).map_err(d)?;
     let mut rubble = BTreeMap::new();
     for _ in 0..n {
         let cell = b.cell(r)?;
-        rubble.insert(cell, counter(r, "rubble.until")?);
+        // Version 2 kept no rising tick: its life is counted from the load.
+        let raised = if v2 { tick } else { counter(r, "rubble.raised")? };
+        let until = counter(r, "rubble.until")?;
+        if raised > tick {
+            return Err(invalid(r, format!("rubble on cell {} rose at {raised}, after the save's tick {tick}", cell.0)));
+        }
+        rubble.insert(cell, (raised, until));
+    }
+    let mut spent = BTreeMap::new();
+    if !v2 {
+        let n = r.count("spent", b.cells, 6).map_err(d)?;
+        for _ in 0..n {
+            let cell = b.cell(r)?;
+            spent.insert(cell, counter(r, "spent.bar")?);
+        }
     }
     let mut blaze = Blaze::new(content);
     let n = r.count("fire cells", MAX_ITEMS, 17).map_err(d)?;
@@ -196,7 +224,7 @@ fn r_elements(r: &mut ByteReader<'_>, content: &Content, b: &Bounds) -> Result<(
         }
         blaze.zones.push(Zone { at, radius, dir: (dx, dz), until: counter(r, "zone.until")? });
     }
-    Ok((rubble, blaze))
+    Ok((rubble, spent, blaze))
 }
 
 /// Bounds checks against the content.
@@ -399,10 +427,10 @@ impl State {
     pub fn from_bytes(content: Arc<Content>, bytes: &[u8]) -> Result<State, StateError> {
         let mut r = ByteReader::new(bytes);
         let version = r.u32("version").map_err(decode)?;
-        if version != STATE_VERSION && version != STATE_VERSION_PLAIN {
+        if ![STATE_VERSION, STATE_VERSION_2, STATE_VERSION_PLAIN].contains(&version) {
             return Err(StateError {
                 code: "unsupported_version",
-                message: format!("game state version {version}; this build reads {STATE_VERSION_PLAIN} and {STATE_VERSION}"),
+                message: format!("game state version {version}; this build reads {STATE_VERSION_PLAIN}, {STATE_VERSION_2} and {STATE_VERSION}"),
                 offset: Some(0),
             });
         }
@@ -421,8 +449,8 @@ impl State {
                 offset: Some(4),
             });
         }
-        // Version 2 is the layout with the elements, written exactly for content that has them.
-        let el = version == STATE_VERSION;
+        // Versions 2 and 3 are the layouts with the elements, written exactly for content that has them.
+        let el = version != STATE_VERSION_PLAIN;
         if el != content.elemental() {
             return Err(StateError {
                 code: "bad_state",
@@ -563,7 +591,7 @@ impl State {
                 detonated: if el { counter(&mut r, "detonated")? } else { 0 },
             });
         }
-        let (rubble, blaze) = if el { r_elements(&mut r, &content, &b)? } else { (BTreeMap::new(), Blaze::new(&content)) };
+        let (rubble, spent, blaze) = if el { r_elements(&mut r, &content, &b, version, tick)? } else { (BTreeMap::new(), BTreeMap::new(), Blaze::new(&content)) };
         r.finish().map_err(d)?;
         // Cross-checks: ids below the next ids, and every counter the tick counts down agrees with
         // the lists it counts (the tick subtracts from them).
@@ -610,10 +638,13 @@ impl State {
             wave_stats,
             blaze,
             rubble,
+            spent,
             bursts: Vec::new(),
             blocked,
             fields,
             rooted: vec![false; cells],
+            #[cfg(test)]
+            no_furor: false,
         };
         w.refresh_roots(&content);
         Ok(State { content, w })

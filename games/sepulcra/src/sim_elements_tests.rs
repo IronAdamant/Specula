@@ -1557,3 +1557,130 @@ fn a_layout_waits_for_one_of_the_dead_to_leave_a_cell() {
     let w = p.waits_at(s.tick());
     assert_eq!((w.entries, w.longest, w.never_applied), (1, t, 0), "{w:?}");
 }
+
+// ---- Rubble is temporary (the owner, 2026-11-28: "rendering those stones in the path as temporary") ----
+
+/// The proving ground with Saxum III replaced by `tier`.
+fn saxum_iii(tier: &str) -> Arc<Content> {
+    Arc::new(proving_with("{ \"cost\": 110, \"range_m\": 7.0, \"cooldown_s\": 2.6, \"damage\": 36, \"line\": 4, \"stagger_s\": 1.2, \"rubble\": { \"hp\": 200, \"s\": 8 } }", tier).expect("legal content"))
+}
+
+/// The fourth review's rubble: no damage, no stagger, rubble of 2,000 HP for 60 s every second.
+const REVIEW_RUBBLE: &str = "{ \"cost\": 110, \"range_m\": 7.0, \"cooldown_s\": 1.0, \"line\": 4, \"rubble\": { \"hp\": 2000, \"s\": 60 } }";
+
+/// What a lone enemy's run came to.
+#[derive(Debug, Default)]
+struct Lone {
+    ticks: u64,
+    gone: bool,
+    leaked: bool,
+    /// Rubble raised, and the most raised on one cell.
+    raised: u32,
+    most_on_a_cell: u32,
+    furor: u32,
+}
+
+/// Plays a lone `kind` set down on `from` (wave 1, started at tick 0) among `stones` (name,
+/// cell, tier), with furor on or off, until it is gone or `limit` ticks have passed.
+fn lone(c: &Arc<Content>, kind: &str, from: &str, stones: &[(&str, CellId, u8)], furor: bool, limit: u64) -> Lone {
+    let mut s = quiet(c);
+    s.w.no_furor = !furor;
+    let id = plant(&mut s, kind, from);
+    s.w.dust = 10_000_000;
+    let mut ev = Vec::new();
+    for &(name, cell, tier) in stones {
+        s.apply(&Command::PlaceStone { cell, stone: c.stone_kind(name).unwrap() }, &mut ev).expect("placed");
+        for _ in 0..tier {
+            s.apply(&Command::Upgrade { cell }, &mut ev).expect("upgraded");
+        }
+    }
+    let mut on: BTreeMap<CellId, u32> = BTreeMap::new();
+    let mut r = Lone::default();
+    while s.enemy(id).is_some() && r.ticks < limit {
+        ev.clear();
+        s.step_into(&[], &mut ev);
+        r.ticks += 1;
+        for e in &ev {
+            match e {
+                Event::RubbleRaised { cell } => {
+                    r.raised += 1;
+                    *on.entry(*cell).or_default() += 1;
+                }
+                Event::Furor { .. } => r.furor += 1,
+                _ => {}
+            }
+        }
+    }
+    r.gone = s.enemy(id).is_none();
+    r.leaked = s.wave_stats()[0].leaked == 1;
+    r.most_on_a_cell = on.values().copied().max().unwrap_or(0);
+    r
+}
+
+/// A heave on standing rubble restores neither its health nor its life: the rubble the dead
+/// have half broken stays half broken, and crumbles when it was to.
+#[test]
+fn a_heave_never_restores_standing_rubble() {
+    let c = saxum_iii(REVIEW_RUBBLE);
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "shambler", "top:9,18");
+    hold_still_but_shove(&mut s);
+    place(&mut s, "saxum", "top:10,15", 2);
+    let ev = steps(&mut s, 1);
+    let cell = ev.iter().find_map(|e| if let Event::RubbleRaised { cell } = e { Some(*cell) } else { None }).expect("rubble rose");
+    let first = s.rubble().find(|r| r.cell == cell).unwrap();
+    assert_eq!((first.hp, first.max_hp, first.until - first.raised), (2_000_000, 2_000_000, 60 * TICK_HZ));
+    s.w.walls.get_mut(&cell).unwrap().hp = 900_000;
+    let ev = steps(&mut s, 5 * TICK_HZ);
+    assert!(ev.iter().filter(|e| matches!(e, Event::Heaved { .. })).count() >= 4, "the stone kept heaving: {ev:?}");
+    let now = s.rubble().find(|r| r.cell == cell).expect("still standing");
+    assert_eq!((now.hp, now.raised, now.until), (900_000, first.raised, first.until), "neither its health nor its life came back");
+    let _ = id;
+}
+
+/// A cell whose rubble has gone takes none again while one of the dead that lived then still
+/// stands; once they have all gone it may.
+#[test]
+fn a_cell_whose_rubble_went_takes_none_while_its_dead_stand() {
+    let c = saxum_iii("{ \"cost\": 110, \"range_m\": 7.0, \"cooldown_s\": 0.5, \"line\": 4, \"rubble\": { \"hp\": 2000, \"s\": 2 } }");
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "shambler", "top:9,18");
+    hold_still_but_shove(&mut s);
+    place(&mut s, "saxum", "top:10,15", 2);
+    let ev = steps(&mut s, 1);
+    let cell = ev.iter().find_map(|e| if let Event::RubbleRaised { cell } = e { Some(*cell) } else { None }).expect("rubble rose");
+    let ev = steps(&mut s, 20 * TICK_HZ);
+    assert!(ev.contains(&Event::WallCrumbled { cell }), "it crumbled");
+    assert!(!ev.iter().any(|e| *e == Event::RubbleRaised { cell }), "and never rose there again while the shambler stood: {ev:?}");
+    assert!(s.w.barred(cell));
+    // The shambler goes; a newcomer does not bar the cell.
+    let i = idx(&s, id);
+    s.w.enemies[i].alive = false;
+    s.w.wave_stats[0].alive -= 1;
+    steps(&mut s, 1);
+    plant(&mut s, "shambler", "top:9,18");
+    hold_still_but_shove(&mut s);
+    assert!(!s.w.barred(cell), "nobody who saw it go still stands");
+    let ev = steps(&mut s, 5 * TICK_HZ);
+    assert!(ev.iter().any(|e| matches!(e, Event::RubbleRaised { .. })), "rubble rises again: {ev:?}");
+}
+
+/// The fourth review's case: a lone shambler stood 100,000 ticks at full health attacking
+/// rubble raised again as it crumbled. By rubble's own rule (furor switched off), it now passes:
+/// each cell takes rubble at most once in its life, and each rubble holds it at most the lesser
+/// of its life and the time its claws take to break it.
+#[test]
+fn the_reviews_rubble_lets_a_lone_enemy_through_by_its_own_rule() {
+    let c = saxum_iii(REVIEW_RUBBLE);
+    let cell = nearest_build_cells(&c, AMID, 1)[0];
+    let stones = [("saxum", cell, 2u8)];
+    let control = lone(&saxum_iii("{ \"cost\": 110, \"range_m\": 7.0, \"cooldown_s\": 1.0, \"line\": 4 }"), "shambler", GORGE, &stones, false, 100_000);
+    let r = lone(&c, "shambler", GORGE, &stones, false, 100_000);
+    let t = c.stone(c.stone_kind("saxum").unwrap()).tiers[2].el;
+    let claws = c.enemy(c.enemy_kind("shambler").unwrap()).wall_damage;
+    let each = u64::from(t.rubble_ticks).min((t.rubble_hp as u64).div_ceil(claws as u64));
+    println!("FUROR-PROBE rubble: control {control:?}; review {r:?}; each {each}");
+    assert!(r.gone && r.leaked && r.furor == 0, "{r:?}");
+    assert_eq!(r.most_on_a_cell, 1, "{r:?}");
+    assert!(r.ticks <= control.ticks + u64::from(r.raised) * each, "{r:?} against {} + {} x {each}", control.ticks, r.raised);
+}

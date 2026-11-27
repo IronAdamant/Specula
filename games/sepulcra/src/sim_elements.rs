@@ -402,19 +402,39 @@ impl World {
         for &l in &line {
             self.cover(content, l, until, ev);
         }
+        // Rubble is temporary: it rises only on a cell with no wall (so a heave never restores a
+        // standing rubble's health or life) and none of the dead on it, and never again on a cell
+        // whose rubble has gone while one of the dead living then still stands ([`World::barred`]).
         if el.rubble_hp > 0 {
             let spot = line.iter().rev().copied().find(|&l| {
-                map.cell(l).kind.wallable() && !self.walls.contains_key(&l) && !self.enemies.iter().any(|e| e.alive && e.touches(l))
+                map.cell(l).kind.wallable() && !self.walls.contains_key(&l) && !self.enemies.iter().any(|e| e.alive && e.touches(l)) && !self.barred(l)
             });
             if let Some(l) = spot {
                 self.walls.insert(l, Wall { hp: el.rubble_hp, max_hp: el.rubble_hp, cost: 0 });
-                self.rubble.insert(l, tick.saturating_add(el.rubble_ticks));
+                self.rubble.insert(l, (tick, tick.saturating_add(el.rubble_ticks)));
                 self.set_blocked(content, l, true);
                 ev.push(Event::RubbleRaised { cell: l });
             }
         }
         ev.push(Event::Heaved { stone: cell, at: start, cells: line.len() as u8, affected: n });
         true
+    }
+
+    /// The rubble on `cell` has gone (broken, blasted, crumbled, or taken down as a wall): the
+    /// cell is spent, and takes no rubble again while any enemy living now still stands
+    /// ([`World::barred`]). No rubble there: nothing happens (the player's walls).
+    pub(super) fn rubble_gone(&mut self, cell: CellId) {
+        if self.rubble.remove(&cell).is_some() {
+            self.spent.insert(cell, self.next_enemy);
+        }
+    }
+
+    /// May no rubble rise on `cell`? True while one of the dead that lived when its last rubble
+    /// went still stands: whoever that rubble stopped or held up is among them, so rubble never
+    /// stands twice on a cell in front of the same enemy, and rubble by itself holds nobody for
+    /// ever (each cell at most once in an enemy's life, each at most its life).
+    pub(super) fn barred(&self, cell: CellId) -> bool {
+        self.spent.get(&cell).is_some_and(|&bar| self.enemies.iter().any(|e| e.alive && e.id < bar))
     }
 
     /// An exploding sapper reached a wall: it bursts (no dust: it was not killed).
@@ -450,7 +470,7 @@ impl World {
             self.wave_stats[usize::from(e.wave) - 1].detonated += 1;
             for c in &gone {
                 self.walls.remove(c);
-                self.rubble.remove(c);
+                self.rubble_gone(*c);
                 self.blocked[c.index()] = false;
                 ev.push(Event::WallBroken { cell: *c });
             }
@@ -513,13 +533,18 @@ impl World {
                 self.kill(content, i, true, ev);
             }
         }
-        let crumbled: Vec<CellId> = self.rubble.iter().filter(|(_, &t)| tick >= t).map(|(c, _)| *c).collect();
+        let crumbled: Vec<CellId> = self.rubble.iter().filter(|(_, &(_, until))| tick >= until).map(|(c, _)| *c).collect();
         for c in crumbled {
-            self.rubble.remove(&c);
+            self.rubble_gone(c);
             if self.walls.remove(&c).is_some() {
                 ev.push(Event::WallCrumbled { cell: c });
                 self.set_blocked(content, c, false);
             }
+        }
+        // A spent cell whose last living witness has gone takes rubble again: forget it.
+        if !self.spent.is_empty() {
+            let oldest = self.enemies.iter().filter(|e| e.alive).map(|e| e.id).min();
+            self.spent.retain(|_, bar| oldest.is_some_and(|o| o < *bar));
         }
         if els.on && tick.is_multiple_of(els.spread_ticks.max(1)) {
             self.spread_on_the_dead(content, ev);
@@ -575,9 +600,15 @@ impl World {
             h.write_u32(u32::from(x.shoves));
         }
         h.write_u64(self.rubble.len() as u64);
-        for (c, t) in &self.rubble {
+        for (c, &(raised, until)) in &self.rubble {
             h.write_u32(u32::from(c.0));
-            h.write_u32(*t);
+            h.write_u32(raised);
+            h.write_u32(until);
+        }
+        h.write_u64(self.spent.len() as u64);
+        for (c, bar) in &self.spent {
+            h.write_u32(u32::from(c.0));
+            h.write_u32(*bar);
         }
         for s in &self.wave_stats {
             h.write_u32(s.detonated);

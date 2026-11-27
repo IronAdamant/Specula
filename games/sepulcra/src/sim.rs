@@ -200,6 +200,10 @@ pub enum Event {
     RubbleRaised { cell: CellId },
     /// Rubble crumbled by itself.
     WallCrumbled { cell: CellId },
+    /// `enemy`'s wave has passed its hour ([`crate::content::WAVE_HOUR_TICKS`] after its last
+    /// entry) with it still standing: from this tick it is in **furor**, and nothing holds it
+    /// (DESIGN.md, "Furor"). Never on a stock run.
+    Furor { enemy: EnemyId },
     /// A fuel cell caught fire, burnt out, or was put out.
     CellCaught { cell: CellId },
     CellSpent { cell: CellId },
@@ -221,6 +225,29 @@ pub struct Wall {
     pub hp: i32,
     pub max_hp: i32,
     pub cost: i32,
+}
+
+/// Rubble standing on a lane cell (DESIGN.md, "Saxum"): temporary, by its own rules. It goes
+/// when the dead have broken it (`hp` of `max_hp`, milli-HP: its wall's) or when its life ends
+/// (it rose at `raised` and crumbles at `until`), whichever comes first; a heave never restores
+/// either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RubbleStand {
+    pub cell: CellId,
+    pub hp: i32,
+    pub max_hp: i32,
+    pub raised: u32,
+    pub until: u32,
+}
+
+impl RubbleStand {
+    /// What its health bar shows at `tick`, permille: the lesser of the health it has left and the
+    /// life it has left, since either ending first ends it. 0 when it is gone.
+    pub fn left_permille(&self, tick: u32) -> i32 {
+        let health = i64::from(self.hp.max(0)) * 1000 / i64::from(self.max_hp.max(1));
+        let life = i64::from(self.until.saturating_sub(tick)) * 1000 / i64::from(self.until.saturating_sub(self.raised).max(1));
+        health.min(life).clamp(0, 1000) as i32
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -378,14 +405,22 @@ struct World {
     wave_stats: Vec<WaveStats>,
     /// The slab's fire (empty without fuel).
     blaze: Blaze,
-    /// Rubble an earth stone raised: its wall's cell and the tick it crumbles.
-    rubble: BTreeMap<CellId, u32>,
+    /// Rubble an earth stone raised: its wall's cell, the tick it rose and the tick it crumbles
+    /// (its health is its wall's).
+    rubble: BTreeMap<CellId, (u32, u32)>,
+    /// Cells whose rubble has gone (broken, blasted, crumbled or taken down), each with the
+    /// [`World::next_enemy`] of the tick it went: while any living enemy's id is below it, no
+    /// rubble rises on that cell again (DESIGN.md, "Saxum": rubble is temporary).
+    spent: BTreeMap<CellId, EnemyId>,
     /// Exploding enemies to burst before this tick ends (always empty between ticks).
     bursts: Vec<EnemyId>,
     // Derived from the state above (so not hashed), refreshed eagerly when it changes.
     blocked: Vec<bool>,
     fields: Fields,
     rooted: Vec<bool>,
+    /// Tests only: furor switched off, so a test can hold what another rule holds by itself.
+    #[cfg(test)]
+    no_furor: bool,
 }
 
 /// `step(&mut state, &commands)`: the pure-function form of [`State::step`].
@@ -420,10 +455,13 @@ impl State {
             wave_stats: vec![WaveStats::default(); content.waves.len()],
             blaze: Blaze::new(&content),
             rubble: BTreeMap::new(),
+            spent: BTreeMap::new(),
             bursts: Vec::new(),
             blocked,
             fields,
             rooted: vec![false; n],
+            #[cfg(test)]
+            no_furor: false,
         };
         State { content, w }
     }
@@ -433,9 +471,12 @@ impl State {
         &self.w.blaze
     }
 
-    /// Rubble standing: its cell and the tick it crumbles.
-    pub fn rubble(&self) -> impl Iterator<Item = (CellId, u32)> + '_ {
-        self.w.rubble.iter().map(|(c, t)| (*c, *t))
+    /// Rubble standing, in cell order, with what its bar shows ([`RubbleStand`]).
+    pub fn rubble(&self) -> impl Iterator<Item = RubbleStand> + '_ {
+        self.w.rubble.iter().map(|(&cell, &(raised, until))| {
+            let w = self.w.walls.get(&cell).copied().unwrap_or(Wall { hp: 0, max_hp: 1, cost: 0 });
+            RubbleStand { cell, hp: w.hp, max_hp: w.max_hp, raised, until }
+        })
     }
 
     /// How charged the stone on `cell` is, permille (1000: ready). A wind stone's gust spends
@@ -686,7 +727,7 @@ impl World {
             }
             Command::RemoveWall { cell } => {
                 let w = self.walls.remove(&cell).expect("checked");
-                self.rubble.remove(&cell);
+                self.rubble_gone(cell);
                 let refund = (i64::from(w.cost) * i64::from(rules.refund_percent) * i64::from(w.hp.max(0))
                     / (100 * i64::from(w.max_hp.max(1)))) as i32;
                 self.gain(refund, DustSource::Refund, ev);
@@ -1119,7 +1160,7 @@ impl World {
         w.hp -= dmg;
         if w.hp <= 0 {
             self.walls.remove(&cell);
-            self.rubble.remove(&cell);
+            self.rubble_gone(cell);
             ev.push(Event::WallBroken { cell });
             self.set_blocked(content, cell, false);
         } else if quarter(w.hp, w.max_hp) != before {
