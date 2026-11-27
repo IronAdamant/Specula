@@ -86,6 +86,7 @@ fn on_adapter(adapter: AdapterPreference, label: &str) {
     assert_eq!((early.pipelines.created, early.pipelines.created_after_warm), (made, 0), "{test}: the frame compiled nothing");
     gpu.request_form_pipelines();
     // (Until the worker ends: a join, not a deadline.)
+    let _watchdog = specula_core::Watchdog::arm("the GPU's background pipeline build");
     let v = gpu.wait_for_pipelines();
     assert!(v.form && v.failed.is_none(), "{test}: the form set is built: {v:?}");
     gpu.request_form_pipelines(); // (again: nothing to do)

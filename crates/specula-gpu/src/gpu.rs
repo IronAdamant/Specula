@@ -743,8 +743,10 @@ impl GpuInner {
         self.pipelines.ready()
     }
 
-    /// Waits for the background build running now, and the one queued behind it, and takes
-    /// their pipelines. Ends when the worker does (a join), never on a time.
+    /// Tests only ([`crate::Gpu::wait_for_pipelines`]): waits for the background build running
+    /// now, and the one queued behind it, and takes their pipelines. Ends when the worker does
+    /// (a join), never on a time; unbounded, so a test arms a watchdog around it.
+    #[doc(hidden)]
     pub fn wait_for_pipelines(&mut self) -> crate::PipelineVariants {
         // Each turn takes one build; a queued request starts one more, and none is asked for
         // while this waits: two turns at most.

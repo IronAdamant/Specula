@@ -460,6 +460,7 @@ fn variant_requests_queue_behind_a_running_build() {
 /// Waits for the running background build to end, whatever its outcome (a join, never a
 /// deadline: a minute's deadline returned a build still running as if it had ended).
 fn settle(gpu: &mut Gpu) -> specula_gpu::PipelineVariants {
+    let _watchdog = specula_core::Watchdog::arm("the GPU's background pipeline build");
     gpu.wait_for_pipelines()
 }
 

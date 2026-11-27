@@ -157,7 +157,8 @@ fn large_and_many_batches_stay_correct() {
         assert!(free >= next, "{test}: the new block is empty");
         // It joins without anyone waiting for it (polled, as a streamer does).
         let t = std::time::Instant::now();
-        while gpu.mesh_growing() && t.elapsed() < std::time::Duration::from_secs(10) {
+        while gpu.mesh_growing() {
+            assert!(t.elapsed() < specula_core::HANG_BOUND, "{test}: the mesh block has not grown on the worker in {:?}: hung?", specula_core::HANG_BOUND);
             gpu.mesh_fits(1);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }

@@ -1862,10 +1862,17 @@ impl Gpu {
         self.inner.pipeline_variants()
     }
 
-    /// Waits for the background pipeline build running now (and one queued behind it) to end,
-    /// and takes its pipelines: the variants it made, or its failure. Ends when the worker does,
-    /// never on a time, and builds nothing on this thread (a variant nobody asked for stays
-    /// missing). For loading screens and tests; a frame never waits for a pipeline.
+    /// **Tests only** (hidden from the docs; `engine_thread_guard` refuses it in the engine's
+    /// code, AGENTS.md rule 15): waits for the background pipeline build running now, and the
+    /// one queued behind it, and takes the pipelines. It blocks until the worker ends, with no
+    /// bound of its own (a hung driver hangs the caller: a test arms
+    /// `specula_core::Watchdog` around it so that a hang names itself), and never ends on a
+    /// time. What it returns is what the last of those builds left: a failure of the running
+    /// build is folded into the queued one, which retries it, so a failure it repaired is not
+    /// returned. It builds nothing a request did not ask for, but where a worker thread
+    /// cannot be started the queued build runs on the calling thread (as every request does
+    /// then). A frame never waits for a pipeline.
+    #[doc(hidden)]
     pub fn wait_for_pipelines(&mut self) -> PipelineVariants {
         self.inner.wait_for_pipelines()
     }
