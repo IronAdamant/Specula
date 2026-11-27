@@ -509,8 +509,15 @@ struct Leaf {
 /// The tip's half-angle as a share of the angle of the straight line from the widest point to
 /// the tip.
 const LEAF_TIP: f64 = 0.4;
-/// The angle, in degrees, at which the round from the stalk crosses the blade's base.
+/// The angle, in degrees, at which the round from the stalk crosses the blade's base (or half
+/// the base's own angle off upright, where that is less: see `leaf_parts`).
 const LEAF_ROUND_CROSS: f64 = 25.0;
+/// How many times the round's radius is halved to fit on the stalk before the leaf is made with
+/// no round.
+const LEAF_ROUND_HALVINGS: usize = 10;
+/// The round's least arc, as a share of the leaf's height (stalk and blade): a thousand times the
+/// library's edge floor.
+const LEAF_ROUND_LEAST: f64 = 1e3 * crate::outline::EDGE_FLOOR;
 fn leaf_parts(a: &Args) -> Result<Leaf, Refusal> {
     let (l, st) = (a.f("length"), a.f("stalk"));
     let w = 0.5 * a.f("width_ratio") * l;
@@ -539,12 +546,34 @@ fn leaf_parts(a: &Args) -> Result<Leaf, Refusal> {
     // Where the blade meets the stalk: a concave round from the stalk's side into the base's
     // arc (review 2's picture check: "a blunt cusp where the stalk joins"). Its circle stands on
     // the stalk's side, `rf` out from it (tangent to the side), and crosses the base's circle at
-    // LEAF_ROUND_CROSS degrees: tangent there too, the two arcs would make an inflection whose
+    // an angle, not tangent: tangent there too, the two arcs would make an inflection whose
     // chords at a coarse detail lie along one line (a triangle of 2.5e-12 m2 in an extrusion's
-    // cap at detail 24, under the modeller's floor). Its radius is an eighth of the blade's half
-    // width, halved while its foot on the stalk falls below the stalk's upper half.
+    // cap at detail 24, under the modeller's floor).
+    //
+    // Such a round turns by the base's own angle off upright at the stalk's top less its
+    // crossing (review 3 of stage 4, finding 1: at a fixed crossing of 25 degrees, a narrow blade
+    // widest high up, a willow's or a lanceolate leaf's, had no round and was refused). So:
+    // - where the base leaves the stalk at LEAF_ROUND_CROSS or less off upright, there is no
+    //   round: the base meets the stalk as it is, a turn no sharper than the round's own crossing;
+    // - otherwise the round crosses at LEAF_ROUND_CROSS, or at half the base's angle where that
+    //   is less, so that it turns by at least half that angle (never a sliver of an arc);
+    // - its radius is an eighth of the blade's half width, halved while its foot on the stalk
+    //   falls below the stalk's upper half or above the blade's base; where ten halvings do not
+    //   fit it (a stalk far shorter than the blade is wide), there is no round either, nor where
+    //   its arc would be shorter than LEAF_ROUND_LEAST of the leaf's height (a blade far smaller
+    //   than its stalk: its chords would fall under the library's edge floor, and refuse a leaf
+    //   that builds without it).
+    // So no leaf is refused for its round.
     let cb = [w - ra, y0 + yw];
-    let cc = cos(LEAF_ROUND_CROSS * PI / 180.0);
+    let upper = [El::Arc { c: c1, r: rho, a: [w, y0 + yw], b: m, ccw: true }, El::Arc { c: c2, r: rho, a: m, b: [0.0, y0 + l], ccw: false }];
+    let unrounded = |base: El| Leaf { st, yf: y0, sw, l, w, yw, side: [base, upper[0], upper[1]].to_vec() };
+    // The base's way at the stalk's top, off upright: its tangent there is (yw, ra − k).
+    let base_off_upright = atan2(yw, ra - k);
+    let cross = LEAF_ROUND_CROSS * PI / 180.0;
+    if base_off_upright <= cross {
+        return Ok(unrounded(base));
+    }
+    let cc = cos(cross.min(0.5 * base_off_upright));
     let apart = |rf: f64| (ra * ra + rf * rf + 2.0 * ra * rf * cc).sqrt();
     let foot_of = |rf: f64| {
         let dx = 0.5 * sw + rf - cb[0];
@@ -552,17 +581,19 @@ fn leaf_parts(a: &Args) -> Result<Leaf, Refusal> {
         let q = d * d - dx * dx;
         (q > 0.0).then(|| cb[1] - q.sqrt())
     };
+    let fits = |y: &f64| *y >= 0.5 * st && *y < y0;
     let mut rf = w / 8.0;
     let mut yf = foot_of(rf);
-    for _ in 0..40 {
-        if yf.is_some_and(|y| y >= 0.5 * st) {
+    for _ in 0..LEAF_ROUND_HALVINGS {
+        if yf.as_ref().is_some_and(fits) {
             break;
         }
         rf *= 0.5;
         yf = foot_of(rf);
     }
-    let Some(yf) = yf.filter(|y| *y >= 0.5 * st && *y < y0) else {
-        return Err(refuse("stalk_too_short_for_its_round", "the round where the blade meets the stalk does not fit on the stalk: a longer stalk", &nums));
+    let turn = base_off_upright - cross.min(0.5 * base_off_upright);
+    let Some(yf) = yf.filter(|y| fits(y) && rf * turn >= LEAF_ROUND_LEAST * (st + l)) else {
+        return Ok(unrounded(base));
     };
     let cf = [0.5 * sw + rf, yf];
     // The two circles' crossings, `along` from the round's centre toward the base's and `off`

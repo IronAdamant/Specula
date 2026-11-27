@@ -45,6 +45,8 @@ fn every_new_rule_is_refused_with_its_numbers() {
     refused("bell", Solid, &[("flare_ratio", 0.9), ("shoulder_ratio", 0.95)], "shoulder_under_the_flare");
     refused("bell", Solid, &[("shoulder_ratio", 0.05), ("wall", 0.025)], "wall_past_the_shoulder");
     refused("bell", Solid, &[("height_ratio", 0.6), ("flare_ratio", 0.5)], "flare_too_shallow");
+    // A flare 51 times as tall as its step (review 3, finding 6) is too steep, not too shallow.
+    refused("bell", Solid, &[("waist_ratio", 0.95), ("flare_ratio", 0.85), ("height_ratio", 3.0), ("shoulder_ratio", 0.05), ("wall", 0.01)], "flare_too_steep");
     refused("goblet", Solid, &[("radius", 0.04), ("stem", 0.04)], "stem_wider_than_cup_or_foot");
     refused("goblet", Solid, &[("wall", 0.0001), ("stem", 0.01)], "wall_too_thin_over_the_stem");
     refused("bottle", Solid, &[("height_ratio", 3.0), ("neck_length_ratio", 0.6), ("shoulder_ratio", 10.0)], "neck_and_shoulder_over_the_height");
@@ -210,6 +212,102 @@ fn the_chain_links_field_by_hand() {
     near([0.5 * l, t, 0.0], r - t);
 }
 
+/// The leaf builds soundly across its ranges, narrow blades widest high up among them (review 3 of
+/// stage 4, finding 1: a willow's or a lanceolate leaf was refused for its round, whatever its
+/// stalk): a grid of `width_ratio` × `widest_ratio` × stalk at the default length builds at
+/// details 8, 33 and 64 and passes `Outline::validate`.
+#[test]
+fn a_leaf_builds_across_its_ranges() {
+    let leaf = |w: f64, d: f64, st: f64| Spec::new("leaf", Some(Kind::Plane), &[("width_ratio", w), ("widest_ratio", d), ("stalk", st)]).unwrap();
+    let mut tried = 0;
+    for i in 0..=8 {
+        for j in 0..=9 {
+            for st in [crate::table::LEN_MIN, 0.002, 0.02, 1.0, crate::table::LEN_MAX] {
+                let (w, d) = (0.1 + 0.1 * f64::from(i), 0.15 + 0.05 * f64::from(j));
+                for det in [8, 33, 64] {
+                    tried += 1;
+                    match leaf(w, d, st).build(det) {
+                        Ok(Built::Outline(o)) => assert!(o.validate().is_ok(), "leaf {w} {d} {st} at {det}: not valid"),
+                        other => panic!("leaf width_ratio {w} widest_ratio {d} stalk {st} at {det}: {:?}", other.err()),
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(tried, 9 * 10 * 5 * 3);
+    // The review's own: a willow, at every stalk it tried.
+    for st in [0.0001, 0.02, 0.1, 1.0, 10.0, 1000.0] {
+        assert!(leaf(0.1, 0.38, st).build(33).is_ok(), "stalk {st}");
+    }
+}
+
+/// The review's draws of the leaf (round 2's probe: its 16 corners and 150 drawn sets, each at
+/// details 8, 33 and 64, 498 builds): 444 built at d6172439, before the round where the blade
+/// meets the stalk, and the rest were refused `edge_under_floor` (a blade of 0.1 mm on a stalk of
+/// metres). At least as many build now, every one valid, and nothing else is refused.
+#[test]
+fn the_leaf_builds_every_draw_it_built_before_its_round() {
+    fn lcg(s: &mut u64) -> f64 {
+        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (*s >> 11) as f64 / (1u64 << 53) as f64
+    }
+    let found = crate::find("leaf", Some(Kind::Plane)).unwrap();
+    let params = crate::params_of(&found);
+    let mut seed = "leaf".bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+    let nc = 1usize << params.len();
+    let (mut built, mut tried) = (0, 0);
+    for set in 0..nc + 150 {
+        let given: Vec<(&str, f64)> = params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let u = lcg(&mut seed);
+                let mode = if set < nc { (set >> i) & 1 } else { (lcg(&mut seed) * 3.0) as usize };
+                let v = match mode {
+                    0 => p.min,
+                    1 => p.max,
+                    _ if p.min > 0.0 && p.max / p.min > 100.0 => exp(ln(p.min) + (ln(p.max) - ln(p.min)) * u).clamp(p.min, p.max),
+                    _ => p.min + (p.max - p.min) * u,
+                };
+                (p.name, v)
+            })
+            .collect();
+        let s = Spec::of(found, &given).unwrap();
+        for d in [8, 33, 64] {
+            tried += 1;
+            match s.build(d) {
+                Ok(Built::Outline(o)) => {
+                    assert!(o.validate().is_ok(), "{given:?} at {d}: not valid");
+                    built += 1;
+                }
+                Err(Error::Constraint { rule: "edge_under_floor", .. }) => {}
+                other => panic!("{given:?} at {d}: {:?}", other.err()),
+            }
+        }
+    }
+    assert_eq!(tried, 498);
+    assert!(built >= 444, "{built} of 498 built");
+}
+
+/// The bell's flare is refused as too shallow or too steep by which side of the S's range it
+/// falls, and each refusal's advice, taken, builds (review 3 of stage 4, finding 6).
+#[test]
+fn a_bells_flare_refusals_advise_what_mends_them() {
+    let shallow: &[(&str, f64)] = &[("height_ratio", 0.6), ("flare_ratio", 0.5)];
+    let steep: &[(&str, f64)] = &[("waist_ratio", 0.95), ("flare_ratio", 0.85), ("height_ratio", 3.0), ("shoulder_ratio", 0.05), ("wall", 0.01)];
+    for (given, rule, words, mended) in [
+        (shallow, "flare_too_shallow", "a larger height_ratio", ("height_ratio", 1.0)),
+        (steep, "flare_too_steep", "a smaller height_ratio or flare_ratio", ("flare_ratio", 0.5)),
+    ] {
+        let e = Spec::new("bell", Some(Kind::Solid), given).and_then(|s| s.build(32)).err().unwrap();
+        assert!(matches!(&e, Error::Constraint { rule: r, .. } if *r == rule), "{e}");
+        assert!(e.to_string().contains(words), "{e}");
+        let mut v = given.to_vec();
+        v.retain(|(k, _)| *k != mended.0);
+        v.push(mended);
+        assert!(Spec::new("bell", Some(Kind::Solid), &v).and_then(|s| s.build(32)).is_ok(), "{rule} mended by {mended:?} still refused");
+    }
+}
 
 /// Grates at the corners of their ranges (one and eight columns and rows; the widest and the
 /// thinnest bar that leaves a hole; a width and a height of 1e-4 and 1e4 against each other)

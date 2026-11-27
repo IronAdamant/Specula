@@ -311,7 +311,15 @@ fn bell_parts(a: &Args) -> Result<Bell, Refusal> {
     if t >= s {
         return Err(refuse("wall_past_the_shoulder", "the wall must be thinner than the shoulder's radius", &nums));
     }
-    let flare = s_share([r, 0.0], [rw, yw], BELL_BOW).map_err(|x| steep("flare_too_shallow", "the flare from the lip up to the waist (a larger height_ratio or flare_ratio, or a larger waist_ratio, where it is too shallow)", x, &nums))?;
+    // Two rules, one each side of the S's range (review 3 of stage 4, finding 6: a flare 51 times
+    // as tall as its step was named shallow, with advice that made it steeper still).
+    let flare = s_share([r, 0.0], [rw, yw], BELL_BOW).map_err(|x| {
+        if x.0 < x.1 {
+            steep("flare_too_shallow", "the flare from the lip up to the waist is lower than its step in: a larger height_ratio or flare_ratio, or a larger waist_ratio", x, &nums)
+        } else {
+            steep("flare_too_steep", "the flare from the lip up to the waist is over fifty times as tall as its step in: a smaller height_ratio or flare_ratio, or a smaller waist_ratio", x, &nums)
+        }
+    })?;
     // The sound bow's arc turns toward the inside: the wall must be thinner than its radius.
     if let El::Arc { r: bow, .. } = flare[0] {
         if t >= bow {
