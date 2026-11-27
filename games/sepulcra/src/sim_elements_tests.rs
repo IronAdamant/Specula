@@ -1080,7 +1080,6 @@ fn the_tightest_wind_the_rules_allow_lets_a_lone_enemy_through() {
         ticks += 1;
         gusts += ev.iter().filter(|e| matches!(e, Event::Gusted { .. })).count() as u32;
     }
-    eprintln!("tightest wind: through after {ticks} ticks, {gusts} gusts; the bound is {bound} ticks");
     assert!(s.enemy(id).is_none() && s.wave_stats()[0].leaked == 1, "still held after {ticks} ticks ({gusts} gusts), past the bound {bound}");
     assert!(gusts > 100, "the cairns gusted at it: {gusts}");
 }
