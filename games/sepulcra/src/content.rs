@@ -380,6 +380,19 @@ pub const RUN_GRACE_TICKS: u32 = 20 * 60 * TICK_HZ;
 /// result moves, and a wave that lasts twenty minutes past its last entry is a hold, not play.
 pub const WAVE_HOUR_TICKS: u32 = 20 * 60 * TICK_HZ;
 
+/// A run's length as the rules state it ([`Content::run_bound`]), in ticks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunBound {
+    /// The latest hour of any wave on its schedule: from it every enemy standing is in furor.
+    pub hour: u64,
+    /// The longest any kind then takes to walk (or fly) the rest of its way, unhindered.
+    pub walk: u64,
+    /// What a leaper's chance leaps can add to that, with no shoves.
+    pub leaps: u64,
+    /// `hour + walk + leaps + 1`: no run lasts longer.
+    pub ticks: u64,
+}
+
 impl WaveDef {
     /// Ticks after the wave begins that its last enemy enters.
     pub fn entry_span(&self) -> u32 {
@@ -541,6 +554,63 @@ impl Content {
         let walk = (i64::from(lane) + ground) * i64::from(TICK_HZ) * 1000;
         let walk = ((walk + per - 1) / per) as u64;
         Some(WindHold { kind, lane, ground, shoves, shoved, ticks: walk + shoved })
+    }
+
+    /// **A run's length, as a sum the rules state** (DESIGN.md, "Furor"): no run of this content
+    /// lasts longer than [`RunBound::ticks`], whatever its stones (the walls a player builds are
+    /// the one thing outside it), and [`crate::script::run`] stops at that figure.
+    ///
+    /// Every wave begins at the latest on its schedule (a wave called early only begins sooner),
+    /// so by the latest hour of any wave on the schedule every enemy still standing is in furor
+    /// (no enemy of a wave is born after its hour: entries end before it, and an enemy in furor
+    /// calls no summons). From then nothing holds it: no freeze, chill, stagger, shove, slow or
+    /// roots, and no rubble stands. It walks what is left of its way, at most the farthest lane
+    /// cell from the graveyard on the open slab plus one edge (it may stand between two cells, or
+    /// on a leap), at its own slowest pace (a climber's whole way at its climb speed); a flyer
+    /// flies at most its most ring hops and its dive. A leaper may still leap by chance: once at
+    /// each jump point it passes (with no shove nothing sends it back over one), each leap adding
+    /// at most its ledge and its `jump_detour` to its way. So
+    ///
+    /// `ticks = hour + walk + leaps + 1`
+    ///
+    /// (one tick for the step that ends it), each term the rules' own rounding, up.
+    pub fn run_bound(&self) -> RunBound {
+        let mut start = u64::from(self.rules.build_ticks);
+        let mut hour = 0u64;
+        for w in &self.waves {
+            hour = hour.max(start + u64::from(w.entry_span()) + u64::from(WAVE_HOUR_TICKS));
+            start += u64::from(w.duration);
+        }
+        let map = &self.map;
+        let fields = crate::path::Fields::build(map, &vec![false; map.cells().len()], self.rules.wall.breach_penalty);
+        let edge = map.cells().iter().flat_map(|c| map.links(c.id).iter().map(|l| l.cost)).max().unwrap_or(0).max(
+            map.cells().iter().flat_map(|c| map.jump_partners(c.id).iter().map(|&p| map.jump_cost(c.id, p))).max().unwrap_or(0),
+        );
+        let jump_points = map.cells().iter().filter(|c| !map.jump_partners(c.id).is_empty()).count() as u64;
+        let ledge = map.cells().iter().flat_map(|c| map.jump_partners(c.id).iter().map(|&p| map.jump_cost(c.id, p))).max().unwrap_or(0);
+        let air = &map.air;
+        let n = air.ring.len();
+        let seg = (0..n).map(|i| air.ring[i].dist(air.ring[(i + 1) % n.max(1)])).max().unwrap_or(0);
+        let dive = air.ring.iter().map(|p| p.dist(air.dive_target)).max().unwrap_or(0);
+        // ceil(mm x TICK_HZ x 1000 / (speed mm/s x pace permille)).
+        let ticks_for = |mm: i64, def: &EnemyDef, pace: i64| -> u64 {
+            let per = i64::from(def.speed.max(1)) * pace.max(1);
+            ((mm.max(0) * i64::from(TICK_HZ) * 1000 + per - 1) / per) as u64
+        };
+        let (mut walk, mut leaps) = (0u64, 0u64);
+        for def in &self.enemies {
+            if def.flies() {
+                let way = i64::from(def.circle.1) * i64::from(seg) + i64::from(dive);
+                walk = walk.max(ticks_for(way, def, 1000));
+                continue;
+            }
+            let pace = if def.climbs() { i64::from(def.climb_speed.clamp(1, 1000)) } else { 1000 };
+            walk = walk.max(ticks_for(i64::from(self.longest_lane(&fields, def)) + i64::from(edge), def, pace));
+            if def.leaps && def.jump_chance > 0 {
+                leaps = leaps.max(jump_points * ticks_for(i64::from(ledge) + i64::from(def.jump_detour), def, pace));
+            }
+        }
+        RunBound { hour, walk, leaps, ticks: hour + walk + leaps + 1 }
     }
 
     /// The farthest lane cell from the graveyard on the open slab, for `def`'s way of walking (mm).

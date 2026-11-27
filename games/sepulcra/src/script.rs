@@ -476,10 +476,12 @@ impl RunReport {
 }
 
 /// Plays `script` from a fresh state until the game ends, or until `max_waves` waves have been
-/// played out (the run stops just before wave `max_waves + 1` would start). A safety cap stops
-/// runs that stall (e.g. a boss that can never be killed) 20 minutes after the last wave.
+/// played out (the run stops just before wave `max_waves + 1` would start). It stops at the latest
+/// at the run's stated length ([`Content::run_bound`]: the last hour of any wave, the longest
+/// unhindered walk, a leaper's chance leaps), which no run of the content outlasts unless the
+/// player's own walls hold it.
 pub fn run(content: Arc<Content>, seed: u64, script: &Script, max_waves: Option<u16>, mut on_tick: impl FnMut(&State, &[Event])) -> RunReport {
-    let cap = content.scheduled_ticks() + crate::content::RUN_GRACE_TICKS;
+    let cap = content.run_bound().ticks.min(u64::from(u32::MAX)) as u32;
     let mut state = State::new(content, seed);
     let mut player = Player::new(script.clone());
     let mut journal = Journal::new();

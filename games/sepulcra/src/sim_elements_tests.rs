@@ -1785,3 +1785,42 @@ fn a_save_in_furor_loads_in_furor_and_steps_alike() {
         assert_eq!((a, s.hash()), (b, loaded.hash()));
     }
 }
+
+// ---- A run's length (DESIGN.md, "Furor") ----
+
+/// The run's stated length for the proving ground, term by term from its data: built for 20 s,
+/// waves of 50, 55, 60, 55 and 90 s before the last, whose last enemy enters 24 s in, and twenty
+/// minutes after that; then the longest walk and the runner's leaps.
+#[test]
+fn a_runs_length_is_the_sum_design_states() {
+    let c = proving();
+    let b = c.run_bound();
+    assert_eq!(b.hour, u64::from((20 + 50 + 55 + 60 + 55 + 90 + 24) * TICK_HZ + crate::content::WAVE_HOUR_TICKS), "{b:?}");
+    assert_eq!(b.ticks, b.hour + b.walk + b.leaps + 1);
+    assert!(b.walk > 0 && b.leaps > 0, "{b:?}");
+    let shipped = Content::builtin();
+    let s = shipped.run_bound();
+    assert_eq!(s.ticks, s.hour + s.walk + s.leaps + 1);
+    println!("FUROR-PROBE run bound: proving {b:?}; shipped {s:?}");
+}
+
+/// A run that cannot end (the player's own walls, of the most HP the format takes, close every
+/// gate before the dead) stops at exactly the run's stated length, no sooner and no later.
+#[test]
+fn a_run_that_cannot_end_stops_at_its_stated_length() {
+    use crate::content::{ENEMIES_JSON, STONES_JSON, WAVES_JSON};
+    let stones = STONES_JSON.replace("\r\n", "\n");
+    let from = "\"wall\": { \"cost\": 15, \"hp\": 300,";
+    assert_eq!(stones.matches(from).count(), 1, "fixture");
+    let stones = stones.replacen(from, "\"wall\": { \"cost\": 15, \"hp\": 1000000,", 1);
+    let waves = WAVES_JSON.replace("\r\n", "\n");
+    let cut = waves.find("]},").expect("fixture") + 2;
+    let waves = format!("{}\n  ]\n}}\n", &waves[..cut]);
+    let c = Arc::new(Content::from_texts(SLAB_01_JSON, &stones, ENEMIES_JSON, &waves).expect("content"));
+    assert_eq!(c.waves.len(), 1);
+    let text = "{ \"name\": \"sealed\", \"commands\": [ { \"wave\": 0, \"wall\": \"top:10,7\" }, { \"wave\": 0, \"wall\": \"top:12,10\" }, { \"wave\": 0, \"wall\": \"top:9,12\" }, { \"wave\": 0, \"wall\": \"top:7,9\" } ] }";
+    let script = crate::script::Script::parse(text, &c, "sealed").expect("layout");
+    let r = crate::script::run(Arc::clone(&c), 1, &script, None, |_, _| {});
+    assert_eq!((r.outcome, u64::from(r.ticks)), (Outcome::Running, c.run_bound().ticks), "{:?}", r.waves);
+    assert!(r.waves[0].alive > 0, "the dead still at the walls");
+}
