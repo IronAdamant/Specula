@@ -14,10 +14,12 @@ proof needs no one's permission. Everything below is original to this repository
 its licence (MIT or Apache 2.0); the sources are named at the end for credit and for further
 reading, and nothing is copied from them.
 
-**How it is held.** A proof on a page can be wrong. Every numbered statement below is also
-checked in numbers by `crates/specula-model/tests/distance_field_facts.rs`, which uses none
-of the modeller's code: it holds each bound against a nearest point found by search, and each
-"reached exactly when" against the case that reaches it.
+**How it is held.** A proof on a page can be wrong. Every numbered statement of sections 2 to
+5 is also checked in numbers by `crates/specula-model/tests/distance_field_facts.rs`, which uses
+none of the modeller's code: it holds each bound against a nearest point found by search, and
+each "reached exactly when" against the case that reaches it. Section 7's are held by the tests
+of the code it is about, against a reference written apart from it and against nearest points
+found by search.
 
 ## 1. Words
 
@@ -489,7 +491,207 @@ as the two fields are `4k` or `6k` apart.
   pruning ask such a part's range over the ball; a tree of parts that all have factors keeps
   the one quick test.
 
-## 7. Where the same facts are published
+## 7. A bone's flesh, and a body of bones
+
+The `body` shape ([FABRICA.md](FABRICA.md), step 3) is one field for a whole skeleton, meshed
+once. A sample near one bone should ask that bone and its neighbours, not all of them, and the
+mesher's quick skip needs a factor. So the field is built to have one: **every part of it is
+1-Lipschitz by construction, whatever its sections do along the bone**, and the body's own
+culling is exact. The code is `crates/specula-model/src/caro.rs`; its tests hold each statement
+below by sampling (`caro::tests`, against a reference in `f64` written apart from the code and
+against nearest points found by search), not `distance_field_facts.rs`.
+
+**Words.** A **bone** runs from `a` to `b`; `e` is its direction, and `s` and `w` complete a
+frame turned with it (`s` toward its side, where breadth is measured). A point `x` has the
+bone's coordinates `t = (x − a)·e` along it and `y = (u, v) = ((x − a)·s, (x − a)·w)` across it:
+a move and a turn, which keep every distance (2.4). The bone has **sections** at stations
+`t₀ < t₁ < … < t_J` (metres along it), each a half breadth `A_j` and a half depth `B_j`, and one
+**squareness** `p ≥ 2` (2 an ellipse; higher, toward a rounded box). Write `q_j = B_j / A_j`.
+
+**7.1. The profile, and how fast it changes.** Between stations, `A` is the cubic through
+`A_j` and `A_{j+1}` with given slopes at both (a Hermite piece), and so is `q`; `B = q A`. The
+slope at the first and the last station is 0; at a station between, it is the harmonic mean
+`2 r r′ / (r + r′)` of the rises `r`, `r′` of the two pieces beside it when they have one sign,
+and 0 otherwise. Then **each piece of `A` and of `q` runs one way, and stays between its end
+values**; `A`, `q` and `B` have continuous slopes.
+
+*Proof.* On a piece of span `Δ` and secant `δ = (A_{j+1} − A_j) / Δ`, write the end slopes as
+`α δ` and `β δ`. Each slope is 0 or a harmonic mean of `δ` and a rise of the same sign, and
+`2 r r′ / (r + r′) ≤ 2 r′`, so `α` and `β` lie in `[0, 2]` (for `δ = 0` both slopes are 0 and
+the piece is level). With `f = (t − t_j) / Δ`, the piece's slope is `δ` times
+`6f(1 − f) + α (1 − 4f + 3f²) + β (3f² − 2f)`, which is affine in `(α, β)`; at the four corners
+of `[0, 2]²` it is `6f(1 − f)`, `2 − 2f`, `2f` and `6(f − ½)² + ½`, none negative on `[0, 1]`. So
+it never has the sign opposite to `δ`. The slopes agree at each station by construction. ∎
+
+So on a piece `A` lies between `A_j` and `A_{j+1}`, and the greatest of `|A′|` is the greatest
+of a quadratic on `[0, 1]` (at an end or where it turns): the code takes it exactly, from the
+numbers it stores. Write `g` for a number at least the steepest growth of the least half size
+`m = min(A, B)` (where `q ≥ 1` on a piece, `m = A`; where `q ≤ 1`, `m = B`; else either), and
+`k` for a number at least the greatest of `A |q′|`, which is 0 when the proportions do not
+change.
+
+**7.2. The section's gauge.** For `p ≥ 2` let `N_p(z) = (|z₁|^p + |z₂|^p)^{1/p}`, and let the
+section's gauge be `n_t(y) = N_p(u / A(t), v / B(t))`. The section is `n_t ≤ 1`. Then
+`|n_t(y) − n_t(y′)| ≤ |y − y′| / m(t)`; the section holds the disc of radius `m` about the axis
+and lies within the disc of radius `M ≤ √(A² + B²)` (`M = max(A, B)` for `p = 2`).
+
+*Proof.* `N_p` is a norm (Minkowski's inequality). For a unit vector `z`, `|z_i|^p ≤ z_i²`, so
+`N_p(z) ≤ 1`: `N_p` never exceeds the length. So
+`|n_t(y) − n_t(y′)| ≤ N_p((u − u′)/A, (v − v′)/B) ≤ |((u − u′)/A, (v − v′)/B)| ≤ |y − y′| / m`.
+A point of the disc of radius `m` has `n_t ≤ |y| / m ≤ 1`; a point of the section lies in the
+box `|u| ≤ A`, `|v| ≤ B`, and for `p = 2` in the ellipse, which lies within `max(A, B)`. ∎
+
+For `p < 2` the corners turn in and `N_p` exceeds the length by up to `2^{1/p − 1/2}`; such
+sections are refused.
+
+**7.3. A bone's field is 1-Lipschitz, and a bound on both sides, whatever its proportions
+do.** Let `τ` be `t` held to `[t₀, t_J]`, `m = m(τ)`, `e = (t − τ) / m`, and
+`n = √(e² + n_τ(y)²)`. The bone's **flesh** `K` is where `n ≤ 1`: at each station of
+`[t₀, t_J]` exactly the section there, and past each end a cap reaching `m` of that end beyond
+it (a half ellipsoid for `p = 2`). Let `R` be at least the largest `M` along the bone, `c` the
+distance from `x` to the axis's segment from `t₀` to `t_J`, less `R`, and
+
+`ψ = m · (min(n, 2) − 1)`, `L = √(1 + (g + 2k)²)`, `F = max(ψ / L, c)`.
+
+Then (1) `ψ` changes by at most `L` for each metre moved; (2) `F` is 1-Lipschitz; (3) `F` has
+the sign of `K`'s signed distance and is zero exactly on `K`'s surface, so **`F` is a bound for
+`K`, outside and inside**: `|F(x)| ≤ d(x, ∂K)`; (4) it reads short by at most a ratio near the
+bone and a constant far from it: outside, where `n ≤ 2`, `F ≥ s / (L ρ)` with `ρ = M / m` of the
+station (or end) nearest along the axis, and everywhere outside `F ≥ s − (R − m_min)`.
+
+*A lemma first.* **A continuous function that is Lipschitz near every point, and whose gradient,
+wherever it has one, is at most `L` long, changes by at most `L` for each metre.** Take `x`, `y`
+and a small offset `z`. The points without a gradient fill no volume (Rademacher's theorem), so
+for almost every `z` the segment from `x + z` to `y + z` meets them in a set of no length; along
+that segment the function is Lipschitz in one variable, the integral of its derivative, and its
+derivative is the gradient's component, at most `L |x − y|`. So it changes by at most
+`L |x − y|` between `x + z` and `y + z`, and by continuity between `x` and `y`. ∎
+
+*Proof of (1).* `ψ` is continuous (at the ends `e = 0` from both sides; at `n = 2` both
+branches agree) and Lipschitz near every point. Where it has a gradient:
+
+- *Along the bone, `n < 2`.* Across, `∇_y ψ = m ∇n_τ`, at most 1 long (7.2). Along, write
+  `α = A′/A`, `β = B′/B`. Since `N_p` is of degree one, `ũ ∂N/∂ũ + ṽ ∂N/∂ṽ = N` with both terms
+  `|z_i|^p N^{1−p} ≥ 0` (Euler); so `∂n/∂t = −n (ω_u α + ω_v β)` with shares `ω_u, ω_v ≥ 0`
+  adding to one, and `∂ψ/∂t = n (m′ − m Λ) − m′`, `Λ = ω_u α + ω_v β`. Where `m = A`,
+  `m′ − m Λ = ω_v A (α − β) = −ω_v A q′/q`, and `q ≥ 1` there; where `m = B = qA`,
+  `m′ − m Λ = ω_u B (β − α) = ω_u A q′`. Where `A = B` and `m` has a slope, `A′ = B′`, `q′ = 0`
+  and the term is 0. So `|m′ − m Λ| ≤ A |q′| ≤ k`, and `|∂ψ/∂t| ≤ n k + g ≤ 2k + g`. Across
+  and along are square to each other: `|∇ψ|² ≤ 1 + (g + 2k)² = L²`.
+- *Along the bone, `n > 2`.* `ψ = m(τ)`, whose gradient is `m′ e`: at most `g ≤ L`.
+- *Past an end.* `A`, `B` and `m` are the end's. `n` is the gauge of the cap's body, and
+  `|∇n|² = (e² / m² + n_τ² |∇n_τ|²) / n² ≤ (e² + n_τ²) / (m² n²) = 1 / m²` (7.2), so
+  `|∇ψ| ≤ 1`.
+
+The lemma gives (1). ∎ (2) `ψ / L` and `c` are 1-Lipschitz (2.1 for `c`), and so is their
+greater (3.1). (3) `K` lies in the capsule `c ≤ 0`: a point of a section is within `M ≤ R` of
+the axis, and a point `(τ′, y′)` of a cap, `τ′` past the end, has
+`τ′² + |y′|² ≤ m² (1 − n_τ²) + M² n_τ² ≤ R²`. So on `K` `c ≤ 0` (and `c < 0` inside it), and
+`F` is 0 where `n = 1`, below 0 where `n < 1` and at least `ψ / L > 0` where `n > 1`. `n` grows
+along every ray from the axis (it is of degree one there), so `n = 1` is `K`'s surface. Then
+2.3. (4) Where `n ≤ 2`, the point `y / n_τ(y)` at the same station is on the surface, so
+`s ≤ |y| (1 − 1/n) ≤ M (n − 1)`, while `F ≥ ψ / L = m (n − 1) / L`; past an end the same holds
+with the end's point `(x − b) / n`, which is within `M` of the end. Everywhere, let `P` be the
+point of the axis's segment nearest `x`: `K` holds the disc (or half ball, at an end) of radius
+`m(P) ≥ m_min` about `P` toward `x`, so `s ≤ |x − P| − m_min`, and `c = |x − P| − R`. ∎
+
+**Where the proportions change.** This is where 2.7 found no factor for the sculpt's column:
+far out to one side a field that follows one section's gauge changes along the bone by
+`n k` for `n` sections out, without limit. **The clamp at `n = 2` is what removes it**: it
+costs `L` nothing beyond `2k`, and beyond it the capsule `c` carries the field. Nothing is
+asked of how the proportions change but that the profile is 7.1's: `k` is 0 when they do not,
+and `L = √(1 + g²)`, the sculpt column's own factor. For one section all along a bone and
+`p = 2`, `ψ` is the decisions' candidate itself: a capsule of radius `m` in the space stretched
+by `A / m` and `B / m` across, scaled by the least stretch, 1 (2.5).
+
+**7.4. Swells.** A swell along the bone (a calf, a forearm's belly) is a section and is in 7.3.
+A swell off it (a belly, a buttock, a kneecap) is an ellipsoid of half axes `r₁, r₂, r₃` along
+the bone's frame about a centre `o`: its field is
+`F = max(r_min (|(x − o) / r| − 1), |x − o| − r_max)`, taken coordinate by coordinate in the
+frame. **It is 1-Lipschitz and a bound for the ellipsoid, both sides.** *Proof.* The first term
+is 2.5 applied to the unit ball's exact field `|x| − 1`, the second is 2.1, and the ellipsoid
+lies in the ball of radius `r_max`; then 3.1 and the argument of 7.3 (3). ∎ It joins the body
+as a bone does (7.5) and is culled by its ball as a bone is by its capsule (7.6).
+
+**7.5. A body: the bones joined in order of their values.** Let `F₁ … F_n` be the bones' and
+swells' fields at `x`, and `K > 0` the body's **smoothing width**. Sort the values from the
+least; join the first two by the quadratic join of width `K` (section 5,
+`q(a, b) = a ∧ b − K h² / 4`), the result with the third, and so on: that is `G`. Let `T > 0`
+and `H = G ∧ T`. Then:
+
+1. `G` changes by at most the greatest change of the `F_i`, so it and `H` are 1-Lipschitz.
+2. `F_min − K ≤ G ≤ F_min`, where `F_min` is the least of the `F_i`.
+3. `H` has the sign of `G` and the same zeros, so **`H` is a bound for the joined body, both
+   sides.**
+4. **The bulge.** The joined body holds every part and lies where `F_min ≤ K/4` for two parts,
+   and where `F_min ≤ K` for any number. Where that level is under every part's `m / L`, **it
+   lies within `(K/4) L ρ` of the plain union for two parts, and within `K L ρ` for any number**
+   (`L` and `ρ` the greatest of the parts'). For round bones of one size (`L = ρ = 1`) the two
+   parts' `K/4` is reached wherever their fields are equal on the surface, and that includes a
+   **straight joint**: two bones end to end bulge by `K/4` in a ring at their joint.
+
+*Proof.* (1) Where the order of the values is fixed, `G` is a chain of joins, each of which
+changes by at most the greater change of its two inputs (5.3). Where two values are equal, the
+two orders join the same numbers and give the same `G`, so `G` is continuous; along a straight
+path between two lists of values the order changes at finitely many places, and the bound holds
+on each piece between. So `|G(x) − G(y)| ≤ max_i |F_i(x) − F_i(y)| ≤ |x − y|`. `H` by 3.1.
+(2) 5.5's chain, with the first value the least. (3) as 3.1 and 2.3; `T > 0` keeps every zero.
+(4) Where `G ≤ 0`, (2) and 5.1 give `F_min ≤ K/4` for one join and `F_min ≤ K` for a chain.
+At such a point, if `F_i ≤ K < m_i / L_i` then `n < 2` for that part (beyond it `F_i ≥ m_i /
+L_i`), and 7.3 (4) gives `s_i ≤ L_i ρ_i F_i`. For equal fields `q(f, f) = f − K/4`. ∎
+
+The join is the sculpt's quadratic one, but the order is by value, not by the recipe: the
+pairwise join depends on its order (5.5), and the cull below needs every order to give one
+answer.
+
+**7.6. The body's cull is exact.** Let `c_i` be each part's capsule term (7.3's `c`; a swell's
+`|x − o| − r_max`), so `F_i ≥ c_i`, and let `ε = T + 2K`. **`H(x)` is the same number when only
+the parts with `c_i(x) ≤ ε` are joined**, every `x`. So a sample asks only the parts whose
+capsule, widened by `ε`, holds it; a block of radius `r` about `o` needs only the parts with
+`c_i(o) ≤ ε + r`; and the culled value is `H` itself, a bound (7.5 (3)) and 1-Lipschitz, which
+is all the mesher's skip needs.
+
+*Proof.* Let `S` be the kept parts and `m_S` the least of their values. Every other value is
+above `ε`. If `m_S ≤ ε − K`: in the sorted chain the running value is at most `m_S` from its
+first step on (a join is at most its lesser input, and the first value is the least of all,
+which is in `S`), so when a dropped part's value `y` comes it is at least `K` above the running
+value, `h = 0`, and the join returns the running value unchanged. The chain over all is then the
+chain over `S`, step for step. If `m_S > ε − K`: every value is above `ε − K`, so both chains are
+at least `ε − 2K = T` (7.5 (2)), and both `H` are `T`. ∎
+
+**Over a ball.** As `H` is 1-Lipschitz, over the ball of radius `r` about `o` it lies in
+`[H(o) − r, (H(o) + r) ∧ T]`; and since `G ≥ F_min − K ≥ min_i c_i − K`, it is also at least
+`(min_i c_i(o) − r − K) ∧ T`, which prunes a large block far from every bone without asking any
+bone's field.
+
+**In `f32`.** The code computes each of these in single precision, with these allowances (each
+counted in the code, held by test against the reference in `f64`; the count is not proved line
+by line here):
+
+- a value is within `σ(x) = 2⁻¹⁴ (|x|₁ + W)` of the exact one, `W` being the greatest `|a|₁ + R`
+  of the parts plus `9K + T` (about 350 rounding units are counted, of the 1,024 allowed);
+- the derived numbers `L`, `R` and `g`, `k` are worked out in `f64` from the numbers stored and
+  rounded up, so each is at least the exact one for the profile the code evaluates;
+- the cull holds **bit for bit**: the dropped parts' joins return their input unchanged in
+  `f32` too (a difference above `K` rounds to at least `K`), and the second case needs `ε` a
+  little above `T + 2K`, by `2⁻¹⁴ (ε + K)`, for the rounding of a chain of up to 64 joins;
+- a range over a ball and the parts it needs are widened by `2 σ` at the ball's farthest point.
+
+**What 7.3 to 7.6 do not say.**
+
+- The field is no distance: it reads short by `L ρ` near a flat bone and by `R − m` far out,
+  and inside it may read as shallow as the capsule. That costs samples, not soundness.
+- The surface is exactly the sections and the caps in exact arithmetic; in `f32` it lies within
+  `L ρ σ` of them. How smooth it is between pieces is not stated: `A` and `q` have continuous
+  slopes, so the surface along a bone does, and a cap meets its end with a continuous slope
+  because the end slopes are 0. How smooth the joined surface is, beyond what section 5 says of
+  one join, is not stated either.
+- The bulge is bounded, not removed. A straight joint bulges as much as a bend (7.5 (4)): a
+  width that falls as two bones run on from one another is not part of this field.
+- The cull asks every part's capsule at every sample; it is exact, not cheap. A block that asks
+  `c_i(o) ≤ ε + r` once and passes its list to its samples is.
+
+## 8. Where the same facts are published
 
 For credit, and for a reader who wants more. Details of each (links, licences, what each
 states and where) are in [the citations](../research/library/I6-distance-fields-citations.md).
@@ -516,7 +718,7 @@ states and where) are in [the citations](../research/library/I6-distance-fields-
 - The cubic join's sixth of `k`, and the general `k / (2n)` of 5.2: stated as a result in no
   peer-reviewed paper found. It is proved above.
 
-## 8. How this page was checked
+## 9. How this page was checked
 
 A proof is checked by someone who did not write it. A model that wrote none of this page
 read every statement and proof, searched for counterexamples with code of its own, and
@@ -579,5 +781,11 @@ one and joined, or one such part swollen, pass the box, because the box was wide
 level and not by the level over the ratio. That is the modeller's fault and not the
 page's; it is recorded with the modeller
 ([PROCEDURAL_MODELLING.md](PROCEDURAL_MODELLING.md), tier 3).
+
+**Section 7 has not yet been read by a model that did not write it** (written 2026-11-28 by the
+body's third builder). The convolution papers that shape a body round a skeleton state no bound
+on their fields' slopes ([R8-B1](../research/library/R8-B1-convolution-fields-slope-bounds.md));
+section 7 takes none from them and none from sphere tracing's, whose fifth theorem is misprinted
+in the copy read (the form its proof gives is what R8-B1 records).
 
 Nothing on the page follows a source's wording.
