@@ -100,6 +100,7 @@ pub const FAMILIES: &[Family] = &[
     fam("editor", "the window's human editor: what it shows, and driving it as the human (owner)", &["editor_"], &[]),
     fam("security", "the input monitor: keyboard, clipboard and screen takeovers, frozen sessions, swarm pauses (lead, owner)", &["security_"], &[]),
     fam("sprite", "2D from the same source: a model and its clips baked into a sprite sheet with alpha and frame data", &["sprite_"], &[]),
+    fam("exemplar", "the library of sample assets: kinds made by code from measured numbers, a seed a specimen; a copy taken into the project", &["exemplar_"], &[]),
 ];
 
 /// The catalog line of the hosted game's family.
@@ -367,6 +368,9 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("logic_input", "hold a module's input actions"),
     ("logic_hook", "call a module's native hook"),
     ("sprite_bake", "a model and its clips as a 2D sprite sheet"),
+    ("exemplar_list", "sample assets: every kind in one short answer"),
+    ("exemplar_get", "one kind; with a seed, the specimen it draws"),
+    ("exemplar_take", "copy a kind into the project, to build by seed"),
 ];
 
 /// Longest a derived brief (a game's tools) may be.

@@ -1,0 +1,19 @@
+[package]
+name = "specula-exemplaria"
+description = "Specula Exemplaria: the library of sample assets. A plan (Rust) is a body's skeleton, numbers and motions; a kind (data) sets its numbers with their sources and how far each may vary; a specimen is one seed of a kind, written out as an ordinary recipe and anims file"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+
+[dev-dependencies]
+specula-model = { workspace = true }
+specula-anim = { workspace = true }
+
+[lints]
+workspace = true

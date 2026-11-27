@@ -31,6 +31,7 @@ members = [
     "crates/specula-memoria",
     "crates/specula-corpus",
     "crates/specula-formae",
+    "crates/specula-exemplaria",
     "crates/specula",
     "games/sepulcra",
     "games/sepulcra-app",
@@ -95,6 +96,7 @@ specula-ludus = { path = "crates/specula-ludus" }
 specula-memoria = { path = "crates/specula-memoria" }
 specula-corpus = { path = "crates/specula-corpus" }
 specula-formae = { path = "crates/specula-formae" }
+specula-exemplaria = { path = "crates/specula-exemplaria" }
 
 [profile.dev]
 opt-level = 1
@@ -147,6 +149,8 @@ opt-level = 3
 [profile.dev.package.specula-tempus]
 opt-level = 2
 [profile.dev.package.specula-formae]
+opt-level = 2
+[profile.dev.package.specula-exemplaria]
 opt-level = 2
 [profile.dev.package.specula]
 opt-level = 2

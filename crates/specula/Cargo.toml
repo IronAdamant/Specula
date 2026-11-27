@@ -14,6 +14,7 @@ specula-platform = { workspace = true }
 specula-gpu = { workspace = true }
 specula-model = { workspace = true }
 specula-formae = { workspace = true }
+specula-exemplaria = { workspace = true }
 specula-anim = { workspace = true }
 specula-gltf = { workspace = true }
 specula-protocol = { workspace = true }

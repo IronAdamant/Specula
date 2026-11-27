@@ -73,7 +73,10 @@ fn look_up(word: &str, kind: Option<Kind>) -> Result<Found, String> {
         Error::Ambiguous { .. } => format!("'{word}' names more than one kind of form: say which ({e})"),
         _ => {
             let near = formae::nearest(word, kind);
-            format!("no form is called '{word}'{} (formae_list has them all)", if near.is_empty() { String::new() } else { format!(": nearest {}", near.join(", ")) })
+            // (The nearest names in the other lists an agent meets: the sample assets' kinds.)
+            let kinds: Vec<String> = crate::catalog_names::nearest(word, &[&crate::catalog_names::Kinds], 3).into_iter().map(|n| n.name).collect();
+            let kinds = if kinds.is_empty() { String::new() } else { format!("; kinds of the sample assets near it: {} (exemplar_get)", kinds.join(", ")) };
+            format!("no form is called '{word}'{}{kinds} (formae_list has them all)", if near.is_empty() { String::new() } else { format!(": nearest {}", near.join(", ")) })
         }
     })
 }

@@ -1,8 +1,9 @@
 # Design: the libraries of sample assets (`exemplaria`)
 
-Status: **designed 2026-11-24, not built.** The design note and the staged plan for ROADMAP M6 part 5,
-"A library of sample assets, for any game", written before any of its code. Lanes build it after the
-lead (and a reader who wrote none of it) has read this.
+Status: **designed 2026-11-24; stage S0 (the frame) built 2026-11-24** (branch `m6-exemplar`, not
+yet reviewed). The design note and the staged plan for ROADMAP M6 part 5, "A library of sample
+assets, for any game", written before any of its code; what S0 settled for the other stages is in
+"For the plans' lanes" (section B).
 
 The owner (2026-11-16): "Build up the assets of animals, fantasy creatures like dragons, undead, and both
 tech and living assets, and tech like robots. Set up animation. Keep them as sample, along side actually
@@ -99,7 +100,7 @@ A kind is a file, `<name>.kind.json`. Its shape (the fields are the plan's; this
   `withers_height` and `build` set). One level of `base` only, so what a kind is can be read from two
   files at most.
 - **A project changes a copy**, never the library: the copy is the same file in the project's
-  `recipes/`, and a change is a number in it.
+  `assets/models/`, and a change is a number in it.
 
 **Why a kind is not a recipe with `params`.** A recipe's parameters are given from outside; they are not
 drawn, they carry no source, and they do not move together. A wolf's legs, trunk and skull grow with its
@@ -116,21 +117,46 @@ so an agent can see exactly what it would build and take the recipe itself if it
 ### 2. How a seed varies a kind, and the same on every machine
 
 - **The seed comes from where seeds already come from**: an entity's model seed (`ModelSpec::with_seed`),
-  a scatter item's variant seed, or a recipe's `seed`. A kind with no seed given builds its mean.
+  a scatter item's variant seed, or a recipe's `seed`. A kind with no seed given builds its mean. A
+  scatter item names a kind as `{"kind": "box_creature", "variants": 32}` (exactly one of `shape`,
+  `include` and `kind`; no `params`, since the seed draws the numbers): each variant is the specimen of
+  its variant seed, so 32 variants are 32 different bodies, at most `MAX_KIND_VARIANTS` (32) an item
+  where other items take 8, each built once as a template inside the build's work budget as any
+  variant is. The kind is a `<name>.kind.json` in the recipe's folder (the modeller knows no kinds: the
+  engine hands it `specula_model::Specimens`, `exemplar_tools::FolderKinds`).
 - **Each number has its own stream**, `stream_seed(seed, "<kind>/<number>")` (the modeller's own
-  `StableHasher` scheme), so adding a number to a kind never moves the draws of the others.
+  `StableHasher` scheme, `specula_core::hash::stream_seed` since review 1 of S0, seeding PCG32), so
+  adding a number to a kind never moves the draws of the others, and no two streams, nor two
+  consecutive seeds, are related (measured: "For the plans' lanes", Streams). `<kind>` is a
+  project copy's `taken.streams`, the library kind it came from, so a renamed copy draws as the
+  library does. A kind whose draws could leave what its plan can write is refused when it is
+  resolved (Reach, same section).
 - **What is drawn, in order:** size first (one draw, normal, from the size row's spread, or from its range
   read as plus and minus two spreads where only a range is printed: the engine's assumption, said in the
   kind's answer); every length then follows size by the plan's exponents; then each **trait** of the plan
   (build, legs, neck, tail, head for a quadruped; the corpus's fourteen for a person) as a residual, normal,
-  at the spread the source gives, or the kind's `vary` where it gives none (marked `own`). Draws are
-  clipped at 2.5 spreads and at the kind's measured range, whichever is narrower: a specimen is always a
-  body that was measured or lies between measured ones.
+  at the spread the source gives, or the kind's `vary` where it gives none (marked `own`); then a number's
+  own residual, where the kind gives it a spread.
+- **Every residual is drawn from a normal truncated to its window** (review 2 of S0): ±2.5 spreads,
+  narrowed for the size to the kind's measured range, and for a number's own residual to where its value
+  stays inside the number's measured range given what the size and traits gave it. One uniform from the
+  stream becomes one residual by the inverse of the distribution (`normalis`: Φ by its series, and in
+  its tails past 3 by the tail's continued fraction; Φ⁻¹ by Acklam's start and two of Halley's steps,
+  `cdf(quantile(p))` within 5e-16 of `p` where the draws use it), so nothing piles at
+  a window's end (a clip put 12 per cent of the design's wolves at exactly one of its two measured
+  heights) and no draw is rejected and drawn again. A specimen is still always a body that was measured or
+  lies between measured ones. What this costs: a normal truncated at ±2.5 has 0.955 of the spread it was
+  given (the 1.2 per cent of a population beyond 2.5 spreads is left out), and one cut by a narrow
+  measured range less still (the design's wolf of A.1 prints no spread, so a quarter of its range,
+  0.023 m, is taken as one, and its window is -2.15 to +1.85 of those: it draws at 0.0204 m, measured
+  over 200,000 seeds; a wolf with a printed spread of 0.03 m draws at 0.023 m); `exemplar_get` shows the mean, the
+  spread, the range and the window each size is drawn in.
 - **People are the corpus's**: a person's specimen is a `Body` with stature, build, age and traits drawn
   as CORPUS.md says a crowd is made (each trait about zero), and refused traits redrawn by a counted
   rule (at most 8 tries, then the mean), so a seed always gives a body.
-- **Deterministic**: draws through `specula_core::rng::Rng` and `dmath` (`ln_f64`, `cos_f64`, square
-  roots: Box–Muller in `f64`), each drawn number rounded to 0.1 mm (or 0.01 degree) before it is written,
+- **Deterministic**: one uniform from each number's `specula_core::rng::Rng` stream, turned into a
+  residual by the truncated normal's inverse (`normalis`, above: IEEE arithmetic and square roots,
+  `dmath`'s `exp_f64` and `ln_f64`, a fixed number of steps), each drawn number rounded to 0.1 mm (or 0.01 degree) before it is written,
   so the recipe's text is the same bytes everywhere. A test holds a table of kinds and seeds to recipe
   hashes, and CI's Linux job runs it, so the two systems are compared on every push.
 - **The text says what was drawn**: the written recipe's `description` carries the kind, the seed and
@@ -151,7 +177,7 @@ file and must be asked for (section C); it is never written from memory.
 | quadruped: **sprawling** | lizards, crocodiles, tortoises, salamanders | the quadruped's with the limbs out to the side | limb angles, duty, body bend | C6 (thin: lizard proportions and croc high-walk mostly unverified) |
 | **winged quadruped** | dragons (four legs and two wings), and griffins | the quadruped's plus a wing pair from the chest: humerus, forearm, metacarpals, digits II to V, a membrane between them | the quadruped's; wing digit shares, span and area from mass | C4 (bat digits against forearm, Castillo-Figueroa 2020; pterosaur wing-finger shares; wing loading and aspect ratio against mass; the largest flyers' mass against span), C10. **Six limbs are no animal's**: where the wing's root sits is the engine's own (`own`) |
 | winged: **wyvern, bat** | two legs and wings that are the forelimbs | the bat's or the pterosaur's | as above | C4 (bats are measured; pterosaurs mostly as shares) |
-| **bird** | birds of every flight style; flightless | pelvis, synsacrum, a long neck chain (8 to 14), head, beak; wing humerus, ulna, carpometacarpus, primaries as one chain; legs femur, tibiotarsus, tarsometatarsus, toes; tail | wing shares by flight style, span and area, wingbeat from mass | C3 (Wang et al. 2011 wing bones by style; Alerstam 2007 span and area; Pennycuick wingbeat; stroke phases; folding, pigeon only; walking against hopping). **Not delivered**: leg bones, neck vertebrae, downstroke fraction (C) |
+| **bird** | birds of every flight style; flightless | pelvis, synsacrum, a long neck chain (10 to 26 vertebrae: research R7-2C, Q13), head, beak; wing humerus, ulna, carpometacarpus, primaries as one chain; legs femur, tibiotarsus, tarsometatarsus, toes; tail | wing shares by flight style, span and area, wingbeat from mass | C3 (Wang et al. 2011 wing bones by style; Alerstam 2007 span and area; Pennycuick wingbeat; stroke phases; folding, pigeon only; walking against hopping). Neck: R7-2C Q13 (cervical counts 10 to 26, parrots to swans; means by group from 11 to 16, 103 taxa). **Not delivered**: leg bones, a count for each species (B2's table S2 was not read), downstroke fraction (C) |
 | **chain** | snakes, eels, fish; and as a part of other plans: tails, necks, tentacles | a chain of 8 to 32 bones with a section along it; fish add fins as their own small chains | length, girth along the length, the body wave (wavelength, amplitude envelope, frequency), fin places | C5 (Di Santo 2021 across 44 species; the eel; snakes' four gaits, Jayne 2020, Hu 2009). **Not delivered**: girth along a snake, fin places as shares of length, per-species wave numbers (Di Santo's data set, CC0, not downloaded) |
 | **arthropod** | insects (six legs), spiders (eight), and crabs as a variant | body in two or three parts, legs coxa, femur, tibia, tarsus (four segments) | segment shares, gait (tripod, tetrapod, wave; the spider's) | C7 (stick insect and ant models; tripod and wave gaits; a tarantula table with garbled cells); H6 (Walknet rules). **Thin**: no measured segment table with spread (C) |
 | **machine** | vehicles on wheels or tracks, walkers, arms, flyers, things that hover | rigid parts on joints: revolute, prismatic (pistons), wheel axles, track loops; no skin | wheel base and track, wheel radius, ride height, link lengths, joint ranges, cylinder lengths against angle | D1 (joint kinds, arms, legged robots, the excavator's geometry and its cylinder formula), D2 (panel gaps, fasteners: what reads as made), D3, J22 (vehicles' masses, dimensions, tyres, suspension), J5, J23 (aircraft), J28 (engine curves, for sound and speed). **Not delivered**: Ackermann geometry, track pitch and sprockets, robots' joint ranges (C) |
@@ -231,20 +257,36 @@ materials a model).
 
 ### 8. Its own place
 
-- **`exemplaria/` at the repository's root**, by plan: `exemplaria/quadruped/grey_wolf.kind.json`, with
-  its record beside it. Not under `games/`, and nothing of Sepulcra's: Sepulcra is a user, its mobs of
-  maps 2 and 3 made from it in its own folder and style. It ships beside the executable (ROADMAP part 8's
-  export takes the folder), and the engine reads it from there.
-- **A project takes a copy**: `exemplar_take {name, as?}` writes the kind (and its base, if any) into the
-  project's `recipes/` through the project's write path (rule 13: a write with its rule), with a line
-  saying where it came from and the library's hash of it then (`"from": "exemplaria/quadruped/grey_wolf@<hash>"`),
-  so a later answer can say "the library's wolf has changed since you took it". Never a reference to the
-  library's file: a project's assets do not change when the engine does.
+- **`exemplaria/` at the repository's root**, by plan: `exemplaria/quadruped/grey_wolf.kind.json`. Not
+  under `games/`, and nothing of Sepulcra's: Sepulcra is a user, its mobs of maps 2 and 3 made from it in
+  its own folder and style. **The folder is the source and the library is built into the engine**
+  (`include_str!` of each file, `specula-exemplaria/src/library.rs`): what the engine answers and what the
+  table of hashes holds are the same bytes, and nothing beside the executable is read, so nothing there
+  can be swapped (decided by the lead on 2026-11-24; reading the folder from beside the executable, as
+  this note first said, is not built). A test holds the folder and the table together: every file under
+  `exemplaria/`, at any depth, is a kind with its line in the table and the same bytes, and the folder
+  holds nothing else.
+- **A project takes a copy**: `exemplar_take {name, as?}` writes the kind into
+  **`assets/models/NAME.kind.json`**, where a new project keeps its models (`specula new`,
+  `notes/models.md`), through `project_write` (rule 13: the project tools' rule; one tool call, one
+  commit). So `model_build_all` (whose folder is `models` unless told) builds it with the project's own
+  models, and it is listed with them. Its base, if any, is **written into the copy** (one file says
+  everything; one call makes one commit), so a project's copy never has a base, and deleting the
+  library kind's base in a project is moot. Never a reference to the library's file: a project's assets do
+  not change when the engine does.
 - **What every entry carries**: its licence (the engine's, MIT OR Apache-2.0, in a field); what it is in
-  one line; its numbers with units, ranges and sources; the checks it passed at the library's seeds, with
-  the numbers (a `<name>.record.json` written by the library's test, not by hand); a contact sheet
-  (thumbnail tracked under `docs/gallery/exemplaria/`, the full size in `gallery-full/`, as the gallery's
-  rule has it).
+  one line; its numbers with units, ranges and sources. **A project's copy also records its taking, in
+  the copy itself** (no second file, which would be a second commit): `"from":
+  "exemplaria/<plan>/<name>@<hash of the kind file>"`, so a later answer can say "the library's wolf has
+  changed since you took it", and `"taken": {"library": <the library's version, 16 hex digits>, "base":
+  <the base written into it>, "checked": <what was checked at the take>, "own": <how many of its numbers
+  are the engine's own>, "streams": <the library kind's name, which its draws are keyed on>}`. At
+  the take the kind is written at its mean and at seeds 1, 2 and 3, each recipe parsed and its clips generated on its rig, and `checked` says so. The checks of form and motion
+  at the library's seeds (B, stages Q on) are added to `taken` by the stages that make them; a
+  `<name>.record.json` beside the kind file is not made (a test may not write into the checkout, and the
+  folder holds kinds only). A contact sheet per entry (thumbnail tracked under
+  `docs/gallery/exemplaria/`, the full size in `gallery-full/`, as the gallery's rule has it) comes with
+  the first real kinds.
 
 ### 9. The catalogue: one path, not three
 
@@ -397,6 +439,298 @@ engine, looked at by the builder and then by a model that did not take them.
   (`undulate`, `flap`) are generators of their own files and can run beside Q.
 - **P, L and H** touch the terrain and foliage code and nothing of the animals': beside anything.
 - **F waits** for part 4's figure lane.
+
+### For the plans' lanes (what S0 built, and how a stage adds to it)
+
+S0 is built in `crates/specula-exemplaria`, the folder `exemplaria/`, a hook in the modeller
+(`specula_model::Specimens`, for a scatter item by kind) and these files of the engine:
+`exemplar_tools.rs` (the three tools, a kind read as a recipe, `FolderKinds`),
+`catalog_names.rs` (the name index), and single lines in `models.rs`, `project.rs`,
+`project_kinds.rs`, `procgen_tools.rs`, `formae_tools.rs`, `tools.rs`, `authority.rs`,
+`toolscope.rs`, `toolkits.rs` and `write_policy/tests.rs`. What a later stage needs to know,
+beyond the code's own notes:
+
+**Adding a plan** (a stage's plan, `quadruped`, `wheeled`...):
+
+1. A file `crates/specula-exemplaria/src/plans/<plan>.rs` with a unit struct and
+   `pub static PLAN: MyPlan`, implementing `plan::Plan`: `name`, `about`, and its tables as
+   `'static` arrays (`size`, `numbers`, `traits`, `roles`, `options`, `motions`, and
+   `relations`, which has a default of none), then `write`, which turns a `Specimen` into
+   bones, parts and clips through `write::Writing` (`bone`, `part`, `block`, `clip`, `gait`,
+   `fact`; `material(role)` resolves a role; `block(name, role, bone, size, at)` is a box of
+   `size` whose **bottom face** is centred at `at`). `plans/box_creature.rs` is the pattern, at
+   about 200 lines. The size's, traits' and numbers' names are unique across the three tables.
+   Its ranges and relations are the next paragraphs: they are what makes every accepted kind
+   build whole, and they are found by the plan's author, not guessed.
+   Three things the document's own test (a table written from this section alone,
+   `src/tests_table.rs`) had to guess: **every part names a bone**, so a plan with no motions
+   still writes a `root` bone for its parts; **the `write` places parts from the numbers only**,
+   never from the size (a relation names numbers, not the size, so a part placed by the size
+   could cross one placed by a number with nothing to hold them apart: make a height a number,
+   `leg_length`, with a share of the size); and **a plan is tested before it is listed** with
+   `resolve_among(kind, base, &[&MY_PLAN])` (`resolve` finds plans in `PLANS` only).
+2. **Two single lines** in `crates/specula-exemplaria/src/plans/mod.rs`: `pub mod <plan>;` at
+   the end of the modules, and `&<plan>::PLAN,` at the end of `PLANS`.
+3. Nothing else registers it: `resolve` checks a kind against the plan's tables, and the tests
+   `the_plans_tables_are_sound` and `a_plans_relations_are_sound_and_can_always_be_kept` hold
+   every plan's tables (names valid and unique, a number's traits known, at most four roles,
+   every motion's generator in `specula_anim::gen::KINDS`, every pattern in `gaits::PATTERNS`,
+   every relation's terms the plan's numbers of one unit, its margin at least two steps, and the
+   relation keepable inside the ranges).
+
+**A range is where the plan's geometry breaks, never a typical size** (review 2 of S0: the box
+creature's invented 0.3 to 1.2 m refused a measured cat of 0.26 m). A `NumberDef::range` is the
+least and most the plan's `write` makes a whole body for, whatever any other number is (that is
+what relations are for, below). How a plan's author finds them:
+
+- **The least.** Write down, for every pair of parts, every pair of their faces that face the same
+  way and overlap when seen along that axis, and the difference between the two faces as the
+  `write` computes it. A difference that is a fixed fraction of one number (a thigh's side
+  `0.1 × leg_girth` inside the trunk's side) must stay at least three of the recipe's steps
+  (0.3 mm: a written position can be off by up to 0.1 mm at each of two faces, and the modeller
+  welds equal points), and that sets the number's least (`leg_girth` at least 3 mm). A difference
+  that is a sum of several numbers is a relation. Parts that join must overlap by a fraction of a
+  number, never touch: two faces in one plane are one face after rounding (the review's open
+  meshes were two shins whose faces met at x = 0).
+- **The most.** Where a position no longer holds the recipe's step in the modeller's `f32`: under
+  256 m every position keeps the 0.05 mm grid three times over, so 60 m a length for the box
+  creature. A plan whose write has another limit (a joint that folds past a straight line, a
+  number of rings) says so.
+- **The size has no range of its own** (review 3 of S0: a mouse of 3 cm whose numbers were its
+  own was refused because the box creature's size began at 0.039 m, where its *default shares*
+  put a girth at its least). The size enters the body only through the numbers, so the reach
+  refuses a kind for its size only where a number the size drives leaves that number's range,
+  and names the number (`number` in the error, the number's `reach`); the size's `range` is
+  what the arithmetic needs and no more (the box creature's: one step to 10 km).
+- **Then build at them**: a test builds the smallest body (every number at its least) and the
+  largest, and checks that one step under each least is refused by name
+  (`the_box_creature_builds_whole_at_its_limits`). And a test builds thousands of random accepted
+  kinds at random seeds, each body closed, of its boxes' volume, with no two parts sharing a face
+  (`random_accepted_kinds_build_whole_at_random_seeds`, `tests_build.rs`, which has the face check
+  to copy): a pair of faces the author missed shows there as a shared face, with the two parts
+  named.
+
+**A relation is what one number may be against another** (`plan::RelationDef`, the plan's
+`relations()`): `Σ coefficient × number ≥ margin` over two or three of its numbers of one unit, as
+data. Each is the difference of two faces found above that is a sum of several numbers, written
+exactly as the `write` computes it (the box creature's two feet of a side are apart by
+`body_width - 2.3 × leg_girth`: a thigh at `body_width/2 - 0.6 × leg_girth`, a foot 1.1 girths
+wide), with a margin of three steps (`0.0003` m). It names the term that yields (`yields`): if a
+draw would break it, the draw moves that number until it holds (the backstop; a negative
+coefficient's number goes down, a positive one's up), in the plan's order, so list them so that a
+yield only helps the relations after it. The reach holds every relation over every seed: a kind
+that could break one is refused, `outside_plan`, at the first of the relation's numbers the kind
+sets (else a trait it sets, else its size), with the relation's name, its numbers' worst values,
+and a body of the kind's own seeds at which it is least: `at` (the size on its step, each trait's
+residual, each own residual's end of its window, `<number>.own`), `values` (its numbers there),
+`worst` (their sum, less the rounding allowance), `worst_bound` (the check's bound) and `least`
+(the margin); through the engine, the recipe error's numbers. **How the least is found**: at each
+corner of the residuals the sum is linear along each residual, so its least over them is at a
+corner; and **the size is one number**: at each corner the sum is a sum of powers of the size,
+and its least is at an end or a stationary point, found by halving the size's window until the
+sign of the sum's slope is proved on each piece (each of the slope's terms is a power of the
+size, so its least and most on a piece are at the piece's ends), each stationary point
+bracketed to a billionth of the size and bounded there term by term (`draw::least_over_size`).
+So a girth that grows faster than the trunk's width is held against the trunk of the *same*
+size. **What this costs, measured** (review 3 of S0; `tests_reach.rs`): with no measured range
+narrowing one of a relation's residuals the check is exact (to a billionth of its terms, and
+less a millionth of a millionth of them for floating point), and of 196 random kinds refused by
+a relation alone none is whole by an independent exact check (before, each term took its own
+worse end of the size: 73 of 400, by the review's check, and a dog-like kind with its girth's
+exponent at 1.05 was refused at -0.128 m when its least is +0.0146 m). Where a measured range
+narrows a residual the term enters at its range's end or unnarrowed (a bound): 2 of 104 such
+refused kinds are whole, and the test holds it under a twentieth. By the review's own generator
+and check, run again on the mended check: 2 of 400 refused kinds are whole (from 73), both with
+a ranged residual and unequal exponents. Over 500 kinds bisected onto
+the edge of acceptance, a million draws: no backstop acted and no body broke a relation (the
+review's probe, run on the mended check). A trait both terms follow cancels between them (a wide
+`build` moves the girth and the trunk's width together). The test `a_plans_relations_are_sound_and_can_always_be_kept` checks
+that the yielding number's value that keeps a relation, with every other term at the end of its
+range worst for it, lies inside the yielding number's own range: raise a least until it does.
+
+**A constraint that is not linear in the plan's numbers** (an angle against a length, a ratio,
+a product): a relation is `Σ coefficient × number ≥ margin` over numbers of one unit, and the reach
+holds a constraint exactly only in that form. A plan whose geometry needs another does one of two
+things, and its module's notes say which:
+
+- **It declares numbers in which the constraint is linear.** A worked example, the machine's arm
+  (A.3): a link of length `l` on a hinge at height `h`, tilted down from the horizontal by an
+  angle `θ` from 0 to 90° (so its free end is `l sin θ` below the hinge), must stay above the
+  ground: `h - l sin θ ≥ margin` is not linear in `h`, `l` and `θ`. Let the plan's number
+  be the link's reach below its hinge, `drop` (metres: `l sin θ`, with a share of the size and a
+  spread of its own), instead of the angle. The constraint is then the relation
+  `h - drop ≥ margin`, a second relation `l - drop ≥ margin` keeps the angle defined, and the
+  plan's `write` computes the angle from the two numbers, `θ = asin(drop / l)`. A kind sets the
+  drop and its spread; the angle is what follows.
+- **Or it bounds the constraint by a linear one, and says so.** Where the angle must stay a number
+  (degrees down from the horizontal, from a measured joint range), its plan's range gives its
+  most, `θmax`, which must be at most 90° (`sin θ` rises only up to there, so `sin θ ≤ sin θmax`
+  for every `θ` from 0 to `θmax`; past 90° the bound is `l` itself), and
+  `h - sin(θmax) l ≥ margin` (a relation with the constant coefficient `-sin θmax`) holds the
+  constraint at every angle the plan can write. It is stricter than the constraint: a kind whose
+  angle never comes near `θmax` is held as if it did, and the plan's notes say what that refuses.
+
+Neither puts a degree and a metre in one relation (`a_plans_relations_are_sound_and_can_always_be_kept`
+holds a relation's terms to one unit).
+
+**What the reach may cost, and why a plan keeps its relations few.** The reach can run on the
+engine thread: a gallery applied to a kind file validates the file there (taste calls are
+answered on the engine thread; the exemplar tools and `project_write` validate on the caller's
+thread, and a build expands a kind on the model library's worker). So its work has a ceiling,
+counted as it is done (the evaluation that would pass it is not made), and a kind past it is refused `reach_too_dear` with what was counted, how
+much and the ceiling (`work_of`, `work`, `max_work`):
+
+- **Evaluations**, at most `MAX_REACH_WORK` (1,024) for the whole kind: one is a relation's terms
+  at one size, or one corner of a number's windows. Measured on the development laptop, about
+  0.9 µs each with thirteen traits a number, so the reach at its ceiling takes about 1 ms
+  (`the_reach_at_its_ceiling_is_cheap` holds the time under a budget of 5 ms, about five times the quiet time, and the count exactly). The box creature's dearest kind
+  (every number spread, ranged and given its own exponent, every trait varied) takes 190.
+- **Corners of one relation**, at most `MAX_RELATION_CORNERS` (2^14), refused before any is
+  visited: `2^(traits + own residuals + ranged ones)`, each choice of how the ranged terms enter
+  times every corner of the residuals. `a_plans_relations_are_sound_and_can_always_be_kept` holds
+  a plan's relations under it with every residual ranged.
+
+A relation's work grows as its corners × its pieces × its range choices: every corner where its
+numbers follow the size by unequal exponents and the sum is least inside the size's window costs
+a search of the size (about thirty to a hundred evaluations), where one least at an end costs
+two. Each trait a relation's numbers follow doubles its corners, and each number with a spread
+of its own doubles them again, and with a range again. So a plan's author keeps relations few
+and their traits few, and a plan whose kinds would come near the ceiling has its dearest kind
+measured and the figure written in its notes.
+
+**Spreads, and what `source` and `own` mean for them.** A spread is a coefficient of variation of
+the number it moves (0.05: five in a hundred), and `source` or `own` says where *that spread* came
+from as well as the mean: a source's printed standard deviation over its mean is a `source`; a
+spread the engine chose is `own`, with its anchor. **A trait's spread is the spread of the lengths
+it moves, never of a mass**: `build` moves girths, and a mass's coefficient of variation of 20 per
+cent is a girth's of about 7 to 10 (a mass grows as a length cubed), so typing a mass's into
+`vary.build` refuses honest kinds for a unit mistake (research R7-CHECK, part (f): lengths' CVs
+are 4 to 12 per cent). Every residual is drawn from a normal truncated to ±2.5 spreads and to the
+measured range (A.2); a size is held only through the numbers it drives (above); a number's measured range is
+reached through its own spread, so a number with a range and no spread of its own must stay
+inside it through the size and the traits alone, or it is refused (`out_of_range`, its range).
+
+A plan's defaults are the engine's own numbers: a kind that leaves a number out takes the plan's
+share, and `exemplar_get` counts those as "at the plan's default share". A plan writes text and
+touches no part of the modeller: a new shape it needs (S1's `body`) is the modeller's lane.
+
+**Adding a kind**:
+
+1. Its file at `exemplaria/<plan>/<name>.kind.json` (the format: `kind.rs`'s notes; every
+   number with `source` or `own`, never both). The folder holds kind files only.
+2. **One line** at the end of `ENTRIES` in `crates/specula-exemplaria/src/library.rs`: its
+   path and `include_str!` of it. The test
+   `every_file_of_the_folder_is_built_in_and_nothing_built_in_is_missing` fails until both are
+   there, and fails on any other file under the folder.
+3. Rows in the table of `tests/library.rs` for the seeds worth holding (at least the mean and
+   two seeds): the test prints the rows as they are, to paste once their specimens have been
+   looked at. A change that moves a specimen changes those rows in the same commit, saying why.
+   (A kind file's own hash is in its specimens' text, through `from`: any edit to the file moves
+   every row, on purpose.)
+4. A base is another kind of the same plan, by name, one level: in the library it is looked up
+   in `ENTRIES`; in a project, beside the kind's file (`<base>.kind.json`, in the same folder).
+   A project's copy (`exemplar_take`) has its base written into it, so it is one file.
+
+**Adding a generator** (`mechanism`, `undulate`, `flap`) after the split: each kind is a file of
+its own under `crates/specula-anim/src/gen/`. A new one is `gen/<kind>.rs` with
+`use super::*;` and `pub(super) fn <kind>(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32],
+duration: f32) -> Result<Out, AnimError>` (the shared `Body`, `Frame`, `Out`, `solve_all` and the
+pose helpers stay in `gen/mod.rs`, visible to its files), then, in `gen/mod.rs`: `mod <kind>;`
+after the others, its name at the end of the `use {...}` line, its arm in the dispatch
+(`"<kind>" => <kind>(&mut o, skel, &body, &times, duration)?,`) and its name at the end of
+`KINDS`. A plan's `MotionDef.generator` names it; the plans' test reads `KINDS` itself.
+
+**What S0 decided that the note did not say:**
+
+- **The library is built into the engine** (A.8): the folder is the source, held to the
+  built-in table by a test; nothing is read from beside the executable.
+- **A kind is read as a recipe** where its path ends in `.kind.json`: the model library checks
+  it at a spawn by writing its mean in the recipe's style (every role resolved), and its build
+  worker writes the recipe and clips at the spec's seed; a project's `project_write` checks it
+  the same way. A kind's clips are written by the plan: no `anims/<name>.json` is read for it.
+  The anim set an entity's graph writes settle against (`Library::write_set`) is the specimen's
+  at the entity's seed, rig and clips, not its mean's.
+- **Roles** resolve through `specula_model::Style::role`: a preset of the role's name, else the
+  style's `"roles"` table, else refused with the three presets nearest in colour to the kind's
+  hint. A kind's first part written in an unresolved role is the one named.
+- **The copy goes to `assets/models/`** (A.8). Found on the way, and mended: the project store
+  mirrored a project's recipes only from folders named `recipes`, while `specula new` puts a
+  project's models in `assets/models/`, its guide tells an agent to write them there and
+  `model_build_all` builds that folder; so `project_write` (and every tool that writes through
+  it) refused `assets/models/x.json`, and a project's models were not in `project_list`. The
+  store now mirrors `.json` files whose folder is `models` as recipes too (`project::kind_for`);
+  `.glb` and `.gltf` there are still models, and `models/exports/` holds no recipes (as with
+  `recipes/`, the file's own folder must be named so: `models/props/x.json` is not mirrored).
+- **A new project's style names the plans' roles** (`specula new`): its `style.json` carries
+  `"roles"` mapping every role word of A.7 (`coat`, `underside`, `eye`, `claw`, `bark`, `leaf`,
+  `hull`, `panel`, `glass`) onto its four presets, a visible line of the project's own file
+  (not a guess at take time), so a first take needs no patch. A take whose roles the style does
+  not resolve (a role outside that table, or a style without it) is refused with `fix`: the one
+  `project_patch` of the style the copy is checked against (its path and version) that names
+  every unresolved role to the preset nearest its hint colour, for every role the specimen is
+  written in (the kind's own, its base's and the plan's defaults). Under the engine's `--style
+  FILE` no patch is offered (the project's `style.json` is not what the copy is checked
+  against): the answer names the roles to add to that file.
+- **Reach** (A.2, reviews 1 and 2 of S0): when a kind is resolved (at a load, a write, a spawn,
+  a take) the least and most each drawn number can be over every seed is worked out **by the
+  draw's own functions** (`NumberLaw::base`, `window`, `value`, `SizeLaw::at`: the same code the
+  draw calls) at every corner of the residuals' windows, on unrounded values, and a kind that
+  could leave its plan's range, or break one of its relations, is refused, `outside_plan`, at the
+  kind's own field (`size.shoulder_height.sd`, `vary.build.spread`, `numbers.leg_length.mean`,
+  `.share`, `.exponent`, `.range`, `.spread`), with the number, the worst value and the bound
+  (`reach` in the error; for a relation, `relation`; through the engine, the recipe error's
+  numbers). A relation's least is found over the corners of the residuals and over the size as
+  one number (its ends and its stationary points: "For the plans' lanes"); where a number's
+  measured range narrows its residual a bound never above the least is used instead, and the
+  rounding of each number to its step is allowed for. What the catalogue prints
+  is rounded outward (the least down, the most up), so every written value lies inside it. The
+  parser's own limits: a size's spread at most 0.4 of its mean, a spread of a trait or a number at
+  most 0.36, a number's mean and any range above zero. **Two backstops**, which never act on an
+  accepted kind (the tests count them, `draw::backstops`, and hold them at zero over 300,000
+  draws and 3,000 builds of 3,000 and 1,000 random accepted kinds): a drawn value is held inside
+  the plan's range, and a relation is kept by moving its yielding number.
+- **Streams** (A.2): `specula_core::hash::stream_seed(seed, "<key>/<number>")`, the function
+  the modeller uses for its parts and ops (moved into the core so there is one scheme), seeds
+  a PCG32 generator for each number. `<key>` is the kind's name, or a copy's `taken.streams`
+  (the library kind it was taken from), so a copy renamed with `exemplar_take {"as"}` draws the
+  specimens `exemplar_get` showed; a copy's numbers edited keep their streams (a change of one
+  number moves only what depends on it), and a copy whose `taken.streams` is set to its own
+  name is a kind of its own that draws anew. A test measures the streams of every library kind
+  over 40,000 consecutive seeds from 0 and 40,000 up to the largest: no pair at one seed, or at
+  consecutive seeds, correlates past 0.025 (five sampling errors), where the scheme it replaced
+  (`Rng::named`) is shown to fail. A plan's size, traits and numbers have names unique across
+  the three tables (a test), so no two share a stream.
+- **Levels**: only `near` (the specimen's triangle budget) is built; `mid`, `crowd` and `far`
+  are refused (`not_built`) until the plans whose surfaces the modeller can reduce (S1 on)
+  write them as the recipe's LODs.
+- **A scatter item by kind** (A.2): `{"kind": NAME, "variants": N}`, at most 32 variants, each
+  its own specimen; the kind is read from the recipe's folder (`<NAME>.kind.json`, its base
+  beside it) and counts as an include for hot reload. The variant's seed is folded into a
+  recipe's range (below 2^53: found by its test, a full 64-bit seed was refused by the written
+  recipe); a build writes each variant once a pass over its parts (twice with its coarse pass),
+  the same text each time.
+- **The name index** is `crates/specula/src/catalog_names.rs`: a `Source` per list (`Shapes`,
+  `Kinds`); the project's catalogue (lane `m6-formae`) plugs in as a third `Source` in
+  `sources()` when it merges. `formae_get`'s refusal names the nearest kinds, and `exemplar_*`
+  refusals the nearest names of both lists with the call that shows each. `exemplar_list`'s
+  first answer names the shape library's call and count on its second line. `formae_list`'s
+  first answer does **not** name the kinds: one more line puts it over its 3 KB and cuts the
+  shape names it shows today (its test `index_holds_any_table` says so); the orientation an
+  agent is given unasked (lane `m6-formae`) names every catalogue.
+- **The tools are in the kit `make_asset`** (`toolkits.rs`): `exemplar_list`, `exemplar_get`
+  and `exemplar_take` in its `more`, and its steps name `exemplar_list` beside `formae_list`.
+- **A specimen's seed**: a spawn's or a build's is the model library's, 0 to 1,000,000;
+  `exemplar_get` takes any seed a specimen is written with, 0 to 2^53 - 1, so a scatter's
+  variant seeds (folded to 53 bits) can be previewed. `expand` refuses a larger seed: a recipe's
+  JSON cannot hold it exactly. Past 1,000,000 the preview's `use` offers no spawn or build (they
+  would make another specimen): it says why, and that the specimen's own recipe (`full: true`)
+  saved by `project_write` builds that one. **A kind's name is its file's**: `x.kind.json` holds
+  the kind `x`, or the project's checks, the build and a scatter item refuse it
+  (`name_not_file`, naming both); a kind whose base is itself is `base_cycle`.
+- **The catalogue's rows** carry each number's value at the kind's mean, its range over seeds
+  (the reach) and its unit on one line, and the scatter snippet beside the spawn and build ones.
+- **Not in S0**: the `footfalls` and `stride` checks (stage Q), and the checks of form and motion
+  a copy's `taken` will carry (the stages that make them).
 
 ### The size
 

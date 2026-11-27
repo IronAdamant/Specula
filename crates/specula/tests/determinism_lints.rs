@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 /// Crates whose code runs in (or decides) the simulation: they carry the determinism clippy.toml.
-const SIMULATION: [&str; 25] = [
+const SIMULATION: [&str; 26] = [
     "crates/specula-physics",
     // Cosmetic, but reproducible: captures repeat bit for bit on every platform (docs/design/VFX.md).
     "crates/specula-scintilla",
@@ -46,6 +46,9 @@ const SIMULATION: [&str; 25] = [
     // The shape library: the modeller builds meshes, colliders and rig meshes from its outlines
     // and solids, so the same arguments must give the same bytes on every machine.
     "crates/specula-formae",
+    // The library of sample assets: a kind and a seed write a recipe the modeller builds, so the
+    // same seed must write the same bytes on every machine (docs/design/EXEMPLARIA.md).
+    "crates/specula-exemplaria",
     "games/sepulcra",
     "games/ambulo",
     // The gameplay-module examples and their demo (docs/design/GAMEPLAY_MODULES.md).

@@ -806,6 +806,8 @@ pub fn access(tool: &str) -> Option<Access> {
         "disk_prune" => Open("prunes only what the disk budget needs, never saves, worlds, journals or project files; free_mb, which deletes more, needs the lead"),
         // Two project files in one journal entry, as the caller (claims on /project/<path>); its cancel stops the caller's own bakes only.
         "sprite_bake" => World("project"),
+        "exemplar_list" | "exemplar_get" => ReadOnly,
+        "exemplar_take" => World("project"),
         _ => return None,
     })
 }
