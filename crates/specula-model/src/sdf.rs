@@ -4653,6 +4653,11 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     Ok((shape, stats))
 }
 
+/// (Tests only) a range a prune took from a walk's notes, and the same child's worked out
+/// afresh ([`NOTED_AGAINST_FRESH`]).
+#[cfg(test)]
+type NotedAndFresh = ((f32, f32), (f32, f32));
+
 #[cfg(test)]
 thread_local! {
     /// (Tests only) every mesh made on this thread while a test keeps the list, with what
@@ -4677,7 +4682,7 @@ thread_local! {
     /// (Tests only) when set, every range [`pruned`] takes from a walk's notes ([`Noted`]) is
     /// kept here with a fresh range of the same child over the ball `pruned` asks of, worked
     /// out apart from what [`Did`] counts: what a test holds the reuse to.
-    static NOTED_AGAINST_FRESH: std::cell::RefCell<Option<Vec<((f32, f32), (f32, f32))>>> = const { std::cell::RefCell::new(None) };
+    static NOTED_AGAINST_FRESH: std::cell::RefCell<Option<Vec<NotedAndFresh>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// (Tests only) at a build's charge, before it looks for a cancel (`before`) or after: counts
