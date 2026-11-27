@@ -44,4 +44,77 @@ How the files were made:
     - no collisions between non-incident features for d < lfs_min/2.
 
 ## Sections B, C, D
-(Filled in when complete; see below.)
+
+| Item | File | Primary sources read | Substitutes / additions (labelled) | Not obtained | Verify rows / fixes |
+|---|---|---|---|---|---|
+| B1 Convolution fields, slope bounds | R8-B1-convolution-fields-slope-bounds.md | Bloomenthal-Shoemake 91, Zanni et al. 13 (SCALIS, HAL), Angles et al. 17 | Hart 1996 sphere tracing (Lipschitz bound; copy legality WEAK) | Sherstyuk 1999 (thesis embargoed); SCALIS ray-tracing paper | 29 / 0 (1 WEAK) |
+| B2 Meshing: DC, manifold DC, MC33 | R8-B2-meshing-dual-contouring-mc33.md | Ju et al. 02, Schaefer-Ju-Warren 07, Chernyaev 95 (CERN), Lewiner et al. 03 | Custódio et al. 13 (MC33 bugs) | Ju-Udeshi; Nielson DMC (cited only) | 21 / 4 |
+| B3 Quadric simplification with attributes | R8-B3-quadric-simplification-attributes.md | Garland-Heckbert 97, 98; Hoppe 99 | Garland thesis (via A4) | none | 23 / 2 |
+| B4 Skin weights | R8-B4-skin-weights-heat-bbw-voxel.md | Baran-Popović 07 (MIT OA), Jacobson et al. 11 | Autodesk Maya docs for Dionne-de Lasa | Dionne-de Lasa 2013 | 21 / 0 (1 WEAK) |
+| C1 Lightning (DBM) | R8-C1-lightning-dbm-branching.md | Kim-Lin 07 | Sañudo et al. 95 (CC BY-NC-SA), Bickel et al. 06, Glassner 00, Reis-Fernandes 22 | NPW 1984; Reed-Wyvill 94 | 39 / 2 (1 WEAK) |
+| C2 Curl noise and plume rise | R8-C2-curl-noise-and-plume-rise.md | Bridson et al. 07; EPA ISC3 Vol II (public domain) | Cushman-Roisin ch. 8 | Briggs originals | 33 / 0 (1 WEAK) |
+| C3 Flame puffing and height (addendum to J11) | R8-C3-flame-puffing-and-height-addendum.md | none (both listed items blocked) | NIST FDS Validation Guide (public domain), Taha et al. 24 (HAL) | Cetegen-Ahmed 93; Heskestad 83; NUREG-1805 | 19 / 0 |
+| C4 Bloodstain impact angle and spreading | R8-C4-bloodstain-impact-angle-spreading.md | Attinger et al. 13 | Laan et al. 14 | Hulse-Smith et al. 05 | 27 / 0 |
+| C5 Flash thresholds | R8-C5-flash-thresholds-wcag-itu.md | WCAG 2.2 + Understanding + G176; ITU-R BT.1702-3 | EA IRIS README (BSD-3) | ISO 9241-391; Harding FPA, PEAT internals | 37 / 2 |
+| D1 Baluster and mouldings | R8-D1-baluster-and-moulding-constructions.md | Gibbs 1732 (IA scan, public domain) | Ware, *American Vignola* Pt I (public domain) | a measured survey of real balusters | 25 / 0 (1 WEAK) |
+| D2 Tower bell profile | R8-D2-tower-bell-profile.md | (none listed) Grimthorpe 1903 (Gutenberg) | EB 1911 "Bell" | an open modern true-harmonic profile table | 19 / 1 (1 WEAK) |
+| D3 Drinking vessels | R8-D3-drinking-vessel-proportions.md (+ R8-D3-met-drinking-vessels-data.csv) | (none listed) Met Collection API (CC0), Parpinello et al. 18 (CC BY) | ISO 3591 via Wikipedia; Attwood et al. 12 | MPRG 1998 Guide; POTS 1983; ISO 3591 text | 18 / 3 (3 WEAK) |
+
+### Key answers, sections B to D
+- **B1.**
+  - None of the listed kernel papers states a gradient bound. Hart gives Lip C_R = 3/(2R).
+  - My bound: Lip f ≤ (max|dk/du|/σ)·(skeleton weight in support). Kernel maxima are tabulated.
+  - Hart's Theorem 5 is misprinted; use the form from the proof.
+- **B2.**
+  - DC is always closed but not manifold.
+  - Manifold DC guarantees manifold output under Prop. 1 (χ = 1, 0/2 face crossings).
+  - MC33 handles two sheets per cell with face and interior tests, but the published tables have bugs (Custódio 13).
+  - No method guarantees freedom from self-intersection.
+- **B3.**
+  - The QEM formulas.
+  - Fold-over: test normal flips (penalise or reject).
+  - QEM does not keep manifoldness, so add the A4 link condition.
+  - Attributes: Garland-Heckbert 98 (Rⁿ) against Hoppe 99 (R³ projection).
+  - Bone weights: clamp and renormalise (mine).
+- **B4.**
+  - Heat weights solve (−Δ+H)w = Hp: one factorisation.
+  - BBW is a QP on a tet mesh.
+  - Voxel binding leaks where parts touch.
+  - Sources disagree on heat-weight robustness.
+- **C1.**
+  - DBM: p ∝ φ^η, giving dimension about 1.7.
+  - η of 1-4 (Kim-Lin) against η ≈ 6 matching photos in 3D (Sañudo).
+  - Sum probabilities in ascending order (rounding bug).
+  - Glassner's segment and flash numbers.
+- **C2.**
+  - Curl-noise boundary ramp and Eq. 5.
+  - Briggs (ISC3): F_b = g v d² ΔT/(4T_s).
+  - Final rise 21.425F^(3/4)/u (F < 55) and 38.71F^(3/5)/u.
+  - Gradual rise 1.60F^(1/3)x^(2/3)/u.
+- **C3.**
+  - Puffing frequency f ≈ 1.5/√D against Zukoski's 0.50√(g/D).
+  - Heskestad L_f/D = 3.7Q*^(2/5) − 1.02. J11's 0.235 corresponds to 3.87.
+- **C4.**
+  - W/L = sin α.
+  - d_max/d0 ≈ ½Re^(1/4).
+  - Splash threshold K = 57.7.
+  - Laan Padé law with A = 1.24.
+  - Sources disagree on whether the stain equals D_max.
+- **C5.**
+  - WCAG: no more than 3 flashes per second, or under the thresholds. A general flash is a 10% change with the darker image below 0.80. Area: 0.006 sr = 25% of a 10° field (341×256 px; 21,824 px²).
+  - Red flash (WCAG 2.2 note): R/(R+G+B) ≥ 0.8 and Δu′v′ > 0.2.
+  - ITU: 20 cd/m² below 160; Michelson 1/17 at or above 160; 25% of the *screen*; 360/334 ms; 5 s caution.
+- **D1.**
+  - Gibbs: stone baluster 8 parts high by 2 wide (H = 4W); gap ½W; neck ½W; plinth and abacus 1 part each; belly at about 0.4H (from the plate).
+  - Ware: W = H/3; centres about H/2; cap and base ¼H each; belly at H/3.
+  - Gibbs's arc constructions: cyma (diagonal halved, intersecting arcs); ovolo centre; cavetto radius 6/5 of the fillet projection; torus a semicircle; scotia from two centres on a 3/7 split.
+- **D2.**
+  - Grimthorpe: D in 24 parts. Inside sweep a quarter ellipse, 14 × 6.
+  - Sound-bow D/13 (D/12 heavy); waist D/39.
+  - Inside shoulder diameter ½D at 0.583D.
+  - Crown arc radius 16½-18 parts (≈0.71D); lip arc 3½-4 parts; pit ≥ 5/3 D.
+  - EB1911's "edge D/10, height 12× thickness" disagrees.
+- **D3.**
+  - Tumbler and beaker H/D median 1.2-1.3; mug 1.25.
+  - Goblet overall about 1.8 (historical) to 2.4 (ISO).
+  - Goblet bowl H/maxD about 1.5; rim/max about 0.7; stem plus foot about 35% of the height; foot D ≈ bowl max D.

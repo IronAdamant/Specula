@@ -378,12 +378,14 @@ R7-5b do not.
   - *Not checkable from the pack* (read online by the researcher and not saved, or packed as a
     refusal page): listed in each check. Those are not typed in as checked.
 
-## Round eight: geometry and the mathematics behind it (2026-11-27; section A)
+## Round eight: geometry and the mathematics behind it (2026-11-27 and 28; sections A to D)
 
 Asked for in [LIBRARY_RESEARCH_BRIEF_ROUND8.md](../LIBRARY_RESEARCH_BRIEF_ROUND8.md), because four
 lanes of the libraries were held up by geometry and not by programming. **Section A (soft edges on
-raised figures) was delivered the same evening**; sections B (a creature's body as one surface),
-C (effects by mathematics) and D (turned and moulded forms) are still to come.
+raised figures) was delivered the same evening; sections B (a creature's body as one surface),
+C (effects by mathematics) and D (turned and moulded forms) the next morning.** Nothing of B to D
+is in the engine yet: each file goes to its lane, and a number is checked against its source as it
+is typed in.
 
 | File | What it answers |
 |---|---|
@@ -394,8 +396,20 @@ C (effects by mathematics) and D (turned and moulded forms) are still to come.
 | [R8-A5](R8-A5-exact-predicates-shewchuk.md) | Exact answers from floating point: the orientation and in-circle predicates' error bounds |
 | [R8-A6](R8-A6-capping-holes-fist-cdt-flips.md) | Capping a figure with holes: robust ear clipping, constrained Delaunay, why edge flips terminate |
 | [R8-A7](R8-A7-local-feature-size-least-edge.md) | Predicting a mesh's least edge before building it: local feature size |
+| [R8-B1](R8-B1-convolution-fields-slope-bounds.md) | A smooth field around a skeleton, and a bound on its slope: none of the kernel papers states one; a Lipschitz bound from sphere tracing, and the researcher's own bound, labelled so |
+| [R8-B2](R8-B2-meshing-dual-contouring-mc33.md) | Meshing once: which method is closed, which manifold and under what condition; two sheets in one cell; the published tables' known faults |
+| [R8-B3](R8-B3-quadric-simplification-attributes.md) | Simplifying without losing the shape or the rig: the quadric's formulas, the fold-over test, why the link condition must be added, carrying bone weights |
+| [R8-B4](R8-B4-skin-weights-heat-bbw-voxel.md) | Skin weights from the skeleton alone: heat weights, bounded biharmonic weights, voxel binding; cost and known leaks |
+| [R8-C1](R8-C1-lightning-dbm-branching.md) | Lightning's shape: the growth rule and its exponent (two sources disagree), branching, and a rounding fault in summing probabilities |
+| [R8-C2](R8-C2-curl-noise-and-plume-rise.md) | Smoke that stays a plume: curl noise and why it has no divergence; a plume's rise against downwind distance |
+| [R8-C3](R8-C3-flame-puffing-and-height-addendum.md) | A fire's flicker and height, as an addendum to round three's J11: puffing frequency against diameter, flame height; both listed sources were blocked and substitutes are labelled |
+| [R8-C4](R8-C4-bloodstain-impact-angle-spreading.md) | Where a drop lands: a stain's width over length against impact angle; spreading; the splash threshold |
+| [R8-C5](R8-C5-flash-thresholds-wcag-itu.md) | What counts as a flash: the general and red flash definitions, the area rule, the broadcast limits: what the flash governor is built from |
+| [R8-D1](R8-D1-baluster-and-moulding-constructions.md) | The baluster's proportions in parts, and the classical mouldings as constructions from arcs (two sources, which differ) |
+| [R8-D2](R8-D2-tower-bell-profile.md) | A tower bell's profile in parts of its diameter; one source disagrees and both are given |
+| [R8-D3](R8-D3-drinking-vessel-proportions.md), [data](R8-D3-met-drinking-vessels-data.csv) | Drinking vessels: height over diameter for tumblers, beakers, mugs and goblets, from a museum's open data (the measurements are in the CSV) |
 | [as delivered](R8-README-as-delivered.md), [substitutes](R8-blocked-downloads-ALTERNATIVES.md) | The delivery's own overview, and which sources were replaced by a labelled substitute |
-| [R8-D3](R8-D3-vessel-forms-MPRG-1998.md) | Section D, vessels: pottery forms by profile and proportion (jug, jar, bowl, dish, beaker, cup, mug), their named profiles and component parts, from the Medieval Pottery Research Group's guide of 1998. Read by the lead's side from a copy the owner supplied (2026-11-28), text only: the outline drawings were not seen, and no second check was made. Five of its rules are a reading, marked so; it gives ratios and no sizes |
+| [R8-D3, forms](R8-D3-vessel-forms-MPRG-1998.md) | Section D, vessels (the delivery lists this guide as not obtained; the owner supplied a copy afterwards): pottery forms by profile and proportion (jug, jar, bowl, dish, beaker, cup, mug), their named profiles and component parts, from the Medieval Pottery Research Group's guide of 1998. Read by the lead's side from a copy the owner supplied (2026-11-28), text only: the outline drawings were not seen, and no second check was made. Five of its rules are a reading, marked so; it gives ratios and no sizes |
 
 - **Each file has a second checker's file beside it** (`.verify.md`), by the same researcher, row by
   row; the delivery counts 223 checked rows and 18 fixes applied.
