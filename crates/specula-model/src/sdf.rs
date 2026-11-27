@@ -240,6 +240,11 @@ fn ellipsoid_is_loose(p: &Prim) -> bool {
     matches!(p, Prim::Ellipsoid { radii } if !(radii[0] == radii[1] && radii[1] == radii[2]))
 }
 
+/// How far from round an ellipsoid may be for [`ellipsoid_span`] to give its range: the most
+/// `short` (`(rho + 1 / rho) / 2`, so a ratio of radii up to `2 + √3`, about 3.7), where its
+/// field outside is never less than half the distance to it.
+const QUICK_SHORT: f32 = 2.0;
+
 /// **The range of an ellipsoid child's field in a ball, from its value at the middle alone**
 /// (`d`, which [`valued`] has already taken, in its parent's frame; `r` the ball's radius
 /// there): `(d - r) / short` to `short d + r`, `short` being `(rho + 1 / rho) / 2` for the
@@ -281,6 +286,13 @@ fn ellipsoid_is_loose(p: &Prim) -> bool {
 /// What is left is relative (the field's `9 u |f|`, `short`'s own `4 u`, and the few roundings
 /// of the span's sums and products: under `30 u` in all, `1.8e-6`), covered by `1e-5` of each
 /// bound. None of it leans on a caller's padding of its ball.
+///
+/// **Only of an ellipsoid within [`QUICK_SHORT`] of round.** From its middle's value alone a
+/// span is up to `short` looser each way than the walk's (whose least comes from the box round
+/// the ellipsoid and its greatest from a point of its surface): a needle a hundred times as
+/// long as it is thick (`short` 50) was kept by the span in blocks the walk let it go from,
+/// and its mesh cost 9.5% more than with every range walked (review 2 of the merged sculpt,
+/// finding 3: its tree 31-279). Past that the walk is taken.
 fn ellipsoid_span(k: &Prepared, q: V3, d: f32, r: f32) -> Option<(f32, f32)> {
     let PKind::Prim(Prim::Ellipsoid { radii }) = &k.kind else { return None };
     let m = &k.m;
@@ -294,6 +306,9 @@ fn ellipsoid_span(k: &Prepared, q: V3, d: f32, r: f32) -> Option<(f32, f32)> {
     }
     let rho = most / least;
     let short = 0.5 * (rho + 1.0 / rho);
+    if !(short <= QUICK_SHORT) {
+        return None;
+    }
     let (lo, hi) = ((d - r - slack) / short - slack, short * (d + slack) + r + slack);
     let span = (lo - 1e-5 * lo.abs(), hi + 1e-5 * hi.abs());
     (span.0.is_finite() && span.1.is_finite()).then_some(span)
@@ -8139,8 +8154,11 @@ mod tests {
     /// 32 flat ellipsoids in a row (one sculpt of `made_record.rs`'s recipe), and flat
     /// ellipsoids moved, turned, mirrored and scaled among balls, sharp, smooth and nearly
     /// joined, meshed with it and with every ellipsoid's range walked instead: the same bytes,
-    /// for less work where it is asked, and never more than its own weight a time it is asked
-    /// past the ranges it saves.
+    /// for less work where it is asked, and on these trees never more than its own weight a
+    /// time it is asked past the ranges it saves. (That is measured, not proved: a span is up
+    /// to [`QUICK_SHORT`] looser than the distance, so a tree could keep a child the walk lets
+    /// go. Review 2's 459 trees and 228 more, with needles, all held it once a needle's range
+    /// was walked; two of them, which did not before, are here.)
     #[test]
     fn a_flat_ellipsoids_range_from_its_middle_changes_no_mesh() {
         let row = group(
@@ -8175,13 +8193,34 @@ mod tests {
             let op = [Combine::Union, Combine::Union, Combine::Near][case % 3];
             trees.push(group(op, kids, [0.0, 0.05, 0.1][case % 3]));
         }
-        for (i, tree) in trees.iter().enumerate() {
-            let res = [24, 48][i % 2];
+        let mut options: Vec<MeshOptions> = (0..trees.len()).map(|i| opts([24, 48][i % 2])).collect();
+        // Review 2's two trees that cost more with the span than walked, when a needle a
+        // hundred times as long as it is thick took it (31-279: 9.5% more; 31-222: 2.2%), each
+        // in its own box: since [`QUICK_SHORT`] a needle's range is walked.
+        let at = |p: Prim, at: V3| {
+            let mut n = prim(p);
+            n.m.at = at;
+            n
+        };
+        let mut needle = at(Prim::Ellipsoid { radii: [0.003, 0.003, 0.3] }, [-0.14568865, -0.30817974, 0.49584252]);
+        needle.m.mirror = [false, false, true];
+        needle.m.rotate = [-112.11595, -16.929413, 16.957275];
+        needle.m.scale = 2.4063702;
+        let mut t279 = group(Combine::Union, vec![at(Prim::Sphere { radius: 0.13235386 }, [0.3246404, 0.11351192, 0.41486692]), at(Prim::Sphere { radius: 0.18619028 }, [-0.17847574, -0.04506296, -0.29421097]), at(Prim::Sphere { radius: 0.09876135 }, [0.43465382, -0.028948724, 0.4131986]), needle], 0.01);
+        t279.m.at = [-0.09073863, -0.15618524, -0.11539524];
+        t279.m.round = 0.013112875;
+        trees.push(t279);
+        options.push(MeshOptions { bounds: Some(([-0.63601035, -1.3118174, -1.0603523], [0.6232823, 0.3830874, 0.8295619])), max_work: u64::MAX, max_triangles: 3_000_000, ..opts(24) });
+        let mut needle = at(Prim::Ellipsoid { radii: [0.0003, 0.0004970766, 0.3] }, [-0.32722706, 0.040733755, -0.11142385]);
+        needle.m.rotate = [-46.84999, 22.011414, -18.041016];
+        trees.push(group(Combine::Union, vec![needle, at(Prim::Sphere { radius: 0.04188597 }, [0.4678895, -0.15233248, -0.46155888])], 0.05));
+        options.push(MeshOptions { bounds: Some(([-0.62623453, -0.35203755, -0.66126394], [0.66759455, 0.38329846, 0.23706192])), max_work: u64::MAX, max_triangles: 3_000_000, ..opts(40) });
+        for (i, (tree, o)) in trees.iter().zip(&options).enumerate() {
             Did::taken();
-            let (quick, qs) = mesh(tree, &opts(res)).unwrap();
+            let (quick, qs) = mesh(tree, o).unwrap();
             let asked = Did::taken();
             NO_QUICK_SPAN.with(|f| f.set(true));
-            let walked = mesh(tree, &opts(res));
+            let walked = mesh(tree, o);
             NO_QUICK_SPAN.with(|f| f.set(false));
             let (walked, ws) = walked.unwrap();
             assert_eq!((mesh_hash(&quick), quick.tris.len()), (mesh_hash(&walked), walked.tris.len()), "tree {i}");
@@ -8199,6 +8238,7 @@ mod tests {
     /// cover). Flat, needle and nearly round ellipsoids (ratios of radii to a thousand, sizes
     /// from a hundredth to ten), moved, turned, mirrored and scaled; balls from just short of
     /// the ellipsoid to well clear of it, and some reaching into it: every span is given only
+    /// of an ellipsoid within [`QUICK_SHORT`] of round, and only
     /// where the ball is clear (`d > r`), and the field sampled in the ball (its middle, toward
     /// and away from the shape along its gradient at the ball's edge, toward its middle, and
     /// throughout and on its edge) lies inside it, with no padding of the ball. Through every
@@ -8211,7 +8251,7 @@ mod tests {
         let ten = |x: f32| crate::dmath::pow(10.0, x);
         for _ in 0..60_000 {
             let a = ten(r.range(-2.0, 1.0));
-            let rho = [1.001f32, 1.5, 3.0, 10.0, 100.0, 1000.0][r.pick(6)];
+            let rho = [1.001f32, 1.2, 1.5, 2.0, 2.5, 3.0, 3.7, 10.0, 100.0, 1000.0][r.pick(10)];
             let mut radii = match r.pick(4) {
                 0 => [a, a * r.range(0.3, 1.0), a / rho],
                 1 => [a, a / rho, (a / rho * r.range(1.0, 2.0)).min(a)],
@@ -8253,6 +8293,11 @@ mod tests {
             }
             .max(0.0);
             let got = ellipsoid_span(&k, c, d, rad);
+            let short = 0.5 * (rho + 1.0 / rho);
+            if short > QUICK_SHORT * 1.001 {
+                assert!(got.is_none(), "a span {got:?} of an ellipsoid {short} from round: {node:?}");
+                continue;
+            }
             if !(d > rad) {
                 assert!(got.is_none(), "a span {got:?} for a ball that reaches the ellipsoid: d {d} r {rad} {node:?}");
                 reaching += 1;
@@ -8285,10 +8330,10 @@ mod tests {
                 assert!(lo <= f && f <= hi, "the field {f} outside its span {lo}..{hi} in a ball of {rad} about {c:?} (its value {d} there), at {p:?}: {node:?}");
             }
         }
-        assert!(given > 10_000 && reaching > 10_000 && samples > 500_000 && edge > 1_000, "{given} spans, {reaching} balls reaching, {samples} samples, {edge} near the least");
+        assert!(given > 6_000 && reaching > 6_000 && samples > 300_000 && edge > 500, "{given} spans, {reaching} balls reaching, {samples} samples, {edge} near the least");
         // Through every modifier the argument does not cover, no span; nor of another
         // primitive, nor of a group.
-        let flat = || prim(Prim::Ellipsoid { radii: [0.5, 0.02, 0.3] });
+        let flat = || prim(Prim::Ellipsoid { radii: [0.5, 0.2, 0.3] });
         let others: [fn(&mut Modifiers); 11] = [
             |m| m.round = 0.01,
             |m| m.shell = 0.01,
