@@ -154,6 +154,7 @@ mod light_noise;
 mod light_tools;
 pub mod terrain;
 mod model_export;
+mod sprite_bake;
 mod paint_tools;
 mod path_tools;
 mod terrain_tools;
@@ -2708,6 +2709,8 @@ impl Engine {
             stream_tools::Fly::abort(f);
         }
         self.studio_shutting_down();
+        // Step jobs give back what they hold (targets, pins) and are answered.
+        self.steps_shutting_down();
         // A perf_capture in progress answers with the frames it has.
         self.profiler.abort_capture();
     }
@@ -3321,6 +3324,11 @@ impl Engine {
             self.start_anim_job(request);
             return;
         }
+        if matches!(request.command, Command::SpriteBake(_)) {
+            // A job of its owner's: renders landed without waiting, the rest on workers (see `sprite_bake::job`).
+            self.start_sprite_bake(request);
+            return;
+        }
         if matches!(request.command, Command::PerfLight(_)) {
             // A measuring render per step (see `light_tools`).
             self.start_light_job(request);
@@ -3739,6 +3747,7 @@ impl Engine {
             Command::Ui(call) => self.ui_call(call, w, tick, &request.session),
             Command::SaveGame(call) => self.handle_save(call, w, &by, authority::authority(&self.swarm, &request.session.id)),
             Command::ModelBuild(_) | Command::ModelExport(..) | Command::ModelReload => unreachable!("answered by handle_model_call"),
+            Command::SpriteBake(_) => unreachable!("a step job (start_sprite_bake)"),
             // An agent's hold on an action the human is using takes their input over: judged by
             // the input monitor first (docs/design/SECURITY.md).
             Command::Logic(call) => match self.security_logic_input(&call, &request.session) {
@@ -4240,7 +4249,7 @@ fn call_class(command: &Command) -> Class {
         Command::StudioRender(_) | Command::StudioDone(_) => Class::Read,
         Command::Vfx(call) => vfx_tools::call_class(call),
         Command::Timeline(call) => timeline_tools::call_class(call),
-        Command::PerfLight(_) => Class::Render,
+        Command::PerfLight(_) | Command::SpriteBake(_) => Class::Render,
         Command::Gi(call) => gi_tools::call_class(call),
         Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelExport(..) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,

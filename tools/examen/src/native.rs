@@ -25,6 +25,7 @@ mod form;
 mod launch;
 mod light;
 mod search;
+mod sprite;
 
 /// One native check.
 pub struct Check {
@@ -62,6 +63,11 @@ pub const CHECKS: &[Check] = &[
         about: "what the engine looks for itself: a run read on its way, a run for each value of a number, a number tuned to a condition, and a script found that a run of its own plays to the same state (docs/design/FIRST_HOUR.md)",
         run: search::search,
     },
+    Check {
+        name: "sprite_check",
+        about: "sprite_bake end to end: two files in one journal entry and one undo, the project's light, a held bake cancelled by its owner only and by a lead's force, none kept for a caller with no name, a cancel honoured once encoded and refused too_late once writing, a claim taken while a bake runs refusing its commit, 512 cells answered as a job, and a windowed bake from a shell uploading its model once (docs/design/SPRITE_BAKE.md)",
+        run: sprite::sprite,
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static Check> {
@@ -90,6 +96,9 @@ pub struct Cx {
     /// The settings folder (below the check's own) its engines and commands use: whose
     /// machine this is. A check that needs a second operator names another for a while.
     operator: &'static str,
+    /// Environment variables the check's engines are started with (a test gate of the
+    /// engine's, such as `SPECULA_TEST_BAKE_HOLD`).
+    engine_env: Vec<(String, String)>,
 }
 
 impl Drop for Cx {
@@ -133,7 +142,7 @@ fn expect(ok: bool, what: &str, answer: &Json) -> Result<(), String> {
 impl Cx {
     pub fn new(out: &Path, port: u64) -> Cx {
         let exe = crate::run::target_dir().join("debug").join(if cfg!(windows) { "specula.exe" } else { "specula" });
-        Cx { out: out.to_path_buf(), port, exe, log: Vec::new(), engines: Vec::new(), started: 0, operator: "settings" }
+        Cx { out: out.to_path_buf(), port, exe, log: Vec::new(), engines: Vec::new(), started: 0, operator: "settings", engine_env: Vec::new() }
     }
 
     pub fn say(&mut self, line: impl Into<String>) {
@@ -145,6 +154,11 @@ impl Cx {
         let mut text = self.log.join("\n");
         text.push('\n');
         text
+    }
+
+    /// The engines started from here on get `name=value` in their environment.
+    pub fn engine_env(&mut self, name: &str, value: &str) {
+        self.engine_env.push((name.to_owned(), value.to_owned()));
     }
 
     /// From here on the check's engines and commands are another operator's: another settings
@@ -244,6 +258,7 @@ impl Cx {
         let mut cmd = Command::new(&self.exe);
         cmd.arg("--project").arg(project).args([if headless { "--headless" } else { "--no-activate" }, "--port", &port.to_string()]);
         cmd.args(["--settings", &own(self.operator), "--captures", &own("captures"), "--cache", &own("cache"), "--trace", &own("trace")]);
+        cmd.envs(self.engine_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd.args(flags).current_dir(project).stdin(Stdio::null()).stdout(file.0).stderr(file.1);
         let mut child = cmd.spawn().map_err(|e| format!("the engine could not be started ({}): {e}", self.exe.display()))?;
         self.say(format!("engine {n} on port {port}: --project {} {} (log: {})", project.display(), flags.join(" "), log.display()));

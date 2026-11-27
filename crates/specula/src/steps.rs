@@ -60,6 +60,25 @@ pub(crate) trait StepJob {
     fn on_gpu(&self) -> bool {
         false
     }
+    /// Called once, on every way a job leaves the queue ([`Ended`]): what it holds of the
+    /// engine's (a render target, a pin on a build) goes back here, whether it answered or was
+    /// dropped. Its answer, if any, is sent after this.
+    fn on_end(&mut self, _engine: &mut Engine, _how: Ended) {}
+}
+
+/// How a step job left the queue (its [`StepJob::on_end`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ended {
+    /// It answered (`Step::Done`) or handed its answer on (`Step::Handed`).
+    Answered,
+    /// It had to queue and the queue was full (`job_busy`), after its first slices ran.
+    Refused,
+    /// Past its deadline (`timed_out`).
+    TimedOut,
+    /// Its session closed (`session_closed`; never a kept job).
+    SessionClosed,
+    /// The engine is stopping (`shutting_down`).
+    ShuttingDown,
 }
 
 struct Entry {
@@ -67,6 +86,8 @@ struct Entry {
     owner: JobOwner,
     session: String,
     cancel_on_close: bool,
+    /// Counted as its agent's but kept when its session closes ([`Engine::step_job_kept`]).
+    kept: bool,
     reply: Reply,
     deadline: Instant,
     class: Class,
@@ -89,6 +110,10 @@ impl Entry {
 #[derive(Default)]
 pub struct Steps {
     queue: VecDeque<Entry>,
+    /// Render targets whose job ended while their render was still on the GPU: each goes back
+    /// to the engine's target cache once a poll finds its render done ([`Engine::land_orphans`]),
+    /// never waited for.
+    pub(crate) orphans: Vec<((u32, u32), specula_gpu::TargetId)>,
     /// Journal replays in progress (`world_hash {verify}`): each holds a copy of the journal's
     /// base world, so at most [`MAX_REPLAYS`] at once; the rest wait their turn cheaply.
     pub(crate) replays: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -132,17 +157,32 @@ impl Engine {
     /// call and is never refused); one that must queue is refused (`job_busy`) past
     /// [`MAX_STEP_JOBS`] agents' jobs queued or [`MAX_STEPS_PER_OWNER`] for this agent. A
     /// playtest's step (call 0) always queues.
-    pub(crate) fn step_job(&mut self, start: StepStart, mut job: Box<dyn StepJob>) {
+    pub(crate) fn step_job(&mut self, start: StepStart, job: Box<dyn StepJob>) {
+        self.step_job_as(start, job, false);
+    }
+
+    /// [`Engine::step_job`] for a job whose answer is kept for its owner's identity, which
+    /// outlives a connection (`sprite_bake`): counted as the agent's job, never dropped when
+    /// the session that started it closes (its own deadline still ends it).
+    pub(crate) fn step_job_kept(&mut self, start: StepStart, job: Box<dyn StepJob>) {
+        self.step_job_as(start, job, true);
+    }
+
+    fn step_job_as(&mut self, start: StepStart, mut job: Box<dyn StepJob>, kept: bool) {
         let StepStart { owner, session, call, reply, deadline, class } = start;
         let trace = specula_core::trace::Ctx::current();
         let started = Instant::now();
         loop {
             match job.step(self, &reply) {
                 Step::Done(out) => {
+                    job.on_end(self, Ended::Answered);
                     let _ = reply.send(out);
                     return;
                 }
-                Step::Handed => return,
+                Step::Handed => {
+                    job.on_end(self, Ended::Answered);
+                    return;
+                }
                 Step::More if started.elapsed().as_secs_f64() * 1000.0 < INLINE_MS => {}
                 Step::More | Step::Wait => break,
             }
@@ -158,10 +198,11 @@ impl Engine {
             .with("queued_by", Json::arr(owners.into_iter().map(Json::from)))
             .with("retry_after_s", 1)
             .with("retry", true);
+            job.on_end(self, Ended::Refused);
             reply.refuse(&e);
             return;
         }
-        self.steps.queue.push_back(Entry { job, owner, session, cancel_on_close: call != 0, reply, deadline, class, trace, started, landed: false });
+        self.steps.queue.push_back(Entry { job, owner, session, cancel_on_close: call != 0, kept, reply, deadline, class, trace, started, landed: false });
     }
 
     /// Runs queued slices round-robin within the credit earned at `share` of the wall time since
@@ -170,16 +211,24 @@ impl Engine {
     /// after a window that pulsed: `Schedule::frame_pump`). Answers whether a job did more than
     /// wait.
     pub(crate) fn pump_steps(&mut self, share: f64, server: &specula_protocol::Server, leave_pulsed: bool) -> bool {
+        self.pump_steps_among(share, |e| e.open_session_ids(server.all_sessions()), leave_pulsed)
+    }
+
+    /// [`Engine::pump_steps`], the open sessions told by `alive` (tests have no server).
+    fn pump_steps_among(&mut self, share: f64, alive: impl FnOnce(&Self) -> BTreeSet<String>, leave_pulsed: bool) -> bool {
         let now = Instant::now();
         let earned = self.steps.last_pump.map_or(MAX_CREDIT_MS, |t| (now - t).as_secs_f64() * 1000.0 * share);
         self.steps.last_pump = Some(now);
+        // Before the empty queue's return: a job the last pass dropped with its render on the
+        // GPU may have been the only one queued (review 2, M1).
+        self.land_orphans();
         if self.steps.queue.is_empty() {
             self.steps.credit_ms = MAX_CREDIT_MS;
             return false;
         }
         if self.steps.last_session_check.is_none_or(|t| now - t >= SESSION_CHECK) {
             self.steps.last_session_check = Some(now);
-            let alive = self.open_session_ids(server.all_sessions());
+            let alive = alive(self);
             self.drop_closed_steps(&alive);
         }
         self.steps.credit_ms = (self.steps.credit_ms + earned).min(MAX_CREDIT_MS);
@@ -189,8 +238,9 @@ impl Engine {
     /// Drops the queued jobs of sessions not in `alive` (`session_closed`), whatever they were
     /// doing: one that waits ([`Step::Wait`]) is dropped as one with more to do is.
     pub(crate) fn drop_closed_steps(&mut self, alive: &BTreeSet<String>) {
-        for e in std::mem::take(&mut self.steps.queue) {
-            if e.cancel_on_close && !alive.contains(&e.session) {
+        for mut e in std::mem::take(&mut self.steps.queue) {
+            if e.cancel_on_close && !e.kept && !alive.contains(&e.session) {
+                e.job.on_end(self, Ended::SessionClosed);
                 let _ = e.reply.send(stopped("session_closed", &format!("the session closed; its {} was dropped", e.job.kind())));
             } else {
                 self.steps.queue.push_back(e);
@@ -208,6 +258,7 @@ impl Engine {
         while self.steps.credit_ms > 0.0 {
             let Some(mut e) = self.steps.queue.pop_front() else { break };
             if Instant::now() > e.deadline {
+                e.job.on_end(self, Ended::TimedOut);
                 let _ = e.reply.send(stopped("timed_out", &format!("the {} ran out of its caller's time; ask for less (fewer subjects, rows or frames) or call again when the engine is less busy", e.job.kind())));
                 continue;
             }
@@ -246,9 +297,13 @@ impl Engine {
                 }
                 Step::Done(out) => {
                     waited = 0;
+                    e.job.on_end(self, Ended::Answered);
                     let _ = e.reply.send(out);
                 }
-                Step::Handed => waited = 0,
+                Step::Handed => {
+                    waited = 0;
+                    e.job.on_end(self, Ended::Answered);
+                }
                 // It waits at the back: the jobs behind it are not held up by it (they were:
                 // review of m5-framezones), and their order among themselves is kept.
                 Step::Wait => {
@@ -265,6 +320,83 @@ impl Engine {
 
     pub(crate) fn steps_busy(&self) -> bool {
         self.steps.busy()
+    }
+
+    /// The engine is stopping: every queued job ends ([`Ended::ShuttingDown`]) and is answered
+    /// `shutting_down`; a target whose render is still on the GPU is landed (waited for: the
+    /// engine is stopping, and the device goes next).
+    pub(crate) fn steps_shutting_down(&mut self) {
+        for mut e in std::mem::take(&mut self.steps.queue) {
+            e.job.on_end(self, Ended::ShuttingDown);
+            let _ = e.reply.send(stopped("shutting_down", &format!("the engine is shutting down; the {} was stopped before it answered (what it had already committed stays: project_list says)", e.job.kind())));
+        }
+        if !self.steps.orphans.is_empty() {
+            let _ = self.gpu.settle_offscreen(true);
+            self.land_orphans();
+        }
+    }
+
+    /// A render target whose job ended with its render on the GPU: back to the engine's target
+    /// cache once that render is done ([`Engine::land_orphans`]).
+    pub(crate) fn orphan_target(&mut self, size: (u32, u32), target: specula_gpu::TargetId) {
+        self.steps.orphans.push((size, target));
+    }
+
+    /// Orphaned targets whose render is done go back to the target cache (or are destroyed when
+    /// it is full); one still rendering is polled, never waited for.
+    pub(crate) fn land_orphans(&mut self) {
+        if self.steps.orphans.is_empty() {
+            return;
+        }
+        for (size, t) in std::mem::take(&mut self.steps.orphans) {
+            // Still rendering: polled again later. Done, or failed (the device's error is the
+            // next render's to say): given back.
+            if self.gpu.offscreen_pending_target() == Some(t) && matches!(self.gpu.settle_offscreen_within(Some(Duration::ZERO)), Ok(false)) {
+                self.steps.orphans.push((size, t));
+                continue;
+            }
+            self.give_back_target(size, t);
+        }
+    }
+
+    /// A target an offscreen job held alone goes back to the engine's cache of offscreen targets,
+    /// or is destroyed when the cache is full.
+    pub(crate) fn give_back_target(&mut self, size: (u32, u32), t: specula_gpu::TargetId) {
+        if self.targets.len() < crate::MAX_CACHED_TARGETS {
+            self.targets.push((size, t));
+        } else {
+            self.gpu.destroy_target(t);
+        }
+    }
+
+    /// Tests: every queued job is past its deadline (the next pass drops them all).
+    #[cfg(test)]
+    pub(crate) fn steps_expire_all(&mut self) {
+        let past = Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now);
+        for e in &mut self.steps.queue {
+            e.deadline = past;
+        }
+    }
+
+    /// Tests: how many jobs are queued.
+    #[cfg(test)]
+    pub(crate) fn steps_queued(&self) -> usize {
+        self.steps.queue.len()
+    }
+
+    /// Tests: one pass of the queue with a full credit, orphaned targets landed first (as
+    /// [`Engine::pump_steps`] does).
+    #[cfg(test)]
+    pub(crate) fn steps_pass(&mut self) -> bool {
+        self.steps.credit_ms = MAX_CREDIT_MS;
+        self.land_orphans();
+        self.run_steps(false)
+    }
+
+    /// Tests: the window's pump itself ([`Engine::pump_steps`]), every queued job's session open.
+    #[cfg(test)]
+    pub(crate) fn steps_pump(&mut self) -> bool {
+        self.pump_steps_among(WINDOW_SHARE, |e| e.steps.queue.iter().map(|q| q.session.clone()).collect(), false)
     }
 }
 
@@ -482,6 +614,91 @@ mod tests {
         // Its next step sends the next render; a step finding it on the GPU waits.
         assert!(pass(&mut e, MAX_CREDIT_MS, false) && steps.get() == 5);
         assert!(e.steps.gpu_waiting());
+    }
+
+    /// A job that records how it ended, after `waits` waits (or for ever).
+    struct Ends {
+        how: std::rc::Rc<std::cell::RefCell<Vec<Ended>>>,
+        waits: Option<usize>,
+    }
+
+    impl StepJob for Ends {
+        fn kind(&self) -> &'static str {
+            "ends"
+        }
+
+        fn step(&mut self, _: &mut Engine, _: &Reply) -> Step {
+            match &mut self.waits {
+                Some(0) => Step::Done(ToolOutput::text("{}")),
+                Some(n) => {
+                    *n -= 1;
+                    Step::Wait
+                }
+                None => Step::Wait,
+            }
+        }
+
+        fn on_end(&mut self, _: &mut Engine, how: Ended) {
+            self.how.borrow_mut().push(how);
+        }
+    }
+
+    /// Review 1 of the sprite bake, finding 3: a job dropped by the queue gave back nothing it
+    /// held. Every way a job leaves the queue calls its end hook once, before its answer:
+    /// answered (in its call, or in a pass), refused for a full queue, past its deadline, its
+    /// session closed, the engine stopping. A kept job is never dropped for its session.
+    #[test]
+    fn every_way_a_job_leaves_the_queue_calls_its_end_once() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        let how = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let start = |name: &str, call: u64| {
+            let (reply, answer) = crate::jobs::channel();
+            let owner = crate::jobs::JobOwner { name: name.into(), key: name.into() };
+            (StepStart { owner, session: name.into(), call, reply, deadline: Instant::now() + Duration::from_secs(120), class: crate::schedule::Class::Render }, answer)
+        };
+        let ends = |waits| Box::new(Ends { how: std::rc::Rc::clone(&how), waits });
+        let code = |a: &std::sync::mpsc::Receiver<ToolOutput>| a.try_recv().map(|o| format!("{o:?}")).unwrap_or_default();
+        // Answered in its call.
+        let (s, a) = start("ann", 1);
+        e.step_job(s, ends(Some(0)));
+        assert_eq!(*how.borrow(), [Ended::Answered]);
+        assert!(!code(&a).is_empty());
+        // Answered in a pass.
+        let (s, _a) = start("ann", 1);
+        e.step_job(s, ends(Some(3)));
+        while how.borrow().len() < 2 {
+            e.steps_pass();
+        }
+        assert_eq!(how.borrow()[1], Ended::Answered);
+        // Refused: the owner's slots full.
+        let mut held = Vec::new();
+        for _ in 0..MAX_STEPS_PER_OWNER {
+            let (s, a) = start("bob", 2);
+            e.step_job(s, ends(None));
+            held.push(a);
+        }
+        let (s, a) = start("bob", 2);
+        e.step_job(s, ends(None));
+        assert_eq!(how.borrow()[2], Ended::Refused);
+        assert!(code(&a).contains("job_busy"));
+        // Past its deadline: every one of bob's.
+        e.steps_expire_all();
+        e.steps_pass();
+        assert_eq!(how.borrow()[3..], [Ended::TimedOut; MAX_STEPS_PER_OWNER]);
+        assert!(held.iter().all(|a| code(a).contains("timed_out")));
+        // Its session closed: a plain job ends so; a kept one stays queued.
+        let (s, a) = start("cy", 3);
+        e.step_job(s, ends(None));
+        let (s, kept) = start("cy", 3);
+        e.step_job_kept(s, ends(None));
+        e.drop_closed_steps(&BTreeSet::new());
+        assert_eq!(*how.borrow().last().unwrap(), Ended::SessionClosed);
+        assert!(code(&a).contains("session_closed") && e.steps_queued() == 1);
+        // The engine stopping: the kept one too.
+        e.steps_shutting_down();
+        assert_eq!(*how.borrow().last().unwrap(), Ended::ShuttingDown);
+        assert!(code(&kept).contains("shutting_down") && e.steps_queued() == 0);
+        assert_eq!(how.borrow().len(), 3 + MAX_STEPS_PER_OWNER + 2, "each job's end was called once: {:?}", how.borrow());
     }
 
     /// Review of 998af3d (major 1): twenty agents looping world_hash {verify} filled the slots and

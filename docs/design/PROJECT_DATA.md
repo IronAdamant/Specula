@@ -83,12 +83,13 @@ Only files of known kinds are mirrored; everything else on disk is left alone:
 | `sound` | `*.json` in a folder named `sounds` | `specula_audio`'s sound recipe parser | the hosted game: Sepulcra re-renders that sound |
 | `anim_set` | `*.json` in a folder named `anims` | JSON syntax (the anim lane owns its schema) | the model library, as recipes |
 | `timeline` | `*.json` in a folder named `timelines` | `specula_tempus::Timeline::parse_text`, then anim and vfx values as `world_set` takes them ([TIMELINE.md](TIMELINE.md)) | the next `timeline_play` reads the new version |
+| `sprite_sheet` | `<name>.sheet.json` directly in a folder named `sprites` (a baked sheet's frame data, written by `sprite_bake` beside its atlas `<name>.png`); any other `*.json` there, a hand-made sheet's own (Aseprite, TexturePacker), is not mirrored | `sprite_bake::sheet::SheetData::parse`, the reader a game's playback uses: the grid, every strip's frames inside the atlas, each strip's `sprite` object playing its own frames ([SPRITE_BAKE.md](SPRITE_BAKE.md)) | none needed: a game reads it when it spawns a sprite |
 | `game` | `game.json` at the project's root | `specula_ludus::GameFile::parse` ([FIRST_HOUR.md](FIRST_HOUR.md)) | the project shell follows it while it runs (`Game::game_file_changed`, with the store's text) |
 | `note` | `notes/<id>.md` at the project's root (the id: lowercase letters, digits, `_`, `-`) | `specula_memoria::Note::parse`: front matter with a title and a kind | none needed: the `memory_*` tools read the store |
 | `rust` | `*.rs` under a module's `src/` | **`logic_build` only** (see below) | `build: true` on the write runs `logic_build` |
 | `cargo` | a module's `Cargo.toml` | `check_module_manifest` (a module's manifest only), then `logic_build` | as `rust` |
 | `json` | other `*.json` at a module's top level (`actions.json`) | JSON syntax | as `rust` |
-| `png` | `*.png` under a folder named `textures`, `images`, `references` or `icons` | decodes (at most 8192 a side, 32 M pixels) | models rebuild; the hosted game |
+| `png` | `*.png` under a folder named `textures`, `images`, `references`, `icons` or `sprites` (`sprites` since `sprite_bake`, 2026-11-24: a project's hand-made sprite PNGs there are mirrored into the content store from then on, as textures are) | decodes (at most 8192 a side, 32 M pixels) | models rebuild; the hosted game |
 | `glb`, `gltf` | `*.glb` / `*.gltf` under a folder named `models` | imports as `model_build` imports it (a `.gltf` must be self-contained) | models rebuild |
 | `wav` | `*.wav` under a folder named `audio` or `sounds` | parses | the hosted game |
 

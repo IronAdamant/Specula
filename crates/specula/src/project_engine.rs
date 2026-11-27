@@ -50,7 +50,7 @@ enum CommitStep {
 
 /// Whether a project call reads or writes the disk (so waits for a sync in progress).
 fn waits_for_sync(call: &ProjectCall) -> bool {
-    matches!(call, ProjectCall::Snapshot { .. } | ProjectCall::Commit { .. } | ProjectCall::ModuleTexts { .. } | ProjectCall::CommitFixes { .. } | ProjectCall::Mount { .. })
+    matches!(call, ProjectCall::Snapshot { .. } | ProjectCall::Commit { .. } | ProjectCall::ModuleTexts { .. } | ProjectCall::CommitFixes { .. } | ProjectCall::Mount { .. } | ProjectCall::CommitFiles { .. })
 }
 
 /// The text `path` had at `version`, and the changes after it (newest first), from the journal
@@ -195,6 +195,16 @@ pub(crate) fn file_commit(wd: &mut dyn crate::write_policy::WorldWrite, path: &s
     Ok(())
 }
 
+/// A multi-file project commit's writes ([`ProjectCall::CommitFiles`]: `sprite_bake`'s atlas and
+/// its frame data): every file in one journal entry, each checked against claims as one commit's
+/// file is, so a claim on any of them refuses them all and one undo takes them all back.
+pub(crate) fn files_commit(wd: &mut dyn crate::write_policy::WorldWrite, files: Vec<(String, Option<ProjectFile>)>) -> Result<(), WorldError> {
+    for (path, file) in files {
+        wd.put_file(&path, file, false);
+    }
+    Ok(())
+}
+
 impl Engine {
     /// Answers a project call on the main thread.
     pub(crate) fn project_call(&mut self, call: ProjectCall, w: Writer, by: &str) -> ToolOutput {
@@ -264,6 +274,36 @@ impl Engine {
             ProjectCall::Owner { reply } => {
                 // The identity key alone: a name given (or changed) by agent_hello later keeps them.
                 let _ = reply.send(w.session.unwrap_or(w.name).to_owned());
+                ToolOutput::text("{}")
+            }
+            ProjectCall::CommitFiles { files, reply } => {
+                match self.project_commit_files(files, w, by) {
+                    Err(c) => {
+                        let _ = reply.send(c);
+                    }
+                    // Answered once every file is on disk (written on a worker), each file's
+                    // disk state its own: a write still pending or held is said for that file.
+                    Ok((seq, paths)) => self.project_sync_then(None, move |e, _, reloaded| {
+                        let files = paths.iter().map(|p| {
+                            let f = e.world.files().get(p);
+                            let disk = if let Some(why) = e.project.pending.get(p) {
+                                Json::obj([("pending", Json::from(why.as_str())), ("note", Json::from("the change is committed and journaled; the engine retries the write every second (project_list shows it)"))])
+                            } else if e.project.held.contains_key(p) {
+                                Json::obj([("held", Json::from("the file on disk can't be mirrored; the change is in the journal"))])
+                            } else {
+                                Json::from("written")
+                            };
+                            Json::obj([
+                                ("path", Json::from(p.as_str())),
+                                ("version", Json::from(f.map(|f| f.version))),
+                                ("bytes", Json::from(f.map_or(0, |f| if f.kind.is_binary() { project::binary_bytes(f) } else { f.text.len() as u64 }))),
+                                ("disk", disk),
+                            ])
+                        });
+                        let j = Json::obj([("files", Json::arr(files)), ("journal", Json::from(seq)), ("reloaded", Json::arr(reloaded.into_iter().map(Json::from)))]);
+                        let _ = reply.send(Committed::Done(j));
+                    }),
+                }
                 ToolOutput::text("{}")
             }
             ProjectCall::CommitFixes { files, reply } => {
@@ -337,6 +377,42 @@ impl Engine {
         match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, rule, |wd| file_commit(wd, path, new, also, by)) {
             Err(e) => Err(Committed::Refused(e)),
             Ok((_, seq)) => Ok((seq, backup)),
+        }
+    }
+
+    /// Several files in one journal entry ([`ProjectCall::CommitFiles`]): each is checked as one
+    /// commit checks its file (its base, its mount and kind, the store's room, the disk's
+    /// budget), then all are written under the project rule, or none is.
+    fn project_commit_files(&mut self, files: Vec<crate::project_tools::FileWrite>, w: Writer, by: &str) -> Result<(Option<u64>, Vec<String>), Committed> {
+        // Two spellings of one file in one commit (one file on Windows and macOS): refused, as
+        // a batch of the taste tools' is.
+        check_batch(&files.iter().map(|(p, _, _)| p.as_str()).collect::<Vec<_>>(), crate::write_policy::Rule::Project, &[]).map_err(Committed::Refused)?;
+        let mut puts = Vec::with_capacity(files.len());
+        for (path, base, file) in files {
+            let (new, _) = self.project_prepare(&path, base, Some(file), false, by)?;
+            puts.push((path, new));
+        }
+        // Each file was checked against the store as it is; together they must fit too (the
+        // store's file count and bytes, the binary store's, and the disk's budget for all).
+        if puts.len() > 1 {
+            let mut view = self.world.files().clone();
+            let mut disk_bytes = 0u64;
+            for (p, f) in puts.iter().filter_map(|(p, f)| f.as_ref().map(|f| (p, f))) {
+                project::room_for(&view, p, f.text.len()).map_err(Committed::Refused)?;
+                let bytes = if f.kind.is_binary() { project::binary_bytes(f) } else { f.text.len() as u64 };
+                if f.kind.is_binary() {
+                    project::room_for_binary(&view, p, bytes).map_err(Committed::Refused)?;
+                }
+                disk_bytes += bytes;
+                view.insert(p.clone(), f.clone());
+            }
+            crate::disk::book().admit(crate::disk::Category::Project, disk_bytes, crate::disk::Need::Agent).map_err(|e| Committed::Refused(e.to_world()))?;
+        }
+        let paths: Vec<String> = puts.iter().map(|(p, _)| p.clone()).collect();
+        let tick = self.clock.tick();
+        match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, crate::write_policy::Rule::Project, |wd| files_commit(wd, puts)) {
+            Err(e) => Err(Committed::Refused(e)),
+            Ok((_, seq)) => Ok((seq, paths)),
         }
     }
 

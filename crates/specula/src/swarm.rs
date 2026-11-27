@@ -162,6 +162,11 @@ pub fn default_name(s: &SessionInfo) -> String {
 }
 
 impl Swarm {
+    /// The name of the agent whose session is `session_id`, once it said hello.
+    pub fn name_of(&self, session_id: &str) -> Option<String> {
+        self.agents.get(session_id).map(|a| a.name.clone())
+    }
+
     /// Who a session is in attribution, claims and undo.
     pub fn agent_name(&self, session: &SessionInfo) -> String {
         match self.agents.get(&session.id) {

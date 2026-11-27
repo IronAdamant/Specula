@@ -88,6 +88,9 @@ pub enum JobKind {
     /// The start screen's disk work: a folder checked or made, the project list read or
     /// written, the clipboard read for a pasted path (`launch_window`).
     Launch,
+    /// `sprite_bake`'s work off the engine thread: the style files read, a cell resolved into
+    /// the atlas, the atlas encoded and stored.
+    SpriteBake,
 }
 
 impl JobKind {
@@ -118,6 +121,7 @@ impl JobKind {
             JobKind::TimelineSound => "timeline_sound",
             JobKind::ModuleSound => "module_sound",
             JobKind::Launch => "launch",
+            JobKind::SpriteBake => "sprite_bake",
         }
     }
 }
@@ -167,18 +171,21 @@ pub struct Offload {
     cancel_on_close: bool,
     /// What it holds until it runs (pixels), against [`MAX_PENDING_BYTES`].
     bytes: u64,
+    /// Not cancelled when its session closes, though counted as the agent's (a job that answers
+    /// its owner later, by identity: `sprite_bake`'s).
+    outlives_session: bool,
 }
 
 impl Offload {
     /// An agent's job. `call`: the request's call id (0 for a playtest step, which isn't cancelled
     /// with its starter's session).
     pub fn agent(kind: JobKind, owner: JobOwner, session: &str, call: u64) -> Offload {
-        Offload { kind, owner: Some((owner, session.to_owned())), lane: Lane::Any, class: Class::Render, cancel_on_close: call != 0, bytes: 0 }
+        Offload { kind, owner: Some((owner, session.to_owned())), lane: Lane::Any, class: Class::Render, cancel_on_close: call != 0, bytes: 0, outlives_session: false }
     }
 
     /// The engine's own job (a write it owes): never refused, never cancelled.
     pub fn engine(kind: JobKind) -> Offload {
-        Offload { kind, owner: None, lane: Lane::Any, class: Class::Disk, cancel_on_close: false, bytes: 0 }
+        Offload { kind, owner: None, lane: Lane::Any, class: Class::Disk, cancel_on_close: false, bytes: 0, outlives_session: false }
     }
 
     pub fn lane(mut self, lane: Lane) -> Offload {
@@ -194,6 +201,13 @@ impl Offload {
     /// What the job holds until it runs (the pixels it encodes).
     pub fn bytes(mut self, bytes: u64) -> Offload {
         self.bytes = bytes;
+        self
+    }
+
+    /// Kept when its session closes (still counted against its owner's slots): a job whose
+    /// answer is kept for its owner's identity, which outlives a connection.
+    pub fn outlives_session(mut self) -> Offload {
+        self.outlives_session = true;
         self
     }
 }
@@ -228,6 +242,8 @@ struct Pending {
     owner: Option<(JobOwner, String)>,
     cancel: Cancel,
     cancel_on_close: bool,
+    /// Counted as the agent's, but not cancelled when its session closes ([`Offload::outlives_session`]).
+    kept: bool,
     bytes: u64,
     then: Then,
     class: Class,
@@ -460,7 +476,7 @@ impl Engine {
         let cancel = Cancel::default();
         let trace = specula_core::trace::Ctx::current();
         let then: Then = Box::new(move |e, r| then(e, r.map(|b| *b.downcast::<R>().unwrap_or_else(|_| unreachable!("a job's payload is its own type")))));
-        self.workers.pending.insert(id, Pending { kind: o.kind, owner: o.owner, cancel: cancel.clone(), cancel_on_close: o.cancel_on_close, bytes: o.bytes, then, class: o.class, trace, started: Instant::now(), call: self.dispatch_call });
+        self.workers.pending.insert(id, Pending { kind: o.kind, owner: o.owner, cancel: cancel.clone(), cancel_on_close: o.cancel_on_close, kept: o.outlives_session, bytes: o.bytes, then, class: o.class, trace, started: Instant::now(), call: self.dispatch_call });
         let task = Task { id, lane: o.lane, cancel, work: Box::new(move |c| Box::new(work(c)) as Payload), trace };
         self.workers.shared.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tasks.push_back(task);
         self.workers.shared.wake.notify_one();
@@ -483,7 +499,7 @@ impl Engine {
             self.workers.last_session_check = Instant::now();
             let alive = self.open_session_ids(server.all_sessions());
             for p in self.workers.pending.values() {
-                if p.cancel_on_close && p.owner.as_ref().is_some_and(|(_, s)| !alive.contains(s)) {
+                if p.cancel_on_close && !p.kept && p.owner.as_ref().is_some_and(|(_, s)| !alive.contains(s)) {
                     p.cancel.set();
                 }
             }
@@ -771,6 +787,7 @@ mod tests {
             owner: o.map(|o| (o, "s".into())),
             cancel: Cancel::default(),
             cancel_on_close: call != 0,
+            kept: false,
             bytes,
             then: Box::new(|_, _| {}),
             class: Class::Render,

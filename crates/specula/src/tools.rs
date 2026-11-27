@@ -253,6 +253,8 @@ pub enum Command {
     /// model_export: as model_build, and the built model is lent to the caller's thread through
     /// the slot (the export and the file's check run there).
     ModelExport(world::ModelSpec, crate::models::BuiltSlot),
+    /// sprite_bake: a planned sheet's renders, a cell a step (see [`crate::sprite_bake::job`]).
+    SpriteBake(Box<crate::sprite_bake::job::Bake>),
     /// model_reload: re-read every recipe and style now.
     ModelReload,
     /// Cameras, orbits, compares and queries (see [`crate::sight_tools`]).
@@ -430,6 +432,8 @@ pub struct Tools {
     /// Binary project files' content store and the uploads in progress (see [`crate::blobs`]).
     pub(crate) content: Option<std::sync::Arc<crate::blobs::ContentStore>>,
     pub(crate) uploads: std::sync::Arc<crate::blobs::Uploads>,
+    /// `sprite_bake`s running, for their owners' cancels.
+    pub(crate) bakes: std::sync::Arc<crate::sprite_bake::Running>,
     /// The engine's audio service (the `audio_*` tools read it on this side).
     pub(crate) audio: Option<std::sync::Arc<crate::audio_service::AudioService>>,
     /// Closed while the engine starts: calls wait for it (see [`crate::startgate`]). `None`:
@@ -472,6 +476,7 @@ impl Tools {
             scopes,
             content: None,
             uploads: Default::default(),
+            bakes: Default::default(),
             audio: None,
             start: None,
         }
@@ -750,7 +755,7 @@ impl CallerThread {
             "logic_reload" => CallerThread::LogicReload,
             "merge_suggest" => CallerThread::MergeSuggest,
             "style_check" => CallerThread::Studio,
-            "terrain_edit" | "model_paint" | "model_path" | "model_export" => CallerThread::Terrain,
+            "terrain_edit" | "model_paint" | "model_path" | "model_export" | "sprite_bake" => CallerThread::Terrain,
             "timeline_set" => CallerThread::Timeline,
             "text_edit" => CallerThread::Text,
             "security_incidents" => CallerThread::Security,
@@ -3097,6 +3102,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::trace_tools::definitions())
     .chain(crate::editor_tools::definitions())
     .chain(crate::inputguard_tools::definitions())
+    .chain(crate::sprite_bake::definitions())
     .collect()
 }
 

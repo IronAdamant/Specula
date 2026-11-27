@@ -1569,7 +1569,9 @@ fn stream_views(views: &[ViewReq]) -> Vec<crate::streaming::CaptureView> {
     views.iter().map(|v| (v.camera, v.width, v.height, v.lod)).collect()
 }
 
-fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+/// A frame or sheet as PNG bytes. Called only inside worker jobs (offload_capture's, and
+/// `sprite_bake`'s atlas encode: `sprite_bake::job`), never on the engine thread.
+pub(crate) fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     let _z = profile::zone("sight.encode");
     png::encode_rgba8(w, h, rgba, Level::Fastest)
 }

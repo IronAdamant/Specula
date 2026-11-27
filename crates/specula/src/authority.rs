@@ -507,6 +507,13 @@ pub fn of_session(session_id: &str) -> Authority {
     PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map_or(Authority::Agent, |(_, a, _)| *a)
 }
 
+/// Whether session `session_id` said hello (it has an agent's identity, which a later session
+/// resumes), read from the caller thread (see [`PUBLISHED`]). A new identity is keyed by the
+/// session that introduced it, so a key equal to its session's id says nothing of this.
+pub fn said_hello(session_id: &str) -> bool {
+    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).contains_key(session_id)
+}
+
 /// The authority the operator's grants give: `a`, except that a lead nobody granted
 /// (`granted` false) counts as a plain agent.
 ///
@@ -797,6 +804,8 @@ pub fn access(tool: &str) -> Option<Access> {
         "tools_activate" | "tools_deactivate" => Open("changes only the caller's own tool list, within the cap the lead set (tools_scope)"),
         "tools_invoke" => Open("calls another tool by name, inside the caller's scope: that tool's own access applies"),
         "disk_prune" => Open("prunes only what the disk budget needs, never saves, worlds, journals or project files; free_mb, which deletes more, needs the lead"),
+        // Two project files in one journal entry, as the caller (claims on /project/<path>); its cancel stops the caller's own bakes only.
+        "sprite_bake" => World("project"),
         _ => return None,
     })
 }

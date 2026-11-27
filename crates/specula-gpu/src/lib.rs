@@ -1655,6 +1655,16 @@ impl Gpu {
         self.inner.has_texture(texture)
     }
 
+    /// `target`'s last [`Gpu::render_async`] (with its ID buffer) as it landed: its colour, sRGB
+    /// RGBA8 top row first, and its opaque ids. **Never waits for the GPU and never records a
+    /// copy**: `Ok(None)` while any asynchronous render is in flight (poll
+    /// [`Gpu::settle_offscreen`] first); an error when the render left its colour on the GPU, or
+    /// when another target's ID render came after it (its ids are gone: render it again). Two
+    /// copies out of mapped memory, so a step job can land a render without a stall.
+    pub fn read_landed(&mut self, target: TargetId) -> Result<Option<(Vec<u8>, IdImage)>, GpuError> {
+        self.inner.read_landed(target)
+    }
+
     /// Read back the target as tightly packed sRGB RGBA8, top row first.
     ///
     /// Errors if the target has never been rendered.

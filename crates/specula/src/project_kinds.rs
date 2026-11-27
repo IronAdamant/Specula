@@ -354,6 +354,12 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
         // Timelines: the format, then what the engine plays (anim and vfx values as world_set
         // takes them; docs/design/TIMELINE.md).
         FileKind::Timeline => out.extend(crate::timeline::validate_file(path, text)),
+        // A baked sprite sheet's frame data: read whole by the same reader a game's playback uses.
+        FileKind::SpriteSheet => {
+            if let Err(e) = crate::sprite_bake::sheet::validate(text) {
+                out.push(Problem { file: path.to_owned(), severity: "error", code: "invalid_sprite_sheet".into(), at: e.at, message: e.message, offset: None });
+            }
+        }
         // Notes are prose (the style configurator's): any text.
         FileKind::StyleNotes => {}
         // The game file: its format, with where a problem is and what to write.

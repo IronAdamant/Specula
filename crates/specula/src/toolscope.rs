@@ -99,6 +99,7 @@ pub const FAMILIES: &[Family] = &[
     fam("trace", "the structured log: events, one call's causal tree, crash reports, incidents", &["trace_"], &[]),
     fam("editor", "the window's human editor: what it shows, and driving it as the human (owner)", &["editor_"], &[]),
     fam("security", "the input monitor: keyboard, clipboard and screen takeovers, frozen sessions, swarm pauses (lead, owner)", &["security_"], &[]),
+    fam("sprite", "2D from the same source: a model and its clips baked into a sprite sheet with alpha and frame data", &["sprite_"], &[]),
 ];
 
 /// The catalog line of the hosted game's family.
@@ -365,6 +366,7 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("logic_status", "loaded modules and their state"),
     ("logic_input", "hold a module's input actions"),
     ("logic_hook", "call a module's native hook"),
+    ("sprite_bake", "a model and its clips as a 2D sprite sheet"),
 ];
 
 /// Longest a derived brief (a game's tools) may be.

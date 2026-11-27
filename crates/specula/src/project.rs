@@ -104,6 +104,10 @@ pub enum FileKind {
     /// `game.json` at a project's root: the game file (`specula_ludus::GameFile`), which the
     /// project shell follows while the engine runs.
     Game,
+    /// `*.sheet.json` directly in a folder named `sprites`: a baked sprite sheet's frame data
+    /// (`sprite_bake`; read and checked by [`crate::sprite_bake::sheet::SheetData::parse`]).
+    /// Any other JSON there (a hand-made sheet's own) is not mirrored, as before the kind.
+    SpriteSheet,
     /// Binary files (see [`FileKind::is_binary`]).
     Png,
     Glb,
@@ -114,7 +118,7 @@ pub enum FileKind {
 }
 
 impl FileKind {
-    pub const ALL: [FileKind; 23] = [
+    pub const ALL: [FileKind; 24] = [
         FileKind::Recipe,
         FileKind::Style,
         FileKind::StyleRules,
@@ -133,6 +137,7 @@ impl FileKind {
         FileKind::Strings,
         FileKind::Note,
         FileKind::Game,
+        FileKind::SpriteSheet,
         FileKind::Png,
         FileKind::Glb,
         FileKind::Gltf,
@@ -160,6 +165,7 @@ impl FileKind {
             FileKind::Strings => "strings",
             FileKind::Note => "note",
             FileKind::Game => "game",
+            FileKind::SpriteSheet => "sprite_sheet",
             FileKind::Png => "png",
             FileKind::Glb => "glb",
             FileKind::Gltf => "gltf",
@@ -273,7 +279,7 @@ pub fn room_for_binary(files: &BTreeMap<String, ProjectFile>, path: &str, bytes:
 /// Folders binary files of each kind are mirrored in (any folder on the way counts:
 /// `assets/textures/stone/wall.png`). Binary files elsewhere are left alone, so a working folder
 /// full of screenshots is never copied into the content store.
-pub const PNG_FOLDERS: [&str; 4] = ["textures", "images", "references", "icons"];
+pub const PNG_FOLDERS: [&str; 5] = ["textures", "images", "references", "icons", "sprites"];
 pub const MODEL_FOLDERS: [&str; 1] = ["models"];
 pub const WAV_FOLDERS: [&str; 3] = ["audio", "sounds", "music"];
 
@@ -423,6 +429,9 @@ pub fn kind_for(mount: MountKind, rel: &str) -> Option<FileKind> {
                 "anims" => Some(FileKind::AnimSet),
                 "timelines" => Some(FileKind::Timeline),
                 "strings" => Some(FileKind::Strings),
+                // A baked sheet's frame data only (`sprite_bake`): any other JSON in a sprites
+                // folder (a hand-made sheet's own) is the project's to keep as it is, unread.
+                "sprites" if name.ends_with(crate::sprite_bake::FRAMES_SUFFIX) => Some(FileKind::SpriteSheet),
                 _ => None,
             }
         }

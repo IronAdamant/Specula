@@ -239,6 +239,10 @@ pub fn call(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> To
     if name == "model_export" {
         return crate::model_export::call(tools, session, args);
     }
+    // (And a model baked into a sprite sheet: planned and written on this thread, rendered on the engine's.)
+    if name == "sprite_bake" {
+        return crate::sprite_bake::call(tools, session, args);
+    }
     if name != "terrain_edit" {
         return err("unknown_tool", format!("unknown terrain tool '{name}'"), vec![]);
     }
