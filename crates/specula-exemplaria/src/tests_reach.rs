@@ -6,7 +6,7 @@
 use crate::draw::{pow, round, Specimen};
 use crate::error::{Broken, Error};
 use crate::kind::Kind;
-use crate::plan::{resolve, resolve_among, MotionDef, NumberDef, OptionDef, Plan, RelationDef, Resolved, RoleDef, SizeDef, TraitDef, Unit};
+use crate::plan::{resolve, resolve_among, MotionDef, NumberDef, OptionDef, Plan, RelationDef, RoleDef, SizeDef, TraitDef, Unit};
 use crate::plans::box_creature::PLAN as BOX;
 use crate::write::Writing;
 
@@ -244,7 +244,7 @@ fn a_dog_whose_girths_grow_faster_than_its_trunk_is_accepted() {
 /// them with an exponent of their own from -1 to 3, spreads to 0.3 and measured ranges.
 fn random_text(g: &mut specula_core::rng::Rng, name: &str) -> String {
     let mut u = || (g.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-    let mut r = |a: f64, b: f64, u: &mut dyn FnMut() -> f64| a + (b - a) * u();
+    let r = |a: f64, b: f64, u: &mut dyn FnMut() -> f64| a + (b - a) * u();
     let mut parts = vec![format!(r#""kind": 1, "name": "{name}", "plan": "box_creature", "about": "a probe""#)];
     let mut smean = BOX.size().mean;
     if u() < 0.85 {
