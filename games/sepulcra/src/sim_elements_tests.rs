@@ -1099,15 +1099,6 @@ fn bursts_are_counted_when_they_go_off_and_the_counts_agree() {
     assert!(events > 0 && events == total, "{events} bursts");
 }
 
-/// The proving ground with Ventus III replaced by `tier` and its fade by `fade`.
-fn wind_content(tier: &str, fade: &str) -> Result<Content, crate::error::DataError> {
-    let stones = PROVING_STONES_JSON.replace("\r\n", "\n");
-    let (from, to) = ("{ \"cost\": 90, \"range_m\": 6.5, \"cooldown_s\": 4.0, \"push_m\": 5.0, \"push_s\": 0.6 }", "\"shove_fade\": 0.25,");
-    assert_eq!((stones.matches(from).count(), stones.matches(to).count()), (1, 1), "test fixture");
-    let stones = stones.replacen(from, tier, 1).replacen(to, &format!("\"shove_fade\": {fade},"), 1);
-    Content::from_texts(SLAB_01_JSON, &stones, PROVING_ENEMIES_JSON, PROVING_WAVES_JSON)
-}
-
 /// A Ventus III that pushes `push_m` over 5 s and recharges one tick later.
 fn slow_gust(push_m: f64) -> String {
     format!("{{ \"cost\": 90, \"range_m\": 6.5, \"cooldown_s\": 5.034, \"push_m\": {push_m:.1}, \"push_s\": 5.0 }}")
@@ -1651,4 +1642,294 @@ fn a_run_that_cannot_end_stops_at_its_stated_length() {
     let r = crate::script::run(Arc::clone(&c), 1, &script, None, |_, _| {});
     assert_eq!((r.outcome, u64::from(r.ticks)), (Outcome::Running, c.run_bound().ticks), "{:?}", r.waves);
     assert!(r.waves[0].alive > 0, "the dead still at the walls");
+}
+
+// ---- The property that closes the class (DESIGN.md, "Furor"): every run ends inside its stated length ----
+
+/// The proving ground's stones in file order, and the attack each one's tiers are for.
+const PROP_STONES: [(&str, Attack); 9] = [
+    ("warding", Attack::Bolt),
+    ("rune_pillar", Attack::Pulse),
+    ("brazier", Attack::Lob),
+    ("sky_obelisk", Attack::Bolt),
+    ("rogus", Attack::Lob),
+    ("fulmen", Attack::Strike),
+    ("gelu", Attack::Bolt),
+    ("ventus", Attack::Gust),
+    ("saxum", Attack::Heave),
+];
+
+/// A uniform draw in `lo..=hi`.
+fn draw(r: &mut Rng, lo: i64, hi: i64) -> i64 {
+    lo + (r.next_u64() % (hi - lo + 1) as u64) as i64
+}
+
+/// A legal value in `lo..=hi` (thousandths of the file's unit), weighted on the extremes: the
+/// least or the most a fifth of the time each, the least's near neighbour a tenth, otherwise
+/// anywhere between.
+fn wild(r: &mut Rng, lo: i64, hi: i64) -> i64 {
+    match r.below(10) {
+        0 | 1 => lo,
+        2 | 3 => hi,
+        4 => (lo + 1).min(hi),
+        _ => draw(r, lo, hi),
+    }
+}
+
+/// Thousandths as the decimal a file writes.
+fn th(v: i64) -> String {
+    format!("{}.{:03}", v / 1000, v % 1000)
+}
+
+/// One random legal tier of `attack`, over every field it reads, each across its whole legal
+/// range (content.rs: `parse_stones`, `parse_tier_el`, `check_tier`).
+fn wild_tier(r: &mut Rng, attack: Attack) -> String {
+    let mut k: Vec<String> = vec!["\"cost\": 1".into(), format!("\"range_m\": {}", th(wild(r, 500, 100_000)))];
+    let some = |r: &mut Rng| r.below(3) != 0;
+    match attack {
+        Attack::Bolt | Attack::Lob | Attack::Pulse => {
+            k.push(format!("\"cooldown_s\": {}", th(wild(r, 34, 600_000))));
+            let damage = wild(r, 0, 100_000_000);
+            let (slow, slow_s) = if some(r) { (wild(r, 1, 900), wild(r, 0, 600_000)) } else { (0, 0) };
+            let (mut chill, mut burn) = (0, 0);
+            if attack != Attack::Pulse {
+                k.push(format!("\"projectile_mps\": {}", th(wild(r, 34, 1_000_000))));
+                if attack == Attack::Lob {
+                    k.push(format!("\"splash_m\": {}", th(wild(r, 1, 100_000))));
+                }
+                if some(r) {
+                    chill = wild(r, 1, 1000);
+                    k.push(format!("\"chill\": {}, \"freeze_s\": {}, \"shatter\": {}", th(chill), th(wild(r, 34, 30_000)), th(wild(r, 0, 5_000))));
+                }
+                if some(r) {
+                    burn = wild(r, 30, 10_000_000);
+                    k.push(format!("\"burn_dps\": {}, \"burn_s\": {}", th(burn), th(wild(r, 34, 60_000))));
+                }
+            }
+            // A tier must deal damage, slow, chill or burn.
+            let damage = if damage == 0 && slow == 0 && chill == 0 && burn == 0 { 1 } else { damage };
+            k.push(format!("\"damage\": {}", th(damage)));
+            if slow > 0 {
+                k.push(format!("\"slow\": {}, \"slow_s\": {}", th(slow), th(slow_s)));
+            }
+        }
+        Attack::Strike => {
+            k.push(format!("\"cooldown_s\": {}, \"damage\": {}", th(wild(r, 334, 600_000)), th(wild(r, 1, 100_000_000))));
+            let chain = wild(r, 0, 8);
+            k.push(format!("\"chain\": {chain}, \"chain_keep\": {}, \"wet_bonus\": {}", th(wild(r, 0, 1000)), th(wild(r, 0, 5000))));
+            if chain > 0 {
+                k.push(format!("\"chain_m\": {}", th(wild(r, 1, 20_000))));
+            }
+        }
+        Attack::Gust => {
+            k.push(format!("\"cooldown_s\": {}, \"push_m\": {}, \"push_s\": {}", th(wild(r, 34, 600_000)), th(wild(r, 1, 30_000)), th(wild(r, 34, 5_000))));
+        }
+        Attack::Heave => {
+            k.push(format!("\"cooldown_s\": {}, \"damage\": {}, \"line\": {}", th(wild(r, 34, 600_000)), th(wild(r, 0, 100_000_000)), wild(r, 1, 8)));
+            if some(r) {
+                k.push(format!("\"stagger_s\": {}", th(wild(r, 0, 10_000))));
+            }
+            if some(r) {
+                k.push(format!("\"rubble\": {{ \"hp\": {}, \"s\": {} }}", th(wild(r, 1_000, 100_000_000)), th(wild(r, 100, 120_000))));
+            }
+        }
+    }
+    format!("{{ {} }}", k.join(", "))
+}
+
+/// The proving ground's `stones.json` with every stone's three tiers drawn by [`wild_tier`] and a
+/// drawn `shove_fade` (0.05 to 1).
+fn wild_stones(r: &mut Rng) -> String {
+    let mut text = PROVING_STONES_JSON.replace("\r\n", "\n");
+    let fade = "\"shove_fade\": 0.25,";
+    assert_eq!(text.matches(fade).count(), 1, "fixture");
+    text = text.replacen(fade, &format!("\"shove_fade\": {},", th(wild(r, 50, 1000))), 1);
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    for (_, attack) in PROP_STONES {
+        let at = rest.find("\"tiers\": [").expect("fixture: a stone's tiers");
+        let end = at + rest[at..].find("\n      ]").expect("fixture: the tiers' end");
+        let tiers: Vec<String> = (0..3).map(|_| wild_tier(r, attack)).collect();
+        out.push_str(&rest[..at]);
+        out.push_str(&format!("\"tiers\": [\n        {}", tiers.join(",\n        ")));
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Waves of one: a lone `kind`, or (`None`) the proving ground's last wave, everything at once.
+fn prop_waves(kind: Option<&str>) -> String {
+    let groups = match kind {
+        Some(k) => format!("{{ \"enemy\": \"{k}\", \"count\": 1, \"from\": \"{}\" }}", match k { "wraith" => "air", "shambler" => "ground", _ => "gorges" }),
+        None => "{ \"enemy\": \"shambler\", \"count\": 12, \"from\": \"ground\", \"start_s\": 0, \"every_s\": 1.5 }, { \"enemy\": \"tumidus\", \"count\": 6, \"from\": \"gorges\", \"start_s\": 5, \"every_s\": 2.5 }, { \"enemy\": \"runner\", \"count\": 12, \"from\": \"gorges\", \"start_s\": 10, \"every_s\": 1.0 }, { \"enemy\": \"wraith\", \"count\": 4, \"from\": \"air\", \"start_s\": 15, \"every_s\": 3 }, { \"enemy\": \"colossus\", \"count\": 1, \"from\": \"gorge_mid\", \"start_s\": 0 }".to_owned(),
+    };
+    format!("{{ \"start_dust\": 1000000, \"tombstones\": 1000, \"build_time_s\": 0, \"waves\": [ {{ \"duration_s\": 100, \"hp\": 1.5, \"groups\": [ {groups} ] }} ] }}")
+}
+
+/// Lane cells the drawn layouts gather round: the middle lane, both gorges, the south lane, the
+/// north-west bend.
+const PROP_ANCHORS: [&str; 5] = [AMID, GORGE, "top:15,19", "top:9,16", "top:6,9"];
+
+/// A drawn layout: up to twelve stones of drawn kinds and tiers (mostly III) round one anchor,
+/// as many as twelve along one lane a third of the time.
+fn wild_layout(r: &mut Rng, c: &Content) -> Vec<(StoneKind, CellId, u8)> {
+    let anchor = PROP_ANCHORS[r.below(PROP_ANCHORS.len() as u32) as usize];
+    let mut cells = nearest_build_cells(c, anchor, 24);
+    let n = if r.below(3) == 0 { 12 } else { 1 + r.below(12) as usize };
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let cell = cells.remove(r.below(cells.len() as u32) as usize);
+        let kind = StoneKind(r.below(PROP_STONES.len() as u32) as u8);
+        let tier = [0u8, 1, 2, 2, 2][r.below(5) as usize];
+        out.push((kind, cell, tier));
+    }
+    out
+}
+
+/// What one run came to, against the length the rules state for it.
+#[derive(Debug, Clone, Copy, Default)]
+struct PropRun {
+    ticks: u64,
+    figure: u64,
+    furor: u32,
+}
+
+/// Plays one run of `c` with `stones` set down at its first tick: the lone enemy its waves bring,
+/// or the whole wave; or (`planted`) a lone `kind` set down on a cell, as the reviews' probes did.
+/// Panics, naming the run, unless it ends (won: nobody left standing) inside its stated length.
+fn prop_run(c: &Arc<Content>, stones: &[(StoneKind, CellId, u8)], planted: Option<(&str, &str)>, seed: u64, what: &dyn Fn() -> String) -> PropRun {
+    let mut s = match planted {
+        Some(_) => quiet(c),
+        None => State::new(Arc::clone(c), seed),
+    };
+    let lone = planted.map(|(kind, cell)| plant(&mut s, kind, cell));
+    let b = c.run_bound();
+    let figure = match planted {
+        Some(_) => u64::from(s.w.hour_of(c, 1).unwrap()) + b.walk + b.leaps + 1,
+        None => b.ticks,
+    };
+    s.w.dust = 100_000_000;
+    let mut ev = Vec::new();
+    for &(stone, cell, tier) in stones {
+        if s.apply(&Command::PlaceStone { cell, stone }, &mut ev).is_ok() {
+            for _ in 0..tier {
+                let _ = s.apply(&Command::Upgrade { cell }, &mut ev);
+            }
+        }
+    }
+    let mut r = PropRun { figure, ..PropRun::default() };
+    let ended = |s: &State| match lone {
+        Some(id) => s.enemy(id).is_none(),
+        None => s.outcome() != Outcome::Running,
+    };
+    while !ended(&s) && r.ticks <= figure {
+        ev.clear();
+        s.step_into(&[], &mut ev);
+        r.ticks += 1;
+        r.furor += ev.iter().filter(|e| matches!(e, Event::Furor { .. })).count() as u32;
+    }
+    let standing = s.enemies().len();
+    assert!(
+        ended(&s) && r.ticks <= figure && (lone.is_some() || (s.outcome() == Outcome::Won && standing == 0)),
+        "a run did not end inside its stated length: {r:?}, {standing} standing, outcome {:?}, {:?}\n{}",
+        s.outcome(),
+        b,
+        what()
+    );
+    r
+}
+
+/// The reviews' own extremes, as content (the proving ground with these tiers put in), where
+/// their stones stood, and the lone enemy and its cell.
+fn review_extremes() -> Vec<(&'static str, Vec<(&'static str, String)>, Vec<(&'static str, Vec<CellId>, u8)>, &'static str, &'static str)> {
+    let c = proving();
+    let ring: Vec<CellId> = RING.iter().map(|x| at(&c, x)).collect();
+    let amid = nearest_build_cells(&c, AMID, 1);
+    let saxum3 = "{ \"cost\": 110, \"range_m\": 7.0, \"cooldown_s\": 2.6, \"damage\": 36, \"line\": 4, \"stagger_s\": 1.2, \"rubble\": { \"hp\": 200, \"s\": 8 } }";
+    let pillar3 = "{ \"cost\": 90, \"range_m\": 6.0, \"cooldown_s\": 1.0, \"damage\": 6, \"slow\": 0.55, \"slow_s\": 1.5 }";
+    let ventus3 = "{ \"cost\": 90, \"range_m\": 6.5, \"cooldown_s\": 4.0, \"push_m\": 5.0, \"push_s\": 0.6 }";
+    let fade = "\"shove_fade\": 0.25,";
+    let free: Vec<CellId> = nearest_build_cells(&c, AMID, 64).into_iter().filter(|x| !ring.contains(x)).take(1).chain(nearest_build_cells(&c, GORGE, 64).into_iter().filter(|x| !ring.contains(x)).take(1)).collect();
+    vec![
+        // Review 3, r3_a: a push of 30 m over 5 s at the slowest fade, four cairns.
+        ("r3_a wind", vec![(ventus3, slow_gust(30.0)), (fade, "\"shove_fade\": 0.05,".into())], vec![("ventus", ring.clone(), 2)], "shambler", GORGE),
+        // Review 3, r3_e: frost with no damage, chill 1 and a 30 s freeze, every tick.
+        ("r3_e frost", vec![(GELU_III, "{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 0.034, \"projectile_mps\": 1000, \"chill\": 1.0, \"freeze_s\": 30 }".into())], vec![("gelu", ring.clone(), 2)], "shambler", GORGE),
+        // Review 4, p5 (r4_a): a heave of 0.01 that staggers 10 s every 9.9 s, and 0.001 every tick.
+        ("p5 stagger 9.9 s", vec![(saxum3, "{ \"cost\": 110, \"range_m\": 7.0, \"cooldown_s\": 9.9, \"damage\": 0.01, \"line\": 4, \"stagger_s\": 10 }".into())], vec![("saxum", amid.clone(), 2)], "shambler", AMID),
+        ("p5 stagger every tick", vec![(saxum3, "{ \"cost\": 110, \"range_m\": 7.0, \"cooldown_s\": 0.034, \"damage\": 0.001, \"line\": 4, \"stagger_s\": 10 }".into())], vec![("saxum", amid.clone(), 2)], "shambler", AMID),
+        // Review 4, p6 and p7 (r4_f, r4_i): rubble of 2,000 HP for 60 s every second, and of
+        // 100,000 HP for 120 s every tick on a line of 8.
+        ("p6 rubble 2000", vec![(saxum3, REVIEW_RUBBLE.into())], vec![("saxum", amid.clone(), 2)], "shambler", GORGE),
+        ("p6 rubble 100000", vec![(saxum3, "{ \"cost\": 110, \"range_m\": 7.0, \"cooldown_s\": 0.034, \"line\": 8, \"rubble\": { \"hp\": 100000, \"s\": 120 } }".into())], vec![("saxum", amid.clone(), 2)], "runner", GORGE),
+        // Review 4, p5 (r4_b): a slow of 0.9 for 600 s under the wind at the old edge of refusal.
+        ("p5 slow under wind", vec![(pillar3, "{ \"cost\": 90, \"range_m\": 6.0, \"cooldown_s\": 1.0, \"slow\": 0.9, \"slow_s\": 600 }".into()), (ventus3, slow_gust(14.1)), (fade, "\"shove_fade\": 0.05,".into())], vec![("ventus", ring, 2), ("rune_pillar", free, 2)], "shambler", GORGE),
+    ]
+}
+
+/// The property, over `cases` drawn contents from `seed`: for each, a lone enemy of each kind and
+/// the whole last wave; then the reviews' extremes. Returns the run that came nearest its figure.
+fn the_property(cases: u64, seed: u64) -> (PropRun, String, u32, u32) {
+    let mut nearest = (PropRun::default(), String::new());
+    let (mut runs, mut furious) = (0u32, 0u32);
+    let mut note = |r: PropRun, what: String| {
+        runs += 1;
+        furious += u32::from(r.furor > 0);
+        if r.ticks * nearest.0.figure.max(1) > nearest.0.ticks * r.figure {
+            nearest = (r, what);
+        }
+    };
+    for case in 0..cases {
+        let mut rng = Rng::new(seed, case);
+        let stones = wild_stones(&mut rng);
+        for kind in [Some("shambler"), Some("runner"), Some("tumidus"), Some("colossus"), Some("wraith"), None] {
+            let waves = prop_waves(kind);
+            let c = match Content::from_texts(SLAB_01_JSON, &stones, PROVING_ENEMIES_JSON, &waves) {
+                Ok(c) => Arc::new(c),
+                Err(e) => panic!("the generator drew content the loader refuses ({e}): case {case} of seed {seed}\n{stones}"),
+            };
+            let layout = wild_layout(&mut rng, &c);
+            let what = || format!("case {case} of seed {seed}, {kind:?}, layout {:?}\nstones.json:\n{stones}", layout.iter().map(|&(k, cell, t)| (c.stone(k).id.clone(), c.map.cell_name(cell), t + 1)).collect::<Vec<_>>());
+            let r = prop_run(&c, &layout, None, case, &what);
+            note(r, what());
+        }
+    }
+    for (name, subs, stones, kind, from) in review_extremes() {
+        let mut text = PROVING_STONES_JSON.replace("\r\n", "\n");
+        for (a, b) in &subs {
+            assert_eq!(text.matches(a).count(), 1, "fixture {name}: {a}");
+            text = text.replacen(a, b, 1);
+        }
+        let c = Arc::new(Content::from_texts(SLAB_01_JSON, &text, PROVING_ENEMIES_JSON, PROVING_WAVES_JSON).unwrap_or_else(|e| panic!("{name}: the format takes it now: {e}")));
+        let layout: Vec<(StoneKind, CellId, u8)> = stones.iter().flat_map(|(k, cells, t)| cells.iter().map(|&cell| (c.stone_kind(k).unwrap(), cell, *t))).collect();
+        let what = || format!("the reviews' {name}");
+        let r = prop_run(&c, &layout, Some((kind, from)), 1, &what);
+        note(r, what());
+    }
+    (nearest.0, nearest.1, runs, furious)
+}
+
+/// **Every run ends inside the length the rules state**, over random legal content drawn from
+/// the whole format (every stone, every tier field across its legal range, weighted on the
+/// extremes: no damage, the longest freeze and stagger, the slowest recharge and the fastest,
+/// the largest push, slows of 0.9 for 600 s, rubble of any health and life, many stones of mixed
+/// kinds along one lane), a lone enemy of each kind and a whole wave on each, and the reviews'
+/// extremes. A stone that holds in a way furor does not end fails here. 8 contents (48 runs) and
+/// the reviews' 7, a few seconds in a debug build (the extremes are the runs that reach furor);
+/// the release run below draws a hundred times as many contents.
+#[test]
+fn every_run_ends_inside_its_stated_length() {
+    let (nearest, what, runs, furious) = the_property(8, 0x5e9_f0e0);
+    println!("FUROR-PROBE property: {runs} runs, {furious} reached furor; nearest its figure: {nearest:?} ({})", what.lines().next().unwrap_or(""));
+    assert!(furious > 0, "some drawn content held a run to its wave's hour: the property met furor");
+}
+
+/// The same property over a hundred times as many contents: `cargo test -p sepulcra --release
+/// --lib -- --ignored every_run_ends_inside_its_stated_length_at_length`.
+#[test]
+#[ignore = "800 drawn contents: run by hand, in release"]
+fn every_run_ends_inside_its_stated_length_at_length() {
+    let (nearest, what, runs, furious) = the_property(800, 0x5e9_f0e1);
+    println!("FUROR-PROBE property at length: {runs} runs, {furious} reached furor; nearest its figure: {nearest:?} ({})", what.lines().next().unwrap_or(""));
 }
