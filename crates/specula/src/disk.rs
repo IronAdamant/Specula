@@ -1997,7 +1997,14 @@ mod tests {
         let shortage = |e: &std::io::Error| matches!(e.raw_os_error(), Some(8 | 14 | 112 | 1450 | 1453 | 1455));
         match junction_race(&b) {
             Ok(()) => {}
-            Err(e) if shortage(&e) => crate::skip_test("a_folder_swapped_for_a_junction_mid_delete_stays_inside", &format!("the machine ran short ({e}): not the code under test")),
+            Err(e) if shortage(&e) => {
+                let (test, why) = ("a_folder_swapped_for_a_junction_mid_delete_stays_inside", format!("the machine ran short ({e}): not the code under test"));
+                crate::skip_test(test, &why);
+                // Said in the gate's log too, past the harness's capture (a trace event alone is
+                // seen by nobody there), so a test that skips on every run cannot read as a pass.
+                use std::io::Write as _;
+                let _ = writeln!(std::io::stderr(), "{test}: SKIPPED — {why}");
+            }
             Err(e) => panic!("the test's own setup failed: {e}"),
         }
         let _ = std::fs::remove_dir_all(&b);

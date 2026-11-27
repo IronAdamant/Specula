@@ -54,9 +54,12 @@ pub const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(600);
 /// Tests only: ends the test process when a wait with no bound of its own (a join on a GPU
 /// pipeline build: a hung driver never returns) has not ended in [`HANG_BOUND`], saying what
 /// it was waiting for, so that the hang fails by name and not by the gate's time limit for a
-/// whole step. Armed before the wait, dropped after it. The message is a panic's (the standard
-/// hook prints it, on a thread of its own), and then the process aborts: a panic on that
-/// thread alone would end only it, and the waiting thread would go on hanging.
+/// whole step. Armed before the wait, dropped after it. The message names the thread that armed
+/// it (libtest names a test's thread after the test) and is written straight to standard
+/// error, which the test harness does not capture: a panic's message would go to the arming
+/// test's capture buffer (a spawned thread inherits it) and be lost when the process aborts,
+/// and libtest names a test only when it ends. Then the process aborts: a panic on the
+/// watchdog's thread alone would end only it, and the waiting thread would go on hanging.
 #[doc(hidden)]
 pub struct Watchdog {
     _disarm: std::sync::mpsc::Sender<()>,
@@ -72,10 +75,14 @@ impl Watchdog {
     pub fn arm_for(what: &str, bound: std::time::Duration) -> Watchdog {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let what = what.to_owned();
+        let armed_by = std::thread::current().name().unwrap_or("an unnamed thread").to_owned();
         // (A watchdog that cannot start a thread watches nothing: the wait is as it was.)
         let _ = std::thread::Builder::new().name("specula-watchdog".into()).spawn(move || {
             if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(bound) {
-                let _ = std::panic::catch_unwind(|| panic!("hung: {what} has not ended in {bound:?}"));
+                use std::io::Write as _;
+                // The one console write of this crate's sources (print_guard allows it): a test
+                // aid's last words before the abort, which no trace sink would live to show.
+                let _ = writeln!(std::io::stderr(), "hung: {what} has not ended in {bound:?} (armed by {armed_by})");
                 std::process::abort();
             }
         });
