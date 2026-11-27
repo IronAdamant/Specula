@@ -476,17 +476,29 @@ What each does, in the rules' own terms (`src/sim_elements.rs`, `src/blaze.rs`):
   0.075 chill a hit at III) and alone against crowds. **Frost must hurt:** a tier that chills or
   freezes and deals no damage is refused by name (the third review: such a tier, firing every
   tick, kept a lone shambler frozen 199,738 of 200,000 ticks, since only a hit with damage
-  shatters the ice). With damage, a lone enemy is killed or walks on: every freeze starts with a
-  hit and every hit takes at least d (the least damage of a chilling tier), so it stands at most
-  ceil(HP / d) freezes of at most F ticks each (F the longest freeze), and it passes or dies
-  within its walk at the slowest slow plus ceil(HP / d) x (F + 1) ticks (one more a freeze for
-  the part-millimetre a freeze drops). For the harshest frost the format takes (a hit every tick
-  of 0.001 damage, chill 1, 30 s freezes, 0.9 slow for 600 s) that is 49,580,063 ticks for a
-  shambler (55 HP: 55,000 hits), and four such stones let it through in 5,439; one stone that
-  hits just after each thaw for a fifth of its HP holds it 4,083 ticks of its 7,012
-  (`frost_with_damage_lets_a_lone_enemy_through_or_kills_it_within_its_bound`). That bound is not
-  held to the run's cap by the loader, as the wind's is: frost of very little damage can still
-  keep a lone enemy past the cap, for a bounded time.
+  shatters the ice). **And frost is held under the run's cap when content loads**, as the wind
+  is: every freeze starts with a hit of a chilling tier, and every such hit takes at least d (the
+  least damage any chilling tier deals: Gelu I's 6 here), so an enemy of at most HP (its own
+  times the largest wave scale) stands at most ceil(HP / d) freezes of at most F ticks each (F
+  the longest freeze), and it passes or dies within
+
+      ceil(L x 30 x 10^9 / (v x p x (1000 - s) x (1000 - r))) + ceil(HP / d) x (F + 1)   ticks
+
+  (L, v and p as for the wind; s the strongest slow any stone gives and r the roots' slow,
+  permille; one tick more a freeze for the part-millimetre a freeze drops). That is
+  `Content::frost_hold`, and the loader refuses content in which it is longer, for any ground
+  enemy, than the run's cap leaves after the last wave's last enemy enters, naming both figures
+  and what to change (more damage on the chilling tiers, or a shorter `freeze_s`). It is a loose
+  bound (it takes every hit to come just after the last freeze thawed), and **the stock proving
+  stones sit close to it**: the colossus (1,250 HP at the largest scale 1.5, 313 hits of 6 at
+  most, 3 s freezes) gets 33,582 ticks against a room of 35,280, a margin of 1,698 (the shipped
+  stones have no frost). The harshest frost the format takes (a hit every tick of 0.001 damage,
+  chill 1, 30 s freezes, 0.9 slow for 600 s) is **refused** (74,361,986 ticks for a shambler);
+  played anyway, its numbers put in by hand, four such stones let a lone shambler through in
+  5,439, and one stone that hits just after each thaw for a fifth of its HP holds one frozen
+  3,596 ticks of the 4,505 its five hits can hold it
+  (`ordinary_frost_is_inside_the_runs_cap_and_the_harshest_is_refused`,
+  `frost_with_damage_lets_a_lone_enemy_through_or_kills_it_within_its_bound`).
 - **Ventus (wind).** Deals nothing (the content refuses any damage, slow, burn or chill on a gust,
   and the wind hurts nobody on any path: what a fanned fire or a shove onto burning grass does is
   fire's). When any ground enemy is in range, one alone included (the owner: the enemy "gets
@@ -542,7 +554,10 @@ What each does, in the rules' own terms (`src/sim_elements.rs`, `src/blaze.rs`):
   slow its walk (to no less than 0.1 x (1 - 0.15) of its pace here); and a leaper's chance leaps
   (a runner rolls only when it walks onto a jump point, and each leap lengthens its way by at most
   its ledge and `jump_detour`: at most once a jump point for each pass the wind sends it back
-  over). Without the fade the first proving sweep found runs that never ended (a gust every 5 s
+  over, so at most 4 x (1 + 32) leaps for a runner here, and 15,762 ticks with its 1,242 of wind;
+  measured with a ring of cairns round each ledge over 20 seeds each, it took at most 1,173 ticks
+  and 3 leaps, and 12 of the 40 leapt:
+  `a_runners_chance_leaps_stay_within_their_stated_bound_under_the_wind`). Without the fade the first proving sweep found runs that never ended (a gust every 5 s
   pushed a wave's last shamblers back 4 m, as far as they walk in 5 s: 922 of 1,000 `fire_wind`
   runs unfinished at the time cap). Tests also hold that every wind layout ends and that
   content without the key still ends. Good for buying time, for keeping the dead in another stone's
@@ -873,8 +888,9 @@ What it says, read honestly:
   than before (68.8 % from 77.4 %): a lone enemy is pushed back less often now, and so is less
   often kept in the rime stone's range. That is the shape of
   the owner's "non damage" stone; its numbers (range, push, recharge) are what to tune.
-- **A lone enemy is not held for ever, by two rules of the loader:** frost and earth that hold
-  must hurt (Gelu, Saxum above), and the wind is held by its own series: each shove of one enemy
+- **A lone enemy is not held for ever, by three rules of the loader:** frost and earth that hold
+  must hurt (Gelu, Saxum above), frost is held under the run's cap by its own bound (Gelu), and
+  the wind is held by its own series: each shove of one enemy
   is `shove_fade` weaker than the one before and comes only after the last has ended, so a lone
   enemy passes within ceil((L + sum of s_n) x 30 x 1000 / (v x p)) + sum of t_n ticks, which the
   loader refuses past the run's cap ("Ventus" above). Two claims made here before were false:

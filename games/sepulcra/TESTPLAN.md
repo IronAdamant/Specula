@@ -228,7 +228,9 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
       (its damage shatters the ice; it does not set the enemy alight, nor light a Tumidus's fuse).
 - [ ] Frost on a burning one puts it out; rime on a cell stops the grass fire there.
 - [ ] Frost must hurt: a Gelu tier that chills or freezes with no damage is refused (`damage`
-      named); with damage, a lone one under frost is killed or walks on (DESIGN.md, "Gelu").
+      named); with damage, a lone one under frost is killed or walks on, and content whose frost
+      could hold one past the run's cap is refused when it loads, naming both figures (DESIGN.md,
+      "Gelu": the stock proving stones are inside by 1,698 ticks).
 - [ ] The colossus barely chills (mass 8); Gelu is weak against it.
 
 ### 12.5 Wind (Ventus): no damage, through the push, then recharge
