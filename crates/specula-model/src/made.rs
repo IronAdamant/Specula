@@ -567,7 +567,7 @@ fn walk(node: &crate::sdf::SdfNode, adds: bool, out: &mut Vec<Option<Vec<Seen>>>
                     let (k, _) = along(a, b);
                     let (p, q) = across(k);
                     let (bx, dx) = if side[p].abs() >= side[q].abs() { (p, q) } else { (q, p) };
-                    view(superellipse(broad, deep, square), (bx, dx), 1.0 / 3.0);
+                    view(superellipse(broad, deep, crate::sdf::column_square(square)), (bx, dx), 1.0 / 3.0);
                     view(capped(&rows.iter().map(|r| [r[1], r[0] * len]).collect::<Vec<V2>>(), caps), (bx, k), 1.0 / 3.0);
                     view(capped(&rows.iter().map(|r| [r[2], r[0] * len]).collect::<Vec<V2>>(), caps), (dx, k), 1.0 / 3.0);
                 }

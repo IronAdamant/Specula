@@ -406,10 +406,20 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     a cancel gives one error wherever it is seen, a limit with no measure and no limit
     (`a_cancel_gives_one_error_wherever_it_is_seen`: the work done when a cancel comes is a
     timing, not a fact of the recipe). Every step of the search, of the reach and of the
-    mesher's ranges is counted where it is done, by kind, and charged before it is done
-    (`every_step_is_charged_before_it_is_done`), and the charge is held to each kind's count
-    at its weight, the weights written out as numbers in the test: a weight left out of the
-    charge, or changed, fails the test.
+    mesher's ranges is counted where it is done, by kind, and charged. Most are charged
+    before they are done: every step of the reach, every walk of a column, a mesher's block
+    range at one copy of everything, and every ball of the search over a tree with no
+    repetition (`every_step_is_charged_before_it_is_done`). **Three are charged after**, by
+    design: what a ball of the search meets past one copy of a repeated node (it learns how
+    many copies only in its walk; at most eight times the tree's range), the same for a
+    mesher's block range, and the ranges a prune of the mesher takes of its loose children
+    (charged when the prune ends: at most one prune's ranges run unpaid). Measured, they do
+    not let a build pass its limit: in 232 refusals by the limit the work done was never past
+    it, and the error's measure was at most 149,341 units past it, one charge (review 1 of
+    the merged sculpt). The charge is held to each kind's count at the weights of the table
+    below, which the tests read from this document (`did_shares`), and the table is held to
+    the code row by row (`the_weights_are_the_documents`): a weight left out of the charge,
+    or changed in the code without its row here, fails a test.
     **What still grows, by count** (the same 1,200 boxes): of the reviewer's 600, **none**
     (the five balls, the turned ellipsoid and the empty meeting keep the old box); of the
     crate's own 600, **14**: the 4 where the old box cuts the solid off (a flat ellipsoid
@@ -427,6 +437,75 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     anything (no reach passes their boxes), so their meshes, work and hashes do not move
     (`the_repositorys_sculpts_keep_their_boxes` holds every mesh of every such build to no
     asks and no search work).
+
+#### The sculpt's weights
+
+What a sculpt's steps are charged, in work units (about a nanosecond each on the reference
+laptop). The tests read this table (`did_shares` in `crate::sdf`) and hold it to the code row
+by row (`the_weights_are_the_documents`), so a weight is changed here and in the code together,
+with its measurement, or a test fails. The evaluations' weights are each at least one and a half
+times the slowest time measured (`calibrate_sdf`); the ranges' are timed against an evaluation
+of the same tree at the same points, in a release build that is not a test's.
+
+| Step | Units | What it is, and how it was set |
+|---|---|---|
+| a half space | 48 | an evaluation: the 48 every primitive costs |
+| a ball or a capsule | 54 | an evaluation |
+| a round cone | 74 | an evaluation |
+| a column at squareness 2 or 4 | 86 | an evaluation (roots only); a squareness below 2 is held at 2 |
+| a column at squareness 3 | 170 | an evaluation (one power) |
+| a column at any other squareness | 318 | an evaluation (three powers) |
+| a box | 60 | an evaluation |
+| a torus | 60 | an evaluation |
+| an ellipsoid | 60 | an evaluation |
+| a rounded shape at power 2 | 348 | an evaluation; powers past it are billed (`ROUNDED_POWER`) |
+| a rounded shape at any other power | 1,498 | an evaluation; powers past it are billed |
+| a straight cylinder | 60 | an evaluation |
+| a tapered cylinder | 83 | an evaluation |
+| a turn | 6 | a node's modifier, at each evaluation and each copy a range meets |
+| a stretch | 3 | the same |
+| a repetition | 38 | the same |
+| a twist | 65 | the same |
+| a bend | 23 | the same |
+| a displacement | 15 | the same, and an octave each besides |
+| an octave of noise | 45 | the same |
+| a group | 8 | an evaluation of a group, besides its children |
+| a smooth join | 20 | a child of a smooth group, at each evaluation (twice in a range) |
+| a sharp join | 3 | a child of a sharp group, the same |
+| a range's frame | 134 | a ball taken into a node's frame and its range out of it (160 until it was timed outside a test build, 2026-11-28) |
+| a group's list in a range | 300 | a group's list of its children's ranges (200 until then) |
+| a column's range | 0 | a column's range past its evaluation, its outline in hand: timed within its evaluation's weight |
+| a rounded shape's range | 0 | a rounded shape's range past its evaluation (its slack): timed within its evaluation's weight |
+| a support by a root | 24 | a section's support in a column's walk, at squareness 2 |
+| a support by powers | 260 | the same at any other squareness |
+| a piece of a curve | 600 | a piece of a column's curve in its walk |
+| a node the reach asks | 1,200 | a node of the reach |
+| a child the reach gathers | 60 | a child of a group the reach asks |
+| a pair the reach meets | 20 | a pair of a smooth group's children in the reach |
+| a place of a column's table | 6 | a place of a column's table at a level the reach asks |
+| a flat ellipsoid's range from its middle | 15 | a prune's range of a flat ellipsoid the ball does not reach into, from its value at the middle (`ellipsoid_span`) |
+
+**A new node** (a primitive or a modifier) joins the sculpt with every one of these, or a test
+cannot see its fault:
+
+- an evaluation weight: an arm of `prim_cost` (a primitive) or `modifiers_cost` (a modifier),
+  its kind in `prim_kind` and `PRIM_ROWS` and its row in the table above (or a field of `Did`
+  and its share in `did_shares`, for a modifier);
+- a `bounds` arm, and its factor and slack (`prim_lip`, `prim_slack`; `lip_slack` for a
+  modifier), or, where no factor bounds its field across a ball, a mark that makes
+  `factor_holds` false (as `loose` and `wander` do), or the mesher's skip trusts the factor;
+- a `field_range` arm (`inner_range`, or the frame in `field_range_noting`) that is a sound
+  bound over every ball, an `own_range_cost` arm, and the range of parameters in which that
+  bound is proved, held where the node is prepared (as a column's squareness is held at 2 or
+  more: `column_square`);
+- a `reach_within` or `prim_reach` arm, charged per node;
+- if it walks anything, a walk charged before it in `outline_columns` and in the reach, kept
+  once a node (as `Outline` is), and a `Did` counter where the work is done, after its charge;
+- and the node in the tests' trees: `charged_trees` (what every charging test runs over),
+  `every_primitives_factor_bounds_it_or_its_range_is_asked` (its factor and range, over its
+  whole range of parameters) and `a_skipped_block_or_a_pruned_child_loses_no_surface` (the
+  mesh against the tree sampled whole). The tests see only the nodes they are given.
+
 - **A part thinner than a cell meshes with edges that four triangles share** (looked into on
   2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
   It is not the join and not the box: **one crescent** (`{"op": "difference", "of": [{"op":

@@ -70,7 +70,11 @@ pub enum Prim {
     /// going the way the sizes go: level at a section only where they turn, never outside the
     /// two sections it is between. `square` says how square its sections are: 2 is an ellipse,
     /// and the higher it is the flatter the sides and the tighter the corners (a superellipse:
-    /// 3 is a body's trunk, 8 nearly a box with rounded corners). A
+    /// 3 is a body's trunk, 8 nearly a box with rounded corners). **A squareness below 2 is
+    /// held at 2** ([`column_square`]): a section rounder than an ellipse is meshed, bounded and
+    /// charged as an ellipse, since the range its field takes in a ball is not proved below 2
+    /// (review 1 of the merged sculpt: 73 of 30,000 balls wrong at 0.5 to 1.9, 11 on the wrong
+    /// side of nothing). Recipes give 2 to 8. A
     /// rounded end closes it past each end. A trunk, a limb with its swell, a neck, a vase.
     /// Given by its ends, in the node's frame; its field is a lower bound of the distance.
     Column { a: V3, b: V3, side: V3, sections: [[f32; 3]; MAX_SECTIONS], count: u8, square: f32 },
@@ -78,6 +82,26 @@ pub enum Prim {
 
 /// Most sections in one column.
 pub const MAX_SECTIONS: usize = 8;
+
+/// The least squareness a column is meshed with ([`Prim::Column`]): an ellipse.
+pub const LEAST_SQUARE: f32 = 2.0;
+
+/// The squareness a column given `square` is meshed, bounded and charged with: `square`, held
+/// to at least [`LEAST_SQUARE`] (a NaN is an ellipse). Taken where a column is prepared
+/// ([`prepare`]), weighed ([`prim_cost`], [`column_walk_cost`]) and walked into a table
+/// ([`column_table`], which the reach and the outline read), so that every part of a mesh sees
+/// the same shape.
+pub fn column_square(square: f32) -> f32 {
+    if square >= LEAST_SQUARE { square } else { LEAST_SQUARE }
+}
+
+/// A primitive as it is prepared: a column's squareness held ([`column_square`]).
+fn held(p: Prim) -> Prim {
+    match p {
+        Prim::Column { a, b, side, sections, count, square } => Prim::Column { a, b, side, sections, count, square: column_square(square) },
+        p => p,
+    }
+}
 
 /// How children combine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,6 +238,37 @@ struct Outline {
 /// equal, is the distance itself.)
 fn ellipsoid_is_loose(p: &Prim) -> bool {
     matches!(p, Prim::Ellipsoid { radii } if !(radii[0] == radii[1] && radii[1] == radii[2]))
+}
+
+/// **The range of an ellipsoid child's field in a ball, from its value at the middle alone**
+/// (`d`, which [`valued`] has already taken, in its parent's frame; `r` the ball's radius
+/// there): `(d - r) / short` to `short d + r`, `short` being `(rho + 1 / rho) / 2` for the
+/// ratio `rho` of its greatest radius to its least. Sound where `d > r`: outside the
+/// ellipsoid its field is never more than the distance to it and never below that distance
+/// over `short` ([`inner_range`]), so the middle is between `d` and `short d` from it, every
+/// point of the ball between `d - r` (more than nothing: outside) and `short d + r`, and its
+/// field there between the first over `short` and the second. A move, a turn, a mirror and a
+/// scale keep it (a scale scales the field, the distance and the radius alike); any other
+/// modifier, and a ball that reaches within `d` of the middle, give `None`. What [`pruned`]
+/// takes of a flat ellipsoid the ball does not reach into, in place of walking its range
+/// ([`field_range_noting`]): a few operations where the walk took a frame and two bounds
+/// (review 1 of the merged sculpt, finding 1: 52 sculpts of 32 flat ellipsoids, built before
+/// the lanes were merged, were refused for the work of those walks). Charged [`QUICK_SPAN`].
+fn ellipsoid_span(k: &Prepared, d: f32, r: f32) -> Option<(f32, f32)> {
+    let PKind::Prim(Prim::Ellipsoid { radii }) = &k.kind else { return None };
+    let m = &k.m;
+    let plain = m.stretch == [1.0; 3] && m.round == 0.0 && m.shell <= 0.0 && m.displace.is_none() && m.repeat.is_none() && m.elongate == [0.0; 3] && m.twist == 0.0 && m.bend == 0.0 && m.scale > 0.0 && m.scale.is_finite();
+    let least = radii[0].min(radii[1]).min(radii[2]);
+    let most = radii[0].max(radii[1]).max(radii[2]);
+    if !(plain && least > 0.0 && most.is_finite() && d.is_finite() && d > r) {
+        return None;
+    }
+    let rho = most / least;
+    let short = 0.5 * (rho + 1.0 / rho);
+    // (A hair wider each way than worked out, as the walk's bound above is.)
+    let (lo, hi) = ((d - r) / short, short * d + r);
+    let span = (lo - 1e-5 * lo.abs() - 1e-7, hi + 1e-5 * hi.abs() + 1e-7);
+    (span.0.is_finite() && span.1.is_finite()).then_some(span)
 }
 
 #[derive(Clone, Debug)]
@@ -376,7 +431,7 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
     *next += 1;
     let my_seed = seed ^ next.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     let kind = match &n.kind {
-        Kind::Prim(p) => PKind::Prim(*p),
+        Kind::Prim(p) => PKind::Prim(held(*p)),
         Kind::Group { op, kids, smooth } => PKind::Group { op: *op, kids: kids.iter().map(|k| prepare(k, seed, next)).collect(), smooth: *smooth },
     };
     let (lip, slack) = lip_slack(n);
@@ -466,15 +521,15 @@ fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued, spent: &mut Spent, seen:
         return keep_all(PKind::Group { op: *op, kids: kids.iter().zip(&at.kids).map(|(kid, v)| pruned(kid, q, r, v, spent, seen)).collect(), smooth: *smooth });
     }
     // Each child's least and greatest distance anywhere in the ball.
+    #[cfg(test)]
+    let old = OLD_FACTORS.with(|f| f.get());
+    #[cfg(not(test))]
+    let old = false;
     let span: Vec<(f32, f32)> = kids
         .iter()
         .zip(&at.kids)
         .map(|(k, v)| {
             let d = v.d;
-            #[cfg(test)]
-            let old = OLD_FACTORS.with(|f| f.get());
-            #[cfg(not(test))]
-            let old = false;
             if k.loose && !old {
                 // An ellipsoid whose radii differ, or a group with one in it: its factor holds
                 // nothing across the ball (inside it changes as fast as it likes near its
@@ -483,7 +538,27 @@ fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued, spent: &mut Spent, seen:
                 // (Taken once a prune: a loose child under a loose child kept was walked with
                 // it, and its range is found where that walk noted it.)
                 if let Some(got) = seen.get(&(std::ptr::from_ref(k) as usize)) {
+                    #[cfg(test)]
+                    if NOTED_AGAINST_FRESH.with(|n| n.borrow().is_some()) {
+                        let counted = DID.with(|d| *d.borrow());
+                        let fresh = field_range_as(k, q, r, &mut 1, &mut Spent::default(), true);
+                        DID.with(|d| *d.borrow_mut() = counted);
+                        NOTED_AGAINST_FRESH.with(|n| n.borrow_mut().as_mut().map(|v| v.push((*got, fresh))));
+                    }
                     return *got;
+                }
+                // (A flat ellipsoid the ball does not reach into: its range from its value at
+                // the middle alone, a few operations where its walk took a frame and two
+                // bounds: [`ellipsoid_span`].)
+                #[cfg(test)]
+                let quick = !NO_QUICK_SPAN.with(|f| f.get());
+                #[cfg(not(test))]
+                let quick = true;
+                if let Some(got) = ellipsoid_span(k, d, r).filter(|_| quick) {
+                    #[cfg(test)]
+                    DID.with(|d| d.borrow_mut().quick_spans += 1);
+                    spent.work += QUICK_SPAN;
+                    return got;
                 }
                 return field_range_noting(k, q, r, &mut 1, spent, true, Some(seen));
             }
@@ -1866,9 +1941,11 @@ fn prim_cost(p: &Prim) -> u64 {
         // ellipse's column and a squareness of 4 (roots only) 49 to 52 ns; a squareness of 3
         // (one power) 106 to 113; any other (three powers) 207 to 212. Each weight with the
         // primitive's 48 is at least one and a half times the slowest.
-        Prim::Column { square: 2.0 | 4.0, .. } => 38,
-        Prim::Column { square: 3.0, .. } => 122,
-        Prim::Column { .. } => 270,
+        Prim::Column { square, .. } => match column_square(square) {
+            2.0 | 4.0 => 38,
+            3.0 => 122,
+            _ => 270,
+        },
         Prim::Box { .. } | Prim::Torus { .. } | Prim::Ellipsoid { .. } => 12,
         // (Measured with the rest, three times in release, 2026-11-19, at points in and near
         // the shape, where the closest-point steps are taken: a power of 2 or 4 takes roots
@@ -2012,14 +2089,44 @@ type Searched = ((V3, V3), Spent);
 // up to 140 more, a rounded shape's slack a power), and a column's walk 1.3 to 2.4 ns a unit
 // where an evaluation took 1.6 to 5.8. Timed, so only a scale: what the tests hold is that
 // every step counted is charged ([`Spent`]).
+//
+// Timed again on 2026-11-28 where they are spent: in a release build that is not a test's
+// (the first timing was in test builds, where every range also counts its steps for [`Did`],
+// so they read high; review 1 of the merged sculpt). A probe outside the test profile timed a
+// ball's range of each kind against an evaluation of the same tree at the same 4,096 points
+// (balls of 1% to 15% of the tree's size, about and around it), each priced in that
+// evaluation's units: 22 trees (six primitives alone, an ellipsoid tight and not; unions of 4
+// and 32 ellipsoids, of 8 and 32 balls sharp and smooth; chains of sixteen unions of two;
+// columns at squareness 2, 3 and 5, of fixed and changing proportions; rounded shapes at
+// powers 2, 3 and 6), each built twice apart and the faster taken (one instance of the same
+// tree was timed up to three times slower than another in every round, by where its data
+// lay), eleven rounds in a shuffled order a run, eight runs, on a machine busy with other
+// builds. Each weight is the median:
+// - a frame: 134 (the runs' medians 102, 126, 128, 134, 135, 137, 137, 137; by primitive, a
+//   box's about 75, a ball's 80 to 100, an untightened ellipsoid's 95 to 135, a tightened
+//   one's 150 to 170, whose bound above takes most of the rest);
+// - a group's list: 300 (the chains of sixteen: 130 to 571 sharp, 152 to 695 smooth, 219 to
+//   522 of ellipsoids, the median of all 24 296; one group alone is lost in the noise,
+//   -1,900 to 900);
+// - a column's range past its frame and its evaluation: nothing (-31 to -81 in every run:
+//   with its outline in hand it costs less than its evaluation's weight, which is set at one
+//   and a half times the slowest evaluation);
+// - a rounded shape's: nothing (the runs' medians -39, -29, -19, -16, -12, -1, 38, 53).
+// The first weights were 160, 200, 96 and 200.
 /// The work of taking a ball into a node's frame and its range out of it ([`Spent`]).
-const RANGE_FRAME: u64 = 160;
+const RANGE_FRAME: u64 = 134;
 /// The work of a group's list of its children's ranges, besides its joins ([`Spent`]).
-const RANGE_GROUP: u64 = 200;
-/// A column's range beyond its evaluation: an exponential and its distance from its box.
-const COLUMN_RANGE: u64 = 96;
-/// A rounded shape's range beyond its evaluation: its slack, a power ([`rounded_slack`]).
-const ROUNDED_RANGE: u64 = 200;
+const RANGE_GROUP: u64 = 300;
+/// A column's range beyond its evaluation (an exponential and its distance from its box):
+/// measured within its evaluation's weight.
+const COLUMN_RANGE: u64 = 0;
+/// A rounded shape's range beyond its evaluation (its slack, a power: [`rounded_slack`]):
+/// measured within its evaluation's weight.
+const ROUNDED_RANGE: u64 = 0;
+/// A flat ellipsoid's range in a ball from its value at the middle ([`ellipsoid_span`]), which
+/// [`pruned`] takes in place of walking its range: timed at 15.1 to 16.4 units of an
+/// evaluation of the same ellipsoid (three runs, two instances, the lower taken; as above).
+const QUICK_SPAN: u64 = 15;
 /// One support of a column's section in its walk ([`section_support`]): a root at a
 /// squareness of 2, three powers at any other.
 const SUPPORT_WORK: [u64; 2] = [24, 260];
@@ -2052,7 +2159,7 @@ fn range_cost(n: &Prepared) -> u64 {
 /// supports it takes of its sections ([`column_supports`]) and its pieces.
 fn column_walk_cost(sections: usize, square: f32) -> u64 {
     let segments = (sections.max(1) - 1).max(1) as u64;
-    column_supports(sections) * SUPPORT_WORK[usize::from(square != 2.0)] + segments * COLUMN_PIECES as u64 * PIECE_WORK
+    column_supports(sections) * SUPPORT_WORK[usize::from(column_square(square) != 2.0)] + segments * COLUMN_PIECES as u64 * PIECE_WORK
 }
 
 /// The most supports ([`section_support`]) a walk of a column's curve takes: its two ends on
@@ -2141,6 +2248,11 @@ struct Did {
     /// Levels asked of columns' tables (each charged its table's most places before it is
     /// asked: what the reach's charge may pass what it did by).
     table_asks: u64,
+    /// (Not a step, and weighed nothing: which way a range was asked.) Ellipsoids' ranges
+    /// asked tightened ([`field_range_as`]): the mesher's and [`pruned`]'s, never the box's search's.
+    tight_asks: u64,
+    /// Flat ellipsoids' ranges taken from their value at the middle ([`ellipsoid_span`]).
+    quick_spans: u64,
 }
 
 /// (Tests only) the kinds of primitive [`prim_cost`] weighs apart.
@@ -2157,9 +2269,11 @@ fn prim_kind(p: &Prim) -> usize {
         Prim::HalfSpace { .. } => 0,
         Prim::Sphere { .. } | Prim::Capsule { .. } => 1,
         Prim::RoundCone { .. } => 2,
-        Prim::Column { square: 2.0 | 4.0, .. } => 3,
-        Prim::Column { square: 3.0, .. } => 4,
-        Prim::Column { .. } => 5,
+        Prim::Column { square, .. } => match column_square(square) {
+            2.0 | 4.0 => 3,
+            3.0 => 4,
+            _ => 5,
+        },
         Prim::Box { .. } => 6,
         Prim::Torus { .. } => 7,
         Prim::Ellipsoid { .. } => 8,
@@ -2172,7 +2286,10 @@ fn prim_kind(p: &Prim) -> usize {
 
 #[cfg(test)]
 impl Did {
-    const NONE: Did = Did { range_nodes: 0, mods: [0; 6], octaves: 0, range_prims: [0; PRIM_KINDS], column_ranges: 0, rounded_ranges: 0, groups: 0, kids_smooth: 0, kids_sharp: 0, supports_root: 0, supports_pow: 0, pieces: 0, mid_evals: 0, reach_nodes: 0, reach_kids: 0, reach_pairs: 0, table_places: 0, table_asks: 0 };
+    const NONE: Did = Did { range_nodes: 0, mods: [0; 6], octaves: 0, range_prims: [0; PRIM_KINDS], column_ranges: 0, rounded_ranges: 0, groups: 0, kids_smooth: 0, kids_sharp: 0, supports_root: 0, supports_pow: 0, pieces: 0, mid_evals: 0, reach_nodes: 0, reach_kids: 0, reach_pairs: 0, table_places: 0, table_asks: 0, tight_asks: 0, quick_spans: 0 };
+
+    /// One of every step: what each kind weighs alone ([`did_shares`]).
+    const ONE: Did = Did { range_nodes: 1, mods: [1; 6], octaves: 1, range_prims: [1; PRIM_KINDS], column_ranges: 1, rounded_ranges: 1, groups: 1, kids_smooth: 1, kids_sharp: 1, supports_root: 1, supports_pow: 1, pieces: 1, mid_evals: 1, reach_nodes: 1, reach_kids: 1, reach_pairs: 1, table_places: 1, table_asks: 1, tight_asks: 1, quick_spans: 1 };
 
     /// What it did since the last call, and starts again.
     fn taken() -> Did {
@@ -2358,6 +2475,7 @@ fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, spent: &mut Spent,
                 d.range_prims[prim_kind(p)] += 1;
                 d.column_ranges += u64::from(matches!(p, Prim::Column { .. }));
                 d.rounded_ranges += u64::from(matches!(p, Prim::Rounded { .. }));
+                d.tight_asks += u64::from(tight && matches!(p, Prim::Ellipsoid { .. }));
             }
             PKind::Group { kids, smooth, .. } => {
                 d.groups += 1;
@@ -2527,7 +2645,7 @@ fn bounds(n: &SdfNode) -> Option<(V3, V3, f32, f32)> {
                     let used = &sections[..(count as usize).clamp(1, MAX_SECTIONS)];
                     // (An ellipse reaches as far as its longer half; a squarer section reaches
                     // toward the corner of the box round it, which is as far as any goes.)
-                    let widest = used.iter().map(|s| if square == 2.0 { s[1].max(s[2]) } else { len2(s[1], s[2]) }).fold(0.0f32, f32::max);
+                    let widest = used.iter().map(|s| if column_square(square) == 2.0 { s[1].max(s[2]) } else { len2(s[1], s[2]) }).fold(0.0f32, f32::max);
                     // (Its rounded ends reach no further past its first and last sections than those are wide.)
                     (math3::sub(math3::vmin(a, b), [widest; 3]), math3::add(math3::vmax(a, b), [widest; 3]))
                 }
@@ -3443,6 +3561,8 @@ fn column_places(sections: usize) -> u64 {
 
 /// [`ColumnTable`] of a column: one walk of its curve.
 fn column_table(a: V3, b: V3, side: V3, used: &[[f32; 3]], square: f32) -> ColumnTable {
+    // (As the column is prepared: a reach of a rounder one would bound a smaller solid.)
+    let square = column_square(square);
     let axis = math3::sub(b, a);
     let last = used.len() - 1;
     // Its own frame, as [`column`] takes it.
@@ -4549,9 +4669,15 @@ thread_local! {
     static NO_SKIP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// (Tests only) prune nothing.
     static NO_PRUNE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// (Tests only) walk every flat ellipsoid's range in a prune, as before [`ellipsoid_span`].
+    static NO_QUICK_SPAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// (Tests only) skip and prune by the tree's factors alone, as before 2026-11-24: what
     /// lost surface beside flat ellipsoids.
     static OLD_FACTORS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// (Tests only) when set, every range [`pruned`] takes from a walk's notes ([`Noted`]) is
+    /// kept here with a fresh range of the same child over the ball `pruned` asks of, worked
+    /// out apart from what [`Did`] counts: what a test holds the reuse to.
+    static NOTED_AGAINST_FRESH: std::cell::RefCell<Option<Vec<((f32, f32), (f32, f32))>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// (Tests only) at a build's charge, before it looks for a cancel (`before`) or after: counts
@@ -7375,43 +7501,155 @@ mod tests {
         t
     }
 
+    /// The heading in `docs/design/PROCEDURAL_MODELLING.md` over the table of the sculpt's
+    /// weights, which [`did_shares`] weighs what was done by.
+    const WEIGHTS_HEADING: &str = "#### The sculpt's weights";
+
+    thread_local! {
+        /// The table under [`WEIGHTS_HEADING`]: each row's name and its weight in units.
+        static DOCUMENTED: std::collections::BTreeMap<String, u64> = documented_weights();
+    }
+
+    fn documented_weights() -> std::collections::BTreeMap<String, u64> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/design/PROCEDURAL_MODELLING.md");
+        let doc = std::fs::read_to_string(path).expect("docs/design/PROCEDURAL_MODELLING.md").replace("\r\n", "\n");
+        let at = doc.find(WEIGHTS_HEADING).expect("the document's table of the sculpt's weights");
+        let mut rows = std::collections::BTreeMap::new();
+        for line in doc[at..].lines().skip(1).map(str::trim).skip_while(|l| !l.starts_with('|')).take_while(|l| l.starts_with('|')) {
+            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+            if let Some(units) = cells.get(1).and_then(|c| c.replace(',', "").parse::<u64>().ok()) {
+                assert!(rows.insert(cells[0].to_string(), units).is_none(), "the row {} twice", cells[0]);
+            }
+        }
+        rows
+    }
+
+    /// A weight as the document's table states it ([`WEIGHTS_HEADING`]).
+    fn documented(name: &str) -> u64 {
+        DOCUMENTED.with(|w| *w.get(name).unwrap_or_else(|| panic!("the document's table of the sculpt's weights has no row {name:?}")))
+    }
+
     /// What the box's search, [`reach`] and the mesher's ranges did ([`Did`], counted where
-    /// each step is done), at the weights the charge is meant to pay, **each written out here
-    /// as a number and not taken from the charging code**, so that a weight changed there (at
-    /// its site or its constant) is changed here too, on purpose, or a test fails (review 4 of
-    /// the box lane: eleven of these were the charging code's own constants, and halving one
-    /// failed nothing). `tree` is the cost of one evaluation of the whole tree, for each at a
-    /// box's middle. Each kind with its share, by name.
+    /// each step is done), at the weights the charge is meant to pay, **each taken from the
+    /// table of `docs/design/PROCEDURAL_MODELLING.md` and not from the charging code**, so that
+    /// a weight changed in the code, at its site or its constant, fails the charging tests
+    /// until the document's row says the same (review 4 of the box lane: eleven of these were
+    /// the charging code's own constants, and halving one failed nothing; review 1 of the
+    /// merged sculpt: they were then numbers written here, and halving one here and in the
+    /// code failed nothing). [`the_weights_are_the_documents`] holds the table to the code
+    /// row by row. `tree` is the cost of one evaluation of the whole tree, for each at a box's
+    /// middle. Each kind with its share, by name.
     fn did_shares(d: &Did, tree: u64) -> Vec<(&'static str, u64)> {
-        // A primitive's evaluation, by `prim_kind` (as `prim_cost` and `ROUNDED_COST` have
-        // them): a half space, a ball or capsule, a round cone, columns at squareness 2 or 4,
-        // 3 and any other, a box, a torus, an ellipsoid, rounded shapes at power 2 and any
-        // other, straight and tapered cylinders.
-        const PRIM: [u64; PRIM_KINDS] = [48, 54, 74, 86, 170, 318, 60, 60, 60, 348, 1498, 60, 83];
+        let w = documented;
+        // A primitive's evaluation, by `prim_kind`.
+        let prim = PRIM_ROWS.map(w);
         vec![
-            ("range frames", d.range_nodes * 160),
-            ("turned copies", d.mods[0] * 6),
-            ("stretched copies", d.mods[1] * 3),
-            ("repeated copies", d.mods[2] * 38),
-            ("twisted copies", d.mods[3] * 65),
-            ("bent copies", d.mods[4] * 23),
-            ("displaced copies", d.mods[5] * 15),
-            ("noise octaves", d.octaves * 45),
-            ("primitives' ranges", d.range_prims.iter().zip(PRIM).map(|(n, w)| n * w).sum()),
-            ("columns' ranges", d.column_ranges * 96),
-            ("rounded shapes' ranges", d.rounded_ranges * 200),
-            ("groups' ranges", d.groups * (2 * 8 + 200)),
-            ("smooth joins", d.kids_smooth * 2 * 20),
-            ("sharp joins", d.kids_sharp * 2 * 3),
-            ("supports by a root", d.supports_root * 24),
-            ("supports by powers", d.supports_pow * 260),
-            ("pieces of curves", d.pieces * 600),
+            ("range frames", d.range_nodes * w("a range's frame")),
+            ("turned copies", d.mods[0] * w("a turn")),
+            ("stretched copies", d.mods[1] * w("a stretch")),
+            ("repeated copies", d.mods[2] * w("a repetition")),
+            ("twisted copies", d.mods[3] * w("a twist")),
+            ("bent copies", d.mods[4] * w("a bend")),
+            ("displaced copies", d.mods[5] * w("a displacement")),
+            ("noise octaves", d.octaves * w("an octave of noise")),
+            ("primitives' ranges", d.range_prims.iter().zip(prim).map(|(n, w)| n * w).sum()),
+            ("columns' ranges", d.column_ranges * w("a column's range")),
+            ("rounded shapes' ranges", d.rounded_ranges * w("a rounded shape's range")),
+            ("groups' ranges", d.groups * (2 * w("a group") + w("a group's list in a range"))),
+            ("smooth joins", d.kids_smooth * 2 * w("a smooth join")),
+            ("sharp joins", d.kids_sharp * 2 * w("a sharp join")),
+            ("supports by a root", d.supports_root * w("a support by a root")),
+            ("supports by powers", d.supports_pow * w("a support by powers")),
+            ("pieces of curves", d.pieces * w("a piece of a curve")),
             ("evaluations at a middle", d.mid_evals * tree),
-            ("nodes the reach asked", d.reach_nodes * 1200),
-            ("children the reach gathered", d.reach_kids * 60),
-            ("pairs the reach met", d.reach_pairs * 20),
-            ("places of columns' tables", d.table_places * 6),
+            ("nodes the reach asked", d.reach_nodes * w("a node the reach asks")),
+            ("children the reach gathered", d.reach_kids * w("a child the reach gathers")),
+            ("pairs the reach met", d.reach_pairs * w("a pair the reach meets")),
+            ("places of columns' tables", d.table_places * w("a place of a column's table")),
+            ("flat ellipsoids' ranges from their middle", d.quick_spans * w("a flat ellipsoid's range from its middle")),
         ]
+    }
+
+    /// The document's rows for a primitive's evaluation, in the order of `prim_kind`.
+    const PRIM_ROWS: [&str; PRIM_KINDS] = [
+        "a half space",
+        "a ball or a capsule",
+        "a round cone",
+        "a column at squareness 2 or 4",
+        "a column at squareness 3",
+        "a column at any other squareness",
+        "a box",
+        "a torus",
+        "an ellipsoid",
+        "a rounded shape at power 2",
+        "a rounded shape at any other power",
+        "a straight cylinder",
+        "a tapered cylinder",
+    ];
+
+    /// **The document's table of the sculpt's weights is the code's, row by row**
+    /// ([`did_shares`] weighs what was done by the table, so a weight changed in the code
+    /// alone fails the charging tests, and this says which row).
+    #[test]
+    fn the_weights_are_the_documents() {
+        let w = documented;
+        let column = |square: f32| Prim::Column { a: [0.0; 3], b: [0.0, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections: [[0.0, 0.1, 0.1]; MAX_SECTIONS], count: 2, square };
+        let prims = [
+            Prim::HalfSpace { normal: [0.0, 1.0, 0.0], offset: 0.0 },
+            Prim::Sphere { radius: 1.0 },
+            Prim::RoundCone { a: [0.0; 3], b: [0.0, 1.0, 0.0], ra: 0.2, rb: 0.1 },
+            column(2.0),
+            column(3.0),
+            column(5.0),
+            Prim::Box { half: [1.0; 3], round: 0.0 },
+            Prim::Torus { radius: 1.0, tube: 0.2 },
+            Prim::Ellipsoid { radii: [1.0, 0.5, 0.2] },
+            Prim::Rounded { half: [1.0; 3], power: 2.0, disc: false },
+            Prim::Rounded { half: [1.0; 3], power: 3.0, disc: false },
+            Prim::Cylinder { radius: 1.0, radius_top: 1.0, half_height: 1.0, round: 0.0 },
+            Prim::Cylinder { radius: 1.0, radius_top: 0.5, half_height: 1.0, round: 0.0 },
+        ];
+        for (p, row) in prims.iter().zip(PRIM_ROWS) {
+            assert_eq!(PRIM_ROWS[prim_kind(p)], row, "{p:?}");
+            assert_eq!(prim_cost(p), w(row), "{row}");
+        }
+        // (A capsule, a column at 4 or below 2 share their kinds' rows.)
+        assert_eq!(prim_cost(&Prim::Capsule { radius: 0.1, half_height: 0.5 }), w("a ball or a capsule"));
+        assert_eq!(prim_cost(&column(4.0)), w("a column at squareness 2 or 4"));
+        assert_eq!(prim_cost(&column(1.5)), w("a column at squareness 2 or 4"));
+        let one = |f: fn(&mut Modifiers)| {
+            let mut m = Modifiers::default();
+            f(&mut m);
+            modifiers_cost(&m)
+        };
+        assert_eq!(one(|m| m.rotate = [10.0, 0.0, 0.0]), w("a turn"));
+        assert_eq!(one(|m| m.stretch = [2.0, 1.0, 1.0]), w("a stretch"));
+        assert_eq!(one(|m| m.repeat = Some(([2, 1, 1], [1.0, 0.0, 0.0]))), w("a repetition"));
+        assert_eq!(one(|m| m.twist = 10.0), w("a twist"));
+        assert_eq!(one(|m| m.bend = 10.0), w("a bend"));
+        assert_eq!(one(|m| m.displace = Some((0.1, 1.0, 1))), w("a displacement") + w("an octave of noise"));
+        assert_eq!(one(|m| m.displace = Some((0.1, 1.0, 3))), w("a displacement") + 3 * w("an octave of noise"));
+        assert_eq!(group_cost(0, 0, 0.0), w("a group"));
+        assert_eq!(group_cost(0, 1, 0.0), w("a group") + w("a sharp join"));
+        assert_eq!(group_cost(0, 1, 0.1), w("a group") + w("a smooth join"));
+        for (constant, row) in [
+            (RANGE_FRAME, "a range's frame"),
+            (RANGE_GROUP, "a group's list in a range"),
+            (COLUMN_RANGE, "a column's range"),
+            (ROUNDED_RANGE, "a rounded shape's range"),
+            (SUPPORT_WORK[0], "a support by a root"),
+            (SUPPORT_WORK[1], "a support by powers"),
+            (PIECE_WORK, "a piece of a curve"),
+            (REACH_NODE, "a node the reach asks"),
+            (REACH_KID, "a child the reach gathers"),
+            (REACH_PAIR, "a pair the reach meets"),
+            (REACH_PLACE, "a place of a column's table"),
+            (QUICK_SPAN, "a flat ellipsoid's range from its middle"),
+        ] {
+            assert_eq!(constant, w(row), "{row}");
+        }
+        // (Every row is one of these: the table says nothing the code does not.)
+        assert_eq!(DOCUMENTED.with(|t| t.len()), PRIM_ROWS.len() + 7 + 3 + 12, "{:?}", DOCUMENTED.with(|t| t.keys().cloned().collect::<Vec<_>>()));
     }
 
     /// Trees whose box's search and reach do every kind of step: the drawn set's (every
@@ -7491,9 +7729,13 @@ mod tests {
         }
         let names: Vec<&str> = did_shares(&Did::NONE, 0).iter().map(|s| s.0).collect();
         let did: u64 = sum.iter().sum();
-        let least = sum.iter().copied().min().unwrap();
+        // (A kind the table weighs nothing, as a column's or a rounded shape's range past its
+        // evaluation, has no share to fall short by.)
+        // (Nor a kind only the mesher does: a flat ellipsoid's range from its middle in a prune.)
+        let weighed: Vec<bool> = did_shares(&Did::ONE, 1).iter().map(|s| s.1 > 0 && !s.0.starts_with("flat ellipsoids")).collect();
+        let least = sum.iter().zip(&weighed).filter(|(_, w)| **w).map(|(s, _)| *s).min().unwrap();
         assert!(searched >= 10, "{searched} searches ran");
-        assert!(least > 0, "a kind never done: {:?}", names.iter().zip(&sum).filter(|(_, s)| **s == 0).collect::<Vec<_>>());
+        assert!(least > 0, "a kind never done: {:?}", names.iter().zip(&sum).zip(&weighed).filter(|((_, s), w)| **s == 0 && **w).collect::<Vec<_>>());
         assert!(charged >= did && charged - did < least, "charged {charged}, did {did}, the least share {least}: {:?}", names.iter().zip(&sum).collect::<Vec<_>>());
     }
 
@@ -7736,6 +7978,33 @@ mod tests {
         assert!(tight_hi < 0.0, "{tight_hi}");
     }
 
+    /// **The box's search asks its ranges untightened, at its own call** (review 1 of the
+    /// merged sculpt, finding 5: [`the_search_asks_an_ellipsoid_untightened`] holds the
+    /// function, and the search's call asking tightened passed every test). A flat ellipsoid
+    /// swollen and turned, whose field reads short across its broad side so that its reach
+    /// passes `bounds`'s box and the search runs: no ellipsoid's range the search asks is
+    /// tightened ([`Did`]'s `tight_asks`); the mesher's, in the box the search gave, are.
+    #[test]
+    fn the_box_search_itself_asks_untightened() {
+        let radii = [0.3, 0.5, 0.04];
+        let mut flat = prim(Prim::Ellipsoid { radii });
+        flat.m.round = 0.05;
+        flat.m.rotate = [0.0, 30.0, 0.0];
+        Did::taken();
+        let (b, spent) = mesh_box_charged(&flat, 32, 1, &mut |_| Ok(())).unwrap().unwrap();
+        let d = Did::taken();
+        let asked = d.range_prims[prim_kind(&Prim::Ellipsoid { radii })];
+        assert!(spent.asks > 0 && asked > 0, "the search asked the ellipsoid's range: {spent:?}, {asked}");
+        assert_eq!(d.tight_asks, 0, "the search asked {} of {asked} ellipsoids' ranges tightened", d.tight_asks);
+        // (In a box as wide again each way, beside a ball: blocks far from it ask its range,
+        // and prunes the ellipsoid's.)
+        let size = math3::sub(b.1, b.0);
+        let wide = (math3::sub(b.0, size), math3::add(b.1, size));
+        let pair = group(Combine::Union, vec![flat, at_ball(0.1, [0.6, 0.0, 0.0])], 0.0);
+        mesh(&pair, &MeshOptions { bounds: Some(wide), ..opts(32) }).unwrap();
+        assert!(Did::taken().tight_asks > 0, "the mesher asks tightened");
+    }
+
     /// **A prune takes each loose child's range once** (review 2 of the mesher lane, finding
     /// 1: at each kept union the range was taken over the whole loose child, then the
     /// recursion walked its loose children again, so nested loose unions cost their depth
@@ -7776,6 +8045,118 @@ mod tests {
             }
         }
         assert!(asked > 100, "{asked} prunes asked a range");
+    }
+
+    /// **A range a prune takes from a walk's notes is the child's own, through every
+    /// modifier** (review 1 of the merged sculpt, finding 3: a range noted before the child's
+    /// swelling, or in the child's scaled frame, passed every test, the nested unions of
+    /// [`a_prune_takes_each_loose_childs_range_once`] having none). Sixteen nested unions as
+    /// there, each level moved, turned, scaled up or down, stretched, mirrored and swollen, and
+    /// its flat ellipsoid scaled and swollen too: every range taken from the notes holds the
+    /// range of the same child worked out afresh over the ball the prune asks of (it was taken
+    /// over a ball a hair larger about the same middle), and the pruned tree is the whole tree,
+    /// bit for bit, through each ball.
+    #[test]
+    fn a_noted_range_is_the_childs_own_through_every_modifier() {
+        let mut t = prim(Prim::Sphere { radius: 0.03 });
+        for level in 0..16 {
+            let x = 0.06 * level as f32;
+            let mut e = prim(Prim::Ellipsoid { radii: [0.08, 0.02, 0.08] });
+            e.m.at = [x, 0.0, 0.0];
+            e.m.scale = [1.3, 0.7][level % 2];
+            e.m.round = 0.004 * (level % 3) as f32;
+            let mut kids = vec![t, e];
+            for b in 0..3 {
+                let mut s = prim(Prim::Sphere { radius: 0.01 });
+                s.m.at = [x + 0.02 * b as f32, 0.03, 0.0];
+                kids.push(s);
+            }
+            t = group(Combine::Union, kids, 0.0);
+            t.m.at = [0.01 * (level % 4) as f32, -0.004 * level as f32, 0.0];
+            t.m.rotate = [3.0 * level as f32, -2.0 * level as f32, 5.0];
+            t.m.scale = [1.25, 0.8, 1.1, 0.9][level % 4];
+            t.m.stretch = [[1.0; 3], [1.2, 0.9, 1.0], [0.8, 1.0, 1.15]][level % 3];
+            t.m.mirror = [level % 5 == 2, false, level % 7 == 3];
+            t.m.round = [0.0, 0.006, 0.015][level % 3];
+        }
+        let p = prepare(&t, 1, &mut 0);
+        let (lo, hi, _, _) = bounds(&t).unwrap();
+        let mut r = Review(0x0a07_ed0f_f5e7_7e55);
+        NOTED_AGAINST_FRESH.with(|n| n.replace(Some(Vec::new())));
+        for _ in 0..300 {
+            let c = [0, 1, 2].map(|k| r.range(lo[k], hi[k]));
+            let reach = [0.005, 0.02, 0.08, 0.3][r.pick(4)];
+            let here = prune_asking(&p, c, reach, &mut Spent::default());
+            for _ in 0..8 {
+                let q = math3::add(c, math3::scale(math3::normalize(r.v3(-1.0, 1.0)), reach * r.unit()));
+                assert_eq!(eval(&here, q).to_bits(), eval(&p, q).to_bits(), "about {c:?}, {reach}, at {q:?}");
+            }
+        }
+        let pairs = NOTED_AGAINST_FRESH.with(|n| n.replace(None)).unwrap();
+        let tol = |x: f32| 1e-6 * (1.0 + x.abs());
+        for ((nlo, nhi), (flo, fhi)) in &pairs {
+            assert!(*nlo <= flo + tol(*flo) && *nhi >= fhi - tol(*fhi), "a noted range {nlo}..{nhi} does not hold the child's own {flo}..{fhi}");
+        }
+        // (Reused often, and of children with every modifier: groups and ellipsoids alike.)
+        assert!(pairs.len() > 1000, "{} noted ranges reused", pairs.len());
+    }
+
+    /// **A flat ellipsoid's range from its middle changes no mesh, and saves the walks it
+    /// stands for** ([`ellipsoid_span`]; review 1 of the merged sculpt, finding 1). A union of
+    /// 32 flat ellipsoids in a row (one sculpt of `made_record.rs`'s recipe), and flat
+    /// ellipsoids moved, turned, mirrored and scaled among balls, sharp, smooth and nearly
+    /// joined, meshed with it and with every ellipsoid's range walked instead: the same bytes,
+    /// for less work where it is asked, and never more than its own weight a time it is asked
+    /// past the ranges it saves.
+    #[test]
+    fn a_flat_ellipsoids_range_from_its_middle_changes_no_mesh() {
+        let row = group(
+            Combine::Union,
+            (0..32)
+                .map(|j| {
+                    let mut e = prim(Prim::Ellipsoid { radii: [0.05 + 0.001 * j as f32, 0.05 + 0.0013 * (300 + j) as f32 / 64.0, 0.06 + 0.0007 * j as f32] });
+                    e.m.at = [0.06 * j as f32, 0.0, 0.0];
+                    e
+                })
+                .collect(),
+            0.0,
+        );
+        let mut trees = vec![row];
+        let mut r = Review(0x0e11_1950_1d0f_f1a7);
+        for case in 0..12 {
+            let kids = (0..6)
+                .map(|i| {
+                    let mut k = if i % 2 == 0 {
+                        let a = r.range(0.05, 0.3);
+                        prim(Prim::Ellipsoid { radii: [a, a / [2.0, 5.0, 20.0][r.pick(3)], a * r.range(0.2, 1.0)] })
+                    } else {
+                        prim(Prim::Sphere { radius: r.range(0.03, 0.2) })
+                    };
+                    k.m.at = r.v3(-0.6, 0.6);
+                    k.m.rotate = r.v3(-90.0, 90.0);
+                    k.m.scale = r.range(0.6, 1.6);
+                    k.m.mirror = [r.chance(0.3), false, r.chance(0.3)];
+                    k
+                })
+                .collect();
+            let op = [Combine::Union, Combine::Union, Combine::Near][case % 3];
+            trees.push(group(op, kids, [0.0, 0.05, 0.1][case % 3]));
+        }
+        for (i, tree) in trees.iter().enumerate() {
+            let res = [24, 48][i % 2];
+            Did::taken();
+            let (quick, qs) = mesh(tree, &opts(res)).unwrap();
+            let asked = Did::taken();
+            NO_QUICK_SPAN.with(|f| f.set(true));
+            let walked = mesh(tree, &opts(res));
+            NO_QUICK_SPAN.with(|f| f.set(false));
+            let (walked, ws) = walked.unwrap();
+            assert_eq!((mesh_hash(&quick), quick.tris.len()), (mesh_hash(&walked), walked.tris.len()), "tree {i}");
+            assert!(qs.work <= ws.work + asked.quick_spans * QUICK_SPAN, "tree {i}: {} with it, {} without", qs.work, ws.work);
+            if i == 0 {
+                assert!(asked.quick_spans > 1000 && qs.work < ws.work * 9 / 10, "the row of 32: {} asked, {} with it, {} without", asked.quick_spans, qs.work, ws.work);
+            }
+        }
     }
 
     /// **A cancelled sculpt gives one error, wherever the cancel is seen** (review 4 of the box
@@ -8556,6 +8937,9 @@ mod tests {
     /// radii differ, and a column whose proportions change, do change faster (so the test
     /// would see a factor taken for them), are marked so (`loose`, `wander`), and over every
     /// ball the range the mesher asks ([`field_range_as`], tight) holds every value in it.
+    /// Columns are drawn at squareness 0.5 to 8, since `Prim::Column` and [`mesh`] are public:
+    /// below 2 the range was wrong until a column's squareness was held at 2 where it is
+    /// prepared ([`column_square`]; review 1 of the merged sculpt, finding 2).
     #[test]
     fn every_primitives_factor_bounds_it_or_its_range_is_asked() {
         let mut r = Review(0x0bad_cafe_1234_5679);
@@ -8580,7 +8964,7 @@ mod tests {
                         *row = [if count == 1 { 0.5 } else { i as f32 / (count - 1) as f32 }, w, if keep { w * shape } else { r.range(0.01, 0.01 + 0.1 * steep) }];
                     }
                     let length = r.range(0.1, 1.0);
-                    Prim::Column { a: [0.0, 0.0, 0.0], b: [0.0, length, 0.0], side: [1.0, 0.0, 0.0], sections, count: count as u8, square: [2.0, 3.0, 4.0, r.range(2.0, 8.0), 8.0][r.pick(5)] }
+                    Prim::Column { a: [0.0, 0.0, 0.0], b: [0.0, length, 0.0], side: [1.0, 0.0, 0.0], sections, count: count as u8, square: [2.0, 3.0, 4.0, r.range(2.0, 8.0), 8.0, r.range(0.5, 1.95), r.range(0.5, 1.95)][r.pick(7)] }
                 }
                 2 => Prim::Sphere { radius: r.range(0.01, 0.5) },
                 3 => {
