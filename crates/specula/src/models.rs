@@ -517,6 +517,11 @@ struct Workers {
     /// Tests deliver results by hand through this.
     #[cfg(test)]
     inject: mpsc::Sender<Done>,
+    /// Tests only: how many jobs a worker has begun to build (a cancelled job it skips is not
+    /// one), so that a test says by count, not by time, that a build did not wait behind
+    /// dropped ones.
+    #[cfg(test)]
+    ran: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Drop for Workers {
@@ -534,9 +539,13 @@ impl Workers {
         let (tx, done) = mpsc::channel::<Done>();
         let queues = Arc::new((Mutex::new(Queues::default()), Condvar::new()));
         let cancelled = Arc::new(Mutex::new(BTreeSet::new()));
+        #[cfg(test)]
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let kinds = (0..n).map(|i| (format!("specula-model-{i}"), if i == 0 { Takes::Light } else { Takes::LightFirst })).chain((0..heavy).map(|i| (format!("specula-model-heavy-{i}"), Takes::HeavyFirst)));
         for (name, takes) in kinds {
             let (tx, cancelled, queues) = (tx.clone(), Arc::clone(&cancelled), Arc::clone(&queues));
+            #[cfg(test)]
+            let ran = Arc::clone(&ran);
             let spawned = std::thread::Builder::new().name(name.clone()).spawn(move || loop {
                 let job = {
                     let (q, cv) = &*queues;
@@ -561,6 +570,8 @@ impl Workers {
                 let outcome = if skip {
                     Outcome::Cancelled
                 } else {
+                    #[cfg(test)]
+                    ran.fetch_add(1, Ordering::SeqCst);
                     let _flag = specula_model::work::cancel_on(Arc::clone(&job.cancel));
                     let o = run(&job, build);
                     settled(o, job.cancel.load(Ordering::Relaxed))
@@ -590,6 +601,8 @@ impl Workers {
             flags: Arc::new(Mutex::new(BTreeMap::new())),
             #[cfg(test)]
             inject: tx,
+            #[cfg(test)]
+            ran,
         }
     }
 
@@ -4420,7 +4433,7 @@ mod tests {
 
     /// Takes finished builds until none is in flight (or 60 s pass).
     fn settle(lib: &mut Library) -> BTreeSet<u32> {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + specula_core::HANG_BOUND;
         let mut changed = BTreeSet::new();
         // At least once: builds a graph write waited for are handed on by the next finish.
         loop {
@@ -4429,7 +4442,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(lib.in_flight(), 0, "builds didn't finish");
+        assert_eq!(lib.in_flight(), 0, "builds have not finished in {:?}: hung?", specula_core::HANG_BOUND);
         changed
     }
 
@@ -5355,9 +5368,9 @@ mod tests {
         assert!((height(&second) - 2.9).abs() < 1e-3, "built from the disk as it is now: {second}");
         assert_eq!(second.get("cached").and_then(Json::as_bool), Some(false));
         // The entity's handle follows at the engine's next passes.
-        let give_up = Instant::now() + Duration::from_secs(60);
+        let give_up = Instant::now() + specula_core::HANG_BOUND;
         while e.library.lock().built(entity.handle).is_none_or(|b| b.id == before) {
-            assert!(Instant::now() < give_up, "the entity kept its old build");
+            assert!(Instant::now() < give_up, "the entity kept its old build for {:?}: hung?", specula_core::HANG_BOUND);
             e.poll_assets_async(false);
             e.pump_workers(None);
             e.pump_builds(Some(Duration::from_millis(20)));
@@ -5765,13 +5778,19 @@ mod tests {
         // Their entities are deleted: every queued build is dropped at once (no spare threshold).
         lib.collect_garbage(&BTreeSet::new());
         assert_eq!(lib.in_flight(), 0, "nobody waits for them");
-        // A live entity's light build is not stuck behind them (at most the two already running).
+        // A live entity's light build is not stuck behind them: by count, not by time (a bound
+        // of 20 s on its landing stood for this, which a loaded machine could break and a build
+        // stuck behind six heavy ones on a fast one could pass). When it lands, the workers
+        // have begun at most the heavy builds they held when the entities went (one each) and
+        // the light one: every dropped build still queued was skipped.
         let started = Instant::now();
         let light = lib.resolve(&ModelSpec::new("recipes/block.json")).unwrap().handle;
-        while lib.built(light).is_none() && started.elapsed() < Duration::from_secs(20) {
+        while lib.built(light).is_none() {
+            assert!(started.elapsed() < specula_core::HANG_BOUND, "the live light build has not landed in {:?}: hung?", specula_core::HANG_BOUND);
             lib.finish(Some(Duration::from_millis(20)));
         }
-        assert!(lib.built(light).is_some(), "the live build landed");
+        let ran = lib.workers.ran.load(Ordering::SeqCst);
+        assert!(ran <= WORKERS + HEAVY_WORKERS + 1, "{ran} builds were begun before the live one landed: it waited behind dropped ones");
         // The last heavy spec is wanted again while its cancelled job is still queued or running:
         // whatever that old job reports, the entity ends up built, not failed.
         let again = lib.resolve(&heavies[5]).unwrap();
@@ -5781,7 +5800,8 @@ mod tests {
         assert_eq!(r.state, ModelState::Ready, "{:?}", lib.handle_error(r.handle));
         // A cancelled job may still be running on a worker: its id is pruned when it ends.
         let waited = Instant::now();
-        while !lib.workers.cancelled.lock().unwrap().is_empty() && waited.elapsed() < Duration::from_secs(20) {
+        while !lib.workers.cancelled.lock().unwrap().is_empty() {
+            assert!(waited.elapsed() < specula_core::HANG_BOUND, "a cancelled job has not ended in {:?}: hung?", specula_core::HANG_BOUND);
             lib.finish(Some(Duration::from_millis(20)));
         }
         assert!(lib.workers.cancelled.lock().unwrap().is_empty(), "cancelled ids are pruned as their jobs end");
@@ -5850,7 +5870,8 @@ mod tests {
         let light = lib.resolve(&ModelSpec::new("recipes/block.json")).unwrap().handle;
         assert!(lib.recipes["recipes/sculpt.json"].heavy && !lib.recipes["recipes/block.json"].heavy);
         let started = Instant::now();
-        while lib.built(light).is_none() && started.elapsed() < Duration::from_secs(20) {
+        while lib.built(light).is_none() {
+            assert!(started.elapsed() < specula_core::HANG_BOUND, "the live light build has not landed in {:?}: hung?", specula_core::HANG_BOUND);
             lib.finish(Some(Duration::from_millis(5)));
         }
         assert!(lib.built(light).is_some());
@@ -5860,7 +5881,8 @@ mod tests {
         lib.collect_garbage(&[light].into_iter().collect());
         let mut outcomes = Vec::new();
         let waited = Instant::now();
-        while outcomes.len() < 2 && waited.elapsed() < Duration::from_secs(30) {
+        while outcomes.len() < 2 {
+            assert!(waited.elapsed() < specula_core::HANG_BOUND, "the dropped sculpts have not both ended in {:?} ({outcomes:?}): hung?", specula_core::HANG_BOUND);
             for f in lib.finish(Some(Duration::from_millis(20))).0 {
                 if jobs.contains(&f.job) {
                     outcomes.push(f.result.err().map(|e| e.code.to_string()));
@@ -6291,6 +6313,7 @@ mod tests {
     /// never a deadline: a minute's ran out once on a loaded machine, 2026-11-24) and tells
     /// `models` what it made.
     fn built(models: &mut GpuModels, gpu: &mut Gpu) {
+        let _watchdog = specula_core::Watchdog::arm("the GPU's background pipeline build");
         gpu.wait_for_pipelines();
         models.refresh_ready(gpu);
     }

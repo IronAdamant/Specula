@@ -78,6 +78,7 @@ fn drawing_300_animated_creatures_allocates_nothing() {
     assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
     // The skinned pipelines are built on a worker thread; creatures are held back until then
     // (waited for by joining the build, never by a deadline).
+    let _watchdog = specula_core::Watchdog::arm("the GPU's background pipeline build");
     gpu.wait_for_pipelines();
     models.refresh_ready(&mut gpu);
     assert!(!models.waiting(world.get(ids[0]).unwrap()), "the skinned pipelines were built");

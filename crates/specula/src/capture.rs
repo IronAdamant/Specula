@@ -1717,6 +1717,14 @@ fn take_projection_within(slot: &(std::sync::Mutex<Projected>, std::sync::Condva
     let asked = std::time::Instant::now();
     while matches!(*g, Projected::Working) {
         let Some(left) = limit.checked_sub(asked.elapsed()).filter(|d| !d.is_zero()) else { break };
+        // (Tests: told that this view is about to wait, the lock still held, so that a worker
+        // the test makes finishes while it waits and never before: `tests::ABOUT_TO_WAIT`.)
+        #[cfg(test)]
+        tests::ABOUT_TO_WAIT.with(|h| {
+            if let Some(tx) = h.borrow_mut().take() {
+                let _ = tx.send(());
+            }
+        });
         g = landed.wait_timeout(g, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
     }
     match std::mem::replace(&mut *g, Projected::Taken) {
@@ -1728,6 +1736,12 @@ fn take_projection_within(slot: &(std::sync::Mutex<Projected>, std::sync::Condva
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Told once when this thread's next projection wait is about to wait, with the lock
+        /// held ([`take_projection_within`]).
+        pub(super) static ABOUT_TO_WAIT: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
+    }
 
     /// Review R1 of m5-gpuwork, M2: whoever gets to a view's projection first does it, and
     /// nobody waits passes for the other.
@@ -1745,20 +1759,27 @@ mod tests {
         project_if_first(&set, &s);
         assert!(take_projection(&s).is_some());
         // A worker in the middle of it is waited for, not raced: the view gets the worker's result.
+        // The worker finishes once the view is waiting (told so with the lock held, it takes the
+        // lock only when the view's wait gives it up), never before: a worker made late by a
+        // sleep of 30 ms had, on a loaded machine, finished before the view looked, and the
+        // wait was not what was tested (review 1 of `m6-clock-tests`, finding 4).
         let s = slot();
         *s.0.lock().unwrap() = Projected::Working;
+        let (waiting_tx, waiting) = std::sync::mpsc::channel();
+        ABOUT_TO_WAIT.with(|h| *h.borrow_mut() = Some(waiting_tx));
         let worker = {
             let s = std::sync::Arc::clone(&s);
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(30));
+                waiting.recv().expect("the view waits for the worker");
                 *s.0.lock().unwrap() = Projected::Done(Vec::new());
                 s.1.notify_all();
             })
         };
-        // (Its result, not `None`, is what says the view waited for the worker and got it. The
-        // limit here is long: what is tested is the hand-over, not how fast this machine is.)
-        assert!(take_projection_within(&s, std::time::Duration::from_secs(60)).is_some(), "the worker's result");
+        // (Its result, not `None`, is what says the view waited for the worker and got it; the
+        // limit only names a hang.)
+        assert!(take_projection_within(&s, specula_core::HANG_BOUND).is_some(), "the worker's result");
         worker.join().unwrap();
+        assert!(ABOUT_TO_WAIT.with(|h| h.borrow().is_none()), "the view waited");
         // A worker that does not finish (switched out, or dead) is not waited for past the
         // bound: the view projects its own, and the job is marked taken.
         let s = slot();
