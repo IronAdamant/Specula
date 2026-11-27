@@ -730,3 +730,44 @@ fn the_tallys_record_is_bounded() {
     assert_eq!(tally.made.borrow().len(), 65, "the 66th sculpt has no slot left");
     assert_eq!(ball.owners.iter().filter(|&&o| o != crate::shape::NO_OWNER).count(), 0, "{:?}", ball.owners);
 }
+
+/// A crescent: a sculpt with a rim thinner than a cell, which a build notes.
+const CRESCENT: &str = r#"{ "op": "sdf", "resolution": 24, "tree": { "op": "difference", "of": [
+    { "op": "sphere", "radius": 0.5 }, { "op": "sphere", "radius": 0.5, "at": [0.05, 0, 0] } ] } }"#;
+
+/// **A build's notes stop at [`MAX_BUILD_NOTES`]**: twenty sculpts with rims thinner than a
+/// cell, each of which notes it, give the model the first sixteen notes, in order, and no
+/// more (each sculpt's report still says it: the stats keep all twenty). And the tally keeps
+/// sixteen of a thousand.
+#[test]
+fn a_build_keeps_at_most_sixteen_notes() {
+    let parts: Vec<String> = (0..20).map(|i| format!(r#"{{ "name": "c{i}", "material": "stone", "shape": {CRESCENT}, "ops": [{{ "op": "move", "by": [{i}, 0, 0] }}] }}"#)).collect();
+    let m = build_with(&format!(r#"{{ "name": "crescents", "parts": [{}] }}"#, parts.join(",")), &[]).unwrap();
+    // (A level of detail the build skipped is said beside them, outside the tally's sixteen.)
+    let thin: Vec<&String> = m.notes.iter().filter(|n| n.contains("thinner than a cell")).collect();
+    assert_eq!(thin.len(), MAX_BUILD_NOTES, "{:?}", m.notes);
+    assert!(m.notes.iter().all(|n| n.contains("thinner than a cell") || n.starts_with("lods[")), "{:?}", m.notes);
+    for (i, n) in thin.iter().enumerate() {
+        assert!(n.starts_with(&format!("parts[{i}].shape")), "{i}: {n}");
+    }
+    assert_eq!(m.extras.stats.iter().filter(|(_, j)| j.get("thin_cells").is_some()).count(), 20);
+    let tally = Tally::default();
+    for i in 0..1000 {
+        tally.note(format!("note {i}"));
+    }
+    let kept = tally.notes.borrow();
+    assert_eq!((kept.len(), kept[0].as_str(), kept[15].as_str()), (16, "note 0", "note 15"));
+}
+
+/// **Where a thin rim is, a build says in the sculpt's own frame**, before any operation on it
+/// or its part, and its note says so: a crescent moved five metres has its rim at x from
+/// about -0.46 to -0.08 at this resolution, where the model has nothing.
+#[test]
+fn a_thin_rim_is_said_in_the_sculpts_own_frame() {
+    let m = build_with(&format!(r#"{{ "name": "c", "parts": [{{ "name": "c", "material": "stone", "shape": {CRESCENT}, "ops": [{{ "op": "move", "by": [5, 0, 0] }}] }}] }}"#), &[]).unwrap();
+    assert!(m.lods[0].bounds().min[0] > 4.4, "the model is moved");
+    let at = m.extras.stats.iter().find_map(|(_, j)| j.get("thin_at").cloned()).expect("a thin rim");
+    let x = |k: usize| at.as_array().unwrap()[k].as_array().unwrap()[0].as_f64().unwrap();
+    assert!(x(0) > -0.6 && x(1) < 0.1, "{at:?}: in the sculpt's own frame");
+    assert!(m.notes.iter().any(|n| n.contains("thinner than a cell") && n.contains("in the sculpt's own frame")), "{:?}", m.notes);
+}

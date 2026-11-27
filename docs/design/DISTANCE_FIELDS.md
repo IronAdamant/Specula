@@ -79,6 +79,98 @@ point and is zero on the scaled surface, and 2.3 makes it a bound. For the lower
 The scaled point `a′` is in `S′`, and `|x − a′| ≤ σ_max |y − a| = σ_max · g(x)`. So
 `d(x, S′) ≤ σ_max · g(x)`. ∎
 
+**2.6. The ellipsoid's field is no bound inside, and no factor holds it.** Let `E` be the
+ellipsoid of half axes `e₁, e₂, e₃`, with least `e_min`, greatest `e_max` and ratio
+`ρ = e_max / e_min`. The modeller's field for it is `f(x) = k₀ (k₀ − 1) / k₁`, with
+`k₀ = |x / e|` and `k₁ = |x / e²|` taken coordinate by coordinate. Write `s` for the signed
+distance of `E`. Then:
+
+1. *Outside, `f` never exceeds the distance:* `0 < f(x) ≤ s(x)`.
+2. *Inside, it may read up to `ρ` times too deep, and never less than `1 / ρ` of the depth:*
+   `(1 − k₀) e_min ≤ −f(x) ≤ (1 − k₀) e_max` and `(1 − k₀) e_min ≤ −s(x) ≤ (1 − k₀) e_max`.
+3. *At the surface its slope is one; near the middle it has no bound*: as `x` goes to the
+   middle along a direction `u`, `f` goes to `−|u / e| / |u / e²|`, which is `−e_max` along
+   the longest axis and `−e_min` along the shortest. So within any distance of the middle
+   `f` changes by `e_max − e_min`, and no factor bounds how fast it changes.
+
+*Proof.* (1) Let `x` be outside (`k₀ > 1`) and `y = x / k₀`, a point of the surface. The
+gradient of `k₀²` at `y` is `2 y / e²`, so the plane touching `E` at `y` has the normal
+`n = x / e²` (a multiple of it), and `x` lies `(x − y) · n / |n| = (1 − 1/k₀) (x · x/e²) / k₁
+= (1 − 1/k₀) k₀² / k₁ = f(x)` beyond it. `E` is convex, so it lies wholly behind that plane,
+and every point of `E` is at least `f(x)` from `x`. (2) `k₀` changes by at most `1 / e_min`
+for each unit moved (each coordinate is divided by at least `e_min`), so the ball of radius
+`(1 − k₀) e_min` about `x` stays where `k₀ < 1`, inside `E`; and `x / k₀` is on the surface,
+`(1 − k₀) |x / k₀| ≤ (1 − k₀) e_max` away. That is the depth's pair. For the field's:
+`−f = (1 − k₀) · k₀ / k₁`, and `k₀ / k₁ = |x / e| / |x / e²|` lies between `e_min` and
+`e_max`, since each coordinate of `x / e` is that of `x / e²` times its `eᵢ`. (3) Both `k₀`
+and `k₁` are of degree one in `x`, so `k₀ / k₁` depends only on the direction; at the middle
+`k₀` goes to nothing. ∎
+
+So `|f(x)| ≤ ρ · |s(x)|` everywhere, and near the middle of a flat one it comes close (the
+most measured by sampling on 2026-11-24, so less than or equal to the true greatest: 0.90 of
+`ρ` at `ρ` = 2, 0.83 at 3, 0.82 at 5, 0.76 at 10, 0.60 at 25 and 0.57 at 100), and the
+slope is unbounded inside for every `ρ > 1` (measured: 5.5 at `ρ` = 1.5, 520 at 100); outside,
+far from a flat one, it reaches hundreds (950 at `ρ` = 100). **The modeller once took a
+factor of 2 for it**; 2.7 says what that cost.
+
+**2.7. What skipping and pruning need, and what a factor gives.** The mesher fills a block of
+samples by the sign at its middle `c` when no surface lies within the block's reach `R`; it
+prunes a child out of a union over a ball when the child's least value in the ball is above
+the others' greatest. Both rest on a **bound of the field over a ball**. A field `f` with
+factor `L` (that is, `|f(x) − f(y)| ≤ L |x − y|`) and slack `σ` gives one at once: over the
+ball of radius `R` about `c` it lies within `f(c) ± (L R + σ)`; and joins, meetings, cuts,
+smooth joins, swellings, shells and noise keep a factor (3.1, 5.3, 5.6; a constant moves
+nothing; noise of amount `a` adds `2a` to `σ`). **A field with no factor gives none**: by 2.6
+an ellipsoid's middle may read `e_max` deep at a point `e_min` from its surface, so a block
+there passes the mesher's test `|f(c)| > L R + σ + h` (with `L` = 2 and `h` a cell) with
+surface in it (an ellipsoid of half axes 0.5,
+0.02 and 0.5, meshed at 60 with a block's middle on its middle plane, came out 9,010
+triangles where it is 8,290: four blocks filled solid, a bulge each side). Nor is a ratio
+`|f| ≤ ρ |s|` enough for a tree: a swelling, a shell, a smooth join or noise moves the surface
+to another level of the field, and the ratio says nothing of other levels (for every level,
+it is the factor itself).
+
+So the modeller takes the bound over a ball **from the node, not from one factor**, wherever
+a node's factor is none (`field_range`, worked out through the tree: [PROCEDURAL_MODELLING.md](PROCEDURAL_MODELLING.md),
+tier 3). For the ellipsoid it uses 2.6 itself. Its least over the ball of radius `r` about
+`x`: as `field_range` has it from where its field is at most a level. Its greatest: let
+`t = |x| (1 − 1/k₀)` outside (the distance to `x / k₀`, a point of the surface, so at least
+`s(x)`) and `t = −(1 − k₀) e_min` inside (at least `s(x)`, by 2.6 (2)); then `s ≤ t + r`
+over the ball (2.2). Where `t + r ≥ 0` the field is at most `t + r` (outside by 2.6 (1); and
+inside it is below nothing). Where `t + r < 0` the whole ball is inside, at least
+`−(t + r)` deep, and the field is at most `(t + r) / ρ` (by 2.6 (2): `−f ≥ (1 − k₀) e_min ≥
+−s / ρ`).
+
+**What is not proved here.** Two other parts have no factor either, and the modeller asks
+their range too, but their ranges rest on reasoning in the code, not on a statement of this
+page. A column whose breadth and depth change in different proportions changes, far to one
+side, faster than its factor (`column_lip`) by an allowance for each of its own radii out
+(`column_wander`); `field_range` bounds it by that allowance, and that bound is **held by a
+test** (`a_fields_range_over_a_ball_holds_every_value_in_it`, and the mesher's
+`every_primitives_factor_bounds_it_or_its_range_is_asked`), **not proved**. A repetition's
+field jumps at its cells' edges, and `field_range` goes to every copy a ball can reach (at most
+eight; past that it says nothing). And **pruning still takes such a column's span from
+`column_wander`'s allowance, not from a range** (`sdf::pruned`): the review of 2026-11-24
+found no tree where that is wrong, but it is not proved. What would close both: a proof that a
+column's field is within `L` times its signed distance with `L = sqrt(1 + (κ g)²)` (`g` the
+steepest growth of either radius along it, `κ = 2^(1/2 − 1/s)` for squareness `s`, how far a
+point of a superellipse moves when its radii do), including its rounded ends, and a range
+built on it for both the mesher and pruning.
+
+**What the code adds to these ranges, and why it changes nothing above.** A column's range
+reads its box of level 0 and its ratio from one walk of its curve, made before any range is
+asked (`outline_columns`: the box's search and the mesher each make one), where it once walked
+the curve at every ask: the walk is the same function either way, so the outline changes what
+a range costs, never what it says. And a prune that goes down into a loose child it kept takes
+that child's own children's ranges from the walk that gave the child's (`sdf::pruned`, its
+noted ranges) instead of walking them again: that walk took them over a ball about the same
+middle (by the same steps as `local`), only larger (each frame widens the radius by a
+ten-thousandth), and a range over a ball holds over every smaller ball about its middle. So
+each is a range of this page asked of a larger ball: never tighter, never unsound. That the
+code does these two things as said is held by test (`the_mesher_walks_each_column_once`,
+`a_prune_takes_each_loose_childs_range_once`, and the meshes and ranges compared bit for bit
+with the two lanes before them), not by proof.
+
 ## 3. Joining, meeting and cutting
 
 Write `a ∧ b` for the lesser and `a ∨ b` for the greater of two numbers.
@@ -392,6 +484,10 @@ as the two fields are `4k` or `6k` apart.
   one exact part needs the join's whole width `k`. And a smooth meeting of a part that is
   only a bound inside can eat deeper than `D` (5.6).
 - **An uneven scale costs the ratio of its least to its greatest factor** (2.5).
+- **A part with no factor is bounded by its own range, not by a number** (2.6, 2.7): a flat or
+  long ellipsoid, a column whose proportions change, a repetition. The mesher's skip and its
+  pruning ask such a part's range over the ball; a tree of parts that all have factors keeps
+  the one quick test.
 
 ## 7. Where the same facts are published
 

@@ -906,3 +906,77 @@ fn a_sampled_figures_distance_is_within_twice_its_sampling_error() {
         }
     }
 }
+
+/// The modeller's field for the ellipsoid of half axes `e` (`k0 (k0 - 1) / k1`), and `k0`.
+fn ellipsoid(e: P3, p: P3) -> (f64, f64) {
+    let k0 = ((p[0] / e[0]) * (p[0] / e[0]) + (p[1] / e[1]) * (p[1] / e[1]) + (p[2] / e[2]) * (p[2] / e[2])).sqrt();
+    let w = [p[0] / (e[0] * e[0]), p[1] / (e[1] * e[1]), p[2] / (e[2] * e[2])];
+    let k1 = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();
+    (k0 * (k0 - 1.0) / k1, k0)
+}
+
+/// 2.6: outside, the ellipsoid's field never exceeds the distance; inside, it and the depth
+/// both lie between `(1 - k0)` times the least and the greatest half axis, so the field reads
+/// up to the ratio of the axes too deep; at the middle it goes to minus the greatest half axis
+/// along that axis and minus the least along its own. And 2.7's greatest over a ball holds
+/// every value in the ball.
+#[test]
+fn an_ellipsoids_field_is_a_bound_outside_and_reads_up_to_its_ratio_too_deep_inside() {
+    let mut s = Seq(0x5eed_d157_0026);
+    for case in 0..12 {
+        let rho = [1.5, 3.0, 10.0, 30.0][case % 4];
+        let e = if case % 2 == 0 { [1.0, 1.0 / rho, s.span(0.4, 1.0)] } else { [1.0 / rho, 1.0, 1.0 / rho * s.span(1.0, 2.0)] };
+        let (least, most) = (e[0].min(e[1]).min(e[2]), e[0].max(e[1]).max(e[2]));
+        // The surface, by its two angles (closer than `gap` everywhere: the steps in arc are
+        // at most the greatest half axis times the step in angle).
+        let n = 160;
+        let mut surface = Vec::with_capacity(2 * n * n);
+        for i in 0..=n {
+            let (st, ct) = dmath::sin_cos_f64(std::f64::consts::PI * i as f64 / n as f64);
+            for j in 0..2 * n {
+                let (sp, cp) = dmath::sin_cos_f64(std::f64::consts::PI * j as f64 / n as f64);
+                surface.push([e[0] * st * cp, e[1] * ct, e[2] * st * sp]);
+            }
+        }
+        let gap = most * std::f64::consts::PI / n as f64;
+        let nearest = |p: P3| surface.iter().map(|q| dist3(*q, p)).fold(f64::MAX, f64::min);
+        let mut deepest = 0.0f64;
+        for _ in 0..200 {
+            let p = [s.span(-1.6, 1.6) * e[0], s.span(-1.6, 1.6) * e[1], s.span(-1.6, 1.6) * e[2]];
+            let (f, k0) = ellipsoid(e, p);
+            let d = nearest(p);
+            if k0 > 1.0 {
+                assert!(f > 0.0 && f <= d + 1e-9, "outside, {e:?} at {p:?}: field {f} beyond the distance {d}");
+            } else {
+                let (lo, hi) = ((1.0 - k0) * least, (1.0 - k0) * most);
+                assert!(-f >= lo * (1.0 - 1e-9) && -f <= hi * (1.0 + 1e-9), "inside, {e:?} at {p:?}: field {f} outside {lo}..{hi}");
+                assert!(d + gap >= lo && d <= hi + gap, "inside, {e:?} at {p:?}: depth {d} outside {lo}..{hi}");
+                deepest = deepest.max(-f / (d + gap));
+            }
+            // 2.7's greatest over a ball about `p`.
+            let r = s.span(0.0, 0.3) * most;
+            let t = if k0 >= 1.0 { (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() * (1.0 - 1.0 / k0) } else { -(1.0 - k0) * least } + r;
+            let top = if t >= 0.0 { t } else { t / (most / least) };
+            for _ in 0..20 {
+                let u = [s.span(-1.0, 1.0), s.span(-1.0, 1.0), s.span(-1.0, 1.0)];
+                let l = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt().max(1e-9);
+                let k = r * s.unit() / l;
+                let q = [p[0] + u[0] * k, p[1] + u[1] * k, p[2] + u[2] * k];
+                assert!(ellipsoid(e, q).0 <= top + 1e-9, "{e:?}: {} in the ball of {r} about {p:?}, above its greatest {top}", ellipsoid(e, q).0);
+            }
+        }
+        // Reached near the middle: along the longest axis, minus the greatest half axis, where
+        // the surface is only the least half axis away.
+        let long = (0..3).fold(0, |a, k| if e[k] > e[a] { k } else { a });
+        let mut p = [0.0; 3];
+        p[long] = 1e-6 * most;
+        let (f, _) = ellipsoid(e, p);
+        assert!((f + most).abs() < 1e-5 * most, "{e:?}: at the middle along its longest axis the field is {f}, not {}", -most);
+        let short = (0..3).fold(0, |a, k| if e[k] < e[a] { k } else { a });
+        let mut p = [0.0; 3];
+        p[short] = 1e-6 * least;
+        let (f, _) = ellipsoid(e, p);
+        assert!((f + least).abs() < 1e-5 * least, "{e:?}: at the middle along its shortest axis the field is {f}, not {}", -least);
+        assert!(deepest <= rho * (1.0 + 1e-9), "{e:?}: the field read {deepest} times the depth, past the ratio {rho}");
+    }
+}

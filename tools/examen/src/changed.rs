@@ -70,7 +70,8 @@ pub const READ_BY_TESTS: &[&str] = &[
     // crates/specula-formae/tests/doc_table.rs holds the shape library's table of every form.
     "docs/design/FORMAE.md",
     // crates/specula-formae/tests/doc_table.rs holds that the modelling document's list of shapes
-    // points at the shape library.
+    // points at the shape library; crates/specula-model/src/sdf.rs's tests weigh a sculpt's
+    // steps by its table of weights.
     "docs/design/PROCEDURAL_MODELLING.md",
 ];
 

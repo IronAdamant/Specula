@@ -216,11 +216,14 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   the level and the join's width (two parts) or nine quarters of it (more: proved in the
   code's comment); a meeting or a cut asks for the level itself. An ellipsoid's and a column's
   fields read short far from them and are answered exactly for what they read (an ellipsoid:
-  the greatest of a quadratic's roots; a column: its halves times `1 + level / cap`). A twist
-  or a bend keeps a point's distance from its axis and turns it by at most its rate times the
-  coordinate it goes by. **The mesher takes the old box and moves a side out only where this
-  reaches more than a quarter of a cell past it** (the grid samples half a cell past its box,
-  so nothing within a quarter is lost): every mesh that was right is the same mesh.
+  the greatest of a quadratic's roots; a column: since the second round, piece by piece of the
+  curve between its sections, below). A twist or a bend keeps a point's distance from its axis
+  and turns it by at most its rate times the coordinate it goes by. **The mesher takes the old
+  box and moves a side out only where this reaches more than a quarter of a cell past it** (the
+  grid samples half a cell past its box, so nothing within a quarter is lost) **and a search of
+  the field cannot show the slab past that side empty** (since the third round, below). So a
+  sculpt whose solid lies within the old box keeps the old box, bit for bit, wherever the
+  search succeeds; those of the drawn sets where it does not are named.
   - **How it is held** (`sdf.rs` tests): each case below reaches its whole surface, closed
     (two needles joined, a needle rounded, shelled, and a group's swelling over one, two groups
     of four needles, a flat box twisted, a box bent; each failed before); the recipe of two
@@ -243,13 +246,9 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     coordinate); now it does. A rotated meeting of several boxes joined smoothly does not
     escape the old box (a meeting's field is never below any operand's, and the box was widened
     by a cube of the join's width, not a ball): run, 2 to 6 copies, widths 0.1 to 0.3.
-  - **Still a limit**: the reach is a bound, sometimes more generous than the solid. A figure
-    melted four to eight times more than the default (`smooth` 0.1 to 0.2) with its arms out
-    gets a whole-figure box up to a third deeper than before (its limbs' columns read short
-    across their broad side, and a join that wide is answered for where it could reach, not
-    where it does), so its cells are a few percent coarser; no solid was found outside either
-    box. A sliver thinner than the sampling of the truth test could pass it unseen. The union's
-    tighter answer asks every child three times: past 16,384 asks in a tree it asks once.
+  - **Still a limit**: the reach is a bound, sometimes more generous than the solid; where the
+    search of the field cannot show that (the third round's remainders, below), the box is that
+    much larger. A sliver thinner than the sampling of the truth test could pass it unseen.
 
 - **The fault as found** (2026-11-20, by holding the modeller against
   [DISTANCE_FIELDS.md](DISTANCE_FIELDS.md): each case meshed inside the automatic box and inside
@@ -292,7 +291,291 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     smaller. Also: two caps no test holds (16 notes a build; 16,384 asks a tree, a budget
     that a chain of two-child smooth unions 16 deep already spends); and at `smooth` 0.1
     and 0.2 two builds of the figure's `body` change too, where only the whole figure was
-    named. **A fresh agent is mending it.**
+    named.
+  - **What was mended after it** (2026-11-20, second round, by an agent that wrote none of
+    the first). The causes were counted on the reviewer's 300 trees (a box "grows" where the
+    mesher's box is not `bounds`'s: 34 at resolution 24 and 36 at 64 at the merge), and each
+    rule was tightened while it stayed a bound of every point where the field is at most the
+    level asked:
+    - **A reach keeps its ball.** Each answer is two, both sound, met at the end: a box with
+      a ball round it, and a box. A turn turns the first's box and leaves its ball, as
+      `bounds` turns a box and widens it after; a join's dip is the ball. A union's second,
+      tighter answer is kept as the box. A meeting of parts whose levels do not meet is
+      nothing (a union leaves it out), not a point at the meeting's origin that its
+      modifiers carry. (The five balls in a row now keep the old box at every resolution.)
+    - **A column piece by piece.** Its sizes between two sections are a cubic curve, so each
+      half there is a weighted mean of four control points, and their ratio never beyond the
+      controls' greatest ratio; the curve is cut into eight pieces, and for each the reach
+      along each axis of the frame is the section's support there (an ellipse's, or a squarer
+      section's by the dual exponent) times `1 + level / cap`, with the piece's own stretch of
+      the axis; past each end, the end section and its cap as one shape. Before, the greater
+      half of two sections was grown by the level over the least half of either, every way at
+      once.
+    - **An ellipsoid or a column turned in its own node is worked out in the parent's frame**
+      (an ellipsoid: its support along each axis and a ball of the level times `(rho + 1 /
+      rho) / 2`, Kantorovich's bound on how far its field reads short, met with its exact reach
+      along its own axes; a column: its points and halves moved there), so its box's corners
+      do not swing out.
+    - **A union asks for its second answer only on its first answer's own path**: its plain
+      and paired asks get its children's first answers, so a tree is asked about its size
+      times its depth, not three times more at each level (a chain of 63 two-child smooth
+      unions, the most nodes allow: under 8,400 asks; a chain of pairs 16 deep had spent the
+      16,384). Past the budget, which a tree of 128 nodes no longer reaches, a union gives its
+      first answer, which is sound and keeps its ball.
+    - A rounded cylinder is round about Y with its first half as its radius, whatever its third
+      says (a recipe writes `[r, h, r]`; a drawn tree written otherwise was held only by
+      `bounds`).
+    **What still grows, by count** (`an_ordinary_sculpt_is_meshed_in_the_old_box`: the
+    reviewer's 300 trees and 300 of the crate's own sequence with every primitive, the
+    half-space, every combination and every modifier but stretch, twist and bend, at 24 and
+    64): of the reviewer's 600 boxes, **3** (it was 70): one tree by 0.54 cells at 64 (an
+    ellipsoid 3.7 to 1, turned in a turned group under a join: its ball is twice the dip),
+    and one whose solid is empty at both (a meeting that does not meet; refused for no
+    surface in every box). Of the crate's own 600, 27, each named with the build that shows
+    why: **4 where the old box cut the solid off** (a flat ellipsoid swollen; a flat
+    one-section column swollen: their fields read short across the broad side, so the
+    swelling reaches further than `bounds` widens, by 9 and 19 cells at 64: a second fault of
+    the old box, besides a stretch), 2 of an empty solid, and 21 where the reach is looser and
+    nothing was cut off, by 0.3 to 23 cells (flat ellipsoids and columns at a level above
+    nothing with a turn above them, and meetings swollen, shelled or noised and then turned:
+    a meeting keeps no ball). The review's three small cases (the balls, two tapering columns
+    near-joined at 0.088, an ellipsoid, a rounded box and a column near-joined at 0.081) keep
+    the old box at 24, 48, 64 and 160. The figure at `smooth` 0.1 and 0.2 (it stretches its
+    eggs, so it is not an ordinary sculpt) still grows: of 476 part builds (both sexes, three
+    statures, three builds, four shapings with the limbs at 35/7 and 60/45 degrees), every
+    `whole` (0.4 to 0.8 cells at 0.1, 1.7 to 3.7 at 0.2) and six `body` builds at 0.2 (0.4
+    to 2.5 cells); the other parts do not; no solid was found past the old box. The tests
+    the first round wrote all pass, and no repository sculpt's or figure part's box moves at
+    the shapings they hold.
+    **Also**: the 16 notes a build keeps and the ask budget are held by tests
+    (`a_build_keeps_at_most_sixteen_notes`, `reach_asks_a_bounded_number_of_times`,
+    `past_the_ask_budget_the_reach_is_still_sound`); a thin part's place (`thin_at`, and the
+    note) is in the sculpt's own frame, before any operation on it or its part, and the note
+    now says so; the quarter cell is held by a sweep (`the_box_moves_only_past_a_quarter_cell_and_loses_nothing_within_it`).
+  - **Third round: the field is asked before a side moves** (2026-11-24, by an agent that wrote
+    none of the first two). The reach stays as it is, a bound of every point where the field
+    is at most the level; but a bound can be looser than the solid, and the second round
+    still grew 30 of the 1,200 drawn ordinary boxes where nothing was cut off. So `mesh_box`
+    now asks the field: where the reach passes a side of `bounds`'s box by more than a quarter
+    cell, the slab between them (as wide as the reach's box every other way, which holds the
+    whole solid) is halved into boxes until each is shown clear, and the side stays where it
+    was only when every one is. **A box is shown clear by the least value the field takes in
+    the ball round it** (`field_range`), worked out through the tree and not by one factor for
+    the whole of it: into each node's frame (a move, a turn, a mirror and an elongation keep
+    the ball's radius; a scale and a stretch divide it by the scale times the least stretch; a
+    twist or a bend multiplies it by one and its rate times the ball's furthest from the axis;
+    a repetition sends it to each copy its extent can reach, at most eight in all); a
+    primitive's own factor (`prim_lip`) and twice its slack; the polynomial join is
+    non-decreasing in each operand, so a union's or a meeting's least is the chain of its
+    children's least, and a cut's takes its cutters' greatest; a near-union is never below the
+    chain of all its children (leaving a child out of a chain never lowers it) nor above its
+    least child; then the scale, a swelling, a shell (`|d| - t` over the range) and noise
+    (its amount each way). A box whose middle is solid ends the search; so does a budget of
+    16,384 evaluations of the tree a box (`CLEAR_ASKS`, counted as since the second round: a
+    column's range as nine primitives, `SdfStats::box_asks`). A side not shown clear moves out
+    to the reach, as before: the search only ever keeps a side the field shows nothing past.
+    **The search is charged what it does, as it does it** (`SdfStats::box_work`; second review
+    of the search, 2026-11-24, which found a smooth union of 127 eight-section columns
+    searching for two minutes while charged under half a second, the columns' box and ratio
+    walked again at every ball and the charge made only after the search): each column's
+    walk of its curve once, before the search, at its supports' and pieces' weight; each
+    ball's range through the tree before it is taken, at every node's evaluation weight and
+    a frame's, a group's list and joins, a column's exponential, a rounded shape's slack
+    (the weights set against evaluations timed at the same points); each evaluation at a
+    box's middle at the tree's cost; rounded shapes' powers past their weight on the build's
+    bill. A cancel is looked for before every ball and every walk, and the build's limit at
+    every charge: either ends the build at once with its error (past the limit nothing could
+    be meshed in any box). The same 127 columns now search in about 1.4 s for 164 million
+    units (about 146 s for 704 million before), and the time a unit no longer moves with the
+    squareness (`the_search_spends_no_more_than_it_is_charged`,
+    `a_cancel_or_the_limit_stops_the_search_within_a_ball`, `a_rounded_shapes_search_is_billed`).
+    **So is the reach the search starts from** (third review, the same day: it walked a
+    column's curve again at every level it asked, charged nothing and could not be cancelled;
+    a chain of 64 smooth unions of columns took seven seconds, and a cancel was seen eight
+    seconds after it was raised). A column's curve is walked once into a table, from which
+    its box at any level is a few products a place, bit for bit what the walk gave; every
+    node asked, every child gathered, every pair of a smooth union met, every walk and every
+    level asked of a table is charged before it is done, and a cancel is looked for before
+    every charge. Every mesh without a box given pays it (`SdfStats::reach_work`): the
+    repository's sculpts by 0.01% to 6.9% of a mesh's work (1,200 to 53,000 units), the
+    figure's parts by 0.08% to 0.48% (37,000 to 677,000); no mesh, box or answer moved. The
+    reach of the chain of 64 now takes 0.024 s at squareness 2, 0.073 s at 5 and 0.087 s at
+    1.5 (the reach alone, release, the least of three runs on a machine busy with other
+    builds: the box lane's fourth review), and a cancel ends a mesh within a charge
+    (`the_reach_is_charged_what_it_does`, `a_cancel_or_the_limit_stops_the_reach_at_once`);
+    a cancel gives one error wherever it is seen, a limit with no measure and no limit
+    (`a_cancel_gives_one_error_wherever_it_is_seen`: the work done when a cancel comes is a
+    timing, not a fact of the recipe). Every step of the search, of the reach and of the
+    mesher's ranges is counted where it is done, by kind, and charged. Most are charged
+    before they are done: every step of the reach, every walk of a column, a mesher's block
+    range at one copy of everything, and every ball of the search over a tree with no
+    repetition (`every_step_is_charged_before_it_is_done`). **Three are charged after**, by
+    design: what a ball of the search meets past one copy of a repeated node (it learns how
+    many copies only in its walk; at most eight times the tree's range), the same for a
+    mesher's block range, and the ranges a prune of the mesher takes of its loose children
+    (charged when the prune ends: at most one prune's ranges run unpaid). Measured, they do
+    not let a build pass its limit: in 232 refusals by the limit the work done was never past
+    it, and the error's measure was at most 149,341 units past it, one charge (review 1 of
+    the merged sculpt). The charge is held to each kind's count at the weights of the table
+    below, which the tests read from this document (`did_shares`), and the table is held to
+    the code row by row (`the_weights_are_the_documents`): a weight left out of the charge,
+    or changed in the code without its row here, fails a test.
+    **What still grows, by count** (the same 1,200 boxes): of the reviewer's 600, **none**
+    (the five balls, the turned ellipsoid and the empty meeting keep the old box); of the
+    crate's own 600, **14**: the 4 where the old box cuts the solid off (a flat ellipsoid
+    swollen; a flat column swollen), and 10 (five trees) where the search could not show the
+    slab clear and nothing was cut off: four ran out of budget (three with repetitions, whose
+    balls meet several copies near their cells' edges; a near-joined column whose field
+    changes nearly ten times faster than the distance), and one is a rounded cylinder shelled
+    in a meeting, whose field is trusted only to within its slack, which is more than its
+    0.017 m clearance. **The figure melted at `smooth` 0.1 and 0.2 keeps its box** in all 476
+    part builds (`a_figure_melted_wide_keeps_its_box`; the second round grew every `whole` and
+    six `body` builds there). Held also by `a_fields_range_over_a_ball_holds_every_value_in_it`
+    (drawn trees with every primitive and modifier, stretch, twist, bend, repetition, noise
+    and near-unions among them; every sampled point of every ball within its range) and
+    `the_search_of_the_box_is_bounded_and_charged`. No repository sculpt's search asks
+    anything (no reach passes their boxes), so their meshes, work and hashes do not move
+    (`the_repositorys_sculpts_keep_their_boxes` holds every mesh of every such build to no
+    asks and no search work).
+
+#### The sculpt's weights
+
+What a sculpt's steps are charged, in work units. The tests read this table (`did_shares` in
+`crate::sdf`) and hold it to the code row by row (`the_weights_are_the_documents`), so a weight
+is changed here and in the code together, with its measurement, or a test fails; and no weight
+is nothing (`the_search_spends_no_more_than_it_is_charged`).
+
+**What is promised, and checked:** work done never passes work charged (every step is counted
+where it is done and held to its charge: `the_search_spends_no_more_than_it_is_charged`,
+`every_step_is_charged_before_it_is_done`, the reach's and the mesher's tests); and **over the
+trees of the whole-build probe a unit cost at most 2.0 ns on the reference laptop** (after the
+checklist below: how the weights of the ranges are timed). A unit is not one time for every
+step. The evaluations' weights were set in 2026-11 at one and a half times the slowest time
+`calibrate_sdf` measured of each kind (a ball 34 ns, a column of four sections), and that does
+not hold for every node: a column of eight sections at squareness 2 evaluates in 103 to 108 ns
+for its 86 units, at 5 in 464 to 472 for 318, a rounded shape at power 3 in 2,195 ns for its
+1,617 (review 2 of the merged sculpt), which is why whole builds of columns run near 2 ns a unit
+where balls run near 1.4 and flat ellipsoids 1.1.
+
+| Step | Units | What it is, and how it was set |
+|---|---|---|
+| a half space | 48 | an evaluation: the 48 every primitive costs |
+| a ball or a capsule | 54 | an evaluation |
+| a round cone | 74 | an evaluation |
+| a column at squareness 2 or 4 | 86 | an evaluation (roots only); a squareness below 2 is held at 2 |
+| a column at squareness 3 | 170 | an evaluation (one power) |
+| a column at any other squareness | 318 | an evaluation (three powers) |
+| a box | 60 | an evaluation |
+| a torus | 60 | an evaluation |
+| an ellipsoid | 60 | an evaluation |
+| a rounded shape at power 2 | 348 | an evaluation; powers past it are billed (`ROUNDED_POWER`) |
+| a rounded shape at any other power | 1,498 | an evaluation; powers past it are billed |
+| a straight cylinder | 60 | an evaluation |
+| a tapered cylinder | 83 | an evaluation |
+| a turn | 6 | a node's modifier, at each evaluation and each copy a range meets |
+| a stretch | 3 | the same |
+| a repetition | 38 | the same |
+| a twist | 65 | the same |
+| a bend | 23 | the same |
+| a displacement | 15 | the same, and an octave each besides |
+| an octave of noise | 45 | the same |
+| a group | 8 | an evaluation of a group, besides its children |
+| a smooth join | 20 | a child of a smooth group, at each evaluation (twice in a range) |
+| a sharp join | 3 | a child of a sharp group, the same |
+| a range's frame | 110 | a ball taken into a node's frame and its range out of it (160, then 134 when it was timed in each tree's own units) |
+| a group's list in a range | 90 | a group's list of its children's ranges (200, then 300) |
+| a column's range | 100 | a column's range past its frame and its evaluation, its outline in hand (96, then nothing) |
+| a rounded shape's range | 240 | a rounded shape's range past its frame and its evaluation, its slack (200, then nothing) |
+| a support by a root | 24 | a section's support in a column's walk, at squareness 2 |
+| a support by powers | 260 | the same at any other squareness |
+| a piece of a curve | 600 | a piece of a column's curve in its walk |
+| a node the reach asks | 1,200 | a node of the reach |
+| a child the reach gathers | 60 | a child of a group the reach asks |
+| a pair the reach meets | 20 | a pair of a smooth group's children in the reach |
+| a place of a column's table | 6 | a place of a column's table at a level the reach asks |
+| a flat ellipsoid's range from its middle | 13 | a prune's range of an ellipsoid within twice of round the ball does not reach into, from its value at the middle (`ellipsoid_span`; 15 when timed in its own units) |
+
+**A new node** (a primitive or a modifier) joins the sculpt with every one of these, or a test
+cannot see its fault:
+
+- an evaluation weight: an arm of `prim_cost` (a primitive) or `modifiers_cost` (a modifier),
+  its kind in `prim_kind` and `PRIM_ROWS` and its row in the table above (or a field of `Did`
+  and its share in `did_shares`, for a modifier);
+- a `bounds` arm, and its factor and slack (`prim_lip`, `prim_slack`; `lip_slack` for a
+  modifier), or, where no factor bounds its field across a ball, a mark that makes
+  `factor_holds` false (as `loose` and `wander` do), or the mesher's skip trusts the factor;
+- a `field_range` arm (`inner_range`, or the frame in `field_range_noting`) that is a sound
+  bound over every ball, an `own_range_cost` arm, and the range of parameters in which that
+  bound is proved, held where the node is prepared (as a column's squareness is held at 2 or
+  more: `column_square`);
+- for a modifier, a place in the two lists of modifiers that keep a short way out:
+  `plain` (in `crate::sdf`), which keeps a prune out of a group its children's distances no
+  longer bound, and the list `plain` inside `ellipsoid_span`, which gives a flat ellipsoid's
+  range from its middle only through a move, a turn, a mirror and a scale. Both are lists of
+  what stops them, so a modifier left out of either is taken as harmless there
+  (`a_flat_ellipsoids_range_from_its_middle_holds_its_field` holds the second's present
+  modifiers, and only those);
+- a change to the ellipsoid's field, or to its range in `inner_range`, made in
+  `ellipsoid_span` too: a prune takes a flat ellipsoid's range there a second way, with its
+  own margin for the arithmetic it is computed in (its doc says which roundings it covers);
+- a `reach_within` or `prim_reach` arm, charged per node;
+- if it walks anything, a walk charged before it in `outline_columns` and in the reach, kept
+  once a node (as `Outline` is), and a `Did` counter where the work is done, after its charge;
+- and the node in the tests' trees: `charged_trees` (what every charging test runs over),
+  `every_primitives_factor_bounds_it_or_its_range_is_asked` (its factor and range, over its
+  whole range of parameters) and `a_skipped_block_or_a_pruned_child_loses_no_surface` (the
+  mesh against the tree sampled whole). The tests see only the nodes they are given.
+
+**How the weights of the ranges are timed** (2026-11-28; the probe is lane 3's `rtime3`, kept
+in its scratch folder and mounted into `crate::sdf` for a release build that is not a test's):
+
+- **One unit for every tree:** a ball's evaluation (weight 54) at its own 4,096 points, priced
+  before and after each round, its median over the run giving the run's nanoseconds a unit.
+  (They were priced before in each tree's own evaluation units, 0.48 to 1.5 ns, so a tree of
+  columns and one of balls disagreed about a nanosecond, and weights came out below nothing.)
+- 22 trees (six primitives alone, an ellipsoid tight and not; unions of 4 and 32 ellipsoids, of
+  8 and 32 balls sharp and smooth; three chains of sixteen unions of two; four columns at
+  squareness 2, 3 and 5; rounded shapes at powers 2, 3 and 6), each with a ball's range and an
+  evaluation at the same 4,096 points (balls of 1% to 15% of the tree's size, about and around
+  it), eleven rounds a run in a shuffled order. Of each tree, its range's time past its
+  evaluation's (medians), in units, against what the range is charged past the evaluation. The
+  frame is what a single primitive's range takes past its evaluation; a group's list, a
+  column's and a rounded shape's range, what is left past their frames at the frame measured.
+- **Each weight is the most any tree measured in any run, rounded up to ten** (the span's, to a
+  unit). Four runs, minutes apart; the first two timed the span where it is not given (an
+  ellipsoid further from round than `QUICK_SHORT` allows), so only their other figures count:
+
+  | Run | ns a unit | load (processor, build processes) | frame | group's list | column | rounded | span |
+  |---|---|---|---|---|---|---|---|
+  | 1 | 1.087 | 64-70%, 19 | 106 | 85 | 70 | 139 | (7.0) |
+  | 2 | 1.003 | 70%, 20 | 110 | 86 | 97 | 144 | (5.7) |
+  | 3 | 1.030 | 48-55%, 11-13 | 100 | 54 | 47 | 68 | 12.3 |
+  | 4 | 1.828 | 40-100%, 11-16 | 97 | 60 | 44 | 233 | 12.6 |
+  | set | | | 110 | 90 | 100 | 240 | 13 |
+
+  The medians over the trees are far lower (frame 52 to 59; a group alone -2,360 to -96, its
+  frames and joins charged more than they take there; column 6 to 46; rounded 62 to 110): a
+  weight is the dearest tree's, so that no tree's range costs more than it is charged. The
+  machine was never quiet (other lanes building): the one unit takes most of the load out (a
+  ball's evaluation slows with the rest); the spread between runs is what is left.
+- **The whole-build probe** (`rt3 trees`, res 64, the box found, best of five, at 64-70% load):
+  24 columns of changing proportions at squareness 2, 1.968 ns a unit; at 5, 1.945; 24 at 3 of
+  fixed proportions, 1.929; 24 rounded shapes at power 3, 1.789; 24 rounded discs at 6, 1.162;
+  24 balls, 1.480; 24 flat ellipsoids, 1.107; columns in rounded groups, repeated, 1.588.
+  Review 2 measured the same trees at 0.77 to 1.45 on a quieter machine. A build at the limit
+  (1.5e9 units) is so about 3 s here at the most.
+- What a range costs can still move with the build: in some builds the compiler packs two scalar
+  operations of a range into one instruction whose unused lanes hold leftovers, which read as
+  subnormal floats and cost a microcode assist on this machine (up to about three times a
+  sphere's range on single calls: review 2's "slow twin"). No value and no mesh byte depends on it.
+- **A flat ellipsoid's range from its middle is no dearer than the walk on the trees measured,
+  not in general**: within `QUICK_SHORT` of round, review 2's 459 trees of flat, needle and
+  round ellipsoids and 228 more cost no more with it than with every range walked (past the
+  span's own weight a time), and 0.2% to 0.4% less in all; with needles let through (a `short`
+  of 50) two of them cost 2.2% and 9.5% more, and with a `short` up to 6 one cost 0.8% more.
+  Its bounds are up to `short` looser than the distance's, so a tree can keep a child the walk
+  lets go: the test holds the two trees that showed it.
+
 - **A part thinner than a cell meshes with edges that four triangles share** (looked into on
   2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
   It is not the join and not the box: **one crescent** (`{"op": "difference", "of": [{"op":
@@ -779,7 +1062,40 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   samples), sparse: 8³-cell blocks whose centre is farther from the surface than the tree's
   conservative Lipschitz reach are filled by sign. The reach (Lipschitz factor and slack) folds in
   every node, bounded or not: an unbounded displaced cutter (a half-space with noise) counts as
-  much as a bounded one. **A block that is sampled leaves out what cannot matter in it**: for the
+  much as a bounded one. **Where the tree's factor bounds nothing** (an ellipsoid whose radii
+  differ, a column whose proportions change, a repetition: [DISTANCE_FIELDS.md](DISTANCE_FIELDS.md),
+  2.6 and 2.7), a block the factor shows clear is filled only when its range over the block,
+  worked out through the tree (`field_range`, with an ellipsoid's greatest bounded too), shows
+  it clear as well; and pruning takes a loose child's span from that range, not from a factor.
+  Both are charged in the one scheme the box's search is (`Spent`: every node's frame, its
+  modifiers, its own range and its joins, by the weights of `did_shares`), a block's range
+  before it is taken, a prune's after, and shown in `SdfStats::range_work`. A tree whose
+  ranges are asked has its columns walked once first (`outline_columns`, each walk charged
+  before it and a cancel looked for), so a column's range reads its box and ratio from the
+  outline and costs a range, not a walk (the box lane's fourth review: unoutlined, every
+  block's range walked every column again, charged 384 units for up to 297,240). A prune
+  takes each loose child's range once: going down into a loose child it kept, it finds that
+  child's own children's ranges where the first walk noted them (taken over a ball a
+  ten-thousandth larger a frame, so they hold for the smaller one); on sixteen nested unions
+  of a flat ellipsoid and balls, meshed at 160, that took the ranges from 4.66 million node
+  visits to 0.51 million and the work from 1,527 million units (past the build's limit) to
+  455 million, the mesh the same. Charged so, the mesher's ranges cost what they take (a
+  range about two to three and a half evaluations' time, timed beside them in one run): more
+  than the mesher lane said, which had weighed a range as its primitives' evaluations alone.
+  Against the mesher lane's head, with every mesh the same to the byte: the repository's
+  sculpts 0.5% more work, the figures 1.4%, the drawn set 4.7% (one small tree 2.2 times),
+  the shield 13%, the stone 6%, the coin, leaf and pond nothing; against the box lane's, 145
+  meshes of the crate's and the reviewers' trees 3.7%. A union of 32 ellipsoids whose radii
+  differ costs 14% more than the mesher lane said, and the record's test recipe of 52 of them
+  passed the model's limit (1.59 thousand million units of 1.5; its ellipsoids are round now,
+  `the_record_never_refuses_a_build`). Pruning of a column of changing proportions still goes by `column_wander`'s
+  allowance, which is held by test and not proved (DISTANCE_FIELDS 2.7). Until 2026-11-24 a
+  factor of 2 stood for the ellipsoid: a flat one with blocks' middles on its middle plane was
+  meshed with four blocks filled solid; of drawn trees turned every way, flat ellipsoids came
+  out wrong in 1 of 40 at a ratio of 5 and 8 of 40 at 10, long ones in 1 of 40 at 10, flat
+  ones joined or cut with balls in 1 of 120, and repetitions set off their cells' middles in
+  11 of 60; none of the
+  repository's sculpts, figures or drawn trees moved. **A block that is sampled leaves out what cannot matter in it**: for the
   block, then for each half of it, then for each quarter, the tree is pruned of the children of its
   unions that are too far to touch the surface or its smoothing there (`sdf::prune`), exactly for
   the distance (tests compare the pruned and the whole tree bit for bit; a colour is the same through

@@ -852,7 +852,7 @@ impl Ctx<'_> {
             j.push(("thin_at", Json::arr([at(lo), at(hi)])));
             if !self.coarse {
                 self.tally.note(format!(
-                    "{}: {} cells between {:?} and {:?} hold something thinner than a cell ({:.4} m): each of its sides has vertices of its own, so the mesh is a closed surface there, but it is drawn by the cells' vertices alone (no finer than a cell); raise \"resolution\" or thicken it",
+                    "{}: {} cells between {:?} and {:?} (in the sculpt's own frame, before any operation on it or its part) hold something thinner than a cell ({:.4} m): each of its sides has vertices of its own, so the mesh is a closed surface there, but it is drawn by the cells' vertices alone (no finer than a cell); raise \"resolution\" or thicken it",
                     n.path, st.thin_cells, lo, hi, st.cell
                 ));
             }
