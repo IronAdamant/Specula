@@ -1230,13 +1230,57 @@ fn a_tier_that_chills_freezes_or_staggers_with_no_damage_is_refused() {
     assert!(err.to_string().contains("damage") && err.to_string().contains("staggers"), "{err}");
 }
 
-/// A lone shambler under the first `stones` Gelu stones of [`RING`] at tier III: the ticks until
-/// it is through or dead, the ticks it stood frozen, and whether it got through.
-fn lone_under_frost(c: &Arc<Content>, stones: usize, limit: u64) -> (u64, u64, bool) {
-    let mut s = quiet(c);
-    let id = plant(&mut s, "shambler", GORGE);
-    for cell in &RING[..stones] {
-        place(&mut s, "gelu", cell, 2);
+/// Where the frost tests' Gelu stones stand.
+#[derive(Clone, Copy, Debug)]
+enum Frost {
+    /// The first n of [`RING`]; the enemy is set down on [`GORGE`] and walks through them.
+    Ring(usize),
+    /// The n buildable cells nearest [`AMID`], where the enemy is set down, all placed in the
+    /// tick it is: they fire together, so one volley brings a freeze and the next lands on the
+    /// tick after it thaws when the recharge is one tick longer than the freeze.
+    Round(usize),
+}
+
+/// Where [`Frost::Round`] sets its enemy down: a lane cell beside [`RING`]'s centre.
+const AMID: &str = "top:9,13";
+
+/// The `n` buildable cells nearest `cell` on its face, nearest first (ties by id).
+fn nearest_build_cells(c: &Content, cell: &str, n: usize) -> Vec<CellId> {
+    let centre = c.map.cell(at(c, cell));
+    let mut near: Vec<&crate::map::Cell> = c.map.cells().iter().filter(|x| x.face == centre.face && x.kind.buildable()).collect();
+    near.sort_by_key(|x| (x.pos.dist2(centre.pos), x.id));
+    near.iter().take(n).map(|x| x.id).collect()
+}
+
+/// A lone `kind` with the HP the figure counts (its own times the largest wave scale) under Gelu
+/// stones of `tier` stood as `at`, played from `seed`: the ticks until it is through or dead (at
+/// most `limit`), the ticks it stood frozen, and whether it got through.
+fn lone_under_frost(c: &Arc<Content>, kind: &str, at_: Frost, tier: u8, seed: u64, limit: u64) -> (u64, u64, bool) {
+    let mut s = State::new(Arc::clone(c), seed);
+    s.w.next_wave_tick = None;
+    s.w.wave = 1;
+    s.w.wave_stats[0].started_at = Some(0);
+    let hp = c.frost_hold(c.enemy_kind(kind).unwrap()).expect("a ground enemy under frost").hp as i32;
+    let (from, cells): (&str, Vec<CellId>) = match at_ {
+        Frost::Ring(n) => (GORGE, RING[..n].iter().map(|x| at(c, x)).collect()),
+        Frost::Round(n) => (AMID, nearest_build_cells(c, AMID, n)),
+    };
+    let id = plant(&mut s, kind, from);
+    let i = idx(&s, id);
+    (s.w.enemies[i].hp, s.w.enemies[i].max_hp) = (hp, hp);
+    let gelu = c.stone_kind("gelu").unwrap();
+    let range = c.stone(gelu).tiers[usize::from(tier)].range;
+    let mut ev = Vec::new();
+    s.w.dust = 1_000_000;
+    for cell in cells {
+        if matches!(at_, Frost::Round(_)) {
+            let d2 = c.map.cell(cell).pos.dist2(s.w.enemies[i].pos);
+            assert!(d2 <= i64::from(range) * i64::from(range), "{cell:?} is out of range of the enemy it is to hit");
+        }
+        s.apply(&Command::PlaceStone { cell, stone: gelu }, &mut ev).expect("placed");
+        for _ in 0..tier {
+            s.apply(&Command::Upgrade { cell }, &mut ev).expect("upgraded");
+        }
     }
     let (mut ticks, mut frozen) = (0u64, 0u64);
     while s.enemy(id).is_some() && ticks <= limit {
@@ -1246,7 +1290,7 @@ fn lone_under_frost(c: &Arc<Content>, stones: usize, limit: u64) -> (u64, u64, b
             frozen += 1;
         }
     }
-    assert!(s.enemy(id).is_none(), "still held after {ticks} ticks, past the bound {limit}");
+    assert!(s.enemy(id).is_none(), "a lone {kind} ({at_:?}, tier {tier}, seed {seed}) still held after {ticks} ticks, past the bound {limit}");
     (ticks, frozen, s.wave_stats()[0].leaked == 1)
 }
 
@@ -1262,24 +1306,25 @@ fn gelu_by_hand(cooldown: u32, damage: i32, slow: (i32, u32), freeze: u32) -> Ar
     Arc::new(c)
 }
 
-/// Frost is held under the run's cap when content loads, as the wind is: ordinary frost is
-/// inside it (the stock proving stones, though only by 1,698 ticks; the shipped stones have no
-/// frost), and the harshest frost the format takes (a hit every tick of 0.001 damage, chill 1, a
-/// 30 s freeze, the most slow for the longest) is refused, naming both figures and what to change.
+/// Gelu III as the proving ground's stones.json writes it.
+const GELU_III: &str = "{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 0.9, \"damage\": 14, \"projectile_mps\": 20, \"slow\": 0.35, \"slow_s\": 1.5, \"chill\": 0.6, \"freeze_s\": 3.0, \"shatter\": 2.0 }";
+
+/// Frost is held under the run's cap when content loads, as the wind is: ordinary frost is far
+/// inside it (the stock proving stones under half the room; the shipped stones have no frost),
+/// and the harshest frost the format takes (a hit every tick of 0.001 damage, chill 1, a 30 s
+/// freeze, the most slow for the longest) is refused, naming both figures and what to change.
 #[test]
 fn ordinary_frost_is_inside_the_runs_cap_and_the_harshest_is_refused() {
     let room = |c: &Content| u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
     let p = Content::proving();
     let h = p.longest_frost_hold().expect("the proving ground has frost");
-    let margin = format!("proving: frost {} ticks ({h:?}) against a room of {}: margin {}", h.ticks, room(&p), room(&p) as i64 - h.ticks as i64);
-    assert!(h.ticks <= room(&p), "{margin}");
-    assert_eq!(h.kind, p.enemy_kind("colossus").unwrap(), "the toughest: {margin}");
+    let margin = format!("proving: frost {} ticks ({h:?}) against a room of {}: margin {}, the figure {}% of the room", h.ticks, room(&p), room(&p) as i64 - h.ticks as i64, h.ticks * 100 / room(&p));
+    assert!(h.ticks * 2 < room(&p), "{margin}");
     let shipped = Content::builtin();
     assert_eq!(shipped.longest_frost_hold(), None, "shipped: no chilling tier, so no frost to hold (room {})", room(&shipped));
     assert_eq!(shipped.longest_wind_hold(), None, "shipped: no gust either");
-    let gelu = "{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 0.9, \"damage\": 14, \"projectile_mps\": 20, \"slow\": 0.35, \"slow_s\": 1.5, \"chill\": 0.6, \"freeze_s\": 3.0, \"shatter\": 2.0 }";
     let harsh = "{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 0.034, \"damage\": 0.001, \"projectile_mps\": 1000, \"slow\": 0.9, \"slow_s\": 600, \"chill\": 1.0, \"freeze_s\": 30, \"shatter\": 0 }";
-    let text = proving_with(gelu, harsh).expect_err("refused").to_string();
+    let text = proving_with(GELU_III, harsh).expect_err("refused").to_string();
     let by_hand = gelu_by_hand(1, 1, (900, 18_000), 900);
     let h = by_hand.longest_frost_hold().unwrap();
     assert!(text.contains("frost could keep") && text.contains(&h.ticks.to_string()) && text.contains(&room(&by_hand).to_string()), "{text} / {h:?}");
@@ -1287,27 +1332,130 @@ fn ordinary_frost_is_inside_the_runs_cap_and_the_harshest_is_refused() {
 }
 
 /// Played anyway (its numbers put in by hand), the harshest frost lets a lone shambler through
-/// or kills it within the derived figure ([`Content::frost_hold`]); and one stone that hits just
-/// after each thaw (the longest freeze each hit can bring) holds it frozen for most of the
-/// figure's held part.
+/// or kills it within the derived figure ([`Content::frost_hold`]), and its refusal is not empty:
+/// two such stones, the second placed a tick after the first, shatter and freeze it again every
+/// tick, so it never walks and stands frozen past the run's room until their 0.002 a tick has
+/// killed it. And one stone that hits just after each thaw holds it frozen for nearly the whole
+/// of the figure's held part.
 #[test]
 fn frost_with_damage_lets_a_lone_enemy_through_or_kills_it_within_its_bound() {
     let c = gelu_by_hand(1, 1, (900, 18_000), 900);
+    let room = u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
     let k = c.enemy_kind("shambler").unwrap();
     let h = c.frost_hold(k).unwrap();
-    // 55 HP at the largest wave scale, 1.5: 82,500 hits of 0.001.
-    assert_eq!((h.least, h.freeze, h.hp, h.hits), (1, 900, 82_500, 82_500), "{h:?}");
-    let (ticks, _, _) = lone_under_frost(&c, 4, h.ticks);
-    assert!(ticks <= h.ticks, "{ticks} > {h:?}");
-    // One stone: a 30 s freeze, hit again just after it thaws, each hit a fifth of its HP.
+    // 55 HP at the largest wave scale, 1.5; every hit of 0.001 brings a freeze of 30 s.
+    assert_eq!((h.hp, h.cost, h.freezes, h.freeze, h.held), (82_500, 1, 82_499, 900, 82_499 * 901), "{h:?}");
+    for seed in 1..=3 {
+        let (ticks, frozen, _) = lone_under_frost(&c, "shambler", Frost::Ring(4), 2, seed, h.ticks);
+        assert!(ticks <= h.ticks && frozen <= h.held, "{ticks} ticks, {frozen} frozen, against {h:?}");
+    }
+    let mut s = quiet(&c);
+    let id = plant(&mut s, "shambler", AMID);
+    let i = idx(&s, id);
+    (s.w.enemies[i].hp, s.w.enemies[i].max_hp) = (h.hp as i32, h.hp as i32);
+    let gelu = c.stone_kind("gelu").unwrap();
+    let mut ev = Vec::new();
+    s.w.dust = 1_000_000;
+    let (mut ticks, mut frozen, mut walked) = (0u64, 0u64, 0u64);
+    for (n, cell) in nearest_build_cells(&c, AMID, 2).into_iter().enumerate() {
+        if n == 1 {
+            steps(&mut s, 1);
+            ticks += 1;
+        }
+        s.apply(&Command::PlaceStone { cell, stone: gelu }, &mut ev).expect("placed");
+        s.apply(&Command::Upgrade { cell }, &mut ev).expect("upgraded");
+        s.apply(&Command::Upgrade { cell }, &mut ev).expect("upgraded");
+    }
+    let start = s.enemy(id).unwrap().pos;
+    while s.enemy(id).is_some() && ticks <= h.ticks {
+        steps(&mut s, 1);
+        ticks += 1;
+        match s.enemy(id) {
+            Some(e) if e.el.frozen(s.tick()) => frozen += 1,
+            Some(e) if e.pos != start => walked += 1,
+            _ => {}
+        }
+    }
+    assert!(s.enemy(id).is_none() && s.wave_stats()[0].leaked == 0, "killed where it stood");
+    assert!(frozen > room && walked == 0 && ticks <= h.ticks, "two harsh stones held a lone shambler {frozen} ticks ({walked} walked, {ticks} in all) against a room of {room}: {h:?}");
+    // One stone: a 30 s freeze, hit again on the tick after it thaws, each hit 11 of its 82.5 HP.
     let c = gelu_by_hand(901, 11_000, (0, 0), 900);
     let h = c.frost_hold(k).unwrap();
-    assert_eq!((h.least, h.hits), (6_000, 14), "82.5 HP at the largest scale, against Gelu I's 6 a hit: {h:?}");
-    let (ticks, frozen, leaked) = lone_under_frost(&c, 1, h.ticks);
-    assert!(!leaked && ticks <= h.ticks, "{ticks} against {h:?}");
-    // The one planted here has its own 55 HP: five hits, so at most 5 x 901 ticks held.
-    let held = 5 * (u64::from(h.freeze) + 1);
-    assert!(frozen * 10 >= held * 7, "frozen {frozen} of the {held} its hits can hold it: the bound is loose by the walk, not by the hold");
+    let (ticks, frozen, leaked) = lone_under_frost(&c, "shambler", Frost::Round(1), 2, 1, h.ticks);
+    assert!(!leaked && ticks <= h.ticks && frozen <= h.held, "{ticks} ticks, {frozen} frozen, against {h:?}");
+    assert!(frozen * 10 >= h.held * 9, "frozen {frozen} of the figure's held {}: {h:?}", h.held);
+}
+
+/// The stock proving stones: the figure is under half the run's room (the margin in the
+/// message), and no lone enemy the tests can make takes longer than its figure or stands frozen
+/// longer than its held part: the four ground kinds, at the largest wave scale's HP, under Gelu
+/// I, II and III, walking through a ring of four or set down amid eight that fire together, over
+/// three seeds.
+#[test]
+fn the_stock_frost_holds_a_lone_enemy_within_its_figure_far_inside_the_runs_room() {
+    let c = proving();
+    let room = u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
+    let h = c.longest_frost_hold().expect("the proving ground has frost");
+    let margin = format!("stock: {} ticks ({}) against a room of {room}: margin {}, {}% of the room; {h:?}", h.ticks, c.enemy(h.kind).id, room - h.ticks.min(room), h.ticks * 100 / room);
+    assert!(h.ticks * 2 < room, "{margin}");
+    let (mut most, mut most_frozen) = ((0u64, 1u64, String::new()), (0u64, 1u64, String::new()));
+    for kind in ["shambler", "runner", "tumidus", "colossus"] {
+        let hk = c.frost_hold(c.enemy_kind(kind).unwrap()).unwrap();
+        for tier in 0..3u8 {
+            for at_ in [Frost::Ring(4), Frost::Round(8)] {
+                for seed in 1..=3 {
+                    let (ticks, frozen, _) = lone_under_frost(&c, kind, at_, tier, seed, hk.ticks);
+                    let what = format!("{kind} {at_:?} tier {} seed {seed}", tier + 1);
+                    assert!(ticks <= hk.ticks && frozen <= hk.held, "{what}: {ticks} ticks, {frozen} frozen, against {hk:?} ({margin})");
+                    if ticks * most.1 > most.0 * hk.ticks {
+                        most = (ticks, hk.ticks, what.clone());
+                    }
+                    if frozen * most_frozen.1 > most_frozen.0 * hk.held.max(1) {
+                        most_frozen = (frozen, hk.held.max(1), what);
+                    }
+                }
+            }
+        }
+    }
+    // What the figure leaves (recorded in DESIGN.md, "Gelu"): the walk counted at the slowest
+    // slow and pace, and each freeze counted whole though the stock recharge is shorter.
+    assert!(most.0 * 20 >= most.1 && most_frozen.0 > 0, "closest: {most:?}; most frozen: {most_frozen:?}; {margin}");
+}
+
+/// A Gelu III that freezes at once (chill 1) for 30 s and recharges one tick after the thaw, with
+/// a bolt as fast as the format allows, dealing `damage` milli-HP.
+fn spaced_gelu(damage: u32) -> String {
+    format!("{{ \"cost\": 100, \"range_m\": 7.5, \"cooldown_s\": 30.034, \"damage\": {:.3}, \"projectile_mps\": 1000, \"chill\": 1.0, \"freeze_s\": 30, \"shatter\": 0 }}", f64::from(damage) / 1000.0)
+}
+
+/// At the edge of refusal (the least damage of [`spaced_gelu`] the loader still takes), the enemy
+/// the figure is longest for, set down amid as many such stones as one volley needs to freeze it
+/// (placed together, so they fire together), stands frozen nearly all the figure's held part and
+/// takes within a stated factor of the whole figure: the bound is the rules', not ten times it.
+#[test]
+fn at_the_edge_of_refusal_frost_holds_a_lone_enemy_near_its_figure() {
+    let accepted = |damage: u32| proving_with(GELU_III, &spaced_gelu(damage)).is_ok();
+    let (mut lo, mut hi) = (1u32, 100_000u32);
+    assert!(!accepted(lo) && accepted(hi), "the edge lies between 0.001 and 100 damage");
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if accepted(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let c = Arc::new(proving_with(GELU_III, &spaced_gelu(hi)).unwrap());
+    let room = u64::from(crate::content::RUN_GRACE_TICKS - c.last_entry());
+    let h = c.longest_frost_hold().unwrap();
+    let kind = c.enemy(h.kind).id.clone();
+    assert!(h.ticks <= room && h.ticks * 100 > room * 99, "the edge, {hi} milli-HP a hit: {h:?} against {room}");
+    let per_hit = 1000 * 1000 / i64::from(c.enemy(h.kind).mass.max(1));
+    let n = ((1000 + per_hit - 1) / per_hit) as usize;
+    let (ticks, frozen, leaked) = lone_under_frost(&c, &kind, Frost::Round(n), 2, 1, h.ticks);
+    let what = format!("{kind} amid {n} stones of {hi} milli-HP: {ticks} ticks, {frozen} frozen, against {h:?}");
+    assert!(!leaked && ticks <= h.ticks && frozen <= h.held, "{what}");
+    assert!(frozen * 100 >= h.held * 95 && ticks * 5 >= h.ticks * 4, "{what}");
 }
 
 /// DESIGN.md, "Ventus": a runner's chance leaps are not in the wind's series, and are bounded

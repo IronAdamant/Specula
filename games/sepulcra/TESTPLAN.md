@@ -230,7 +230,7 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
 - [ ] Frost must hurt: a Gelu tier that chills or freezes with no damage is refused (`damage`
       named); with damage, a lone one under frost is killed or walks on, and content whose frost
       could hold one past the run's cap is refused when it loads, naming both figures (DESIGN.md,
-      "Gelu": the stock proving stones are inside by 1,698 ticks).
+      "Gelu": the stock proving stones' figure is 6,932 ticks, 20 % of the room).
 - [ ] The colossus barely chills (mass 8); Gelu is weak against it.
 
 ### 12.5 Wind (Ventus): no damage, through the push, then recharge

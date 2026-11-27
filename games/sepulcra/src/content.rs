@@ -379,15 +379,16 @@ pub struct FrostHold {
     pub kind: EnemyKind,
     /// Its most HP (milli-HP: its own times the largest wave scale).
     pub hp: i64,
-    /// The least damage a hit of a chilling tier deals (milli-HP).
-    pub least: i32,
-    /// The most hits of chilling tiers it can take: ceil(hp / least).
-    pub hits: u64,
-    /// The longest freeze (ticks).
+    /// The tier whose freezes hold it longest for the HP they take: the least milli-HP the hits
+    /// that bring one of its freezes take (its own hit and the chill the others must add,
+    /// rounded up), the most such freezes `hp` pays for, and its freeze (ticks).
+    pub cost: i64,
+    pub freezes: u64,
     pub freeze: u32,
     /// Its longest walk at the slowest slow (ticks).
     pub walk: u64,
-    /// The most ticks frost can hold it: hits x (freeze + 1).
+    /// The most ticks frost can hold it: what its HP pays for, at the dearest tier's rate
+    /// ([`Content::frost_hold`]).
     pub held: u64,
     /// The most ticks it can take to pass or die under frost: `walk + held`.
     pub ticks: u64,
@@ -541,19 +542,37 @@ impl Content {
     /// What frost can cost one lone enemy of `kind` (DESIGN.md, "Gelu"); `None` when no chilling
     /// tier reaches it (a flyer: a freeze holds only the walking; or content with no frost).
     ///
-    /// Frost must hurt (a chilling tier with no damage is refused), so every hit of a chilling
-    /// tier takes at least `d` milli-HP, the least damage any of them deals, and the enemy, at
-    /// most `hp` milli-HP (its own times the largest wave scale), dies within ceil(hp / d) of
-    /// them. A freeze begins only with such a hit on an enemy not frozen and lasts at most `F`
-    /// ticks (the longest freeze), and the hit that shatters one ends it; so it stands at most
-    /// ceil(hp / d) freezes, each costing at most F ticks and one more of its walk (a freeze drops
-    /// the part-millimetre it carried). Walking, it is slowed by at most the strongest slow any
-    /// stone gives and the roots' slow, at its slowest own pace. So it passes or dies within
+    /// The rules (`World::chill_as`, `World::hurt`): a hit of a chilling tier k on an enemy not
+    /// frozen first deals its damage d_k (no bonus: the shatter bonus is only for the frozen),
+    /// then, if the enemy lives, adds q_k = floor(chill_k · 1000 / mass) to its chill; at 1000 the
+    /// enemy freezes for F_k ticks and its chill goes back to 0. A hit on a frozen enemy adds no
+    /// chill and shatters it; chill only fades otherwise (and fire on ice zeroes it). So each
+    /// freeze is brought by hits since the last one whose q add to 1000, the last of them of the
+    /// freezing tier k, every one of them dealing its damage to an enemy that lived on: they take
+    /// at least p_k = d_k + max(0, 1000 − q_k) · (d/q)min milli-HP, (d/q)min the least damage per
+    /// chill of any chilling tier, and all of them together less than `hp` (its own HP times the
+    /// largest wave scale; the killing hit chills nothing). A freeze holds it at most F_k ticks
+    /// and one more of its walk (a freeze drops the part-millimetre it carried). So the ticks it
+    /// stands frozen are at most
     ///
-    /// `ceil(lane · TICK_HZ · 10^9 / (speed · pace · (1000 − slow) · (1000 − roots))) + ceil(hp / d) · (F + 1)` ticks.
+    /// `held = max over k of floor((hp − 1) · (F_k + 1) / p_k)`
     ///
-    /// A bound, and loose (it takes every hit to come just after the last freeze has thawed);
-    /// the wind's ground is not in it ([`Content::wind_hold`] bounds that apart).
+    /// (the freezes, of whatever tiers, are paid for out of one purse of HP: their sum is at most
+    /// the purse times the best rate of any tier). Walking, it is slowed by at most the strongest
+    /// slow any stone gives and the roots' slow, at its slowest own pace. So it passes or dies
+    /// within
+    ///
+    /// `ceil(lane · TICK_HZ · 10^9 / (speed · pace · (1000 − slow) · (1000 − roots))) + held` ticks.
+    ///
+    /// Not in it, and why: **a stone's recharge.** A frozen enemy inside its stone's range is hit
+    /// again within the recharge (and that hit shatters it), but the rules do not keep it there:
+    /// a bolt homes on its target and lands where the enemy has walked to, past the range of the
+    /// stone that fired it, and a stone can be sold or upgraded to a shorter range mid-freeze.
+    /// So a freeze is counted whole (F_k), and the figure is loose by up to F_k over the recharge
+    /// where the recharge is the shorter. Several stones that fire together (placed in one tick
+    /// round an enemy) bring a freeze with one volley and the next on the tick it thaws, and come
+    /// near the figure (`at_the_edge_of_refusal_frost_holds_a_lone_enemy_near_its_figure`). The
+    /// wind's ground is not in it either ([`Content::wind_hold`] bounds that apart).
     pub fn frost_hold(&self, kind: EnemyKind) -> Option<FrostHold> {
         let fields = crate::path::Fields::build(&self.map, &vec![false; self.map.cells().len()], self.rules.wall.breach_penalty);
         self.frost_hold_on(&fields, kind)
@@ -561,21 +580,32 @@ impl Content {
 
     fn frost_hold_on(&self, fields: &crate::path::Fields, kind: EnemyKind) -> Option<FrostHold> {
         let def = self.enemy(kind);
-        let chilling: Vec<&Tier> = self
+        let mass = i64::from(def.mass.max(1));
+        // Each chilling tier that reaches the walking: its damage d, the chill q one of its hits
+        // adds to this kind (the rules' own rounding), and its freeze F.
+        let chilling: Vec<(i128, i128, u32)> = self
             .stones
             .iter()
             .filter(|s| s.targets.hits(false))
             .flat_map(|s| s.tiers.iter())
             .filter(|t| t.el.chill > 0 || t.el.freeze_ticks > 0)
+            .map(|t| (i128::from(t.damage.max(1)), i128::from(i64::from(t.el.chill) * 1000 / mass), t.el.freeze_ticks))
             .collect();
         if def.flies() || chilling.is_empty() {
             return None;
         }
-        let least = chilling.iter().map(|t| t.damage).min().unwrap_or(0).max(1);
-        let freeze = chilling.iter().map(|t| t.el.freeze_ticks).max().unwrap_or(0);
         let scale = self.waves.iter().map(|w| w.hp_scale).max().unwrap_or(1000).max(1000);
         let hp = i64::from(def.hp) * i64::from(scale) / 1000;
-        let hits = (hp + i64::from(least) - 1) / i64::from(least);
+        // The least damage per chill, (d/q)min = dq / qq; a tier whose hit adds no chill to this
+        // kind never brings a freeze.
+        let freezing: Vec<(i128, i128, u32)> = chilling.into_iter().filter(|&(_, q, _)| q > 0).collect();
+        let (dq, qq) = freezing.iter().map(|&(d, q, _)| (d, q)).min_by(|a, b| (a.0 * b.1).cmp(&(b.0 * a.1))).unwrap_or((1, 1));
+        // Per tier, in units of 1/qq milli-HP: p_k = d_k + max(0, 1000 − q_k) · dq / qq.
+        let purse = i128::from(hp - 1).max(0);
+        let price = |d: i128, q: i128| d * qq + (1000 - q).max(0) * dq;
+        let best = freezing.iter().map(|&(d, q, f)| (purse * (i128::from(f) + 1) * qq / price(d, q), price(d, q), f)).max_by_key(|&(h, _, f)| (h, f));
+        let held = best.map_or(0, |(h, _, _)| h.min(i128::from(u64::MAX)) as u64);
+        let (cost, freezes, freeze) = best.map_or((0, 0, 0), |(_, p, f)| ((p + qq - 1) / qq, purse * qq / p, f));
         let slow = self.stones.iter().filter(|s| s.targets.hits(false)).flat_map(|s| s.tiers.iter()).map(|t| t.slow).max().unwrap_or(0).clamp(0, 999);
         let roots = self.rules.nature.slow.clamp(0, 999);
         let pace = if def.climbs() { i128::from(def.climb_speed.clamp(1, 1000)) } else { 1000 };
@@ -583,8 +613,7 @@ impl Content {
         let per = i128::from(def.speed.max(1)) * pace * i128::from(1000 - slow) * i128::from(1000 - roots);
         let walk = i128::from(lane) * i128::from(TICK_HZ) * 1_000_000_000;
         let walk = ((walk + per - 1) / per) as u64;
-        let held = hits as u64 * (u64::from(freeze) + 1);
-        Some(FrostHold { kind, hp, least, hits: hits as u64, freeze, walk, held, ticks: walk + held })
+        Some(FrostHold { kind, hp, cost: cost as i64, freezes: freezes as u64, freeze, walk, held, ticks: walk.saturating_add(held) })
     }
 
     /// The longest [`Content::frost_hold`] of any enemy kind.
@@ -1051,8 +1080,8 @@ fn check_frost(c: &Content) -> Result<(), DataError> {
         "stones",
         ErrorCode::OutOfRange,
         format!(
-            "frost could keep a lone {name} from passing or dying for {} ticks ({} hits of at least {} milli-HP to kill it, each able to freeze it {} ticks, and {} ticks of walk at the slowest slow), past the {room} ticks the run's cap leaves after the last wave's last enemy enters: give the chilling tiers more damage, or a shorter freeze_s",
-            h.ticks, h.hits, h.least, h.freeze, h.walk
+            "frost could keep a lone {name} from passing or dying for {} ticks ({} ticks frozen: its {} milli-HP pay for {} freezes of {} ticks, each brought by at least {} milli-HP of chilling hits; and {} ticks of walk at the slowest slow), past the {room} ticks the run's cap leaves after the last wave's last enemy enters: give the chilling tiers more damage, less chill, or a shorter freeze_s",
+            h.ticks, h.held, h.hp, h.freezes, h.freeze, h.cost, h.walk
         ),
     ))
 }

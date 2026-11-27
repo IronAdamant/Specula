@@ -477,28 +477,56 @@ What each does, in the rules' own terms (`src/sim_elements.rs`, `src/blaze.rs`):
   freezes and deals no damage is refused by name (the third review: such a tier, firing every
   tick, kept a lone shambler frozen 199,738 of 200,000 ticks, since only a hit with damage
   shatters the ice). **And frost is held under the run's cap when content loads**, as the wind
-  is: every freeze starts with a hit of a chilling tier, and every such hit takes at least d (the
-  least damage any chilling tier deals: Gelu I's 6 here), so an enemy of at most HP (its own
-  times the largest wave scale) stands at most ceil(HP / d) freezes of at most F ticks each (F
-  the longest freeze), and it passes or dies within
+  is, by a bound read from the rules. A hit of a chilling tier k on an enemy not frozen deals
+  its damage d_k (the shatter bonus is only for the frozen) and then, if the enemy lives, adds
+  q_k = chill_k x 1000 / mass (rounded down) to its chill; at 1000 it freezes for F_k ticks and
+  its chill goes back to 0. A hit on a frozen enemy adds no chill and shatters it; chill
+  otherwise only fades, and fire on ice zeroes it. So each freeze is brought by hits since the
+  last one whose q add to 1000, the last of the freezing tier, each dealing its damage to an
+  enemy that lived on: at least p_k = d_k + max(0, 1000 - q_k) x (d/q)min milli-HP, (d/q)min
+  the least damage per chill of any chilling tier, and all of them together less than HP (its
+  own times the largest wave scale; the killing hit chills nothing). The freezes, of whatever
+  tiers, are paid out of that one purse, so a lone enemy passes or dies within
 
-      ceil(L x 30 x 10^9 / (v x p x (1000 - s) x (1000 - r))) + ceil(HP / d) x (F + 1)   ticks
+      ceil(L x 30 x 10^9 / (v x p x (1000 - s) x (1000 - r))) + max over k of floor((HP - 1) x (F_k + 1) / p_k)   ticks
 
   (L, v and p as for the wind; s the strongest slow any stone gives and r the roots' slow,
   permille; one tick more a freeze for the part-millimetre a freeze drops). That is
   `Content::frost_hold`, and the loader refuses content in which it is longer, for any ground
   enemy, than the run's cap leaves after the last wave's last enemy enters, naming both figures
-  and what to change (more damage on the chilling tiers, or a shorter `freeze_s`). It is a loose
-  bound (it takes every hit to come just after the last freeze thawed), and **the stock proving
-  stones sit close to it**: the colossus (1,250 HP at the largest scale 1.5, 313 hits of 6 at
-  most, 3 s freezes) gets 33,582 ticks against a room of 35,280, a margin of 1,698 (the shipped
-  stones have no frost). The harshest frost the format takes (a hit every tick of 0.001 damage,
-  chill 1, 30 s freezes, 0.9 slow for 600 s) is **refused** (74,361,986 ticks for a shambler);
-  played anyway, its numbers put in by hand, four such stones let a lone shambler through in
-  5,439, and one stone that hits just after each thaw for a fifth of its HP holds one frozen
-  3,596 ticks of the 4,505 its five hits can hold it
-  (`ordinary_frost_is_inside_the_runs_cap_and_the_harshest_is_refused`,
-  `frost_with_damage_lets_a_lone_enemy_through_or_kills_it_within_its_bound`).
+  and what to change (more damage on the chilling tiers, less chill, or a shorter `freeze_s`).
+  **A stone's recharge is not in it, and cannot be:** a frozen enemy inside its stone's range is
+  hit again within the recharge, which shatters it, but the rules do not keep it there (a bolt
+  homes and lands where its target has walked to, past the range of the stone that fired it;
+  a stone can be sold, or upgraded to a shorter range, mid-freeze), so each freeze is counted
+  whole. Where the recharge is shorter than the freeze the figure is loose by up to that ratio
+  (the stock stones: 1 s against 2 to 3 s). The walk is counted at the slowest slow and pace
+  over the longest lane, as before. The first form of this bound (every hit of the least damage
+  bringing a freeze of the longest) put the stock proving stones at 33,582 ticks of the 35,280,
+  95 % of the room. **Now the stock proving stones are at 6,932** (the shambler: 55 HP at the
+  largest scale 1.5, at most 4 freezes of Gelu II's 2.5 s, 379 ticks frozen, and 6,553 of walk
+  at the slowest slow and its cliff pace), **20 % of the room, a margin of 28,348**; the
+  colossus (1,875 HP, mass 8, so 0.05 to 0.075 chill a hit) 6,463, of which 1,364 frozen. No lone
+  enemy of the four ground kinds, at that HP, under Gelu I, II or III, walking through four
+  stones or set down amid eight that fire together, over three seeds, took longer than its
+  figure or stood frozen longer than its held part (with seed 1 the closest was a runner through four
+  Gelu I, 470 of its 1,209). **At the edge of refusal** (a Gelu III that freezes at once for
+  30 s and recharges a tick after the thaw, at the least damage the loader takes, 6.997) the
+  figure is the colossus's 35,279 ticks; set down amid the eight such stones one volley needs
+  to freeze it, placed together so they fire together, it stood frozen 29,667 of the figure's
+  30,180 held and was dead in 29,734: **within 1.19 of the figure**, the rest its walk, counted
+  whole though it hardly moved (one stone alone, or four it walks through, do not hold it).
+  The harshest frost the format takes (a hit every tick of 0.001 damage, chill 1, 30 s
+  freezes, 0.9 slow for 600 s) is **refused** (74,361,085 ticks for a shambler), and the
+  refusal is not empty: played anyway, its numbers put in by hand, four such stones let a lone
+  shambler through in 5,439 (each tick's four hits freeze, shatter, freeze and shatter it), but
+  two, the second placed a tick after the first, shatter and freeze it again every tick: it
+  never walked, and stood frozen 41,249 ticks, past the room, until their 0.002 a tick killed
+  it. One stone that hits a tick after each thaw for 11 of its 82.5 HP held one frozen 6,293
+  of the figure's 6,757 held (`ordinary_frost_is_inside_the_runs_cap_and_the_harshest_is_refused`,
+  `frost_with_damage_lets_a_lone_enemy_through_or_kills_it_within_its_bound`,
+  `the_stock_frost_holds_a_lone_enemy_within_its_figure_far_inside_the_runs_room`,
+  `at_the_edge_of_refusal_frost_holds_a_lone_enemy_near_its_figure`).
 - **Ventus (wind).** Deals nothing (the content refuses any damage, slow, burn or chill on a gust,
   and the wind hurts nobody on any path: what a fanned fire or a shove onto burning grass does is
   fire's). When any ground enemy is in range, one alone included (the owner: the enemy "gets
