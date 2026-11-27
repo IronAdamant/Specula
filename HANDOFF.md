@@ -2,7 +2,7 @@
 
 Notes from Claude (Fable 5.2 since 2026-11-12) to whoever picks up Specula next, most likely a new
 Claude conversation with no memory of the earlier ones. This page is **current state and what's
-next** only. Last updated **2026-11-24**.
+next** only. Last updated **2026-11-28**.
 
 **The full record is [HANDOFF_HISTORY.md](HANDOFF_HISTORY.md)**: this page as it stood on
 2026-11-21 before it was cut down (the owner's words by date, every review round of M6 part 4,
@@ -11,8 +11,51 @@ need. Older history is in [CHANGELOG.md](CHANGELOG.md). The page was cut because
 full at the start of every session and had grown to 228 KB, most of it the history of review
 rounds.
 
-## Right now (2026-11-24)
+## Right now (2026-11-28)
 
+- **Where the lanes stand (2026-11-28, early morning). Read this before the table of
+  2026-11-24 below, which it overtakes.** The owner, 2026-11-27: "Complete everything as before
+  but do not push into part 5. I want libraries set up"; agents are Opus and Sonnet with a
+  stated effort, used leanly (lanes' rule 18; the Relatum note `m6/part4/economy`); **at 80% of
+  the weekly usage, pause and advise** (the lead cannot read the meter: the owner gives
+  readings; 22% at 22:17 on 2026-11-27, about 3% an hour with ten agents; start nothing new
+  past 65%).
+  - **Merged, gated and pushed (`origin/main` is `f165302b`):** the fire simulation
+    (`specula-elementa`), the timing tests' two rounds, the 2D sprite baker, the shape
+    library's stage 4. **The full gate passed on `f165302b`** (3,756 tests, repeats, slow
+    workers, speed, clippy for both targets, both builds). The gate before it failed on one
+    speed budget (`specula-studio`, `reading_the_largest_record_is_bounded`: 467 ms against
+    400; 220 ms quiet, 368 to 750 ms with other builds on the machine): the budget is now a
+    second, with the measurements beside it (`bf0136dc`, by the lead, not reviewed). The live
+    checks were not run whole.
+  - **In review or a fix round, each in its own worktree:** the sculpt branch (`C:/sl-mesh`,
+    `m6-sculpt`: a quick range for a flat ellipsoid and two weights at zero are with a second
+    reviewer; the creature `body` lane waits on its merge); the sample library's stage S0
+    (`C:/sl-tpl`: the relation check over the size, with a fourth reviewer); Sepulcra's
+    elemental stones (`C:/sl-turres`: wind and frost are checked when content loads, with a
+    fourth reviewer); soft edges (`C:/sl-edge`: the ordinary cases all build; a fifth builder
+    has the heart at detail 256, a tip thinner than the floor, and a named refusal for
+    parallel sides that meet at once); the catalogue (`C:/sf-formae`: a finisher is running
+    its seeded faults, live checks and stall measurements); elements in the engine
+    (`C:/sl-elem6`, third builder).
+  - **Effects:** the particle and effects lanes are joined on `m6-fx` (`C:/sl-fx`): one
+    pipeline, the measured flash check on the caller's thread, nothing ever "pending a flash
+    verdict". The look lane (`m6-effectus-look`) is being merged onto it. **The look lane's
+    colour rule is wrong** (one colour given turns the red hold off for the library's own
+    reds beside it: `C:/lv/lanes/rev-fxlook/fxlook-review2.md`) and is the next job on that
+    branch, then the Rust port of `scripts/vfx_check.py` (it fails against the new pipeline),
+    one review of the whole branch, and the look's next round
+    (`C:/lv/lanes/fxlook/4/picture-check-4.md`). **The flash governor is not built: lightning
+    is shown to nobody before it is.**
+  - **The lead's queue** is `C:/lv/lanes/QUEUE.md`; the decisions are the `*-decisions.md`
+    files beside the lanes' rules (`sculpt-` and `margo-decisions.md` are new). Research round
+    eight, section A (soft edges) is in `docs/research/library/R8-*`; sections B to D are
+    asked for and not delivered.
+  - **What the night taught:** four builders ran past the 350k-token hand-back (to between
+    440k and 540k); two finishers stopped with work uncommitted and no report and had to be
+    resumed; in four lanes a reviewer's seeded fault passed tests the builder had called
+    able to fail. A narrowed re-review costs about 250k tokens; six of the seven tonight
+    found something that had to change before a merge.
 - **The measuring is over; part 4 and the libraries are next (the owner, 2026-11-24).** After
   two readers' assessments of Day Market again: "Fix them but after that, we're no longer
   doing any further testing. We did as much reduction as we can. We need to move on with
@@ -92,9 +135,6 @@ rounds.
   command a lane runs names its own `--settings` folder and `specula new` its own `--in`: one
   lane's scratch project turned up on the owner's start screen and another made a project in
   their home folder (both removed, 2026-11-24).
-- **Not pushed since `59b79140`.** The working line (`m6-una`) holds the Elementa merge, the
-  research and the timing mends, ungated: the full gate waits for the timing lane's second
-  round, since three known tests can still fail it by load alone.
 - **By hand only, and lean.** The owner: "Only by hand working", then "For now we'll stick to 1
   agent". No subagent, and no paid measurement (`examen leverage` builders and judges) beyond what they ask for, until they
   say. When subagents come back: one or two at a time, and always with `model` passed (Opus for
