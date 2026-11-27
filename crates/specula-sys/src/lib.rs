@@ -591,8 +591,39 @@ pub mod thread {
     mod tests {
         use super::*;
 
-        /// Running counts and waiting does not. (Bounds are loose on purpose: the thread may
-        /// be switched out during the busy part, never switched in during the sleep.)
+        /// How long the test waits for the thread's own clock to move before it calls the
+        /// clock stopped (a liveness bound: what ends the wait is the clock passing its mark).
+        const STOPPED: Duration = Duration::from_secs(600);
+
+        /// One millisecond of spinning, by the wall, as cycles a millisecond: never more than
+        /// the thread's true rate (it cannot run longer than the wall says), less when it was
+        /// switched out meanwhile.
+        fn window_rate() -> f64 {
+            let (from, started) = (cycles().expect("counted"), Instant::now());
+            while started.elapsed() < Duration::from_millis(1) {
+                std::hint::spin_loop();
+            }
+            let (to, took) = (cycles().expect("counted"), started.elapsed());
+            to.saturating_sub(from) as f64 / (took.as_secs_f64() * 1e3)
+        }
+
+        /// Running counts and waiting does not, by what the design guarantees and not by how
+        /// much of a wall-clock spin this thread was given.
+        ///
+        /// Before 2026-11-24 it spun 20 ms by the wall and bounded the reading to 5..40 ms:
+        /// with 32 copies at once it read 3.85 ms (the thread was switched out for most of
+        /// the 20) and 46.7 ms (calibrated while switched out, so every reading was high), 3
+        /// runs of 128 (review 1 of `m6-clock-tests`). Neither bound is a guarantee: a
+        /// thread's share of the wall is the machine's, and calibration errs towards "ran".
+        /// What is guaranteed, and held here:
+        /// - the clock moves while the thread runs: it spins until its own clock has passed
+        ///   20 ms (a clock that stood still, or read zero, never gets there: [`STOPPED`]);
+        /// - calibration never makes the rate higher than the thread's true one (its error is
+        ///   towards "ran", as its doc says): the rate is no more than twice the best of many
+        ///   one-millisecond windows, each of which is at most the true rate (a rate in the
+        ///   wrong unit is a thousand times off);
+        /// - a thread that waits does not accrue it: 40 ms asleep reads under 5 ms, at the best
+        ///   rate (a clock that read wall time reads 40).
         #[test]
         fn a_threads_own_time_counts_running_and_not_waiting() {
             std::thread::spawn(|| {
@@ -608,16 +639,23 @@ pub mod thread {
                     }
                 };
                 let at = |c: &CpuClock| c.now_ms().expect("counted a moment ago");
+                let best = (0..50).map(|_| window_rate()).fold(0.0f64, f64::max);
+                assert!(clock.cycles_per_ms() <= 2.0 * best, "calibrated at {} cycles a ms, where the best of 50 one-ms windows ran {best}: calibration may err low, never high", clock.cycles_per_ms());
+                // A reading is the thread's cycles at the rate: between the counts just before
+                // and just after it (exact, whatever the machine's load).
+                let (lo, reading, hi) = (cycles().unwrap(), at(&clock), cycles().unwrap());
+                let in_cycles = reading * clock.cycles_per_ms();
+                assert!(in_cycles >= lo as f64 * (1.0 - 1e-9) && in_cycles <= hi as f64 * (1.0 + 1e-9), "{reading} ms at {} a ms is {in_cycles} cycles, outside the thread's own {lo}..{hi}", clock.cycles_per_ms());
                 let before = at(&clock);
                 let started = Instant::now();
-                while started.elapsed() < Duration::from_millis(20) {
+                while at(&clock) - before < 20.0 {
+                    assert!(started.elapsed() < STOPPED, "the thread's own clock has not passed 20 ms in {STOPPED:?} of spinning: it stands still");
                     std::hint::spin_loop();
                 }
-                let ran = at(&clock) - before;
-                assert!(ran > 5.0 && ran < 40.0, "20 ms of running read as {ran} ms");
-                let before = at(&clock);
+                let exact = CpuClock { cycles_per_ms: best };
+                let before = at(&exact);
                 std::thread::sleep(Duration::from_millis(40));
-                let slept = at(&clock) - before;
+                let slept = at(&exact) - before;
                 assert!(slept < 5.0, "40 ms asleep read as {slept} ms of running");
             })
             .join()
@@ -687,9 +725,16 @@ pub mod interrupt {
     #[cfg(windows)]
     const CTRL_SHUTDOWN_EVENT: u32 = 6;
 
-    /// How long a close/logoff/shutdown handler waits for the main loop to finish.
+    /// How long a close/logoff/shutdown handler waits for the main loop to finish. (In this
+    /// crate's own tests, ten minutes: whether the handler waited for `finished` is the test's
+    /// to decide, never the machine's speed against 4.5 s.)
     #[cfg(windows)]
-    const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_millis(4500);
+    const CLOSE_GRACE: std::time::Duration = if cfg!(test) { std::time::Duration::from_secs(600) } else { std::time::Duration::from_millis(4500) };
+
+    /// Tests: how many times a close handler has looked for `finished` and not found it (it
+    /// is waiting).
+    #[cfg(all(test, windows))]
+    static LOOKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     /// The flag a process is started with to be the first of a process group of its own
     /// (`CREATE_NEW_PROCESS_GROUP`): what [`ask`] can then name. Windows only.
@@ -769,6 +814,8 @@ pub mod interrupt {
                 request();
                 let deadline = std::time::Instant::now() + CLOSE_GRACE;
                 while !FINISHED.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                    #[cfg(test)]
+                    LOOKED.fetch_add(1, Ordering::SeqCst);
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
                 1
@@ -781,6 +828,14 @@ pub mod interrupt {
     pub(crate) fn reset_for_test() {
         REQUESTED.store(false, Ordering::SeqCst);
         FINISHED.store(false, Ordering::SeqCst);
+        LOOKED.store(0, Ordering::SeqCst);
+    }
+
+    /// Tests: whether cleanup has said `finished`, and how often a close handler looked for it
+    /// in vain.
+    #[cfg(all(test, windows))]
+    pub(crate) fn finished_and_looked() -> (bool, usize) {
+        (FINISHED.load(Ordering::SeqCst), LOOKED.load(Ordering::SeqCst))
     }
 
     #[cfg(all(test, windows))]
@@ -1042,18 +1097,27 @@ mod tests {
         assert_eq!(interrupt::simulate(0), 1, "Ctrl+C is handled");
         assert!(interrupt::requested());
 
-        // Console close waits for `finished` (here signalled from another thread).
+        // Console close waits for `finished` (here signalled from another thread): by what the
+        // handler did, never by how long it took. The signaller says `finished` only once the
+        // handler has looked for it and not found it (it is waiting), and the handler has
+        // returned with `finished` said: it waited for it, and ended on it. (Before: a signaller
+        // late by 100 ms and `waited >= 90 ms`, which a signaller late by 4.5 s on a loaded
+        // machine passed with the handler ended by its grace, untested: review 1 of
+        // `m6-clock-tests`, finding 4. In these tests the grace is ten minutes.)
         interrupt::reset_for_test();
-        let start = std::time::Instant::now();
         let signaller = std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            let started = std::time::Instant::now();
+            while interrupt::finished_and_looked().1 == 0 {
+                assert!(started.elapsed() < std::time::Duration::from_secs(600), "the close handler never waited for finished");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             interrupt::finished();
         });
         assert_eq!(interrupt::simulate(2), 1);
-        signaller.join().unwrap();
-        let waited = start.elapsed();
+        let (finished, looked) = interrupt::finished_and_looked();
         assert!(interrupt::requested());
-        assert!(waited >= std::time::Duration::from_millis(90) && waited < std::time::Duration::from_secs(5), "{waited:?}");
+        assert!(finished && looked > 0, "the close handler returned with finished {finished}, having looked {looked} times");
+        signaller.join().unwrap();
         interrupt::reset_for_test();
     }
 
