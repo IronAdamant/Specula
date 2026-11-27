@@ -657,6 +657,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// Review 2 of sprite_bake, M4: a cancelled bake withdraws what it stored; content another
+    /// file refers to stays. (And untouched content does go.)
+    #[test]
+    fn withdraw_leaves_content_another_file_references() {
+        let (base, s) = store("withdraw-ref");
+        let (a, mark) = s.put_new(&[4u8; 64]).unwrap();
+        let mark = mark.expect("written new");
+        s.set_referenced([a].into());
+        assert!(!s.withdraw(a, mark), "referenced: not withdrawn");
+        assert!(s.has(a) && s.get(a).unwrap() == [4u8; 64]);
+        let (b, mark_b) = s.put_new(&[5u8; 64]).unwrap();
+        assert!(s.withdraw(b, mark_b.unwrap()) && !s.has(b), "untouched and unreferenced: withdrawn");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// M4's second guard: content put again (another file's identical bytes) or read since the
+    /// mark stays, though nothing refers to it yet.
+    #[test]
+    fn withdraw_leaves_content_used_again_since_its_mark() {
+        let (base, s) = store("withdraw-used");
+        let (a, mark) = s.put_new(&[6u8; 64]).unwrap();
+        let mark = mark.expect("written new");
+        assert_eq!(s.put(&[6u8; 64]).unwrap(), a, "the same bytes, written again by another file");
+        assert!(!s.withdraw(a, mark), "used since its mark: not withdrawn");
+        assert!(s.has(a) && s.get(a).unwrap() == [6u8; 64]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Uploads: chunks at the right offset only, resumable from status, CRC-checked, bounded.
     #[test]
     fn uploads_resume_and_check_their_bytes() {

@@ -211,20 +211,27 @@ impl Engine {
     /// after a window that pulsed: `Schedule::frame_pump`). Answers whether a job did more than
     /// wait.
     pub(crate) fn pump_steps(&mut self, share: f64, server: &specula_protocol::Server, leave_pulsed: bool) -> bool {
+        self.pump_steps_among(share, |e| e.open_session_ids(server.all_sessions()), leave_pulsed)
+    }
+
+    /// [`Engine::pump_steps`], the open sessions told by `alive` (tests have no server).
+    fn pump_steps_among(&mut self, share: f64, alive: impl FnOnce(&Self) -> BTreeSet<String>, leave_pulsed: bool) -> bool {
         let now = Instant::now();
         let earned = self.steps.last_pump.map_or(MAX_CREDIT_MS, |t| (now - t).as_secs_f64() * 1000.0 * share);
         self.steps.last_pump = Some(now);
+        // Before the empty queue's return: a job the last pass dropped with its render on the
+        // GPU may have been the only one queued (review 2, M1).
+        self.land_orphans();
         if self.steps.queue.is_empty() {
             self.steps.credit_ms = MAX_CREDIT_MS;
             return false;
         }
         if self.steps.last_session_check.is_none_or(|t| now - t >= SESSION_CHECK) {
             self.steps.last_session_check = Some(now);
-            let alive = self.open_session_ids(server.all_sessions());
+            let alive = alive(self);
             self.drop_closed_steps(&alive);
         }
         self.steps.credit_ms = (self.steps.credit_ms + earned).min(MAX_CREDIT_MS);
-        self.land_orphans();
         self.run_steps(leave_pulsed)
     }
 
@@ -384,6 +391,12 @@ impl Engine {
         self.steps.credit_ms = MAX_CREDIT_MS;
         self.land_orphans();
         self.run_steps(false)
+    }
+
+    /// Tests: the window's pump itself ([`Engine::pump_steps`]), every queued job's session open.
+    #[cfg(test)]
+    pub(crate) fn steps_pump(&mut self) -> bool {
+        self.pump_steps_among(WINDOW_SHARE, |e| e.steps.queue.iter().map(|q| q.session.clone()).collect(), false)
     }
 }
 

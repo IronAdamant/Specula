@@ -276,26 +276,53 @@ const WRITING: u8 = 2;
 pub struct Stop {
     state: AtomicU8,
     /// Who forced the cancel (a lead or the owner), for the board.
-    forced_by: OnceLock<String>,
+    forced_by: Mutex<Option<String>>,
 }
 
 /// A cancel that came once the bake's commit had begun: it is being written.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TooLate;
 
+/// What a cancel found: it stopped the bake, or the bake was cancelled already (by its owner,
+/// or by a forced cancel before it), and this one changed nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Stopping {
+    Now,
+    Already,
+}
+
 impl Stop {
     /// Cancels the bake unless its writing has begun (`TooLate`). `forced_by`: a lead's or the
     /// owner's forced cancel of another agent's bake, logged on the board when the bake stops.
     pub fn cancel(&self, forced_by: Option<&str>) -> Result<(), TooLate> {
+        self.cancel_by(forced_by).map(|_| ())
+    }
+
+    /// [`Stop::cancel`], saying whether this cancel stopped the bake or it was cancelled already.
+    pub fn cancel_by(&self, forced_by: Option<&str>) -> Result<Stopping, TooLate> {
+        self.cancel_seen(forced_by, |_| {})
+    }
+
+    /// [`Stop::cancel_by`], `at_swap` told the forcer's name as it stands the moment the swap
+    /// has won (tests: what a reader that sees the bake cancelled then sees).
+    fn cancel_seen(&self, forced_by: Option<&str>, at_swap: impl FnOnce(Option<&str>)) -> Result<Stopping, TooLate> {
+        // The forcer's name goes in before the swap, so whoever sees the bake cancelled sees who
+        // forced it (review 2, M3: the engine thread could answer "by its owner" and log nothing
+        // between the two). A swap that loses puts the name back as it was; the lock holds one
+        // forcer at a time and keeps readers until the swap is decided.
+        let mut name = self.forced_by.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = forced_by.map(|by| name.replace(by.to_owned()));
         match self.state.compare_exchange(RUNNING, CANCELLED, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => {
-                if let Some(by) = forced_by {
-                    let _ = self.forced_by.set(by.to_owned());
-                }
-                Ok(())
+                at_swap(name.as_deref());
+                Ok(Stopping::Now)
             }
-            Err(CANCELLED) => Ok(()),
-            Err(_) => Err(TooLate),
+            Err(was) => {
+                if let Some(before) = before {
+                    *name = before;
+                }
+                if was == CANCELLED { Ok(Stopping::Already) } else { Err(TooLate) }
+            }
         }
     }
 
@@ -312,8 +339,8 @@ impl Stop {
         self.state.load(Ordering::Acquire) == WRITING
     }
 
-    pub fn forced_by(&self) -> Option<&str> {
-        self.forced_by.get().map(String::as_str)
+    pub fn forced_by(&self) -> Option<String> {
+        self.forced_by.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 }
 
@@ -419,6 +446,9 @@ pub struct Cancelled {
     pub stopped: Vec<u64>,
     pub too_late: Vec<u64>,
     pub forced: Option<String>,
+    /// A forced cancel of a bake already cancelled: its id, and by whom ("its owner", or an
+    /// earlier forced cancel). Nothing was forced and nothing logged.
+    pub already: Option<(u64, String)>,
 }
 
 impl Running {
@@ -518,8 +548,14 @@ impl Running {
                 Some(e) if !e.running() => Ok(Cancelled::default()),
                 Some(e) => {
                     let forced = (e.owner != owner).then_some(forcer).flatten();
-                    match e.stop.cancel(forced) {
-                        Ok(()) => Ok(Cancelled { stopped: vec![id], too_late: Vec::new(), forced: forced.map(|_| e.name()) }),
+                    match e.stop.cancel_by(forced) {
+                        // Forced, but its owner (or a forced cancel before) had stopped it: this
+                        // one forced nothing, and the bake logs nothing for it (review 2, M3).
+                        Ok(Stopping::Already) if forced.is_some() => {
+                            let by = if e.stop.forced_by().is_some() { "an earlier forced cancel" } else { "its owner" };
+                            Ok(Cancelled { already: Some((id, by.to_owned())), ..Cancelled::default() })
+                        }
+                        Ok(_) => Ok(Cancelled { stopped: vec![id], too_late: Vec::new(), forced: forced.map(|_| e.name()), already: None }),
                         Err(TooLate) => Err(too_late(id)),
                     }
                 }
@@ -714,6 +750,29 @@ fn anonymous(session: &SessionInfo) -> bool {
 /// The words that tell a caller with no name how to keep a bake past its call.
 const NAME_YOURSELF: &str = "a bake that runs past its call is kept for its owner's name, and you have none (no agent_hello): say agent_hello {name: \"...\"} first, or from a shell `specula call --as NAME sprite_bake ...`; the same name reads it later";
 
+/// What a cancel says it did.
+fn cancel_answer(c: Cancelled) -> Json {
+    if let Some((id, by)) = &c.already {
+        let note = format!("bake {id} was already cancelled by {by}: this cancel forced nothing, and nothing of it was logged on the board");
+        return Json::obj([("cancelled", Json::from(0u64)), ("already_cancelled", Json::from(*id)), ("note", Json::from(note))]);
+    }
+    let n = c.stopped.len();
+    let note = match (n, c.too_late.is_empty(), &c.forced) {
+        (0, true, _) => "no bake of yours is running: nothing was cancelled".to_owned(),
+        (_, _, Some(whose)) => format!("{whose}'s bake stops at its next step and answers \"cancelled\" to its owner (logged on the board); nothing of it is written"),
+        (_, true, None) => "each stops at its next step and answers \"cancelled\" (to its call, or to sprite_bake {job}); nothing of it is written".to_owned(),
+        (_, false, None) => format!("those stopped answer \"cancelled\", nothing of them written; too late for {:?}: they are writing their two files now and their answers say what was written", c.too_late),
+    };
+    let mut j = Json::obj([("cancelled", Json::from(n)), ("note", Json::from(note))]);
+    if !c.too_late.is_empty() {
+        j.set("too_late", Json::arr(c.too_late.iter().map(|id| Json::from(*id))));
+    }
+    if let Some(whose) = c.forced {
+        j.set("forced", Json::from(whose));
+    }
+    j
+}
+
 fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
     let started = Instant::now();
     let Some(owner) = owner_key(tools, session) else { return err("no_answer", "the engine didn't say who you are") };
@@ -724,23 +783,7 @@ fn run(tools: &Tools, session: &SessionInfo, call: Call) -> ToolOutput {
         Call::Cancel { job, force } => {
             let forcer = lead.then_some(session.id.as_str());
             return match tools.bakes.cancel(&owner, job, force, forcer) {
-                Ok(c) => {
-                    let n = c.stopped.len();
-                    let note = match (n, c.too_late.is_empty(), &c.forced) {
-                        (0, true, _) => "no bake of yours is running: nothing was cancelled".to_owned(),
-                        (_, _, Some(whose)) => format!("{whose}'s bake stops at its next step and answers \"cancelled\" to its owner (logged on the board); nothing of it is written"),
-                        (_, true, None) => "each stops at its next step and answers \"cancelled\" (to its call, or to sprite_bake {job}); nothing of it is written".to_owned(),
-                        (_, false, None) => format!("those stopped answer \"cancelled\", nothing of them written; too late for {:?}: they are writing their two files now and their answers say what was written", c.too_late),
-                    };
-                    let mut j = Json::obj([("cancelled", Json::from(n)), ("note", Json::from(note))]);
-                    if !c.too_late.is_empty() {
-                        j.set("too_late", Json::arr(c.too_late.iter().map(|id| Json::from(*id))));
-                    }
-                    if let Some(whose) = c.forced {
-                        j.set("forced", Json::from(whose));
-                    }
-                    ToolOutput::text(j.to_string())
-                }
+                Ok(c) => ToolOutput::text(cancel_answer(c).to_string()),
                 Err(out) => out,
             };
         }

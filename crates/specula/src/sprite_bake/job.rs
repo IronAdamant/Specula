@@ -457,6 +457,7 @@ impl BakeJob {
         let text = super::sheet_of(&plan, &self.bake.req, &self.bake.built, &self.look.light).to_text();
         let store = self.bake.store.clone();
         let stop = Arc::clone(&self.bake.stop);
+        let (store_back, stop_back) = (store.clone(), Arc::clone(&stop));
         let slot = Rc::new(RefCell::new(None));
         let back = Rc::clone(&slot);
         let bytes = u64::from(plan.atlas[0]) * u64::from(plan.atlas[1]) * 4;
@@ -488,7 +489,18 @@ impl BakeJob {
                 let (blob, mark) = store.put_new(&png).map_err(|e| ToolOutput::error(e.to_json().to_string()))?;
                 Ok(Some(Encoded { pointer: crate::blobs::pointer(blob, png.len() as u64), png_bytes: png.len(), text, stored: mark.map(|m| (blob, m)) }))
             },
-            move |_, r| *back.borrow_mut() = Some(r.unwrap_or_else(|f| Err(f.to_output(JobKind::SpriteBake)))),
+            move |e, r| {
+                let mut r = r.unwrap_or_else(|f| Err(f.to_output(JobKind::SpriteBake)));
+                // Cancelled (or dropped: `on_end` cancels) after the worker's own check: what it
+                // stored goes back, and the bake reads it as cancelled before it stored.
+                if stop_back.cancelled() {
+                    if let Ok(Some(enc)) = &r {
+                        withdraw_from(e, store_back, enc.stored);
+                        r = Ok(None);
+                    }
+                }
+                *back.borrow_mut() = Some(r);
+            },
         )?;
         self.phase = Phase::Encoding(slot);
         Ok(())
@@ -795,9 +807,7 @@ impl BakeJob {
     /// commit) is taken back, on a worker; a worker with no room leaves it to the store's own
     /// pruning (nothing refers to it, so it is the first to go when the disk needs room).
     fn withdraw(&self, e: &mut Engine, stored: Option<(crate::blobs::BlobId, u64)>) {
-        if let (Some((id, mark)), Some(store)) = (stored, self.bake.store.clone()) {
-            let _ = e.offload(Offload::engine(JobKind::SpriteBake), move |_| store.withdraw(id, mark), |_, _| {});
-        }
+        withdraw_from(e, self.bake.store.clone(), stored);
     }
 
     /// Cancelled (by its owner, or a lead's forced cancel, logged on the board here): what it
@@ -808,7 +818,7 @@ impl BakeJob {
         let (done, cells) = (self.resolving.borrow().done, self.bake.plan.cells.len());
         let by = match self.bake.stop.forced_by() {
             Some(sid) => {
-                let lead = e.swarm.name_of(sid).unwrap_or_else(|| sid.to_owned());
+                let lead = e.swarm.name_of(&sid).unwrap_or_else(|| sid.clone());
                 let lead = lead.as_str();
                 let tick = e.clock.tick();
                 e.swarm.board.log(lead, tick, "sprite_bake", None, format!("forced cancel of {}'s bake of {} after {done} of {cells} cells", self.owner.name, self.bake.req.path));
@@ -817,6 +827,13 @@ impl BakeJob {
             None => "by its owner".to_owned(),
         };
         Step::Done(err("cancelled", format!("the bake was cancelled {by} after {done} of {cells} cells; nothing was written")))
+    }
+}
+
+/// [`BakeJob::withdraw`] from `store`: the content goes back on a worker.
+fn withdraw_from(e: &mut Engine, store: Option<Arc<crate::blobs::ContentStore>>, stored: Option<(crate::blobs::BlobId, u64)>) {
+    if let (Some((id, mark)), Some(store)) = (stored, store) {
+        let _ = e.offload(Offload::engine(JobKind::SpriteBake), move |_| store.withdraw(id, mark), |_, _| {});
     }
 }
 
@@ -856,9 +873,14 @@ impl StepJob for BakeJob {
     fn on_end(&mut self, e: &mut Engine, how: Ended) {
         self.release(e);
         if how != Ended::Answered {
-            // Dropped mid-bake: what an encode stored and nothing will refer to goes back.
+            // Dropped mid-bake: what an encode stored and nothing will refer to goes back. The
+            // stop is set first (review 2, M2), so an encode still on a worker stores nothing, or
+            // has what it stored taken back as it returns; one already returned is taken back
+            // here.
+            let _ = self.bake.stop.cancel(None);
             let stored = match &self.phase {
                 Phase::Held(_, enc) => enc.stored,
+                Phase::Encoding(slot) => slot.borrow().as_ref().and_then(|r| r.as_ref().ok()).and_then(Option::as_ref).and_then(|enc| enc.stored),
                 _ => None,
             };
             self.withdraw(e, stored);

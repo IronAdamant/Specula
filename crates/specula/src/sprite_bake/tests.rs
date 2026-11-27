@@ -564,7 +564,7 @@ fn a_cancel_and_the_writing_cannot_both_win() {
     let late = r.cancel("ann", Some(a.id), false, None).unwrap_err();
     assert_eq!(code_of(&late), "too_late");
     assert!(format!("{late:?}").contains("can no longer be stopped"), "{late:?}");
-    assert_eq!(r.cancel("ann", None, false, None), Ok(Cancelled { stopped: vec![a2.id], too_late: vec![a.id], forced: None }));
+    assert_eq!(r.cancel("ann", None, false, None), Ok(Cancelled { stopped: vec![a2.id], too_late: vec![a.id], ..Cancelled::default() }));
     assert!(!a.stop.cancelled() && a2.stop.cancelled());
 }
 
@@ -580,8 +580,8 @@ fn a_lead_may_force_a_cancel_and_read_every_bake() {
     assert_eq!(code_of(&r.cancel("bob", Some(a.id), true, None).unwrap_err()), "force_needs_lead");
     assert!(!a.stop.cancelled());
     let forced = r.cancel("lee", Some(a.id), true, Some("lee-session")).unwrap();
-    assert_eq!(forced, Cancelled { stopped: vec![a.id], too_late: Vec::new(), forced: Some("Ann".into()) });
-    assert!(a.stop.cancelled() && a.stop.forced_by() == Some("lee-session"), "the forcer is kept for the board");
+    assert_eq!(forced, Cancelled { stopped: vec![a.id], forced: Some("Ann".into()), ..Cancelled::default() });
+    assert!(a.stop.cancelled() && a.stop.forced_by().as_deref() == Some("lee-session"), "the forcer is kept for the board");
     // Without force, a lead is refused like anyone (force is asked for, never implied).
     let b = r.start("bob", "assets/sprites/b.png", 4).unwrap();
     assert_eq!(code_of(&r.cancel("lee", Some(b.id), false, Some("lee-session")).unwrap_err()), "not_job_owner");
@@ -602,6 +602,54 @@ fn a_lead_may_force_a_cancel_and_read_every_bake() {
     assert_eq!(parse(&args(r#"{"cancel": true, "job": 3, "force": true}"#)), Ok(Call::Cancel { job: Some(3), force: true }));
     assert_eq!(parse(&args(r#"{"list": true}"#)), Ok(Call::List));
     assert!(parse(&args(r#"{"list": true, "job": 3}"#)).is_err());
+}
+
+/// Review 2, M3 (a): a lead's forced cancel of a bake its owner had already cancelled set no
+/// forcer, yet answered `forced: <owner>` and "logged on the board". It says what happened: the
+/// bake was already cancelled by its owner; nothing forced, nothing logged.
+#[test]
+fn a_forced_cancel_of_a_bake_already_cancelled_forces_and_logs_nothing() {
+    let r = Running::default();
+    let a = r.start("ann", "assets/sprites/a.png", 4).unwrap();
+    a.name.set("Ann".into()).unwrap();
+    assert_eq!(r.cancel("ann", Some(a.id), false, None), Ok(stopped(&[a.id])));
+    let c = r.cancel("lee", Some(a.id), true, Some("lee-session")).unwrap();
+    assert_eq!(c, Cancelled { already: Some((a.id, "its owner".into())), ..Cancelled::default() });
+    assert!(a.stop.cancelled() && a.stop.forced_by().is_none(), "nobody forced it: the bake logs nothing");
+    let answer = cancel_answer(c);
+    assert!(answer.get("forced").is_none(), "{answer}");
+    assert_eq!(answer.get("already_cancelled").and_then(Json::as_u64), Some(a.id));
+    let note = answer.get("note").and_then(Json::as_str).unwrap().to_owned();
+    assert!(note.contains("already cancelled by its owner") && note.contains("forced nothing"), "{note}");
+    // A forced cancel after a forced cancel: the first forcer stays the one the board names.
+    let b = r.start("bob", "assets/sprites/b.png", 4).unwrap();
+    b.name.set("Bob".into()).unwrap();
+    assert_eq!(r.cancel("lee", Some(b.id), true, Some("lee-session")).unwrap().forced, Some("Bob".into()));
+    let again = r.cancel("max", Some(b.id), true, Some("max-session")).unwrap();
+    assert_eq!(again.already, Some((b.id, "an earlier forced cancel".into())));
+    assert_eq!(b.stop.forced_by().as_deref(), Some("lee-session"), "a losing forcer leaves the name as it was");
+}
+
+/// Review 2, M3 (b): the forcer's name was set after the swap, so a reader between the two saw
+/// the bake cancelled with no forcer (answered "by its owner", logged nothing). The name is in
+/// at the moment the swap wins; a cancel that loses (too late, or already cancelled) leaves it
+/// as it was.
+#[test]
+fn a_forced_cancel_names_its_forcer_before_anyone_sees_it_cancelled() {
+    let s = Stop::default();
+    let mut seen = None;
+    assert_eq!(s.cancel_seen(Some("lee-session"), |name| seen = Some(name.map(str::to_owned))), Ok(Stopping::Now));
+    assert_eq!(seen, Some(Some("lee-session".to_owned())), "the name is in when the swap wins");
+    // Losing swaps leave the name alone.
+    assert_eq!(s.cancel_seen(Some("max-session"), |_| panic!("the swap lost")), Ok(Stopping::Already));
+    assert_eq!(s.forced_by().as_deref(), Some("lee-session"));
+    let w = Stop::default();
+    assert!(w.begin_writing());
+    assert_eq!(w.cancel_seen(Some("lee-session"), |_| panic!("the swap lost")), Err(TooLate));
+    assert!(w.forced_by().is_none(), "too late: no forcer is left behind");
+    // The owner's own cancel names nobody.
+    let o = Stop::default();
+    assert_eq!(o.cancel_seen(None, |name| assert!(name.is_none())), Ok(Stopping::Now));
 }
 
 /// Review 1, finding 5: the parser took a .png anywhere below a folder named sprites while the
@@ -1077,6 +1125,39 @@ fn a_bake_the_queue_drops_gives_its_target_and_pin_back() {
     }
 }
 
+/// Review 2, M1: the pump returned on an empty queue before it landed orphaned targets, so a
+/// bake alone in the queue that passed its deadline with a render on the GPU left its target
+/// neither cached nor destroyed until another job was queued. Through the pump only (no
+/// `steps_pass`, which lands orphans itself), with no other job queued: the target goes back.
+#[test]
+fn a_bake_dropped_alone_gives_its_target_back_through_the_pump() {
+    let _one = GPU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut e) = gpu_engine() else { return };
+    let built = engine_built(&mut e, "recipes/statue_angel.json");
+    let size = (32, 32);
+    let (r, _) = bake_on(&mut e, &built, &small_ask(), None, None);
+    r.unwrap_or_else(|o| panic!("{o:?}"));
+    assert_eq!(cached(&e, size), 1);
+    let (j, _, _) = job_of(&mut e, &built, &small_ask(), None, false);
+    let (s, answer) = start_of(1);
+    e.step_job_kept(s, Box::new(j));
+    // Queued alone, its target taken and a render of it on the GPU.
+    pass_until(&mut e, |e| e.steps_queued() == 1 && cached(e, size) == 0 && e.gpu.offscreen_pending());
+    e.steps_expire_all();
+    e.steps_pump();
+    assert_eq!(code_of(&answer.try_recv().expect("answered")), "timed_out");
+    assert_eq!(e.steps_queued(), 0, "nothing else is queued");
+    assert_eq!(e.steps.orphans.len(), 1, "its target was orphaned with its render on the GPU");
+    let give_up = Instant::now() + std::time::Duration::from_secs(60);
+    while !e.steps.orphans.is_empty() {
+        assert!(Instant::now() < give_up, "the orphan was never landed while the queue stayed empty");
+        e.steps_pump();
+        e.workers_wait_one(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(e.steps_queued(), 0);
+    assert_eq!(cached(&e, size), 1, "the target cache is as it was");
+}
+
 /// Finding 7 (not checked by the review): the re-render loop. A cell whose ids another render
 /// keeps taking before it lands (an ID render on another target settles the bake's and
 /// overwrites the shared ID buffer) is rendered again, and was so for ever; now at most
@@ -1133,6 +1214,49 @@ fn a_cancel_while_the_atlas_is_encoded_writes_nothing_and_leaves_nothing_stored(
             e.pump_workers(None);
             e.workers_wait_one(std::time::Duration::from_millis(5));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Review 2, M2: a bake the queue drops (its deadline, here by its end hook as the queue calls
+/// it) while its atlas is on a worker set no stop, so the worker still stored the atlas and
+/// nothing took it back. Dropped as the encode is asked for, or once it has come back unread:
+/// when every worker is done, the content store is as it was.
+#[test]
+fn a_bake_dropped_while_its_atlas_is_encoded_leaves_nothing_stored() {
+    use crate::steps::{Ended, Step, StepJob};
+    let _one = GPU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut e) = gpu_engine() else { return };
+    let built = engine_built(&mut e, "recipes/statue_angel.json");
+    for (i, when) in ["as the encode is asked for", "once the encode has come back"].into_iter().enumerate() {
+        let dir = std::env::temp_dir().join(format!("specula-sprite-drop-{i}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Arc::new(crate::blobs::ContentStore::open(&dir.join("content")).unwrap());
+        let (mut j, _, stop) = job_with(&mut e, &built, &small_ask(), None, false, Some(Arc::clone(&store)));
+        let (reply, _answer) = crate::jobs::channel();
+        let give_up = Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            assert!(Instant::now() < give_up, "{when}: never came");
+            let step = j.step(&mut e, &reply);
+            if i == 0 && j.phase_name() == "encoding" {
+                break;
+            }
+            match step {
+                Step::More => {}
+                Step::Wait => e.workers_wait_one(std::time::Duration::from_millis(5)),
+                Step::Done(o) => panic!("{when}: the bake answered before it was dropped: {o:?}"),
+                Step::Handed => panic!("a bake answers in its steps"),
+            }
+            e.pump_workers(None);
+            if i == 1 && j.encoded() {
+                break;
+            }
+        }
+        j.on_end(&mut e, Ended::TimedOut);
+        drop(j);
+        assert!(stop.cancelled(), "{when}: the dropped bake's stop is set");
+        e.workers_drain(std::time::Duration::from_secs(60));
+        assert_eq!(store.stats(), (0, 0), "{when}: the store kept the dropped bake's atlas");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
