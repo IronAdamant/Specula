@@ -254,20 +254,48 @@ fn ellipsoid_is_loose(p: &Prim) -> bool {
 /// ([`field_range_noting`]): a few operations where the walk took a frame and two bounds
 /// (review 1 of the merged sculpt, finding 1: 52 sculpts of 32 flat ellipsoids, built before
 /// the lanes were merged, were refused for the work of those walks). Charged [`QUICK_SPAN`].
-fn ellipsoid_span(k: &Prepared, d: f32, r: f32) -> Option<(f32, f32)> {
+///
+/// **Sound in the arithmetic it is computed in, not only in exact arithmetic** (review 2 of
+/// the merged sculpt, finding 2: at the edge of its own ball about 600 samples in a million
+/// fell outside it, some on the wrong side of nothing; only the mesher's padding of its balls
+/// kept that out of meshes). `q` is the ball's middle, where `d` was taken (in the parent's
+/// frame). With `u` the unit roundoff of `f32` (`EPSILON / 2`) and `x = |q| + |at| + r + d`
+/// (each length as the sum of its coordinates' sizes, which is never less), every value the
+/// field is evaluated to in the ball, and `d` itself, is within these of the exact field's:
+/// - **where a point is taken to** ([`local`]): the move rounds each coordinate (`u |v|`,
+///   `v` the point less `at`, `|v| <= x`), the turn's three products and two sums in each row
+///   (`3 u` of each row's sum of sizes, so `3 √3 u |v|` in all) and its matrix, made of `f32`
+///   sines and cosines (a few `u` from a true turn: `10 u |v|` allowed), the scale's division
+///   and multiplication (`2 u`); a mirror is exact. So each point is evaluated as if it were
+///   up to `18 u x` from where it is, and the middle too: the ball as evaluated reaches
+///   `2 · 18 u x` further from the middle than `r`;
+/// - **what the field makes of a point** ([`prim_distance`]): `k0` and `k1` each to about
+///   `4 u` of themselves (a division, a square, two sums and a root), `k0 - 1` to `4 u k0`
+///   besides, the product and the quotient `u` each, and [`finish`]'s scale `u`: in all
+///   `9 u |f| + 5 u |v|` (since `k0² / k1 <= |q|` in the ellipsoid's frame, by Cauchy and
+///   Schwarz), at most `14 u x` for the middle's `d`.
+///
+/// So the ball is clear of the ellipsoid where `d - r` passes `slack = 64 u x`
+/// (`9 + 5 + 36 = 50 u x` are needed), and the span is widened by `slack` where its bounds
+/// meet those errors: `(d - r - slack) / short - slack` to `short (d + slack) + r + slack`.
+/// What is left is relative (the field's `9 u |f|`, `short`'s own `4 u`, and the few roundings
+/// of the span's sums and products: under `30 u` in all, `1.8e-6`), covered by `1e-5` of each
+/// bound. None of it leans on a caller's padding of its ball.
+fn ellipsoid_span(k: &Prepared, q: V3, d: f32, r: f32) -> Option<(f32, f32)> {
     let PKind::Prim(Prim::Ellipsoid { radii }) = &k.kind else { return None };
     let m = &k.m;
     let plain = m.stretch == [1.0; 3] && m.round == 0.0 && m.shell <= 0.0 && m.displace.is_none() && m.repeat.is_none() && m.elongate == [0.0; 3] && m.twist == 0.0 && m.bend == 0.0 && m.scale > 0.0 && m.scale.is_finite();
     let least = radii[0].min(radii[1]).min(radii[2]);
     let most = radii[0].max(radii[1]).max(radii[2]);
-    if !(plain && least > 0.0 && most.is_finite() && d.is_finite() && d > r) {
+    let size = |v: V3| v[0].abs() + v[1].abs() + v[2].abs();
+    let slack = 32.0 * f32::EPSILON * (size(q) + size(m.at) + r + d.abs());
+    if !(plain && least > 0.0 && most.is_finite() && d.is_finite() && slack.is_finite() && d - r > slack) {
         return None;
     }
     let rho = most / least;
     let short = 0.5 * (rho + 1.0 / rho);
-    // (A hair wider each way than worked out, as the walk's bound above is.)
-    let (lo, hi) = ((d - r) / short, short * d + r);
-    let span = (lo - 1e-5 * lo.abs() - 1e-7, hi + 1e-5 * hi.abs() + 1e-7);
+    let (lo, hi) = ((d - r - slack) / short - slack, short * (d + slack) + r + slack);
+    let span = (lo - 1e-5 * lo.abs(), hi + 1e-5 * hi.abs());
     (span.0.is_finite() && span.1.is_finite()).then_some(span)
 }
 
@@ -554,7 +582,7 @@ fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued, spent: &mut Spent, seen:
                 let quick = !NO_QUICK_SPAN.with(|f| f.get());
                 #[cfg(not(test))]
                 let quick = true;
-                if let Some(got) = ellipsoid_span(k, d, r).filter(|_| quick) {
+                if let Some(got) = ellipsoid_span(k, q, d, r).filter(|_| quick) {
                     #[cfg(test)]
                     DID.with(|d| d.borrow_mut().quick_spans += 1);
                     spent.work += QUICK_SPAN;
@@ -8162,6 +8190,150 @@ mod tests {
                 assert!(asked.quick_spans > 1000 && qs.work < ws.work * 9 / 10, "the row of 32: {} asked, {} with it, {} without", asked.quick_spans, qs.work, ws.work);
             }
         }
+    }
+
+    /// **A flat ellipsoid's range from its middle holds the field it bounds, in the arithmetic
+    /// it is computed in** ([`ellipsoid_span`]; review 2 of the merged sculpt, findings 1 and
+    /// 2: the meshes could not see a span wrong at its ball's edge, nor one given to a ball
+    /// that reaches into the ellipsoid, nor one given through a modifier its argument does not
+    /// cover). Flat, needle and nearly round ellipsoids (ratios of radii to a thousand, sizes
+    /// from a hundredth to ten), moved, turned, mirrored and scaled; balls from just short of
+    /// the ellipsoid to well clear of it, and some reaching into it: every span is given only
+    /// where the ball is clear (`d > r`), and the field sampled in the ball (its middle, toward
+    /// and away from the shape along its gradient at the ball's edge, toward its middle, and
+    /// throughout and on its edge) lies inside it, with no padding of the ball. Through every
+    /// other modifier, of another primitive and of a group, no span is given. And a prune
+    /// that takes only spans is charged their weight each.
+    #[test]
+    fn a_flat_ellipsoids_range_from_its_middle_holds_its_field() {
+        let mut r = Review(0x5ba1_1e11_1950_0002);
+        let (mut given, mut reaching, mut samples, mut edge) = (0u64, 0u64, 0u64, 0u64);
+        let ten = |x: f32| crate::dmath::pow(10.0, x);
+        for _ in 0..60_000 {
+            let a = ten(r.range(-2.0, 1.0));
+            let rho = [1.001f32, 1.5, 3.0, 10.0, 100.0, 1000.0][r.pick(6)];
+            let mut radii = match r.pick(4) {
+                0 => [a, a * r.range(0.3, 1.0), a / rho],
+                1 => [a, a / rho, (a / rho * r.range(1.0, 2.0)).min(a)],
+                2 => [a, a, a / rho],
+                _ => [a, a / rho, a / rho],
+            };
+            radii.rotate_left(r.pick(3));
+            let most = radii[0].max(radii[1]).max(radii[2]);
+            let mut node = prim(Prim::Ellipsoid { radii });
+            node.m.at = r.v3(-1.0, 1.0).map(|x| x * most);
+            if r.chance(0.6) {
+                node.m.rotate = r.v3(-180.0, 180.0);
+            }
+            if r.chance(0.5) {
+                node.m.scale = ten(r.range(-1.0, 1.0));
+            }
+            node.m.mirror = [r.chance(0.2), r.chance(0.2), r.chance(0.2)];
+            let k = prepare(&node, 1, &mut 0);
+            // A middle near the ellipsoid: a point of its surface, moved off it (or into it),
+            // taken to the parent's frame as `local` takes it back.
+            let u = math3::normalize(r.v3(-1.0, 1.0));
+            let off = most * ten(r.range(-5.0, 0.8)) * if r.chance(0.1) { -0.5 } else { 1.0 };
+            let x = math3::add([radii[0] * u[0], radii[1] * u[1], radii[2] * u[2]], math3::scale(math3::normalize(r.v3(-1.0, 1.0)), off));
+            let s = math3::scale(x, k.m.scale);
+            let t = if k.rotated { [0, 1, 2].map(|j| k.inv_rot[0][j] * s[0] + k.inv_rot[1][j] * s[1] + k.inv_rot[2][j] * s[2]) } else { s };
+            let mut c = math3::add(t, k.m.at);
+            for (ck, mk) in c.iter_mut().zip(k.m.mirror) {
+                if mk && r.chance(0.5) {
+                    *ck = -*ck;
+                }
+            }
+            let d = eval(&k, c);
+            let rad = match r.pick(5) {
+                0 => d * (1.0 - ten(r.range(-7.0, -1.0))),
+                1 => d * r.unit(),
+                2 => d.abs() * r.range(0.5, 2.0),
+                3 => d * (1.0 + ten(r.range(-7.0, -1.0))),
+                _ => d,
+            }
+            .max(0.0);
+            let got = ellipsoid_span(&k, c, d, rad);
+            if !(d > rad) {
+                assert!(got.is_none(), "a span {got:?} for a ball that reaches the ellipsoid: d {d} r {rad} {node:?}");
+                reaching += 1;
+                continue;
+            }
+            let Some((lo, hi)) = got else { continue };
+            given += 1;
+            let h = (rad * 1e-3).max(1e-7);
+            let g = [0, 1, 2].map(|i| {
+                let (mut p, mut m) = (c, c);
+                p[i] += h;
+                m[i] -= h;
+                eval(&k, m) - eval(&k, p)
+            });
+            let toward = math3::normalize(g);
+            let to_mid = math3::normalize(math3::sub(k.m.at, c));
+            for j in 0..48 {
+                let p = match j {
+                    0 => c,
+                    1 | 2 => math3::add(c, math3::scale(toward, if j == 1 { rad } else { -rad } * (1.0 - 1e-6))),
+                    3 | 4 => math3::add(c, math3::scale(to_mid, if j == 3 { rad } else { -rad } * (1.0 - 1e-6))),
+                    _ => {
+                        let at = if j % 3 == 0 { 1.0 - 1e-6 } else { crate::dmath::pow(r.unit(), 1.0 / 3.0) };
+                        math3::add(c, math3::scale(math3::normalize(r.v3(-1.0, 1.0)), rad * at))
+                    }
+                };
+                let f = eval(&k, p);
+                samples += 1;
+                edge += u64::from(f < lo + 1e-3 * (hi - lo));
+                assert!(lo <= f && f <= hi, "the field {f} outside its span {lo}..{hi} in a ball of {rad} about {c:?} (its value {d} there), at {p:?}: {node:?}");
+            }
+        }
+        assert!(given > 10_000 && reaching > 10_000 && samples > 500_000 && edge > 1_000, "{given} spans, {reaching} balls reaching, {samples} samples, {edge} near the least");
+        // Through every modifier the argument does not cover, no span; nor of another
+        // primitive, nor of a group.
+        let flat = || prim(Prim::Ellipsoid { radii: [0.5, 0.02, 0.3] });
+        let others: [fn(&mut Modifiers); 11] = [
+            |m| m.round = 0.01,
+            |m| m.shell = 0.01,
+            |m| m.displace = Some((0.01, 0.2, 1)),
+            |m| m.repeat = Some(([2, 1, 1], [1.5, 0.0, 0.0])),
+            |m| m.elongate = [0.1, 0.0, 0.0],
+            |m| m.twist = 10.0,
+            |m| m.bend = 10.0,
+            |m| m.stretch = [1.0, 2.0, 1.0],
+            |m| m.scale = 0.0,
+            |m| m.scale = -1.0,
+            |m| m.scale = f32::INFINITY,
+        ];
+        let far = [5.0, 0.0, 0.0];
+        assert!(ellipsoid_span(&prepare(&flat(), 1, &mut 0), far, 4.5, 0.1).is_some());
+        for (i, set) in others.iter().enumerate() {
+            let mut e = flat();
+            set(&mut e.m);
+            assert_eq!(ellipsoid_span(&prepare(&e, 1, &mut 0), far, 4.5, 0.1), None, "modifier {i}: {:?}", e.m);
+        }
+        for n in [prim(Prim::Sphere { radius: 0.5 }), prim(Prim::Box { half: [0.5, 0.02, 0.3], round: 0.0 }), group(Combine::Union, vec![flat(), flat()], 0.0)] {
+            assert_eq!(ellipsoid_span(&prepare(&n, 1, &mut 0), far, 4.5, 0.1), None, "{n:?}");
+        }
+        // A prune whose every loose child takes a span is charged the span's weight for each,
+        // at the site (a span charged nothing failed nothing: review 2, its third fault).
+        let row = group(
+            Combine::Union,
+            (0..8)
+                .map(|j| {
+                    let mut e = flat();
+                    e.m.at = [1.2 * j as f32, 0.0, 0.0];
+                    e
+                })
+                .collect(),
+            0.0,
+        );
+        let p = prepare(&row, 1, &mut 0);
+        let mut spent = Spent::default();
+        Did::taken();
+        for j in 0..8 {
+            prune_asking(&p, [1.2 * j as f32 + 0.6, 1.0, 0.0], 0.02, &mut spent);
+        }
+        let did = Did::taken();
+        assert!(did.quick_spans == 8 * 8 && did.range_nodes == 0, "{did:?}");
+        assert_eq!(spent.work, did.quick_spans * documented("a flat ellipsoid's range from its middle"), "{did:?}");
     }
 
     /// **A cancelled sculpt gives one error, wherever the cancel is seen** (review 4 of the box
