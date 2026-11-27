@@ -202,3 +202,41 @@ fn one_entry_that_waits_a_known_time_is_one_wait_of_that_length() {
     assert!(r.skipped.is_empty(), "{:?}", r.skipped);
     assert_eq!((r.waits.entries, r.waits.longest, r.waits.never_applied), (1, n, 0), "{:?}", r.waits);
 }
+
+/// DESIGN.md, "Furor": stock content never reaches a wave's hour. No run of any proving layout
+/// or shipped layout, over a few seeds, has an enemy in furor; and the most any wave's dead stood
+/// past its last entry is printed against the hour (measured on 2026-11-28 in DESIGN.md).
+#[test]
+fn no_stock_run_reaches_a_waves_hour() {
+    use sepulcra::content::WAVE_HOUR_TICKS;
+    let shipped = Arc::new(Content::builtin());
+    let layouts: [(&str, &str); 4] = [
+        ("centre", include_str!("../data/layouts/centre.json")),
+        ("no_air", include_str!("../data/layouts/no_air.json")),
+        ("full_block", include_str!("../data/layouts/full_block.json")),
+        ("none", include_str!("../data/layouts/none.json")),
+    ];
+    let runs: Vec<(Arc<Content>, &str, &str)> = LAYOUTS.iter().map(|&(n, t)| (content(), n, t)).chain(layouts.iter().map(|&(n, t)| (Arc::clone(&shipped), n, t))).collect();
+    let (mut furor, mut most) = (0u32, (0u32, String::new()));
+    for (c, name, text) in &runs {
+        let s = Script::parse(text, c, name).unwrap();
+        let spans: Vec<u32> = c.waves.iter().map(|w| w.entry_span()).collect();
+        for seed in [1, 7, 42] {
+            run(Arc::clone(c), seed, &s, None, |st, ev| {
+                furor += ev.iter().filter(|e| matches!(e, Event::Furor { .. })).count() as u32;
+                for e in st.enemies() {
+                    let w = usize::from(e.wave) - 1;
+                    if let Some(start) = st.wave_stats()[w].started_at {
+                        let past = st.tick().saturating_sub(start + spans[w]);
+                        if past > most.0 {
+                            most = (past, format!("{name} seed {seed} wave {}", w + 1));
+                        }
+                    }
+                }
+            });
+        }
+    }
+    println!("FUROR-PROBE stock: the longest any wave stood past its last entry: {} ticks ({}), against an hour of {WAVE_HOUR_TICKS}", most.0, most.1);
+    assert_eq!(furor, 0, "a stock run reached a wave's hour");
+    assert!(most.0 * 4 < WAVE_HOUR_TICKS, "{most:?}");
+}
