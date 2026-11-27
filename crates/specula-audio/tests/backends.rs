@@ -65,9 +65,10 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
 /// What it no longer holds: that the clock keeps up with the wall (the old lower bound, 0.8
 /// times real time over half a second). A clock thread the machine does not run falls behind
 /// whatever the code does, so no bound on that is a guarantee; a clock that never advanced
-/// still fails here (it never reaches 400 ms of frames, and the wait names the hang). No other
-/// test holds the lower bound, nor the clock's catch-up after it fell ten blocks behind (it
-/// counts an underrun and starts again from now: `backend::Clock::tick`).
+/// still fails here (it never reaches 400 ms of frames, and the wait names the hang). The pace
+/// from below is held by the clock's own state instead, without the wall: its period is exact,
+/// it catches up block by block when a few behind, and twenty behind it counts an underrun and
+/// starts again from now (`backend::tests::the_clock_keeps_its_period_catches_up_and_counts_an_underrun`).
 #[test]
 fn null_backend_consumes_audio_in_real_time() {
     let start = Instant::now();

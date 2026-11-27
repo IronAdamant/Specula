@@ -396,8 +396,15 @@ fn waits_end_when_the_engine_stops_and_are_bounded() {
     // An event of somebody else's does not end them (what another test's event did).
     // Each waiter has looked again since that event (by its state, not after 250 ms that a
     // loaded machine may not have given them: review 1 of `m6-clock-tests`), and still waits.
-    let _ = done(Channel::Screen, "other.test", &Actor::Human, "");
-    let seen = state().seq;
+    // The event is a lead's (an alert): it enters the feed the waiters read and wakes them, so
+    // a wait that ignored its cursor would end on it here. A human's event would not (it is
+    // quiet and wakes nobody), and the check could not fail (review 2 of `m6-clock-tests`).
+    let _ = done(Channel::Screen, "other.test", &agent("s9", "other", Authority::Lead), "");
+    let seen = {
+        let s = state();
+        assert!(s.log.back().is_some_and(|e| e.seq == s.seq), "the event is in the feed the waiters read");
+        s.seq
+    };
     until_looked(&["waiter-0", "waiter-1", "waiter-2"], seen, || waiters.iter().any(|w| w.is_finished()));
     assert_eq!(state().waiters, 3, "a wait ends when the engine stops, not at an event behind its cursor");
     stopping();
@@ -405,7 +412,8 @@ fn waits_end_when_the_engine_stops_and_are_bounded() {
         assert!(w.join().unwrap().events.is_empty());
     }
     assert!(t0.elapsed() < Duration::from_secs(5), "answered in {:?}", t0.elapsed());
-    assert!(wait_events(0, false, 10, Duration::from_secs(60)).events.is_empty() && t0.elapsed() < Duration::from_secs(5), "and no new wait begins while stopping");
+    // From past the lead's event (from 0 it would answer by that event, not by the stop).
+    assert!(wait_events(seen, false, 10, Duration::from_secs(60)).events.is_empty() && t0.elapsed() < Duration::from_secs(5), "and no new wait begins while stopping");
     reset_for_test();
     // Past MAX_WAITERS a call answers at once.
     state().waiters = MAX_WAITERS;
