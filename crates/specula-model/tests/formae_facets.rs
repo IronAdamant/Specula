@@ -1,8 +1,8 @@
 //! Facets through the modeller (review 2 of stage 4, finding 1): only a form faceted by what it
 //! is (`specula_formae::Form::faceted`) is shaded flat whatever the recipe's default smooth angle;
 //! every other form is shaded by the smooth angle exactly as it was before the facet tag existed,
-//! byte for byte; no two faces within a degree of each other crease; a part's own `smooth_angle`
-//! wins over the tag.
+//! byte for byte; at the defaults and one drawn set, no two faces within a degree of each other
+//! crease; facets a few degrees apart stay apart; a part's own `smooth_angle` wins over the tag.
 
 use std::collections::BTreeMap;
 
@@ -140,13 +140,19 @@ fn every_form_not_faceted_is_shaded_as_before_the_tag() {
     assert_eq!(PINS.len(), 110);
 }
 
-/// No form's model, at its defaults or at drawn arguments, at the recipe's default smooth angle
-/// or at 60, has two normals under a degree apart at one position: the tangent joins a facet tag
-/// once cut (a raised stadium's walls into its ends, a rounded box's faces into its rounds, an
-/// arch's legs into its arch) are one surface. The spindle at 60 is held apart: its tips' fans
-/// were split so at 939185c7, by the modeller's smoothing (each corner takes the faces within the
-/// angle of its own, so a fan of faces turning past it gives each corner its own normal), which
-/// the facet tag does not touch.
+/// No form's model, at its defaults and at one drawn set of arguments (set 0 and set 1, no more),
+/// solid or raised as a slab, at the recipe's default smooth angle or at 60, has two normals under
+/// a degree apart at one position: the tangent joins a facet tag once cut (a raised stadium's
+/// walls into its ends, a rounded box's faces into its rounds, an arch's legs into its arch) are
+/// one surface. The spindle at 60 is held apart: its tips' fans were split so at 939185c7.
+///
+/// This does not hold over more draws or other raises, and is not claimed to: the modeller's
+/// smoothing (each corner takes the faces within the angle of its own, so a fan of faces turning
+/// past it gives each corner its own normal) makes such pairs, 0.007 to 0.997 degrees apart, in
+/// 173 models of older forms over five drawn sets (bevelled, bevelled-and-rounded and pillow
+/// raises of 33 plane figures; the ellipsoid, the bicone and the spindle at some arguments), the
+/// same 173 at 939185c7; and in 52 of stage 4's own raises (FORMAE.md, "Facets"). The facet tag
+/// adds none; mending the smoothing would change older bytes, and is not done.
 #[test]
 fn no_two_faces_within_a_degree_crease() {
     let mut models = 0;
@@ -220,6 +226,15 @@ fn a_faceted_form_is_flat_unless_its_part_says() {
         let Ok(Built::Mesh(lib)) = Spec::of(Found { form: specula_formae::form(name).unwrap(), alias: None }, &[]).unwrap().build(specula_formae::DETAIL_DEFAULT) else { panic!("{name}") };
         assert_eq!((lib.points.len(), lib.faces.len(), m.lods[0].positions.len(), m.lods[0].indices.len() / 3), *want, "{name}: library points, faces; modeller's vertices, triangles");
     }
+    // Facets a few degrees apart stay apart (review 3 of stage 4, finding 2: the draws above never
+    // reach a gem's 64 sides, whose girdle facets are 5.6 degrees apart, so a tag that kept facets
+    // only 10 degrees apart passed them): each corner once a plane, exactly.
+    for (name, args, want) in FINE {
+        let m = make(&format!(r#"{{"op": "form", "form": "{name}", "args": {args}}}"#), "", "").unwrap();
+        let Ok(Built::Mesh(lib)) = Spec::new(name, Some(Kind::Solid), &json_args(args)).unwrap().build(specula_formae::DETAIL_DEFAULT) else { panic!("{name}") };
+        assert!(flat_shaded(&m), "{name} {args}: a corner's normal is not its face's");
+        assert_eq!((m.lods[0].positions.len(), corners(&lib)), (*want, *want), "{name} {args}: the modeller's vertices, its faces' corners");
+    }
     let gem = make(r#"{"op": "form", "form": "gem"}"#, "", "").unwrap();
     let smoothed = make(r#"{"op": "form", "form": "gem"}"#, "", r#""smooth_angle": 60, "#).unwrap();
     assert!(!flat_shaded(&smoothed), "a part's own smooth angle left the gem faceted");
@@ -254,6 +269,20 @@ fn tangent_joins_and_many_sides_follow_the_smooth_angle() {
 /// faces, the modeller's vertices, its triangles)).
 type Counts = (usize, usize, usize, usize);
 const COUNTS: &[(&str, Counts)] = &[("gem", (25, 33, 112, 46)), ("crystal", (14, 18, 60, 24)), ("chamfered_box", (24, 26, 96, 44))];
+
+/// Faceted forms whose facets meet at a few degrees: (name, arguments, the modeller's vertices).
+const FINE: &[(&str, &str, usize)] = &[("gem", r#"{"sides": 64, "table_ratio": 0.5}"#, 896), ("crystal", r#"{"sides": 24}"#, 240)];
+
+/// `FINE`'s arguments as pairs (numbers only, as they are written there).
+fn json_args(args: &str) -> Vec<(&str, f64)> {
+    args.trim_matches(|c| c == '{' || c == '}')
+        .split(',')
+        .map(|kv| {
+            let (k, v) = kv.split_once(':').unwrap();
+            (k.trim().trim_matches('"'), v.trim().parse().unwrap())
+        })
+        .collect()
+}
 
 /// Each form that is not faceted, as its model was at 939185c7: (name, digest at the recipe's
 /// default smooth angle, digest at 60).

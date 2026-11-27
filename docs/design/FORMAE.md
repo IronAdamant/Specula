@@ -226,7 +226,16 @@ are, since recipes name them.
   picture check saw (tangent at both ends, the two arcs made an inflection whose chords lay on one
   line at a coarse detail, and an extrusion's cap a triangle under the modeller's floor);
   its radius is an eighth of the blade's half width, halved until its foot lies in the stalk's
-  upper half (`stalk_too_short_for_its_round` where no round fits).
+  upper half and below the blade's base. Such a round turns by the base's angle off upright at
+  the stalk's top less its crossing, so (review 3, finding 1, which found every narrow blade
+  widest high up refused): **where the base leaves the stalk at 25 degrees or less off upright**
+  (a willow's, a lanceolate leaf's) **there is no round**, the base meeting the stalk at a turn no
+  sharper than the round's own crossing; between 25 and 50 degrees the round crosses at half the
+  base's angle, so it always turns by at least half of it; and where ten halvings do not fit it,
+  or its arc would be under a millionth of the leaf's height, there is no round either. No leaf
+  is refused for its round. The review's 498 draws build as at `d6172439` (444; the other 54 are
+  `edge_under_floor`, a blade of 0.1 mm on a stalk of metres), and a grid over the three ranges
+  builds (`tests_stage4.rs`).
 
 **Facets** (review 2 of stage 4, finding 1; round 3). A form is **faceted** when its flat faces
 are the point of it (`Form::faceted`): the Platonic, Archimedean, Catalan and stellated solids,
@@ -236,7 +245,12 @@ within a degree of its plane, whatever the recipe's smooth angle or its default 
 cut stone's crown facets meet at under 30 degrees and were shaded as one curve. Every other form
 carries no tag and is shaded by the smooth angle exactly as before the tag existed: a prism or a
 pyramid of many sides, a rounded form's flat patches, every plane figure raised (a slab's cap and
-walls). Round 2 had tagged every flat surface of every form, which put seams at tangent joins (a
+walls). **So do a `box`, a prism or a pyramid of few sides, and a bipyramid**: they follow the
+recipe's smooth angle like any other form, so `box` at a smooth angle of 120 shades as a blob
+while `cube_in_sphere` stays flat (and a `bipyramid` of 4 sides as one, while `octahedron`
+stays flat), and the default hexagonal `prism` at 60 has its sides shaded round. An author who wants one
+flat gives its part a `smooth_angle` below the angle between its faces (a part's own angle wins,
+below). Round 2 had tagged every flat surface of every form, which put seams at tangent joins (a
 raised stadium's walls into its ends, a rounded box's faces into its rounds, an arch's legs into
 its arch) and faceted a 64-sided prism at a smooth angle of 60; that is undone.
 
@@ -263,17 +277,30 @@ its arch) and faceted a 64-sided prism at a smooth angle of 60; that is undone.
   faceted makes the same model, every level's positions, normals and indices, as at `939185c7`
   (the working line before the tag), at its defaults, at the recipe's default smooth angle and
   at 60 (110 forms pinned; the stage-4 forms are new since and not pinned); no form, at its
-  defaults or at drawn arguments, solid or raised as a slab, at 30 or at 60, has two normals
-  under a degree apart at one position; each faceted form at its defaults and two drawn sets, at
-  30, 60 and 120, has every corner on its face's normal and its vertices as above; a part's
-  smooth angle smooths the gem and the recipe's does not.
-- **Not this lane's, found on the way:** the modeller's smoothing itself makes pairs of normals
-  under a degree apart where a fan of faces turns past the smooth angle around one point (each
-  corner takes the faces within the angle of its own face, which is not the same set at each
-  corner): the spindle's tips at a smooth angle of 60 (128 pairs), and bevelled-and-rounded
-  raises of about thirty figures at drawn arguments (the round's bands against the cap). They
-  are as they were at `939185c7`, and pinned so; mending them (gathering a point's normals into
-  groups before averaging) changes older models' bytes and is the lead's to decide.
+  defaults and at one drawn set of arguments, solid or raised as a slab, at 30 or at 60 (the
+  spindle at 60 left out, below), has two normals under a degree apart at one position; each
+  faceted form at its defaults and two drawn sets, at 30, 60 and 120, has every corner on its
+  face's normal and its vertices as above, and the gem at 64 sides and the crystal at 24 (facets
+  a few degrees apart: a gem's girdle facets at 64 sides are 5.6 degrees apart) have exactly
+  their faces' corners as vertices (896 and 240); a part's smooth angle smooths the gem and the
+  recipe's does not. More draws are not held by a test: what they show is the next point.
+- **Pairs of normals under a degree apart that the modeller's smoothing makes**, not the facet
+  tag's (review 3 of stage 4, finding 3, over the defaults and five drawn sets of every form,
+  solid or raised six ways, at 30 and 60): where a fan of faces turns past the smooth angle
+  around one point, each corner takes the faces within the angle of its own face, which is not
+  the same set at each corner, so one position carries normals a fraction of a degree apart.
+  **173 models of older forms have such pairs, the same 173 at `939185c7`** (before this stage)
+  and now: bevelled (64), bevelled-and-rounded (50) and pillow (55) raises of 33 plane figures
+  (the semicircle, the circular segment, the sector, the cross, the annular sector, the
+  epicycloid and others), and four solids at some arguments (the ellipsoid, the bicone, and the
+  spindle at two: its tips at a smooth angle of 60 are the case the test leaves out). The angles
+  in a pair are 0.007 to 0.997 degrees (median 0.55): a step in shading under 2 percent even at a
+  grazing light, a seam a normals view shows. This stage adds none among older forms. Among its
+  own forms, 52 such models are in bevelled, bevelled-and-rounded and pillow raises of `bead`,
+  `banner`, `stair_profile`, `cyma_recta`, `cyma_reversa` and `arch_portal` (none in the bell,
+  the baluster, the cup or the leaf). They are not mended: mending them (gathering a point's
+  normals into groups before averaging) would change older models' bytes, and the lead decided
+  to leave them.
 
 **Old parameter names** (review 2 of stage 4, finding 3). A name a stage-4 form took before its
 remake is refused (`unknown_param`) with the name that took its place, or, where none did, with
@@ -292,6 +319,17 @@ from its value and is not caught.
   words that are not true of it (the plate's rim has only its four corners and makes a sliver
   against the grate's border): review 2's finding 2, in `raise.rs`, which another lane (soft
   edges) holds; left for it.
+- The leaf's round crosses the blade's base at an angle, not tangent, because the modeller's
+  `extrude` of the outline refuses the tangent round at ordinary details (20, 33, 100, 128, 150,
+  256: its cap's triangulation drops near-collinear ears and the extrusion is not closed), while
+  the library's own slab (`"raise": {"as": "slab"}`) builds the tangent one at every detail tried
+  (review 3 of stage 4, finding 4). The kink this leaves is the cusp the picture check saw. And
+  the modeller's extrusion of the default leaf at detail 200 builds a sliver, a triangle whose
+  altitude is 7.2e-7 of its longest edge (1.9e-9 m2, above the floor), at the inflection between
+  the blade's two upper arcs, which did not change in this round. Both are the modeller's to
+  mend, not done here: route a library outline's `extrude` through the library's slab (its cap
+  cutter), or drop points collinear within rounding before ear clipping; then the round can be
+  tangent.
 - The bell's sound bow is not thicker than its waist; the bell has no crown loop to hang it by.
 - The cup has no handle.
 
