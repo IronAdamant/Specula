@@ -23,10 +23,12 @@
 //! foot), a head's depth 4 mm (0.075 of it parts an eye's side from the head's), a trunk's width
 //! 8 mm (2.3 girths and the margin, so a girth at its least still fits). The most: 60 m a
 //! number, so every position stays under 256 m, where an `f32` still holds the recipe's 0.05 mm
-//! grid three times over. The size enters the body only through the numbers: its range is where
-//! the plan's defaults (its shares, and its traits at 2.5 spreads) keep every number inside its
-//! own: 0.039 m (the girth's 3 mm at 0.09 of the size, less its build) to 50 m (the trunk's 60 m
-//! at 1.2).
+//! grid three times over. **The size has no limit of its own**: it enters the body only through
+//! the numbers, so a kind is refused for its size only where a number it drives leaves that
+//! number's range, and the refusal names the number (a mouse of 3 cm whose numbers are its own is
+//! whole; at the plan's default shares a size under 0.039 m takes the girth under its 3 mm). Its
+//! range is only what the arithmetic needs: from one step (a size written as 0 is no size) to
+//! 10 km.
 
 use crate::draw::Specimen;
 use crate::error::Error;
@@ -39,7 +41,7 @@ pub struct BoxCreature;
 /// The plan.
 pub static PLAN: BoxCreature = BoxCreature;
 
-static SIZE: SizeDef = SizeDef { name: "shoulder_height", unit: Unit::Metre, mean: 0.6, sd: 0.05, range: [0.039, 50.0], about: "ground to the top of the back" };
+static SIZE: SizeDef = SizeDef { name: "shoulder_height", unit: Unit::Metre, mean: 0.6, sd: 0.05, range: [0.0001, 10_000.0], about: "ground to the top of the back" };
 
 /// The most any length of the plan may be, metres.
 const MOST: f64 = 60.0;

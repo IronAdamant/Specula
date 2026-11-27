@@ -208,6 +208,23 @@ fn kinds_of_published_sizes_are_accepted_and_build_whole() {
     assert_eq!(crate::draw::backstops::counts(), before, "no backstop acted");
 }
 
+/// Review 3, finding 2: a size has no limit of its own. A mouse of 3 cm at the shoulder (spread
+/// 2 mm) whose numbers are all set by their own means (each well above its least) is accepted and
+/// builds whole at its mean and 16 seeds; before, it was refused for its size alone, because
+/// 0.039 m is where the plan's default shares put a girth at its least.
+#[test]
+fn a_mouse_whose_numbers_are_its_own_is_accepted_and_builds_whole() {
+    let style = Style::parse(STYLE).unwrap();
+    let means = [("body_length", 0.08), ("body_depth", 0.025), ("body_width", 0.03), ("leg_length", 0.02), ("leg_girth", 0.005), ("neck_length", 0.02), ("head_length", 0.025), ("head_depth", 0.015), ("tail_length", 0.08)];
+    let rows: Vec<String> = means.iter().map(|(n, m)| format!(r#""{n}": {{"mean": {m}, "own": "a mouse's, the engine's own"}}"#)).collect();
+    let mouse = kind("mouse", r#"{"mean": 0.03, "sd": 0.002, "unit": "m", "own": "a mouse's, the engine's own"}"#, &format!(r#", "numbers": {{{}}}"#, rows.join(", ")));
+    let before = crate::draw::backstops::counts();
+    for seed in std::iter::once(None).chain((0..16u64).map(|k| Some(k * 7_919 + 1))) {
+        whole(&mouse, seed, &style).unwrap_or_else(|m| panic!("mouse {seed:?}: {m}"));
+    }
+    assert_eq!(crate::draw::backstops::counts(), before, "no backstop acted");
+}
+
 /// The plan's ranges are where its geometry breaks, found by building at them: the smallest body
 /// its numbers allow (each at its least) and
 /// the largest (lengths of 59 m), the size's least and most at the plan's default shares, all
@@ -223,9 +240,16 @@ fn the_box_creature_builds_whole_at_its_limits() {
     let fixed = r#"{"mean": 0.6, "unit": "m", "own": "x"}"#;
     let smallest = kind("smallest", fixed, &all(&|n| n.range[0]));
     let largest = kind("largest", fixed, &all(&|n| if n.name == "leg_girth" { 15.0 } else { 59.0 }));
-    let size = crate::Plan::size(plan).range;
-    let least = kind("least_size", &format!(r#"{{"mean": {}, "unit": "m", "own": "x"}}"#, size[0]), "");
-    let most = kind("most_size", &format!(r#"{{"mean": {}, "unit": "m", "own": "x"}}"#, size[1]), "");
+    // The size has no limit of its own: at the plan's default shares its least and most are
+    // where a number reaches its own (the girth's 3 mm at 0.09 of 0.039 m, less its build; the
+    // trunk's 60 m at 1.2 of 50 m), and just past them the number is named.
+    let at_size = |name: &str, size: f64| Kind::parse(&format!(r#"{{"kind": 1, "name": "{name}", "plan": "box_creature", "about": "x", "size": {{"shoulder_height": {{"mean": {size}, "unit": "m", "own": "x"}}}}}}"#)).unwrap();
+    let least = resolve(&at_size("least_size", 0.039), None).unwrap();
+    let most = resolve(&at_size("most_size", 50.0), None).unwrap();
+    for (size, number) in [(0.038, "leg_girth"), (50.01, "body_length")] {
+        let e = resolve(&at_size("past", size), None).unwrap_err();
+        assert_eq!((e.code, e.reach.as_ref().map(|r| r.number.as_str())), ("outside_plan", Some(number)), "{e}");
+    }
     for r in [&smallest, &largest, &least, &most] {
         for seed in [None, Some(1), Some(2)] {
             whole(r, seed, &style).unwrap_or_else(|m| panic!("{} {seed:?}: {m}", r.kind.name));

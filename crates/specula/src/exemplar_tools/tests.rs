@@ -290,8 +290,9 @@ fn a_project_write_of_an_impossible_kind_names_the_kinds_field() {
 fn a_kind_refused_for_its_reach_carries_its_numbers_as_a_recipe_error() {
     let bad = r#"{"kind": 1, "name": "bad", "plan": "box_creature", "about": "a probe", "size": {"shoulder_height": {"mean": 0.06, "sd": 0.02, "unit": "m", "own": "x"}}}"#;
     let e = check_kind(bad, &|_| None, &Style::parse(crate::scaffold::STYLE).unwrap(), "t").unwrap_err();
-    assert_eq!((e.path.as_str(), e.limit), ("size.shoulder_height.sd", Some(0.039)), "{e:?}");
-    assert!(e.measured.is_some_and(|m| (m - 0.01).abs() < 1e-12), "{e:?}");
+    // (The size at 2.5 spreads, 0.01 m, takes the trunk's depth under its least, 0.004 m.)
+    assert_eq!((e.path.as_str(), e.limit), ("size.shoulder_height.sd", Some(0.004)), "{e:?}");
+    assert!(e.measured.is_some_and(|m| (m - 0.42 * 0.01 * 0.875).abs() < 1e-12), "{e:?}");
 }
 
 /// Review 2, finding 7: what a tool's answer offers does what it says. A preview at a seed a

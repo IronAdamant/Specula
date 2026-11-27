@@ -302,15 +302,19 @@ fn a_kind_that_could_draw_an_impossible_body_is_refused_with_its_own_field() {
     // zero; one inside that but past the plan's range is refused when resolved.
     let e = parse_err(&small(r#", "size": {"shoulder_height": {"mean": 0.6, "sd": 0.6, "unit": "m", "own": "x"}}"#));
     assert_eq!((e.code, e.path.as_str()), ("out_of_range", "size.shoulder_height.sd"), "{e}");
+    // A size whose 2.5 spreads take a number under its least: refused by the size's spread, naming
+    // the number (the size has no limit of its own: its smallest, 0.01 m, is a size).
     let e = resolve_err(r#", "size": {"shoulder_height": {"mean": 0.06, "sd": 0.02, "unit": "m", "own": "x"}}"#);
     assert_eq!((e.code, e.path.as_str()), ("outside_plan", "size.shoulder_height.sd"), "{e}");
     let r = e.reach.as_ref().unwrap();
-    assert_eq!(r.number, "shoulder_height");
-    assert!((r.worst - 0.01).abs() < 1e-12 && r.bound == [0.039, 50.0], "{e}");
-    assert!(e.to_json().get("worst").is_some() && e.message.contains("0.039..50 m"), "{e}");
-    // A size outside the plan, by its mean or its range.
-    assert_eq!(resolve_err(r#", "size": {"shoulder_height": {"mean": 60.0, "unit": "m", "own": "x"}}"#).path, "size.shoulder_height.mean");
-    assert_eq!(resolve_err(r#", "size": {"shoulder_height": {"mean": 0.6, "range": [0.01, 0.9], "unit": "m", "own": "x"}}"#).path, "size.shoulder_height.range");
+    assert_eq!(r.number, "body_depth");
+    assert!((r.worst - 0.42 * 0.01 * 0.875).abs() < 1e-12 && r.bound == [0.004, 60.0], "{e}");
+    assert!(e.to_json().get("worst").is_some() && e.message.contains("body_depth") && e.message.contains("0.004..60 m"), "{e}");
+    // A size that drives a number past the plan's: refused by its mean, naming the number.
+    let e = resolve_err(r#", "size": {"shoulder_height": {"mean": 60.0, "unit": "m", "own": "x"}}"#);
+    assert_eq!((e.path.as_str(), e.reach.as_ref().map(|r| r.number.as_str())), ("size.shoulder_height.mean", Some("body_length")), "{e}");
+    // A size outside what the plan's arithmetic takes (under one step), by its range.
+    assert_eq!(resolve_err(r#", "size": {"shoulder_height": {"mean": 0.6, "range": [0.00005, 0.9], "unit": "m", "own": "x"}}"#).path, "size.shoulder_height.range");
     // A trait's spread that takes a girth below what the plan can write (a small creature).
     let e = resolve_err(r#", "size": {"shoulder_height": {"mean": 0.06, "unit": "m", "own": "x"}}, "vary": {"build": {"spread": 0.36, "own": "x"}}"#);
     assert_eq!((e.code, e.path.as_str()), ("outside_plan", "vary.build.spread"), "{e}");
