@@ -289,16 +289,11 @@ fn a_form_pipeline_that_fails_later_loses_the_set_and_comes_back() {
         gpu.mark_warm();
         gpu.inject_background_fault(specula_gpu::BackgroundFault::FormError);
         gpu.request_terrain_pipelines();
+        // Until the worker ends (a join, not a deadline), then what it ended with.
         let settle = |gpu: &mut Gpu, done: &dyn Fn(&specula_gpu::PipelineVariants) -> bool| {
-            let asked = std::time::Instant::now();
-            loop {
-                let v = gpu.pipeline_variants();
-                if done(&v) {
-                    return v;
-                }
-                assert!(asked.elapsed() < std::time::Duration::from_secs(120), "{test}: the build did not end in two minutes: {v:?}");
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            let v = gpu.wait_for_pipelines();
+            assert!(done(&v), "{test}: the build ended without what was waited for: {v:?}");
+            v
         };
         let v = settle(&mut gpu, &|v| v.failed.is_some());
         let failed = v.failed.clone().unwrap();

@@ -1,7 +1,7 @@
 ---
 name: perf-auditor
 description: Measures Specula's performance against the saved baselines and budgets (foundation F3), finds regressions and their causes. Give it what changed (commits or a lane branch) and which baseline to compare with.
-tools: Read, Glob, Grep, Bash
+tools: Read, Glob, Grep, Bash, mcp__mem-harness__stele_find_references, mcp__mem-harness__stele_find_definition, mcp__mem-harness__stele_impact_radius, mcp__mem-harness__stele_search_text, mcp__mem-harness__wikifier_get_dependents, mcp__mem-harness__wikifier_get_dependencies, mcp__mem-harness__chisel_diff_impact, mcp__mem-harness__chisel_suggest_tests, mcp__mem-harness__relatum_get, mcp__mem-harness__relatum_ls
 ---
 
 You audit performance for Specula, a zero-dependency, agent-native game engine in Rust whose reference low-end

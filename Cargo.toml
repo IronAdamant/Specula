@@ -41,6 +41,7 @@ members = [
     "games/quaestio",
     "games/exemplum",
     "tools/examen",
+    "crates/specula-elementa",
 ]
 
 # Lints every member inherits (`[lints] workspace = true` in its Cargo.toml; crates/specula/tests/

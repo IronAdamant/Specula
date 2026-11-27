@@ -2346,6 +2346,11 @@ impl Pipelines {
         self.background.requeue.take()
     }
 
+    /// Whether a background build is running (its pipelines not yet taken).
+    pub fn building(&self) -> bool {
+        self.background.pending.is_some()
+    }
+
     /// Whether the GI feature sets exist, are being built or queued, or failed to build (then
     /// only an explicit retry asks again): asking for them again would do nothing.
     pub fn gi_asked(&self, per_pixel: bool) -> bool {
