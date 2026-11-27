@@ -395,6 +395,7 @@ C (effects by mathematics) and D (turned and moulded forms) are still to come.
 | [R8-A6](R8-A6-capping-holes-fist-cdt-flips.md) | Capping a figure with holes: robust ear clipping, constrained Delaunay, why edge flips terminate |
 | [R8-A7](R8-A7-local-feature-size-least-edge.md) | Predicting a mesh's least edge before building it: local feature size |
 | [as delivered](R8-README-as-delivered.md), [substitutes](R8-blocked-downloads-ALTERNATIVES.md) | The delivery's own overview, and which sources were replaced by a labelled substitute |
+| [R8-D3](R8-D3-vessel-forms-MPRG-1998.md) | Section D, vessels: pottery forms by profile and proportion (jug, jar, bowl, dish, beaker, cup, mug), their named profiles and component parts, from the Medieval Pottery Research Group's guide of 1998. Read by the lead's side from a copy the owner supplied (2026-11-28), text only: the outline drawings were not seen, and no second check was made. Five of its rules are a reading, marked so; it gives ratios and no sizes |
 
 - **Each file has a second checker's file beside it** (`.verify.md`), by the same researcher, row by
   row; the delivery counts 223 checked rows and 18 fixes applied.
