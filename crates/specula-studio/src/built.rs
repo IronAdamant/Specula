@@ -636,12 +636,13 @@ mod tests {
         let b = built_of(&record, 0.0).unwrap();
         let took = t.elapsed();
         // Measured on the development laptop: about 220 ms with the machine quiet (twelve runs,
-        // 2026-11-23), 368 to 750 ms while other builds held its cores (2026-11-23 and 28: the
-        // gate's speed step runs this test alone, but not the machine). At 400 ms the budget was
-        // under twice the quiet time and failed two gates for the machine's load. What bounds
-        // the work is the next assertion (32 outlines read, the rest said as not read); this
-        // one only catches a reading that has become several times dearer.
-        assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(1000)), "{took:?}");
+        // 2026-11-23); 368 to 750 ms while a few other builds held its cores (2026-11-23 and
+        // 28); 1,254 ms with ten agents' builds on it (2026-11-28: the gate's speed step runs
+        // this test alone, but not the machine). At 400 ms and then at 1,000 ms the budget
+        // failed three gates for the machine's load and never for the code. What bounds the
+        // work is the next assertion (32 outlines read, the rest said as not read); this one is
+        // a coarse alarm for a reading that has become ten times dearer, and no finer.
+        assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(2500)), "{took:?}");
         // (32 outlines are read, the largest shapes' first: eight shapes of four, of 64.)
         assert!((b.read - 8.0 / 64.0).abs() < 1e-6, "only what the budget read is read: {}", b.read);
     }
