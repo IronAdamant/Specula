@@ -306,7 +306,7 @@ fn ellipsoid_span(k: &Prepared, q: V3, d: f32, r: f32) -> Option<(f32, f32)> {
     }
     let rho = most / least;
     let short = 0.5 * (rho + 1.0 / rho);
-    if !(short <= QUICK_SHORT) {
+    if short > QUICK_SHORT {
         return None;
     }
     let (lo, hi) = ((d - r - slack) / short - slack, short * (d + slack) + r + slack);
@@ -8297,7 +8297,7 @@ mod tests {
                 assert!(got.is_none(), "a span {got:?} of an ellipsoid {short} from round: {node:?}");
                 continue;
             }
-            if !(d > rad) {
+            if d <= rad || d.is_nan() {
                 assert!(got.is_none(), "a span {got:?} for a ball that reaches the ellipsoid: d {d} r {rad} {node:?}");
                 reaching += 1;
                 continue;
