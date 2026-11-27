@@ -25,9 +25,11 @@
 //!   5e-16 of `p` where `x` is within 3, and past it within a relative `1e-14 + 4e-16 x²` (what a
 //!   double's `x` can hold: 2e-13 at 1e-300). Under 1e-300 it is Acklam's
 //!   alone (Halley's step there would need `exp(x²/2)` past what a double holds).
-//! - **Monotone to within 1e-13, not to the last bit**: a `p` one unit in the last place larger
+//! - **Monotone to within 2e-13, not to the last bit**: a `p` one unit in the last place larger
 //!   can give an `x` a few units in the last place smaller (the review counted 23,291 such steps
-//!   in 400,000, none larger than 2.2e-14), and [`cdf`] likewise. Nothing depends on more:
+//!   in 400,000 inside ±2.5, none larger than 2.2e-14; review 4 measured the largest anywhere,
+//!   1.24e-13, at `p` 7,460 units in the last place below Φ(3), where the series' Halley steps
+//!   meet the upper tail's), and [`cdf`] likewise. Nothing depends on more:
 //!   [`truncated`] holds its result inside `[a, b]`, and the reach uses only the windows' ends,
 //!   inside which every draw then lies.
 //!
@@ -241,14 +243,16 @@ mod tests {
         assert!((x + 37.663_06).abs() < 1e-4 && x < quantile(1e-300), "{x}");
     }
 
-    /// Monotone to within 1e-13, not to the last bit (review 3 counted 23,291 steps back in
-    /// 400,000 one-unit steps of `p` inside ±2.5): a step back is never larger than that, and the
+    /// Monotone to within 2e-13, not to the last bit (review 3 counted 23,291 steps back in
+    /// 400,000 one-unit steps of `p` inside ±2.5; review 4 measured 1.24e-13 just below Φ(3), a
+    /// region the walk from 10,000 units below the join now crosses): a step back is never larger
+    /// than that, and the
     /// truncated draw does not depend on more: it stays inside its window at every unit step of
     /// `u` next to the window's ends.
     #[test]
     fn monotone_to_within_its_accuracy_and_the_draw_does_not_need_more() {
         let (mut back, mut most) = (0u32, 0.0f64);
-        for start in [cdf(-2.5), 0.024_25, 0.3, 0.5, 0.9, 1.0 - 0.024_25, cdf(2.4)] {
+        for start in [cdf(-2.5), 0.024_25, 0.3, 0.5, 0.9, 1.0 - 0.024_25, cdf(2.4), f64::from_bits(UPPER.to_bits() - 10_000)] {
             let mut p = start;
             let mut last = quantile(p);
             for _ in 0..20_000 {
@@ -261,7 +265,7 @@ mod tests {
                 last = x;
             }
         }
-        assert!(most < 1e-13, "{back} steps back, the largest {most:e}");
+        assert!(most < 2e-13, "{back} steps back, the largest {most:e}");
         // (The uniforms a stream gives next to 0 and 1: k / 2^53.)
         let step = 1.0 / 9_007_199_254_740_992.0;
         for w in [[-2.5, 2.5], [-1.67, 1.43], [0.3, 0.31], [-2.5, -2.49], [2.0, 2.5]] {

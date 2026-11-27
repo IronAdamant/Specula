@@ -554,15 +554,18 @@ holds a constraint exactly only in that form. A plan whose geometry needs anothe
 things, and its module's notes say which:
 
 - **It declares numbers in which the constraint is linear.** A worked example, the machine's arm
-  (A.3): a link of length `l` on a hinge at height `h`, tilted from upright by up to `θ`, must stay
-  above the ground: `h - l sin θ ≥ margin` is not linear in `h`, `l` and `θ`. Let the plan's number
+  (A.3): a link of length `l` on a hinge at height `h`, tilted down from the horizontal by an
+  angle `θ` from 0 to 90° (so its free end is `l sin θ` below the hinge), must stay above the
+  ground: `h - l sin θ ≥ margin` is not linear in `h`, `l` and `θ`. Let the plan's number
   be the link's reach below its hinge, `drop` (metres: `l sin θ`, with a share of the size and a
   spread of its own), instead of the angle. The constraint is then the relation
   `h - drop ≥ margin`, a second relation `l - drop ≥ margin` keeps the angle defined, and the
   plan's `write` computes the angle from the two numbers, `θ = asin(drop / l)`. A kind sets the
   drop and its spread; the angle is what follows.
 - **Or it bounds the constraint by a linear one, and says so.** Where the angle must stay a number
-  (degrees, from a measured joint range), its plan's range gives its most, `θmax`, and
+  (degrees down from the horizontal, from a measured joint range), its plan's range gives its
+  most, `θmax`, which must be at most 90° (`sin θ` rises only up to there, so `sin θ ≤ sin θmax`
+  for every `θ` from 0 to `θmax`; past 90° the bound is `l` itself), and
   `h - sin(θmax) l ≥ margin` (a relation with the constant coefficient `-sin θmax`) holds the
   constraint at every angle the plan can write. It is stricter than the constraint: a kind whose
   angle never comes near `θmax` is held as if it did, and the plan's notes say what that refuses.

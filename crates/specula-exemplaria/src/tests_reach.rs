@@ -239,6 +239,47 @@ fn a_dog_whose_girths_grow_faster_than_its_trunk_is_accepted() {
     assert!(e.message.contains("shoulder_height 0.775") && e.to_json().get("at").is_some(), "{e}");
 }
 
+/// Review 4, minor 1: a kind on the very edge of a relation is told the cause it has. Bisected
+/// onto the edge (to the last bit of a girth's share), the first refused kind's body is whole to
+/// within the floating-point margin the check takes off: with no measured range among the
+/// relation's residuals it is told of that margin, never to "narrow the range's number" (before
+/// the mend: 443 of the review's 500 such kinds); with a ranged residual it is told of its range.
+#[test]
+fn a_refusal_on_the_edge_names_the_cause_it_has() {
+    let edge = |make: &dyn Fn(f64) -> Kind, mut ok: f64, mut bad: f64| -> Error {
+        assert!(resolve(&make(ok), None).is_ok() && resolve(&make(bad), None).is_err(), "the edge lies between {ok} and {bad}");
+        loop {
+            let mid = 0.5 * (ok + bad);
+            if mid == ok || mid == bad {
+                break;
+            }
+            if resolve(&make(mid), None).is_ok() {
+                ok = mid;
+            } else {
+                bad = mid;
+            }
+        }
+        resolve(&make(bad), None).unwrap_err()
+    };
+    let ranged = |share: f64| kind(&format!(r#"{{"kind": 1, "name": "dog", "plan": "box_creature", "about": "a probe", "size": {{"shoulder_height": {{"mean": 0.55, "sd": 0.09, "unit": "m", "own": "x"}}}}, "numbers": {{"leg_girth": {{"share": {share}, "exponent": 1.2, "spread": 0.05, "range": [0.01, 0.5], "own": "x"}}}}}}"#));
+    for (make, is_ranged) in [(&(|s| dog(s, 1.2)) as &dyn Fn(f64) -> Kind, false), (&ranged, true)] {
+        let e = edge(make, 0.1, 0.135);
+        let b = e.relation.as_ref().unwrap_or_else(|| panic!("{e}"));
+        assert!(b.sum >= b.margin && b.sum < b.margin + 1e-9, "on the edge, whole to within floating point: {e}");
+        assert_eq!(e.message.contains("a measured range narrows a residual"), is_ranged, "{e}");
+        assert_eq!(e.message.contains("within the floating-point margin of breaking"), !is_ranged, "{e}");
+    }
+}
+
+/// Review 4, minor 5: a refusal's value is not rounded onto the limit it is outside of. A size
+/// whose mean is 0.00005 m reads 0.00005, not 0.0001 (on its step, the plan's least).
+#[test]
+fn a_refused_value_is_shown_apart_from_its_limit() {
+    let e = resolve(&kind(r#"{"kind": 1, "name": "mite", "plan": "box_creature", "about": "a probe", "size": {"shoulder_height": {"mean": 0.00005, "unit": "m", "own": "x"}}}"#), None).unwrap_err();
+    assert_eq!((e.code, e.path.as_str()), ("outside_plan", "size.shoulder_height.mean"), "{e}");
+    assert!(e.message.contains("could give shoulder_height 0.00005 m, outside"), "{e}");
+}
+
 /// A random kind of the box creature, weighted to the relations' hard cases (the review's
 /// generator): any size from 0.2 to 3 m, its numbers' means half to 1.8 times the plan's, half of
 /// them with an exponent of their own from -1 to 3, spreads to 0.3 and measured ranges.

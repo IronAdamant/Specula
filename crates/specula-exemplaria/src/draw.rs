@@ -395,11 +395,13 @@ impl Resolved {
         let plan = self.plan;
         let def = plan.size();
         let law = self.size_law();
+        let inside = |x: f64, [lo, hi]: [f64; 2]| x.is_finite() && x >= lo && x <= hi;
         let refuse = |path: &str, number: &str, worst: f64, bound: [f64; 2], unit: Unit, why: String| {
-            Error::new("outside_plan", path, format!("a seed of this kind could give {number} {} {}, outside what the plan {} can write ({}): {why}", round(worst, unit), unit.name(), plan.name(), fmt_range(bound, unit)))
+            // (Rounded to its step unless that puts it inside what it is outside of: then whole.)
+            let shown = if inside(round(worst, unit), bound) { format!("{worst}") } else { format!("{}", round(worst, unit)) };
+            Error::new("outside_plan", path, format!("a seed of this kind could give {number} {shown} {}, outside what the plan {} can write ({}): {why}", unit.name(), plan.name(), fmt_range(bound, unit)))
                 .with_reach(number, worst, bound)
         };
-        let inside = |x: f64, [lo, hi]: [f64; 2]| x.is_finite() && x >= lo && x <= hi;
         let sp = |f: &str| format!("size.{}.{f}", def.name);
         // The size.
         if !inside(law.mean, law.plan) {
@@ -605,10 +607,7 @@ impl Resolved {
             for c in corners(traits.len() + own.len()) {
                 let r = trait_corner(c);
                 let f = |size: f64| at(choice, c, &r, size);
-                let ends = [f(sizes[0]), f(sizes[1])];
-                let roundoff = ROUNDOFF * ends[0].iter().zip(&ends[1]).map(|(a, b)| a.abs().max(b.abs())).sum::<f64>();
-                let (bound, size) = least_over_size(&f, &exponents, sizes, ends, rel.margin + allowance + roundoff);
-                let worst = bound - allowance - roundoff;
+                let (worst, size) = corner_least(&f, &exponents, sizes, rel.margin, allowance);
                 if least.is_none_or(|(x, _, _)| worst < x || worst.is_nan()) {
                     least = Some((worst, size, c));
                 }
@@ -663,9 +662,16 @@ impl Resolved {
             .map(|n| format!("numbers.{n}"))
             .or_else(|| traits.iter().find(|t| self.kind.vary.contains_key(**t)).map(|t| format!("vary.{t}.spread")))
             .unwrap_or_else(|| law.spread_path.clone());
-        let message = if worst < rel.margin {
+        // The wording by its cause: a body that breaks it; else, with no measured range among its
+        // residuals, a least within the floating-point margin of the relation's; else the range.
+        let message = if worst < rel.margin || ranged.is_empty() {
+            let (breaks, close) = if worst < rel.margin {
+                ("which breaks", String::new())
+            } else {
+                ("which comes within the floating-point margin of breaking", format!("; the check takes {ROUNDOFF:e} of its terms' size off for floating point, and a least this close cannot be told from breaking it: move the kind's numbers a little away from it"))
+            };
             format!(
-                "a seed of this kind could give {shown} (at {at_shown}), which breaks the plan {}'s relation {} ({formula} must be at least {} {}; here {:.4} after rounding): {}",
+                "a seed of this kind could give {shown} (at {at_shown}), {breaks} the plan {}'s relation {} ({formula} must be at least {} {}; here {:.4} after rounding){close}: {}",
                 plan.name(),
                 rel.name,
                 rel.margin,
@@ -705,6 +711,17 @@ const MAX_PIECES: usize = 4096;
 /// draw's arithmetic is good to a few units in the last place (about 1e-16), ten thousand times
 /// less than this.
 const ROUNDOFF: f64 = 1e-12;
+
+/// A relation's least over the size at one corner of its residuals, as the check compares it with
+/// the relation's `margin`: the bound of [`least_over_size`], less the rounding `allowance` and the
+/// floating-point margin ([`ROUNDOFF`] of the terms' size at the window's ends). Returns it and the
+/// size of the least value evaluated. The relation holds at that corner when it is at least `margin`.
+fn corner_least(f: &dyn Fn(f64) -> Vec<f64>, exponents: &[f64], sizes: [f64; 2], margin: f64, allowance: f64) -> (f64, f64) {
+    let ends = [f(sizes[0]), f(sizes[1])];
+    let roundoff = ROUNDOFF * ends[0].iter().zip(&ends[1]).map(|(a, b)| a.abs().max(b.abs())).sum::<f64>();
+    let (bound, size) = least_over_size(f, exponents, sizes, ends, margin + allowance + roundoff);
+    (bound - allowance - roundoff, size)
+}
 
 /// The term-by-term bound of a sum over a piece of the size: each term at its own worse end
 /// (each term is a constant times a power of the size, so its least on a piece is at an end).
@@ -877,5 +894,50 @@ mod tests {
         // Enough already: the window is not looked into, and what is returned is at least enough.
         let f = |s: f64| vec![s * s, -2.0 * s, 1.5];
         assert!(least(&f, &[2.0, 1.0, 0.0], [0.5, 2.0], -3.0).0 >= -3.0);
+    }
+
+    /// Review 4, minor 2: a relation of two positive terms and one negative whose least is
+    /// strictly inside the size's window and sits on the margin. `s² + 16/s - (12 - m)` on
+    /// `[1, 3]` is stationary where `2s = 16/s²`, at `s = 2`, and its least there is `m` (0.0003);
+    /// its ends are 5.0003 and 2.3336. The bound at the stationary point is taken term by term over
+    /// its bracket, so it is a bound and not a sample: never above the least, and below it by more
+    /// than floating point could account for (1e-12 of the terms' size, 24 here), and within two
+    /// brackets' share of the terms' slopes (`Σ |exponent × term|` at the least: 16) of it. Sitting
+    /// on the margin, the relation is not shown to hold there.
+    #[test]
+    fn the_bound_at_a_stationary_point_is_below_the_least_and_near_it() {
+        let m = 0.0003;
+        let k = 12.0 - m;
+        let f = move |s: f64| vec![s * s, 16.0 / s, -k];
+        let e = [2.0, -1.0, 0.0];
+        let w = [1.0, 3.0];
+        let least = 4.0 + 8.0 - k;
+        let (size, slopes) = (4.0 + 8.0 + k, 2.0 * 4.0 + 8.0);
+        let (b, s) = least_over_size(&f, &e, w, [f(w[0]), f(w[1])], m);
+        assert!(least - b >= 1e-12 * size, "the bound {b} is not below the least {least} by more than floating point");
+        assert!(least - b <= 2.0 * BRACKET * slopes, "the bound {b} is {} under the least {least}", least - b);
+        assert!((s - 2.0).abs() < 1e-6, "the least evaluated at {s}");
+        let (worst, _) = corner_least(&f, &e, w, m, 0.0);
+        assert!(worst < m, "{worst}");
+    }
+
+    /// Review 4, minor 2: the floating-point margin decides at its edge. `s² + 16/s - k` on
+    /// `[1, 1.5]` falls all the way (its stationary point is at 2), so its least is the sum at
+    /// 1.5, exactly. With an allowance `a` for rounding, a corner holds where that least, less `a`
+    /// and 1e-12 of the terms' size at the window's ends (`2.25 + 16 + k`), is at least the
+    /// margin: `k` set so that this is 1e-13 above the margin holds, 1e-13 below does not.
+    #[test]
+    fn the_floating_point_margin_is_taken_off_at_its_edge() {
+        let (m, a, w, e) = (0.0003, 0.0001, [1.0, 1.5], [2.0, -1.0, 0.0]);
+        for (shift, holds) in [(1e-13, true), (-1e-13, false)] {
+            let mut k = 12.0;
+            for _ in 0..4 {
+                k = 2.25 + 16.0 / 1.5 - (m + a + 1e-12 * (2.25 + 16.0 + k) + shift);
+            }
+            let f = move |s: f64| vec![s * s, 16.0 / s, -k];
+            let (worst, s) = corner_least(&f, &e, w, m, a);
+            assert_eq!(s, 1.5);
+            assert_eq!(worst >= m, holds, "{shift:e} from the edge: {worst} against {m}");
+        }
     }
 }
