@@ -649,7 +649,7 @@ fn recipe_error(e: &specula_exemplaria::Error) -> RecipeError {
         "base_not_found" | "unknown_plan" => ErrorCode::UnknownAsset,
         "base_too_deep" | "base_cycle" => ErrorCode::IncludeCycle,
         "unknown_name" | "base_other_plan" => ErrorCode::UnknownName,
-        "too_large" | "too_many" => ErrorCode::Limit,
+        "too_large" | "too_many" | "reach_too_dear" => ErrorCode::Limit,
         _ => ErrorCode::OutOfRange,
     };
     let near = if e.near.is_empty() { String::new() } else { format!(" (nearest: {})", e.near.join(", ")) };

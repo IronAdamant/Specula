@@ -6,7 +6,7 @@
 use crate::draw::{pow, round, Specimen};
 use crate::error::{Broken, Error};
 use crate::kind::Kind;
-use crate::plan::{resolve, resolve_among, MotionDef, NumberDef, OptionDef, Plan, RelationDef, RoleDef, SizeDef, TraitDef, Unit};
+use crate::plan::{resolve, resolve_among, MotionDef, NumberDef, OptionDef, Plan, RelationDef, Resolved, RoleDef, SizeDef, TraitDef, Unit};
 use crate::plans::box_creature::PLAN as BOX;
 use crate::write::Writing;
 
@@ -278,6 +278,168 @@ fn a_refused_value_is_shown_apart_from_its_limit() {
     let e = resolve(&kind(r#"{"kind": 1, "name": "mite", "plan": "box_creature", "about": "a probe", "size": {"shoulder_height": {"mean": 0.00005, "unit": "m", "own": "x"}}}"#), None).unwrap_err();
     assert_eq!((e.code, e.path.as_str()), ("outside_plan", "size.shoulder_height.mean"), "{e}");
     assert!(e.message.contains("could give shoulder_height 0.00005 m, outside"), "{e}");
+}
+
+/// The dearest box creature to check: every number with an exponent of its own (unequal, so the
+/// size is searched between its ends), a spread of its own and a measured range, every trait
+/// varied: every relation at its most corners and range choices.
+fn dearest() -> Kind {
+    let mean = 0.6;
+    let nums: Vec<String> = BOX
+        .numbers()
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let at = n.share * mean;
+            format!(r#""{}": {{"own": "x", "share": {}, "exponent": {}, "spread": 0.03, "range": [{}, {}]}}"#, n.name, n.share, 0.95 + 0.03 * i as f64, at * 0.6, at * 1.6)
+        })
+        .collect();
+    let vary: Vec<String> = BOX.traits().iter().map(|t| format!(r#""{}": {{"spread": 0.04, "own": "x"}}"#, t.name)).collect();
+    kind(&format!(
+        r#"{{"kind": 1, "name": "dear", "plan": "box_creature", "about": "a probe", "size": {{"shoulder_height": {{"mean": {mean}, "sd": 0.05, "unit": "m", "own": "x"}}}}, "numbers": {{{}}}, "vary": {{{}}}}}"#,
+        nums.join(", "),
+        vary.join(", ")
+    ))
+}
+
+/// The reach's work is counted as it is done: the dearest box creature is accepted on its merits
+/// under a ceiling of exactly the work it takes, and refused `reach_too_dear` one evaluation
+/// under it, naming the work and the ceiling; it is well under the library's ceiling.
+#[test]
+fn a_kind_past_the_reach_work_is_refused_by_name() {
+    let r = resolve(&dearest(), None).unwrap_or_else(|e| panic!("the dearest kind: {e}"));
+    let (bounds, work) = r.reach_within(u64::MAX).unwrap();
+    assert!(work > 0 && work * 4 <= crate::draw::MAX_REACH_WORK, "{work} evaluations");
+    assert_eq!(r.reach_within(work).unwrap(), (bounds, work));
+    let e = r.reach_within(work - 1).unwrap_err();
+    assert_eq!(e.code, "reach_too_dear", "{e}");
+    let w = e.work.as_ref().unwrap();
+    assert!(w.what == "evaluations" && w.done == work && w.ceiling == work - 1, "{w:?}");
+    let j = e.to_json();
+    assert!(j.get("work").is_some() && j.get("max_work").is_some(), "{e}");
+}
+
+const fn probe_trait(name: &'static str) -> TraitDef {
+    TraitDef { name, spread: 0.001, about: "a probe" }
+}
+static MANY_TRAITS: [TraitDef; 13] = [
+    probe_trait("t0"),
+    probe_trait("t1"),
+    probe_trait("t2"),
+    probe_trait("t3"),
+    probe_trait("t4"),
+    probe_trait("t5"),
+    probe_trait("t6"),
+    probe_trait("t7"),
+    probe_trait("t8"),
+    probe_trait("t9"),
+    probe_trait("t10"),
+    probe_trait("t11"),
+    probe_trait("t12"),
+];
+const MANY_WEIGHTS: &[(&str, f64)] = &[("t0", 0.1), ("t1", 0.1), ("t2", 0.1), ("t3", 0.1), ("t4", 0.1), ("t5", 0.1), ("t6", 0.1), ("t7", 0.1), ("t8", 0.1), ("t9", 0.1), ("t10", 0.1), ("t11", 0.1), ("t12", 0.1)];
+static MANY_NUMBERS: [NumberDef; 2] = [
+    NumberDef { name: "outer", unit: Unit::Metre, share: 1.0, exponent: 1.0, traits: MANY_WEIGHTS, range: [0.001, 60.0], about: "a probe" },
+    NumberDef { name: "inner", unit: Unit::Metre, share: 0.5, exponent: 1.0, traits: MANY_WEIGHTS, range: [0.001, 60.0], about: "a probe" },
+];
+static MANY_RELATIONS: [RelationDef; 1] = [RelationDef { name: "inside", terms: &[("outer", 1.0), ("inner", -1.0)], margin: 0.0003, yields: "inner", about: "a probe" }];
+
+/// A plan of a test's own, at the corners' ceiling: one relation of two numbers that follow
+/// thirteen traits (2^13 corners of the residuals, 2^14 of each number's windows).
+struct Many;
+impl Plan for Many {
+    fn name(&self) -> &'static str {
+        "many_traits"
+    }
+    fn about(&self) -> &'static str {
+        "a probe"
+    }
+    fn size(&self) -> &'static SizeDef {
+        BOX.size()
+    }
+    fn numbers(&self) -> &'static [NumberDef] {
+        &MANY_NUMBERS
+    }
+    fn traits(&self) -> &'static [TraitDef] {
+        &MANY_TRAITS
+    }
+    fn roles(&self) -> &'static [RoleDef] {
+        &[]
+    }
+    fn options(&self) -> &'static [OptionDef] {
+        &[]
+    }
+    fn motions(&self) -> &'static [MotionDef] {
+        &[]
+    }
+    fn relations(&self) -> &'static [RelationDef] {
+        &MANY_RELATIONS
+    }
+    fn write(&self, _: &Specimen, _: &mut Writing) -> Result<(), Error> {
+        Ok(())
+    }
+}
+static MANY: Many = Many;
+
+fn many(numbers: &str) -> Resolved {
+    let kind = kind(&format!(r#"{{"kind": 1, "name": "probe", "plan": "many_traits", "about": "a probe"{numbers}}}"#));
+    Resolved { kind, plan: &MANY, base: None }
+}
+
+/// The reach at its ceiling is cheap enough for the engine thread: on the plan of thirteen
+/// traits (the dearest evaluation: thirteen factors a number), a kind whose relation is least
+/// inside the size's window, so the reach would search the size at each of its 8,192 corners, is
+/// refused `reach_too_dear` having done [`crate::draw::MAX_REACH_WORK`] evaluations (and at most
+/// one corner's more), in under 2 ms.
+///
+/// Measured on the development laptop (2026-11-28, quiet; the tests' own build and `--release`
+/// alike, the crate being built at opt-level 2 in both), `EXEMPLARIA_SHOW_REACH=1`: at the
+/// ceiling (1,025 evaluations) 0.84 to 0.99 ms in six runs, about 0.9 µs an evaluation; 1,024 of
+/// the relation's own evaluations, by difference, 0.3 to 1.7 ms (two runs of 30 ms each, so
+/// noisy); the same kind without a ceiling 0.63 to 0.70 s; the dearest box creature accepted
+/// (every number ranged, spread and given its own exponent, every trait varied) 190 evaluations
+/// in 0.15 to 0.17 ms. Not measured under load.
+#[test]
+#[allow(clippy::disallowed_methods, reason = "a speed budget measures wall-clock time; nothing drawn reads it")]
+fn the_reach_at_its_ceiling_is_cheap() {
+    const MS: u64 = 2;
+    let r = many(r#", "numbers": {"outer": {"share": 1.0, "exponent": 2.0, "own": "x"}, "inner": {"share": 2.0, "own": "x"}}"#);
+    let start = std::time::Instant::now();
+    let e = r.reach_within(crate::draw::MAX_REACH_WORK).unwrap_err();
+    let took = start.elapsed();
+    let w = e.work.as_ref().unwrap_or_else(|| panic!("{e}"));
+    assert!(e.code == "reach_too_dear" && w.what == "evaluations" && w.done > w.ceiling && w.done <= w.ceiling + 4_098, "{e}");
+    if std::env::var_os("EXEMPLARIA_SHOW_REACH").is_some() {
+        let start = std::time::Instant::now();
+        let all = r.reach_within(u64::MAX).map(|x| x.1).map_err(|e| e.message);
+        let whole = start.elapsed();
+        let d = resolve(&dearest(), None).unwrap();
+        let start = std::time::Instant::now();
+        let (_, dear) = d.reach_within(u64::MAX).unwrap();
+        let box_took = start.elapsed();
+        // (The numbers' 32,768 corners first, then 1,024 of the relation's evaluations.)
+        let time = |c: u64| {
+            let s = std::time::Instant::now();
+            let _ = r.reach_within(c);
+            s.elapsed()
+        };
+        let relation = time(32_768 + 1_024).saturating_sub(time(32_768));
+        panic!("at the ceiling: {} evaluations in {took:?}; 1,024 of the relation's evaluations: {relation:?}; the whole reach without a ceiling: {all:?} in {whole:?}; the dearest accepted box creature: {dear} evaluations in {box_took:?}", w.done);
+    }
+    assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(MS)), "{} evaluations in {took:?}", w.done);
+}
+
+/// A relation past its corners' ceiling is refused by that name before any corner is visited:
+/// on the plan of thirteen traits, a kind with no spread of its own has 2^13 corners (checked
+/// on its merits), and one with a spread on each number 2^15 (refused).
+#[test]
+fn a_relation_past_its_corners_is_refused_by_name() {
+    many("").reach_within(u64::MAX).unwrap_or_else(|e| panic!("2^13 corners: {e}"));
+    let e = many(r#", "numbers": {"outer": {"share": 1.0, "spread": 0.01, "own": "x"}, "inner": {"share": 0.5, "spread": 0.01, "own": "x"}}"#).reach_within(u64::MAX).unwrap_err();
+    let w = e.work.as_ref().unwrap_or_else(|| panic!("{e}"));
+    assert_eq!((e.code, w.what, w.done, w.ceiling), ("reach_too_dear", "corners", 1 << 15, crate::draw::MAX_RELATION_CORNERS as u64), "{e}");
+    let e = resolve_among(&many(r#", "numbers": {"outer": {"share": 1.0, "spread": 0.01, "own": "x"}, "inner": {"share": 0.5, "spread": 0.01, "own": "x"}}"#).kind, None, &[&MANY]).unwrap_err();
+    assert_eq!(e.code, "reach_too_dear", "resolved: {e}");
 }
 
 /// A random kind of the box creature, weighted to the relations' hard cases (the review's

@@ -11,7 +11,8 @@ pub struct Error {
     /// `out_of_range`, `bad_name`, `no_source`, `two_sources`, `unknown_plan`, `unknown_name`,
     /// `too_many`, `base_not_found`, `base_too_deep`, `base_cycle`, `base_other_plan`,
     /// `role_unresolved`, `unknown_kind`, `not_built`, `outside_plan` (a draw of the kind could
-    /// leave what its plan can write: [`Error::reach`] says how far).
+    /// leave what its plan can write: [`Error::reach`] says how far), `reach_too_dear` (checking
+    /// that would cost more than its ceiling: [`Error::work`] says how much).
     pub code: &'static str,
     /// Where in the kind file (`numbers.leg_length.share`); empty for the whole file.
     pub path: String,
@@ -23,6 +24,17 @@ pub struct Error {
     pub reach: Option<Box<Reach>>,
     /// For `outside_plan` by a relation between numbers: which, and the worst values.
     pub relation: Option<Box<Broken>>,
+    /// For `reach_too_dear`: what was counted, how much, and its ceiling.
+    pub work: Option<Box<Work>>,
+}
+
+/// The work a check came to, past its ceiling.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Work {
+    /// `corners` (of one relation) or `evaluations` (of the relations' terms at a size).
+    pub what: &'static str,
+    pub done: u64,
+    pub ceiling: u64,
 }
 
 /// A relation of a plan's numbers ([`crate::plan::RelationDef`]) a kind's seeds could break.
@@ -59,7 +71,12 @@ pub struct Reach {
 
 impl Error {
     pub fn new(code: &'static str, path: impl Into<String>, message: impl Into<String>) -> Error {
-        Error { code, path: path.into(), message: message.into(), near: Vec::new(), reach: None, relation: None }
+        Error { code, path: path.into(), message: message.into(), near: Vec::new(), reach: None, relation: None, work: None }
+    }
+
+    pub fn with_work(mut self, what: &'static str, done: u64, ceiling: u64) -> Error {
+        self.work = Some(Box::new(Work { what, done, ceiling }));
+        self
     }
 
     pub fn with_relation(mut self, broken: Broken) -> Error {
@@ -94,6 +111,11 @@ impl Error {
             o.push(("worst", Json::from(b.sum)));
             o.push(("worst_bound", Json::from(b.bound)));
             o.push(("least", Json::from(b.margin)));
+        }
+        if let Some(w) = &self.work {
+            o.push(("work_of", Json::from(w.what)));
+            o.push(("work", Json::from(w.done as f64)));
+            o.push(("max_work", Json::from(w.ceiling as f64)));
         }
         Json::obj(o)
     }

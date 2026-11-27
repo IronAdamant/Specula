@@ -573,6 +573,31 @@ things, and its module's notes say which:
 Neither puts a degree and a metre in one relation (`a_plans_relations_are_sound_and_can_always_be_kept`
 holds a relation's terms to one unit).
 
+**What the reach may cost, and why a plan keeps its relations few.** The reach can run on the
+engine thread: a gallery applied to a kind file validates the file there (taste calls are
+answered on the engine thread; the exemplar tools and `project_write` validate on the caller's
+thread, and a build expands a kind on the model library's worker). So its work has a ceiling,
+counted as it is done, and a kind past it is refused `reach_too_dear` with what was counted, how
+much and the ceiling (`work_of`, `work`, `max_work`):
+
+- **Evaluations**, at most `MAX_REACH_WORK` (1,024) for the whole kind: one is a relation's terms
+  at one size, or one corner of a number's windows. Measured on the development laptop, about
+  0.9 µs each with thirteen traits a number, so the reach at its ceiling takes about 1 ms
+  (`the_reach_at_its_ceiling_is_cheap` holds it under 2 ms). The box creature's dearest kind
+  (every number spread, ranged and given its own exponent, every trait varied) takes 190.
+- **Corners of one relation**, at most `MAX_RELATION_CORNERS` (2^14), refused before any is
+  visited: `2^(traits + own residuals + ranged ones)`, each choice of how the ranged terms enter
+  times every corner of the residuals. `a_plans_relations_are_sound_and_can_always_be_kept` holds
+  a plan's relations under it with every residual ranged.
+
+A relation's work grows as its corners × its pieces × its range choices: every corner where its
+numbers follow the size by unequal exponents and the sum is least inside the size's window costs
+a search of the size (about thirty to a hundred evaluations), where one least at an end costs
+two. Each trait a relation's numbers follow doubles its corners, and each number with a spread
+of its own doubles them again, and with a range again. So a plan's author keeps relations few
+and their traits few, and a plan whose kinds would come near the ceiling has its dearest kind
+measured and the figure written in its notes.
+
 **Spreads, and what `source` and `own` mean for them.** A spread is a coefficient of variation of
 the number it moves (0.05: five in a hundred), and `source` or `own` says where *that spread* came
 from as well as the mean: a source's printed standard deviation over its mean is a `source`; a

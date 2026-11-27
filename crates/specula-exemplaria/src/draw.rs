@@ -44,8 +44,19 @@ use specula_core::rng::Rng;
 pub const CLIP_SPREADS: f64 = 2.5;
 /// The largest seed a specimen is written with: the largest integer a JSON number holds exactly.
 pub const MAX_SEED: u64 = (1 << 53) - 1;
-/// The most corners the reach visits for one relation (a plan's relations are held to it by a test).
+/// The most corners the reach visits for one relation: each choice of how its ranged terms enter
+/// times every corner of its residuals' windows (`2^(traits + own residuals + ranged ones)`). A
+/// kind past it is refused `reach_too_dear` before any is visited; a plan's relations are held
+/// by a test to stay under it with every residual ranged.
 pub const MAX_RELATION_CORNERS: usize = 1 << 14;
+/// The most work the reach does for one kind, in evaluations: a relation's terms at one size (at
+/// most three terms, a test holds it), or one corner of a number's windows (they cost about the
+/// same, under a microsecond each here). Past it the kind is refused `reach_too_dear`, counted
+/// as the work is done. The work of a relation is at most its corners × (4,096 pieces + 2)
+/// evaluations, so this, not the corners' ceiling, is what bounds it. The reach can run on
+/// the engine thread (a gallery applied to a kind file validates it there), so it is set from a
+/// measurement to keep a kind at the ceiling under 2 ms (`the_reach_at_its_ceiling_is_cheap`).
+pub const MAX_REACH_WORK: u64 = 1 << 10;
 
 /// One drawn (or mean) number of a specimen, rounded as it is written.
 #[derive(Clone, Debug, PartialEq)]
@@ -390,8 +401,15 @@ impl Resolved {
 
     /// The least and most every drawn number can be over all seeds (the size first, then the
     /// plan's numbers), or why the kind is refused: a draw could leave what the plan can write,
-    /// or break one of its relations. See the module's notes.
+    /// or break one of its relations, or the check would cost more than [`MAX_REACH_WORK`]
+    /// (`reach_too_dear`). See the module's notes.
     pub fn reach(&self) -> Result<Vec<Bound>, Error> {
+        self.reach_within(MAX_REACH_WORK).map(|(b, _)| b)
+    }
+
+    /// [`Resolved::reach`] under a ceiling of `max_work` evaluations of the relations, and the
+    /// evaluations it made.
+    pub(crate) fn reach_within(&self, max_work: u64) -> Result<(Vec<Bound>, u64), Error> {
         let plan = self.plan;
         let def = plan.size();
         let law = self.size_law();
@@ -427,6 +445,9 @@ impl Resolved {
         let sizes = [law.at(law.z[0], def.unit), law.at(law.z[1], def.unit)];
         let mut out = vec![Bound { name: def.name, unit: def.unit, mean: round(law.mean, def.unit), lo: sizes[0], hi: sizes[1] }];
         let laws: Vec<NumberLaw> = plan.numbers().iter().map(|n| self.number_law(n, law.mean)).collect();
+        // The work so far, in evaluations: a corner of a number's windows, or a relation's terms
+        // at one size (each a few powers and products: they cost about the same).
+        let mut work = 0u64;
         for (n, l) in plan.numbers().iter().zip(&laws) {
             if !inside(l.at_mean, n.range) {
                 return Err(refuse(&l.at_mean_path, n.name, l.at_mean, n.range, n.unit, format!("its value at the mean size ({})", l.at_mean_whose)));
@@ -449,7 +470,7 @@ impl Resolved {
                     }
                 }
             }
-            let x = self.extremes(n, l, &law, sizes)?;
+            let x = self.extremes(n, l, &law, sizes, &mut work, max_work)?;
             if x.lo < n.range[0] {
                 let (path, _, whose) = x.lo_factors.iter().min_by(|a, b| a.1.total_cmp(&b.1)).cloned().expect("the size's factor");
                 return Err(refuse(&path, n.name, x.lo, n.range, n.unit, format!("every residual at the end of its window; most of it from {path} ({whose}); narrow it, or give the number a measured range")));
@@ -461,21 +482,36 @@ impl Resolved {
             out.push(Bound { name: n.name, unit: n.unit, mean: round(l.at_mean, n.unit), lo: x.lo, hi: x.hi });
         }
         for rel in plan.relations() {
-            self.relation_holds(rel, &laws, &law, sizes)?;
+            self.relation_holds(rel, &laws, &law, sizes, &mut work, max_work)?;
         }
-        Ok(out)
+        Ok((out, work))
     }
 
     /// A number's least and most over every corner of its windows (the size's two ends, each
     /// trait that moves it at ±2.5 spreads, its own residual at the two ends of its window at
     /// that corner's base), by the draw's own functions, before rounding and before the backstop.
-    fn extremes(&self, n: &NumberDef, l: &NumberLaw, law: &SizeLaw, sizes: [f64; 2]) -> Result<Extremes, Error> {
+    /// The refusal of a kind whose reach would cost more than its ceiling, checking `what_for`.
+    fn too_dear(&self, law: &SizeLaw, what_for: &str, what: &'static str, done: u64, ceiling: u64) -> Error {
+        Error::new(
+            "reach_too_dear",
+            law.spread_path.as_str(),
+            format!("checking {what_for} of the plan {} for this kind would take more than {ceiling} {what} (it came to {done}): give fewer of its numbers a spread or a measured range of their own", self.plan.name()),
+        )
+        .with_work(what, done, ceiling)
+    }
+
+    /// (Each corner it visits is one evaluation of the reach's work, counted into `work`.)
+    fn extremes(&self, n: &NumberDef, l: &NumberLaw, law: &SizeLaw, sizes: [f64; 2], work: &mut u64, max_work: u64) -> Result<Extremes, Error> {
         let mut x = Extremes { lo: f64::INFINITY, hi: f64::NEG_INFINITY, lo_factors: Vec::new(), hi_factors: Vec::new() };
         let size_path = |size: f64| match &l.exponent_path {
             Some(p) => (p.clone(), format!("the kind's exponent {} over sizes {}..{}", l.exponent, sizes[0], sizes[1]), size),
             None => (law.spread_path.clone(), format!("the size's spread (sizes {}..{}) through the exponent {}", sizes[0], sizes[1], l.exponent), size),
         };
         for c in corners(1 + l.traits.len()) {
+            *work += 1;
+            if *work > max_work {
+                return Err(self.too_dear(law, &format!("the number {}", n.name), "evaluations", *work, max_work));
+            }
             let size = sizes[c & 1];
             let r: Vec<f64> = l.traits.iter().enumerate().map(|(i, (_, _, s))| trait_residual(if c >> (i + 1) & 1 == 1 { CLIP_SPREADS } else { -CLIP_SPREADS }, *s)).collect();
             let trait_r = |t: &str| l.traits.iter().position(|x| x.0 == t).map_or(0.0, |i| r[i]);
@@ -548,7 +584,13 @@ impl Resolved {
     ///
     /// A refusal names a body a seed can draw: the size (on its step) and the residuals at which
     /// the sum was least, its numbers there, and their sum ([`Broken`]).
-    fn relation_holds(&self, rel: &RelationDef, laws: &[NumberLaw], law: &SizeLaw, sizes: [f64; 2]) -> Result<(), Error> {
+    ///
+    /// **Its work is bounded as it is done**: the corners it would visit (each choice of how the
+    /// ranged terms enter, times the corners of the residuals) are refused past
+    /// [`MAX_RELATION_CORNERS`] before any is visited, and every evaluation of the relation's
+    /// terms at a size is counted into `work`, refused past `max_work` at the end of the corner
+    /// that passed it (a corner makes at most [`MAX_PIECES`] + 2 evaluations).
+    fn relation_holds(&self, rel: &RelationDef, laws: &[NumberLaw], law: &SizeLaw, sizes: [f64; 2], work: &mut u64, max_work: u64) -> Result<(), Error> {
         let plan = self.plan;
         let terms: Vec<(usize, f64)> = rel.terms.iter().map(|(name, c)| (plan.numbers().iter().position(|n| n.name == *name).expect("a relation names the plan's numbers (a test holds it)"), *c)).collect();
         let mut traits: Vec<&'static str> = Vec::new();
@@ -562,6 +604,11 @@ impl Resolved {
         let own: Vec<usize> = terms.iter().enumerate().filter(|(_, (i, _))| laws[*i].own_spread() > 0.0).map(|(k, _)| k).collect();
         let ranged: Vec<usize> = own.iter().copied().filter(|k| laws[terms[*k].0].range.is_some()).collect();
         let spreads: Vec<f64> = traits.iter().map(|t| self.trait_spread(t)).collect();
+        let dear = |what: &'static str, done: u64, ceiling: u64| self.too_dear(law, &format!("its relation {}", rel.name), what, done, ceiling);
+        let bits = traits.len() + own.len() + ranged.len();
+        if bits > MAX_RELATION_CORNERS.trailing_zeros() as usize {
+            return Err(dear("corners", 1u64.checked_shl(bits as u32).unwrap_or(u64::MAX), MAX_RELATION_CORNERS as u64));
+        }
         let allowance: f64 = terms.iter().map(|(i, c)| c.abs() * plan.numbers()[*i].unit.step() / 2.0).sum();
         let trait_corner = |c: usize| -> Vec<f64> { (0..traits.len()).map(|i| trait_residual(if c >> i & 1 == 1 { CLIP_SPREADS } else { -CLIP_SPREADS }, spreads[i])).collect() };
         // Each term (its coefficient times its number) at `size`, at corner `c` of the residuals
@@ -606,8 +653,16 @@ impl Resolved {
             let mut least: Option<(f64, f64, usize)> = None;
             for c in corners(traits.len() + own.len()) {
                 let r = trait_corner(c);
-                let f = |size: f64| at(choice, c, &r, size);
+                let made = std::cell::Cell::new(0u64);
+                let f = |size: f64| {
+                    made.set(made.get() + 1);
+                    at(choice, c, &r, size)
+                };
                 let (worst, size) = corner_least(&f, &exponents, sizes, rel.margin, allowance);
+                *work += made.get();
+                if *work > max_work {
+                    return Err(dear("evaluations", *work, max_work));
+                }
                 if least.is_none_or(|(x, _, _)| worst < x || worst.is_nan()) {
                     least = Some((worst, size, c));
                 }

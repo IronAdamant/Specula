@@ -730,7 +730,8 @@ fn a_plans_relations_are_sound_and_can_always_be_kept() {
             assert!(rel.margin >= 2.0 * unit.step(), "{}: {}'s margin {} is under two steps", p.name(), rel.name, rel.margin);
             assert!(rel.terms.iter().any(|(n, _)| *n == rel.yields), "{}: {} yields {}, not one of its terms", p.name(), rel.name, rel.yields);
             let traits: std::collections::BTreeSet<&str> = rel.terms.iter().flat_map(|(n, _)| def(n).traits.iter().map(|t| t.0)).collect();
-            assert!(1usize << (traits.len() + rel.terms.len()) <= crate::draw::MAX_RELATION_CORNERS, "{}: {} has too many corners", p.name(), rel.name);
+            // (Every residual ranged: each term an own residual and a choice of how it enters.)
+            assert!(1usize << (traits.len() + 2 * rel.terms.len()) <= crate::draw::MAX_RELATION_CORNERS, "{}: {} has too many corners", p.name(), rel.name);
             // Kept inside the ranges.
             let (_, cy) = rel.terms.iter().find(|(n, _)| *n == rel.yields).unwrap();
             let others: f64 = rel.terms.iter().filter(|(n, _)| *n != rel.yields).map(|(n, c)| c * if *c > 0.0 { def(n).range[0] } else { def(n).range[1] }).sum();
