@@ -254,6 +254,28 @@ fn cup_anchors(a: &Args) -> Vec<Anchor> {
     ]
 }
 
+/// The sound bow's share of the bell's S (its convex arc's radius, of the two arcs' sum): the
+/// concave flare above it is the longer, as a cast bell's is.
+const BELL_BOW: f64 = 0.3;
+/// Two arcs from `a` up to `b`, upright at both, the first turning toward `b`'s side and the
+/// second back, as [`s_join`]'s, but of radii `f` and `1 − f` of their sum: both turn by the same
+/// angle `θ`, `tan(θ/2) = step / rise`, and their radii sum to `rise / sin θ`. The same refusals
+/// as [`s_join`]'s (the rise from one to fifty times the step).
+fn s_share(a: Pt, b: Pt, f: f64) -> Result<[El; 2], (f64, f64)> {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    if !(dy >= dx.abs() && dy <= 50.0 * dx.abs()) {
+        return Err((dy, dx.abs()));
+    }
+    let th = 2.0 * atan2(dx.abs(), dy);
+    let (st, ct) = sin_cos(th);
+    let total = dy / st;
+    let (r1, r2) = (f * total, (1.0 - f) * total);
+    let s = if dx > 0.0 { 1.0 } else { -1.0 };
+    let c1 = [a[0] + s * r1, a[1]];
+    let m = [c1[0] - s * r1 * ct, a[1] + r1 * st];
+    let c2 = [b[0] - s * r2, b[1]];
+    Ok([El::Arc { c: c1, r: r1, a, b: m, ccw: s < 0.0 }, El::Arc { c: c2, r: r2, a: m, b, ccw: s > 0.0 }])
+}
 const P_BELL: &[Param] = &[
     len("radius", "the mouth's radius, at the lip", 0.5),
     ratio("height_ratio", "the height, as a share of the mouth's radius", 1.5, 0.6, 3.0),
@@ -289,7 +311,7 @@ fn bell_parts(a: &Args) -> Result<Bell, Refusal> {
     if t >= s {
         return Err(refuse("wall_past_the_shoulder", "the wall must be thinner than the shoulder's radius", &nums));
     }
-    let flare = s_join([r, 0.0], [rw, yw]).map_err(|x| steep("flare_too_shallow", "the flare from the lip up to the waist (a larger height_ratio or flare_ratio, or a larger waist_ratio, where it is too shallow)", x, &nums))?;
+    let flare = s_share([r, 0.0], [rw, yw], BELL_BOW).map_err(|x| steep("flare_too_shallow", "the flare from the lip up to the waist (a larger height_ratio or flare_ratio, or a larger waist_ratio, where it is too shallow)", x, &nums))?;
     // The sound bow's arc turns toward the inside: the wall must be thinner than its radius.
     if let El::Arc { r: bow, .. } = flare[0] {
         if t >= bow {
@@ -526,7 +548,7 @@ fn vase_anchors(a: &Args) -> Vec<Anchor> {
 
 const P_BALUSTER: &[Param] = &[
     len("radius", "the plinth's and the cap's radius", 0.06),
-    ratio("height_ratio", "the height, as a share of the plinth's radius", 13.0, 6.0, 20.0),
+    ratio("height_ratio", "the height, as a share of the plinth's radius", 9.0, 6.0, 20.0),
     ratio("bulb_ratio", "the belly's radius (the vase low down), as a share of the plinth's", 0.95, 0.5, 1.0),
     ratio("neck_ratio", "the neck's radius (the narrowest, under the collar), as a share of the belly's", 0.36, 0.2, 0.7),
 ];
@@ -534,7 +556,7 @@ const P_BALUSTER: &[Param] = &[
 /// narrowest (under the collar), and the abacus's foot (the cap's flat block). (The engine's own
 /// proportions, after the vase baluster of a stone balustrade: the research library holds no
 /// balusters.)
-const BALUSTER_AT: [f64; 4] = [0.07, 0.3, 0.7, 0.93];
+const BALUSTER_AT: [f64; 4] = [0.07, 0.27, 0.62, 0.93];
 /// The radii of its mouldings, as shares of the plinth's radius: the torus on the plinth, the
 /// cavetto above it, the bead of the collar.
 const BALUSTER_MOULDINGS: [f64; 3] = [0.16, 0.08, 0.1];
@@ -578,7 +600,7 @@ fn baluster_parts(a: &Args) -> Result<Baluster, Refusal> {
     let xt = rb - bt - 0.04 * rb;
     let yt = yp + bt;
     // The cavetto: a quarter round from a ledge in off the torus, up to the belly's foot.
-    let r0 = 0.62 * rbulb;
+    let r0 = 0.45 * rbulb;
     let xc = r0 + bc;
     let yc = yt + bc;
     // The collar: a fillet, a bead and a fillet over the neck's top, each a fiftieth of the height.
@@ -607,7 +629,7 @@ fn baluster_parts(a: &Args) -> Result<Baluster, Refusal> {
     ]);
     els.extend(cyma.into_iter().map(|e| (e, "cyma")));
     els.extend([(El::Line([ra, ya], [rb, ya]), "cap_under"), (El::Line([rb, ya], [rb, h]), "abacus"), (El::Line([rb, h], [0.0, h]), "top")]);
-    // (Every moulding has room at every argument: the cavetto's foot is at most 0.70 of the
+    // (Every moulding has room at every argument: the cavetto's foot is at most 0.53 of the
     // plinth's radius and the torus's back at 0.80; the collar's bead stands out to at most 0.80
     // and the abacus's ledge is at 0.84. Each S rises more than its step across everywhere in
     // the ranges, and one gentler than forty to one goes straight up after: no refusal.)
@@ -1196,5 +1218,23 @@ mod tests {
             assert!(dist(start(s[0]), a) == 0.0 && dist(s[1].end(), z) == 0.0);
             assert!(heading(s[0], false)[1] == 1.0 && heading(s[1], true)[1] == 1.0, "upright at both ends");
         }
+        // The bell's S of unequal arcs: smooth, upright at both ends, its radii in the share
+        // asked, and the same as the equal S at a half.
+        for (a, z) in [([1.0, 0.0], [0.4, 2.0]), ([0.4, 0.0], [1.0, 0.6]), ([0.5, 0.0], [0.275, 0.525])] {
+            for f in [0.1, 0.3, 0.5, 0.9] {
+                let s = s_share(a, z, f).unwrap();
+                joins("an S of a share", &s, &[true]);
+                assert!(dist(start(s[0]), a) == 0.0 && dist(s[1].end(), z) == 0.0);
+                assert!((heading(s[0], false)[1] - 1.0).abs() < 1e-15 && (heading(s[1], true)[1] - 1.0).abs() < 1e-15, "upright at both ends");
+                let (El::Arc { r: r1, .. }, El::Arc { r: r2, .. }) = (s[0], s[1]) else { panic!() };
+                assert!((r1 / (r1 + r2) - f).abs() < 1e-12, "{f}: {r1} {r2}");
+                if f == 0.5 {
+                    let e = s_join(a, z).unwrap();
+                    let (El::Arc { r: q, .. }, El::Arc { r: p, .. }) = (e[0], e[1]) else { panic!() };
+                    assert!((q - r1).abs() <= 1e-12 * q && (p - r2).abs() <= 1e-12 * p);
+                }
+            }
+        }
+        assert!(s_share([1.0, 0.0], [0.4, 0.5], 0.3).is_err() && s_share([1.0, 0.0], [0.99, 1.0], 0.3).is_err());
     }
 }

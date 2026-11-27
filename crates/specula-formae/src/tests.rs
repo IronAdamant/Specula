@@ -947,7 +947,7 @@ fn t8_stage_4_builds_are_pinned() {
 /// a girdle band and the bead is a form of its own. Moved in round 3: the bell's flare is an S
 /// from an upright lip, the baluster is moulded, the cup's defaults are a drinking cup and the
 /// leaf rounds into its stalk.)
-const PINNED_4: u64 = 0xcdae_654a_c9bd_1b63;
+const PINNED_4: u64 = 0xfdc4_a4c6_e7c2_188e;
 
 // ---------------------------------------------------------------- particular checks
 

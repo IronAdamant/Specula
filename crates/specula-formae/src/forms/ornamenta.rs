@@ -541,7 +541,7 @@ fn leaf_parts(a: &Args) -> Result<Leaf, Refusal> {
     // the stalk's side, `rf` out from it (tangent to the side), and crosses the base's circle at
     // LEAF_ROUND_CROSS degrees: tangent there too, the two arcs would make an inflection whose
     // chords at a coarse detail lie along one line (a triangle of 2.5e-12 m2 in an extrusion's
-    // cap at detail 24, under the modeller's floor). Its radius is a twelfth of the blade's half
+    // cap at detail 24, under the modeller's floor). Its radius is an eighth of the blade's half
     // width, halved while its foot on the stalk falls below the stalk's upper half.
     let cb = [w - ra, y0 + yw];
     let cc = cos(LEAF_ROUND_CROSS * PI / 180.0);
@@ -552,7 +552,7 @@ fn leaf_parts(a: &Args) -> Result<Leaf, Refusal> {
         let q = d * d - dx * dx;
         (q > 0.0).then(|| cb[1] - q.sqrt())
     };
-    let mut rf = w / 12.0;
+    let mut rf = w / 8.0;
     let mut yf = foot_of(rf);
     for _ in 0..40 {
         if yf.is_some_and(|y| y >= 0.5 * st) {

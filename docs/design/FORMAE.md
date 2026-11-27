@@ -198,15 +198,16 @@ are, since recipes name them.
   (its arcs would turn past a quarter) or over fifty times it is refused with its numbers. The
   bell (remade in round 3, after the second picture check read its old lip as "a flat
   plate-like flange, a top hat or a plunger knob"): from the mouth, upright at the lip, an S of
-  two arcs up to the waist, the lower one convex (the sound bow, rounding in from the lip) and the
-  upper one concave (the flare curving in to the waist), a short straight waist, a quarter round
+  two arcs up to the waist, the lower one convex (the sound bow, rounding in from the lip, three
+  tenths of the two radii) and the upper one concave and longer (the flare curving in to the
+  waist; both turn by one angle, so the join is smooth), a short straight waist, a quarter round
   into a flat crown; the inside is the outside moved a wall across all the way down, and the
   mouth is a ring a wall wide. Its wall is one thickness: a sound bow thicker than the waist, as
   a cast bell has, is not built. Its error does not fall a steady four times when the detail
   doubles (its volume is the outside's less the inside's, whose chords' errors cancel in part);
   what holds across its range, and is tested, is that each measure is within the bound the build
   states. The baluster (remade in round 3, after "a thin spindle with plain disc ends"): a plinth
-  with a torus (a quarter round) and a cavetto off it, a full belly at three tenths of the height
+  with a torus (a quarter round) and a cavetto off it, a full belly at 0.27 of the height
   (95% of the plinth's radius by default), an S in along a long neck, a collar of a fillet, a bead
   and a fillet, a cyma out to the abacus; its mouldings are the library's own profiles turned. The
   cup's defaults are a drinking cup, a beaker with no handle (6.4 cm across at the foot, 8 at the
@@ -221,8 +222,10 @@ are, since recipes name them.
   the wire's radius, exact on both sides while the wire is thinner than the bend, which the form
   requires).
 - **The leaf** (round 3): where the blade meets the stalk a concave round, tangent to the
-  stalk's side and to the blade's base, takes the place of the blunt cusp the picture check saw;
-  its radius is a twelfth of the blade's half width, halved until its foot lies in the stalk's
+  stalk's side and crossing the blade's base at 25 degrees, takes the place of the blunt cusp the
+  picture check saw (tangent at both ends, the two arcs made an inflection whose chords lay on one
+  line at a coarse detail, and an extrusion's cap a triangle under the modeller's floor);
+  its radius is an eighth of the blade's half width, halved until its foot lies in the stalk's
   upper half (`stalk_too_short_for_its_round` where no round fits).
 
 **Facets** (review 2 of stage 4, finding 1; round 3). A form is **faceted** when its flat faces
@@ -291,6 +294,19 @@ from its value and is not caught.
   edges) holds; left for it.
 - The bell's sound bow is not thicker than its waist; the bell has no crown loop to hang it by.
 - The cup has no handle.
+
+**What the second picture check saw that is not in the forms** (round 3, measured):
+- *A faint horizontal line* on the mushroom's stem and the bottle's body. The mushroom's stem is one
+  band of the mesh from the ground to the cap (rings at y = 0 and 0.06 only; 1,790 triangles, `2V − 4`
+  of its 897 points): no edge is there. The line is the rasterised silhouette: the camera looks down
+  on the stem, so its sides lean in by about a pixel over its height and step one pixel at one row,
+  both sides at the same row (4x crops of two different sheets). On the bottle, the line near 60% is
+  where the straight body meets the shoulder's arc: the profile turns there smoothly but its
+  curvature steps, which clay's raking light shows as a change of tone. Neither is mended.
+- *A diagonal light and dark band* in clay on rounded forms: clay has no shadows (`form.glsl`); it is
+  the terminator of clay's raking key from the upper left, weak fill from the right. The library's
+  sphere shows the same band (`sphere_ref`), and the lit colour pass of the same forms has none. The
+  stage is as FORM.md designs it ("clay's key rakes"); nothing in the engine was changed.
 
 **The raise's cap cutter** (`cap.rs`; review 1 of stage 4, findings 1, 2 and 7). A quarter of
 the trusses the figure accepted could not be raised (`not_well_made`, the cap not cut), at every
@@ -1014,7 +1030,7 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 
 | Form | What it is | Parameters |
 |---|---|---|
-| `baluster` | a turned baluster (a balustrade's post, a table's leg): a plinth with a torus and a cavetto, a full belly low down, a long neck, a collar bead, a cyma out to the cap's block | `radius` m 0.06 (0.0001..10000), `height_ratio` ratio 13 (6..20), `bulb_ratio` ratio 0.95 (0.5..1), `neck_ratio` ratio 0.36 (0.2..0.7) |
+| `baluster` | a turned baluster (a balustrade's post, a table's leg): a plinth with a torus and a cavetto, a full belly low down, a long neck, a collar bead, a cyma out to the cap's block | `radius` m 0.06 (0.0001..10000), `height_ratio` ratio 9 (6..20), `bulb_ratio` ratio 0.95 (0.5..1), `neck_ratio` ratio 0.36 (0.2..0.7) |
 | `mushroom` | a mushroom: a stem under a spherical cap | `stem` m 0.02 (0.0001..10000), `stem_height` m 0.06 (0.0001..10000), `cap` m 0.06 (0.0001..10000), `cap_height` m 0.04 (0.0001..10000) |
 
 #### solid forms, crystal
