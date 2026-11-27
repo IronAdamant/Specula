@@ -140,19 +140,23 @@ so an agent can see exactly what it would build and take the recipe itself if it
 - **Every residual is drawn from a normal truncated to its window** (review 2 of S0): ±2.5 spreads,
   narrowed for the size to the kind's measured range, and for a number's own residual to where its value
   stays inside the number's measured range given what the size and traits gave it. One uniform from the
-  stream becomes one residual by the inverse of the distribution (`normalis`: Φ by its series, Φ⁻¹ by
-  Acklam's start and two of Halley's steps, `cdf(quantile(p))` within 5e-16 of `p`), so nothing piles at
+  stream becomes one residual by the inverse of the distribution (`normalis`: Φ by its series, and in
+  its tails past 3 by the tail's continued fraction; Φ⁻¹ by Acklam's start and two of Halley's steps,
+  `cdf(quantile(p))` within 5e-16 of `p` where the draws use it), so nothing piles at
   a window's end (a clip put 12 per cent of the design's wolves at exactly one of its two measured
   heights) and no draw is rejected and drawn again. A specimen is still always a body that was measured or
   lies between measured ones. What this costs: a normal truncated at ±2.5 has 0.955 of the spread it was
   given (the 1.2 per cent of a population beyond 2.5 spreads is left out), and one cut by a narrow
-  measured range less still (the design's wolf: about 0.023 m, from 0.03); `exemplar_get` shows the mean, the
+  measured range less still (the design's wolf of A.1 prints no spread, so a quarter of its range,
+  0.023 m, is taken as one, and its window is -2.15 to +1.85 of those: it draws at 0.0204 m, measured
+  over 200,000 seeds; a wolf with a printed spread of 0.03 m draws at 0.023 m); `exemplar_get` shows the mean, the
   spread, the range and the window each size is drawn in.
 - **People are the corpus's**: a person's specimen is a `Body` with stature, build, age and traits drawn
   as CORPUS.md says a crowd is made (each trait about zero), and refused traits redrawn by a counted
   rule (at most 8 tries, then the mean), so a seed always gives a body.
-- **Deterministic**: draws through `specula_core::rng::Rng` and `dmath` (`ln_f64`, `cos_f64`, square
-  roots: Box–Muller in `f64`), each drawn number rounded to 0.1 mm (or 0.01 degree) before it is written,
+- **Deterministic**: one uniform from each number's `specula_core::rng::Rng` stream, turned into a
+  residual by the truncated normal's inverse (`normalis`, above: IEEE arithmetic and square roots,
+  `dmath`'s `exp_f64` and `ln_f64`, a fixed number of steps), each drawn number rounded to 0.1 mm (or 0.01 degree) before it is written,
   so the recipe's text is the same bytes everywhere. A test holds a table of kinds and seeds to recipe
   hashes, and CI's Linux job runs it, so the two systems are compared on every push.
 - **The text says what was drawn**: the written recipe's `description` carries the kind, the seed and
@@ -173,7 +177,7 @@ file and must be asked for (section C); it is never written from memory.
 | quadruped: **sprawling** | lizards, crocodiles, tortoises, salamanders | the quadruped's with the limbs out to the side | limb angles, duty, body bend | C6 (thin: lizard proportions and croc high-walk mostly unverified) |
 | **winged quadruped** | dragons (four legs and two wings), and griffins | the quadruped's plus a wing pair from the chest: humerus, forearm, metacarpals, digits II to V, a membrane between them | the quadruped's; wing digit shares, span and area from mass | C4 (bat digits against forearm, Castillo-Figueroa 2020; pterosaur wing-finger shares; wing loading and aspect ratio against mass; the largest flyers' mass against span), C10. **Six limbs are no animal's**: where the wing's root sits is the engine's own (`own`) |
 | winged: **wyvern, bat** | two legs and wings that are the forelimbs | the bat's or the pterosaur's | as above | C4 (bats are measured; pterosaurs mostly as shares) |
-| **bird** | birds of every flight style; flightless | pelvis, synsacrum, a long neck chain (8 to 14), head, beak; wing humerus, ulna, carpometacarpus, primaries as one chain; legs femur, tibiotarsus, tarsometatarsus, toes; tail | wing shares by flight style, span and area, wingbeat from mass | C3 (Wang et al. 2011 wing bones by style; Alerstam 2007 span and area; Pennycuick wingbeat; stroke phases; folding, pigeon only; walking against hopping). **Not delivered**: leg bones, neck vertebrae, downstroke fraction (C) |
+| **bird** | birds of every flight style; flightless | pelvis, synsacrum, a long neck chain (10 to 26 vertebrae: research R7-2C, Q13), head, beak; wing humerus, ulna, carpometacarpus, primaries as one chain; legs femur, tibiotarsus, tarsometatarsus, toes; tail | wing shares by flight style, span and area, wingbeat from mass | C3 (Wang et al. 2011 wing bones by style; Alerstam 2007 span and area; Pennycuick wingbeat; stroke phases; folding, pigeon only; walking against hopping). Neck: R7-2C Q13 (cervical counts 10 to 26, parrots to swans; means by group from 11 to 16, 103 taxa). **Not delivered**: leg bones, a count for each species (B2's table S2 was not read), downstroke fraction (C) |
 | **chain** | snakes, eels, fish; and as a part of other plans: tails, necks, tentacles | a chain of 8 to 32 bones with a section along it; fish add fins as their own small chains | length, girth along the length, the body wave (wavelength, amplitude envelope, frequency), fin places | C5 (Di Santo 2021 across 44 species; the eel; snakes' four gaits, Jayne 2020, Hu 2009). **Not delivered**: girth along a snake, fin places as shares of length, per-species wave numbers (Di Santo's data set, CC0, not downloaded) |
 | **arthropod** | insects (six legs), spiders (eight), and crabs as a variant | body in two or three parts, legs coxa, femur, tibia, tarsus (four segments) | segment shares, gait (tripod, tetrapod, wave; the spider's) | C7 (stick insect and ant models; tripod and wave gaits; a tarantula table with garbled cells); H6 (Walknet rules). **Thin**: no measured segment table with spread (C) |
 | **machine** | vehicles on wheels or tracks, walkers, arms, flyers, things that hover | rigid parts on joints: revolute, prismatic (pistons), wheel axles, track loops; no skin | wheel base and track, wheel radius, ride height, link lengths, joint ranges, cylinder lengths against angle | D1 (joint kinds, arms, legged robots, the excavator's geometry and its cylinder formula), D2 (panel gaps, fasteners: what reads as made), D3, J22 (vehicles' masses, dimensions, tyres, suspension), J5, J23 (aircraft), J28 (engine curves, for sound and speed). **Not delivered**: Ackermann geometry, track pitch and sprockets, robots' joint ranges (C) |
@@ -492,8 +496,12 @@ what relations are for, below). How a plan's author finds them:
   256 m every position keeps the 0.05 mm grid three times over, so 60 m a length for the box
   creature. A plan whose write has another limit (a joint that folds past a straight line, a
   number of rings) says so.
-- **The size's range** is where the plan's defaults (its shares, and its traits at 2.5 spreads)
-  keep every number inside its own: the size enters the body only through the numbers.
+- **The size has no range of its own** (review 3 of S0: a mouse of 3 cm whose numbers were its
+  own was refused because the box creature's size began at 0.039 m, where its *default shares*
+  put a girth at its least). The size enters the body only through the numbers, so the reach
+  refuses a kind for its size only where a number the size drives leaves that number's range,
+  and names the number (`number` in the error, the number's `reach`); the size's `range` is
+  what the arithmetic needs and no more (the box creature's: one step to 10 km).
 - **Then build at them**: a test builds the smallest body (every number at its least) and the
   largest, and checks that one step under each least is refused by name
   (`the_box_creature_builds_whole_at_its_limits`). And a test builds thousands of random accepted
@@ -513,12 +521,54 @@ coefficient's number goes down, a positive one's up), in the plan's order, so li
 yield only helps the relations after it. The reach holds every relation over every seed: a kind
 that could break one is refused, `outside_plan`, at the first of the relation's numbers the kind
 sets (else a trait it sets, else its size), with the relation's name, its numbers' worst values,
-its worst sum and its margin (`relation`, `values`, `worst`, `least` in the error; through the
-engine, the recipe error's numbers). A trait both terms follow cancels between them (a wide
-`build` moves the girth and the trunk's width together), so relations refuse what really breaks
-and accept what does not. The test `a_plans_relations_are_sound_and_can_always_be_kept` checks
+and a body of the kind's own seeds at which it is least: `at` (the size on its step, each trait's
+residual, each own residual's end of its window, `<number>.own`), `values` (its numbers there),
+`worst` (their sum, less the rounding allowance), `worst_bound` (the check's bound) and `least`
+(the margin); through the engine, the recipe error's numbers. **How the least is found**: at each
+corner of the residuals the sum is linear along each residual, so its least over them is at a
+corner; and **the size is one number**: at each corner the sum is a sum of powers of the size,
+and its least is at an end or a stationary point, found by halving the size's window until the
+sign of the sum's slope is proved on each piece (each of the slope's terms is a power of the
+size, so its least and most on a piece are at the piece's ends), each stationary point
+bracketed to a billionth of the size and bounded there term by term (`draw::least_over_size`).
+So a girth that grows faster than the trunk's width is held against the trunk of the *same*
+size. **What this costs, measured** (review 3 of S0; `tests_reach.rs`): with no measured range
+narrowing one of a relation's residuals the check is exact (to a billionth of its terms, and
+less a millionth of a millionth of them for floating point), and of 196 random kinds refused by
+a relation alone none is whole by an independent exact check (before, each term took its own
+worse end of the size: 73 of 400, by the review's check, and a dog-like kind with its girth's
+exponent at 1.05 was refused at -0.128 m when its least is +0.0146 m). Where a measured range
+narrows a residual the term enters at its range's end or unnarrowed (a bound): 2 of 104 such
+refused kinds are whole, and the test holds it under a twentieth. By the review's own generator
+and check, run again on the mended check: 2 of 400 refused kinds are whole (from 73), both with
+a ranged residual and unequal exponents. Over 500 kinds bisected onto
+the edge of acceptance, a million draws: no backstop acted and no body broke a relation (the
+review's probe, run on the mended check). A trait both terms follow cancels between them (a wide
+`build` moves the girth and the trunk's width together). The test `a_plans_relations_are_sound_and_can_always_be_kept` checks
 that the yielding number's value that keeps a relation, with every other term at the end of its
 range worst for it, lies inside the yielding number's own range: raise a least until it does.
+
+**A constraint that is not linear in the plan's numbers** (an angle against a length, a ratio,
+a product): a relation is `Σ coefficient × number ≥ margin` over numbers of one unit, and the reach
+holds a constraint exactly only in that form. A plan whose geometry needs another does one of two
+things, and its module's notes say which:
+
+- **It declares numbers in which the constraint is linear.** A worked example, the machine's arm
+  (A.3): a link of length `l` on a hinge at height `h`, tilted from upright by up to `θ`, must stay
+  above the ground: `h - l sin θ ≥ margin` is not linear in `h`, `l` and `θ`. Let the plan's number
+  be the link's reach below its hinge, `drop` (metres: `l sin θ`, with a share of the size and a
+  spread of its own), instead of the angle. The constraint is then the relation
+  `h - drop ≥ margin`, a second relation `l - drop ≥ margin` keeps the angle defined, and the
+  plan's `write` computes the angle from the two numbers, `θ = asin(drop / l)`. A kind sets the
+  drop and its spread; the angle is what follows.
+- **Or it bounds the constraint by a linear one, and says so.** Where the angle must stay a number
+  (degrees, from a measured joint range), its plan's range gives its most, `θmax`, and
+  `h - sin(θmax) l ≥ margin` (a relation with the constant coefficient `-sin θmax`) holds the
+  constraint at every angle the plan can write. It is stricter than the constraint: a kind whose
+  angle never comes near `θmax` is held as if it did, and the plan's notes say what that refuses.
+
+Neither puts a degree and a metre in one relation (`a_plans_relations_are_sound_and_can_always_be_kept`
+holds a relation's terms to one unit).
 
 **Spreads, and what `source` and `own` mean for them.** A spread is a coefficient of variation of
 the number it moves (0.05: five in a hundred), and `source` or `own` says where *that spread* came
@@ -528,8 +578,7 @@ it moves, never of a mass**: `build` moves girths, and a mass's coefficient of v
 cent is a girth's of about 7 to 10 (a mass grows as a length cubed), so typing a mass's into
 `vary.build` refuses honest kinds for a unit mistake (research R7-CHECK, part (f): lengths' CVs
 are 4 to 12 per cent). Every residual is drawn from a normal truncated to ±2.5 spreads and to the
-measured range (A.2); a size with no measured range must have its 2.5 spreads inside the plan's
-range (the plan's range is where it breaks, not an end of the kind); a number's measured range is
+measured range (A.2); a size is held only through the numbers it drives (above); a number's measured range is
 reached through its own spread, so a number with a range and no spread of its own must stay
 inside it through the size and the traits alone, or it is refused (`out_of_range`, its range).
 
@@ -602,10 +651,10 @@ after the others, its name at the end of the `use {...}` line, its arm in the di
   kind's own field (`size.shoulder_height.sd`, `vary.build.spread`, `numbers.leg_length.mean`,
   `.share`, `.exponent`, `.range`, `.spread`), with the number, the worst value and the bound
   (`reach` in the error; for a relation, `relation`; through the engine, the recipe error's
-  numbers). A relation's least is exact where every term is a product of factors each moved by
-  one residual (its sum is then linear along each residual); where a number's measured range
-  narrows it, or its terms grow by different exponents, a bound never above the least is used
-  instead, and the rounding of each number to its step is allowed for. What the catalogue prints
+  numbers). A relation's least is found over the corners of the residuals and over the size as
+  one number (its ends and its stationary points: "For the plans' lanes"); where a number's
+  measured range narrows its residual a bound never above the least is used instead, and the
+  rounding of each number to its step is allowed for. What the catalogue prints
   is rounded outward (the least down, the most up), so every written value lies inside it. The
   parser's own limits: a size's spread at most 0.4 of its mean, a spread of a trait or a number at
   most 0.36, a number's mean and any range above zero. **Two backstops**, which never act on an

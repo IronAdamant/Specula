@@ -39,8 +39,9 @@ pub struct Broken {
     /// The relation's sum at that body (after the allowance for rounding), and the least it may be.
     pub sum: f64,
     /// The check's bound on the least over every seed (after the allowance for rounding and for
-    /// floating point): under `margin`, which is why the kind is refused. Equal to `sum` but for a
-    /// billionth, except where a measured range narrows a residual (the one place it is a bound).
+    /// floating point): under `margin`, which is why the kind is refused. Never above `sum`, and
+    /// within a millionth of a millimetre of it for a body of metres, except where a measured
+    /// range narrows a residual (the one place the check is a bound).
     pub bound: f64,
     pub margin: f64,
 }
