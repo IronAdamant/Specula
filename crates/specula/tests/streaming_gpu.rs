@@ -59,8 +59,16 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
             world.spawn(s, "t").unwrap();
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(180);
-    while shared.lock().in_flight() > 0 && Instant::now() < deadline {
+    // Every wait below ends on what it waits for (the builds landed, nothing left to upload,
+    // every cell's proxy current), never on a count of frames: a count is the machine's speed
+    // (under load the HLOD loop's 600 frames gave up with 95 of 144 models covered, about ten
+    // times its usual time; it passed alone in 26 s, 2026-11-24). `HANG_BOUND` only turns a
+    // hang into a failure that says what it was waiting for: it bounds each wait from its own
+    // start, never the whole test (`HANG_BOUND`'s doc).
+    let hung = |started: Instant, what: &str| assert!(started.elapsed() < specula_core::HANG_BOUND, "still waiting for {what} after {:?}: hung?", specula_core::HANG_BOUND);
+    let started = Instant::now();
+    while shared.lock().in_flight() > 0 {
+        hung(started, "the 144 models' builds");
         let (_, changed) = shared.lock().finish(Some(Duration::from_millis(50)));
         world.refresh_model_handles(&changed, false);
     }
@@ -92,7 +100,9 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
     // Near cluster A: uploads trickle within 0.25 MB a frame (one item may exceed it alone).
     let mut first = true;
     let mut saw_coarser = false;
-    for _ in 0..400 {
+    let started = Instant::now();
+    loop {
+        hung(started, "cluster A's builds to be uploaded");
         let (kb, uploads, j) = frame(&mut stream, &mut models, &mut gpu, near_a);
         if uploads > 1.0 {
             assert!(kb <= 256.0 + 1.0, "a frame of several uploads stays within upload_mb: {kb} KB");
@@ -118,7 +128,9 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
     let j = stream.json(&gpu, &models);
     assert!(num(&j, &["resident_mb"]) <= 8.0 + 0.01, "{j}");
     // Fly to B: A's builds are evicted to make room (B alone fits the budget).
-    for _ in 0..600 {
+    let started = Instant::now();
+    loop {
+        hung(started, "cluster B's builds to be uploaded");
         let (_, uploads, j) = frame(&mut stream, &mut models, &mut gpu, near_b);
         if num(&j, &["pending_builds"]) == 0.0 && uploads == 0.0 {
             break;
@@ -134,10 +146,14 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
     assert_eq!(missing, 0, "everything near B is resident: {near}");
     // Far from both, high up: the cells' proxies cover their members in a capture.
     let far = Camera::new(Vec3::new(300.0, 400.0, -900.0), Vec3::new(300.0, 0.0, 40.0), 40.0);
-    for _ in 0..600 {
+    // Until every cell with members has a current proxy (or is held back by the memory
+    // budget), and nothing is building or waiting to upload.
+    let started = Instant::now();
+    loop {
         let (_, _, j) = frame(&mut stream, &mut models, &mut gpu, far);
         let h = j.get("hlod").unwrap();
-        if num(h, &["current"]) >= 4.0 && num(h, &["building"]) == 0.0 && num(h, &["ready_to_upload"]) == 0.0 {
+        hung(started, &format!("every cell's proxy to be current: {h}"));
+        if num(h, &["current"]) + num(&j, &["blocked_proxies"]) >= num(h, &["cells"]) && num(h, &["building"]) == 0.0 && num(h, &["ready_to_upload"]) == 0.0 {
             break;
         }
         std::thread::sleep(Duration::from_millis(2));

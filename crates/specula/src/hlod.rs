@@ -857,13 +857,13 @@ mod tests {
     fn build(lib: &SharedLibrary, recipe: &str, seed: u64) -> Arc<Built> {
         let spec = ModelSpec { recipe: recipe.into(), params: Default::default(), seed: Some(seed) };
         let r = lib.lock().resolve(&spec).unwrap();
-        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        let deadline = Instant::now() + specula_core::HANG_BOUND;
         loop {
             lib.lock().finish(Some(std::time::Duration::from_millis(20)));
             if let Some(b) = lib.lock().built(r.handle) {
                 return Arc::clone(b);
             }
-            assert!(Instant::now() < deadline, "build of {recipe} never landed");
+            assert!(Instant::now() < deadline, "build of {recipe} has not landed in {:?}: hung?", specula_core::HANG_BOUND);
         }
     }
 

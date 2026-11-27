@@ -1960,7 +1960,11 @@ mod tests {
             assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
             let mut out = Vec::new();
             for _ in 0..90 {
-                rig.ticks(1);
+                // The wall-time backstop out of reach: what this test holds is decided by work,
+                // and a busy machine had a Lex tick of the 2,000 pass its 1 s backstop (halted
+                // `tick_overrun`, not `work_limit`), or a 200 one (halted where it never is).
+                // The backstop's own halt is held by the table of halts above.
+                rig.ticks_with(1, Limits { backstop: specula_core::HANG_BOUND, ..LIMITS });
                 let run = rig.run_status("heavy");
                 out.push((run.get("tick").and_then(Json::as_u64).unwrap(), run.get("halted").and_then(|h| h.get("error")).cloned()));
             }

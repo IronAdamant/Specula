@@ -43,6 +43,9 @@ const PATTERNS: &[(&str, &str)] = &[
     (".is_dir()", "a file-system stat"),
     (".canonicalize()", "a file-system path resolution"),
     (".read_dir()", "a folder listing"),
+    // A join on the GPU's pipeline build, unbounded (a hung driver never returns): tests only
+    // (review 1 of m6-clock-tests). The engine thread asks for pipelines and draws without them.
+    ("wait_for_pipelines", "a join on the GPU's background pipeline build (tests only)"),
 ];
 
 /// Imports that would hide file-system calls from the patterns above: refused everywhere.

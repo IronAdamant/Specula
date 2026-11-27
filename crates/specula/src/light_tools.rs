@@ -818,6 +818,11 @@ impl Engine {
 mod tests {
     use super::*;
 
+    /// A wait limit for a view still loading that no build or load reaches before the test's
+    /// own hang bound has failed it: a test that means the wait to end because what it waited
+    /// for came in sets it, so that the machine's speed cannot end the wait by the limit.
+    const PATIENT: std::time::Duration = std::time::Duration::from_secs(2 * specula_core::HANG_BOUND.as_secs());
+
     fn args(s: &str) -> Json {
         Json::parse(s).unwrap()
     }
@@ -1015,7 +1020,7 @@ mod tests {
         let mut warmed = false;
         let started = Instant::now();
         while out.is_none() {
-            assert!(started.elapsed() < std::time::Duration::from_secs(120), "the report took over two minutes");
+            assert!(started.elapsed() < specula_core::HANG_BOUND, "the report has not come in {:?}: hung?", specula_core::HANG_BOUND);
             out = step_once(&mut e, &mut job, &reply);
             if out2.is_none() {
                 out2 = step_once(&mut e, &mut second, &reply2);
@@ -1027,7 +1032,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         while out2.is_none() {
-            assert!(started.elapsed() < std::time::Duration::from_secs(120), "the second report took over two minutes");
+            assert!(started.elapsed() < specula_core::HANG_BOUND, "the second report has not come in {:?}: hung?", specula_core::HANG_BOUND);
             out2 = step_once(&mut e, &mut second, &reply2);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -1078,8 +1083,9 @@ mod tests {
         // (counted by what it did, not by a time: its deadline is moved there).
         let spec = parse(&args(r#"{"width": 320, "height": 180, "frames": 16, "eye": [4, 3, 6], "target": [1.5, 0, 0]}"#)).unwrap();
         let mut hurried = LightJob::new(&mut e, spec, &session("aaaaaa11"), far).unwrap();
+        let started = Instant::now();
         let out = loop {
-            assert!(started.elapsed() < std::time::Duration::from_secs(240));
+            assert!(started.elapsed() < specula_core::HANG_BOUND, "the hurried report has not come in {:?}: hung?", specula_core::HANG_BOUND);
             if hurried.round == 4 && hurried.next == 2 && !hurried.flying {
                 hurried.deadline = Instant::now();
             }
@@ -1145,7 +1151,7 @@ mod tests {
         let (reply, _rx) = crate::jobs::channel();
         let started = Instant::now();
         let out = loop {
-            assert!(started.elapsed() < std::time::Duration::from_secs(120), "the report took over two minutes");
+            assert!(started.elapsed() < specula_core::HANG_BOUND, "the report has not come in {:?}: hung?", specula_core::HANG_BOUND);
             if let Some(o) = step_once(e, job, &reply) {
                 break o;
             }
@@ -1198,8 +1204,13 @@ mod tests {
         let Some(mut e) = sprite_engine("a_view_whose_sprite_is_loading_waits") else { return };
         spawn_json(&mut e, r#"{"name": "dot", "shape": "sprite", "sprite": {"texture": "sprites/dot.png", "size": [2, 2]}, "position": [0, 0, 0]}"#);
         let spec = parse(&args(r#"{"width": 128, "height": 128, "frames": 5, "budget_ms": 1000, "eye": [0, 0, 6], "target": [0, 0, 0]}"#)).unwrap();
-        let far = Instant::now() + std::time::Duration::from_secs(600);
+        let far = Instant::now() + std::time::Duration::from_secs(600) + PATIENT;
         let mut job = LightJob::new(&mut e, spec, &crate::timeline::tests::session("aaaaaa11"), far).unwrap();
+        // Which way the wait ends is the test's to say, never the machine's: here it ends when
+        // the picture is in (a load that took longer than LOADING_WAIT on a busy machine ended
+        // it by the limit, the class of `a_view_whose_model_is_building_waits_for_it`); the
+        // limit's own end is held below with the limit cut to nothing.
+        job.wait_limit = PATIENT;
         let (checks, stats) = (e.two_d.fresh_checks, e.two_d.stats_here);
         let (out, r) = run_job(&mut e, &mut job);
         assert!(!out.is_error, "{:?}", out.content);
@@ -1257,6 +1268,7 @@ mod tests {
         // failed: nothing is still loading then.
         let spec = parse(&args(r#"{"width": 128, "height": 128, "frames": 5, "budget_ms": 1000, "eye": [0, 0, 6], "target": [0, 0, 0]}"#)).unwrap();
         let mut failed = LightJob::new(&mut e, spec, &crate::timeline::tests::session("aaaaaa11"), far).unwrap();
+        failed.wait_limit = PATIENT;
         let (out, r) = run_job(&mut e, &mut failed);
         let r = r.unwrap();
         assert!(!out.is_error && matches!(failed.waited, Some(WaitEnd::Ready | WaitEnd::NotNeeded)) && failed.loading == 0, "{r}");
@@ -1287,19 +1299,27 @@ mod tests {
     /// A model still building when a report is asked for is waited for, as `sight_frame` waits
     /// for it, and the view is measured with it built (the third review did not check this).
     /// By state: spawned with no pump between, it is building at the job's first look.
+    ///
+    /// Its wait ends because the build landed, never because LOADING_WAIT ran out: the test
+    /// sets the job's limit past anything a build takes ([`PATIENT`]). Before that, the build
+    /// raced the job's own 10 s limit on the wall clock and lost on a loaded machine
+    /// (`(Some(Limit), 1)`, "waited 10.0 s": review 1 of `m6-clock-tests`, 2026-11-24). The
+    /// limit's end is held by `a_view_whose_sprite_is_loading_waits_for_it_and_no_longer`,
+    /// with the limit cut to nothing: both outcomes are the test's to choose.
     #[test]
     fn a_view_whose_model_is_building_waits_for_it() {
         let Some(mut e) = crate::workers::charge_tests::engine() else { return };
         spawn_json(&mut e, r#"{"name": "stone", "shape": "model", "recipe": "recipes/tombstone.json", "seed": 77, "position": [0, 0, 0]}"#);
         let spec = parse(&args(r#"{"width": 128, "height": 128, "frames": 5, "budget_ms": 1000, "eye": [0, 1, 4], "target": [0, 0.5, 0]}"#)).unwrap();
-        let far = Instant::now() + std::time::Duration::from_secs(600);
+        let far = Instant::now() + std::time::Duration::from_secs(600) + PATIENT;
         let mut job = LightJob::new(&mut e, spec, &crate::timeline::tests::session("aaaaaa11"), far).unwrap();
+        job.wait_limit = PATIENT;
         let (reply, _rx) = crate::jobs::channel();
         assert!(step_once(&mut e, &mut job, &reply).is_none());
         assert_eq!((job.waited, job.loading > 0, job.renders), (None, true, 0), "the case under test: the model is building at the first look, and nothing is drawn");
         let started = Instant::now();
         let out = loop {
-            assert!(started.elapsed() < std::time::Duration::from_secs(120), "the report took over two minutes");
+            assert!(started.elapsed() < specula_core::HANG_BOUND, "the report has not come in {:?}: hung?", specula_core::HANG_BOUND);
             // (The engine's loop takes finished builds between passes.)
             e.pump_builds(None);
             if let Some(o) = step_once(&mut e, &mut job, &reply) {

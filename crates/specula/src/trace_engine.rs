@@ -1102,22 +1102,38 @@ mod tests {
         assert!(mostly_waited(ms, Some(cpu)), "asleep for {ms} ms, the thread ran {cpu} ms");
         assert_eq!(stall.get("lock_ms").and_then(Json::as_f64), Some(0.0), "and it waited for no lock");
         // Work that waited for the model library's lock says so: a worker holds it for 60 ms
-        // (taken before this thread asks, released after), and the wait is this thread's.
-        let library = std::sync::Arc::clone(&engine.library);
-        let (held_tx, held) = std::sync::mpsc::channel::<()>();
-        let holder = std::thread::spawn(move || {
-            let _held = library.lock();
-            held_tx.send(()).unwrap();
-            std::thread::sleep(Duration::from_millis(60));
-        });
-        held.recv().unwrap();
+        // (taken before this thread asks), and the stall's `lock_ms` is the wait this thread's
+        // own lock counted ([`crate::lockwait`]), read before and after. Whether this thread
+        // asked while the worker still held the lock is the machine's (switched out for 60 ms
+        // after `held`, it found the lock free and `lock > 30.0` failed: by reading, review 1
+        // of `m6-clock-tests`); so the case under test is made again until it happened (this
+        // thread waited 40 ms or more, past the stall's 30 ms budget), and what is asserted is
+        // what the code reported of the wait it counted, never how long the wait was.
         let started = Instant::now();
-        drop(engine.library.lock());
-        engine.engine_work_done(0, None, "window_resize", started.elapsed());
-        holder.join().unwrap();
-        let stall = engine.watch.stalls.back().unwrap().clone();
+        let (stall, waited) = loop {
+            assert!(started.elapsed() < specula_core::HANG_BOUND, "in {:?} of tries this thread never waited 40 ms for a lock another thread held for 60", specula_core::HANG_BOUND);
+            let library = std::sync::Arc::clone(&engine.library);
+            let (held_tx, held) = std::sync::mpsc::channel::<()>();
+            let holder = std::thread::spawn(move || {
+                let _held = library.lock();
+                held_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(60));
+            });
+            held.recv().unwrap();
+            engine.watch.stalls.clear();
+            let before = crate::lockwait::total_ms();
+            let work = Instant::now();
+            drop(engine.library.lock());
+            let waited = crate::lockwait::total_ms() - before;
+            engine.engine_work_done(0, None, "window_resize", work.elapsed());
+            holder.join().unwrap();
+            if waited >= 40.0 {
+                assert_eq!(engine.watch.stalls.len(), 1, "{waited} ms of waiting is past the 30 ms frame budget: a stall");
+                break (engine.watch.stalls.back().unwrap().clone(), waited);
+            }
+        };
         let (ms, lock) = (stall.get("ms").and_then(Json::as_f64).unwrap(), stall.get("lock_ms").and_then(Json::as_f64).expect("lock_ms is there"));
-        assert!(lock > 30.0 && lock <= ms, "{ms} ms of work, {lock} ms of it waiting for the lock");
+        assert!((lock - waited).abs() <= 0.01 && lock <= ms, "{ms} ms of work, {lock} ms of it reported as waiting for the lock, where the lock counted {waited} ms");
         // A frame that worked, with a piece of work reported in the middle of it (a capture
         // read): the frame's own time is what its caller measured, not what ran since that
         // piece. It read from the last report before, and said "waited" of such a frame.

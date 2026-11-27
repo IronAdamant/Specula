@@ -62,7 +62,7 @@ fn a_prewarmed_size_renders_without_making_images() {
             // A slice may also wait for the image heap's worker to make room (deferred, never
             // allocated in the call): give it a moment.
             std::thread::sleep(std::time::Duration::from_millis(1));
-            assert!(started.elapsed() < std::time::Duration::from_secs(20), "{test}: the prewarm never finished ({calls} calls)");
+            assert!(started.elapsed() < specula_core::HANG_BOUND, "{test}: the prewarm has not finished in {:?} ({calls} calls): hung?", specula_core::HANG_BOUND);
         }
         assert!(calls >= 4, "{test}: a frame with shadows, bloom, SSAO and FXAA has several images, made one a call ({calls} calls)");
         assert_eq!(gpu.target_images_missing(target), 0, "{test}: every image exists");

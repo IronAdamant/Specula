@@ -56,7 +56,7 @@ fn settle_by_polling(gpu: &mut Gpu, test: &str) -> u32 {
     let mut polls = 0;
     while !gpu.settle_offscreen(false).expect("settle") {
         polls += 1;
-        assert!(start.elapsed() < Duration::from_secs(20), "{test}: the render never settled");
+        assert!(start.elapsed() < specula_core::HANG_BOUND, "{test}: the render has not settled in {:?}: hung?", specula_core::HANG_BOUND);
         std::thread::sleep(Duration::from_micros(200));
     }
     polls
@@ -163,7 +163,7 @@ fn destroying_what_a_render_in_flight_draws_is_safe() {
         while gpu.upload_stats().retired_pending > 0 {
             gpu.flush_uploads().unwrap();
             sync_render(&mut gpu, target, &keep.draws());
-            assert!(start.elapsed() < Duration::from_secs(20), "{test}: retired memory never freed: {:?}", gpu.upload_stats());
+            assert!(start.elapsed() < specula_core::HANG_BOUND, "{test}: retired memory not freed in {:?}: {:?}", specula_core::HANG_BOUND, gpu.upload_stats());
         }
         // The target itself, destroyed in flight.
         let other = gpu.create_target(W, H).unwrap();
@@ -190,7 +190,7 @@ fn a_lost_device_in_flight_settles_with_its_error() {
         let err = loop {
             match gpu.settle_offscreen(false) {
                 Ok(false) => {
-                    assert!(start.elapsed() < Duration::from_secs(20), "{test}: never settled");
+                    assert!(start.elapsed() < specula_core::HANG_BOUND, "{test}: the lost render has not settled in {:?}: hung?", specula_core::HANG_BOUND);
                     std::thread::sleep(Duration::from_micros(200));
                 }
                 Ok(true) => panic!("{test}: the injected loss was not reported"),

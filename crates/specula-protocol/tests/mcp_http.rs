@@ -703,8 +703,10 @@ fn connection_limit_answers_503_not_a_reset() {
     let server = start();
     let addr = server.local_addr();
     let held: Vec<TcpStream> = (0..LIMIT).map(|_| TcpStream::connect(addr).expect("connect")).collect();
-    // Let the accept thread hand every held connection to a worker.
-    std::thread::sleep(Duration::from_millis(300));
+    // No wait for the accept thread to hand every held connection to a worker: it takes
+    // connections in the order they came (one thread, one listener), so each attempt below is
+    // taken after all 256, whenever that is. (A sleep of 300 ms stood here, deciding nothing:
+    // review 1 of `m6-clock-tests`.)
     for attempt in 0..5 {
         let mut c = Client::connect(addr);
         let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;

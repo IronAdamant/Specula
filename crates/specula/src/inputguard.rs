@@ -429,6 +429,10 @@ struct State {
     toasts_dropped: u64,
     /// Counters by class.
     counts: BTreeMap<Class, u64>,
+    /// Tests: a waiting call's thread name → the newest event it had seen when it last
+    /// looked, so that a test knows a waiter has looked since an event, by its state.
+    #[cfg(test)]
+    looked: BTreeMap<String, u64>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -451,6 +455,8 @@ static STATE: Mutex<State> = Mutex::new(State {
     toast_alerts: VecDeque::new(),
     toasts_dropped: 0,
     counts: BTreeMap::new(),
+    #[cfg(test)]
+    looked: BTreeMap::new(),
 });
 static WAKE: Condvar = Condvar::new();
 /// Something is frozen or paused: the gate looks (else it costs one atomic load per call).
@@ -1134,6 +1140,11 @@ pub fn wait_events(after: u64, all: bool, limit: usize, wait: Duration) -> Page 
     if !any(&s) && !wait.is_zero() && s.waiters < MAX_WAITERS {
         s.waiters += 1;
         loop {
+            #[cfg(test)]
+            if let Some(name) = std::thread::current().name() {
+                let seen = s.seq;
+                s.looked.insert(name.to_owned(), seen);
+            }
             if any(&s) || STOPPING.load(Relaxed) {
                 break;
             }

@@ -607,7 +607,8 @@ mod tests {
         let tone = Sound::new("tone", 48_000, 1, (0..96_000).map(|i| (i as f32 * 0.05).sin() * 0.3).collect()).unwrap();
         let (_, h) = audio.play_stream(Box::new(stream::SoundSource::new(tone)), StreamParams::default()).unwrap();
         let start = std::time::Instant::now();
-        while h.status().played_frames < 9_600 && start.elapsed() < std::time::Duration::from_secs(5) {
+        while h.status().played_frames < 9_600 {
+            assert!(start.elapsed() < specula_core::HANG_BOUND, "the worker has not filled 9,600 frames in {:?}: hung?", specula_core::HANG_BOUND);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let st = h.status();

@@ -10,6 +10,17 @@ fn page_of(after: u64, all: bool, limit: usize, wait: Duration) -> (Vec<Json>, u
     (p.events, p.next, p.more)
 }
 
+/// Until each waiting call on a thread named in `names` has looked at the log with an event
+/// newer than `seq` there to see (its state, under the monitor's lock), or has `ended`. A wait
+/// for the waiters to have got somewhere, by what they did; `HANG_BOUND` only names a hang.
+fn until_looked(names: &[&str], seq: u64, ended: impl Fn() -> bool) {
+    let started = std::time::Instant::now();
+    while !ended() && !names.iter().all(|n| state().looked.get(*n).is_some_and(|&seen| seen >= seq)) {
+        assert!(started.elapsed() < specula_core::HANG_BOUND, "{names:?} have not looked since event {seq}: {:?}", state().looked);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn lock() -> MutexGuard<'static, ()> {
     let g = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     reset_for_test();
@@ -272,8 +283,12 @@ fn allowing_a_lead_answers_its_alerts_for_that_session_only() {
 #[test]
 fn the_lead_wakes_on_each_event_and_the_log_is_bounded() {
     let _g = lock();
-    let t = std::thread::spawn(|| page_of(0, false, 10, Duration::from_secs(10)));
-    std::thread::sleep(Duration::from_millis(50));
+    // The lead's call is waiting before the event (it has looked, under the lock it waits on,
+    // so the event can only come while it waits): the wake-up is what is tested, never an event
+    // that was there before it looked. (A sleep of 50 ms stood for this: review 1 of
+    // `m6-clock-tests`.)
+    let t = std::thread::Builder::new().name("lead-waits".into()).spawn(|| page_of(0, false, 10, specula_core::HANG_BOUND)).unwrap();
+    until_looked(&["lead-waits"], 0, || t.is_finished());
     let lead = agent("s1", "lee", Authority::Lead);
     let _ = done(Channel::Screen, "gallery_open", &lead, "");
     let (ev, next, _) = t.join().unwrap();
@@ -369,7 +384,7 @@ fn waits_end_when_the_engine_stops_and_are_bounded() {
     // the engine stopping ends them. And the three are counted when they are there, not after
     // a pause that was hoped to be long enough for three threads to start.
     const NEVER: u64 = u64::MAX;
-    let waiters: Vec<_> = (0..3).map(|_| std::thread::spawn(|| wait_events(NEVER, false, 10, Duration::from_secs(60)))).collect();
+    let waiters: Vec<_> = (0..3).map(|i| std::thread::Builder::new().name(format!("waiter-{i}")).spawn(|| wait_events(NEVER, false, 10, specula_core::HANG_BOUND)).unwrap()).collect();
     let all_waiting = || {
         let deadline = std::time::Instant::now() + specula_core::speed_budget(Duration::from_secs(5));
         while state().waiters != 3 {
@@ -379,15 +394,26 @@ fn waits_end_when_the_engine_stops_and_are_bounded() {
     };
     all_waiting();
     // An event of somebody else's does not end them (what another test's event did).
-    let _ = done(Channel::Screen, "other.test", &Actor::Human, "");
-    std::thread::sleep(Duration::from_millis(250));
+    // Each waiter has looked again since that event (by its state, not after 250 ms that a
+    // loaded machine may not have given them: review 1 of `m6-clock-tests`), and still waits.
+    // The event is a lead's (an alert): it enters the feed the waiters read and wakes them, so
+    // a wait that ignored its cursor would end on it here. A human's event would not (it is
+    // quiet and wakes nobody), and the check could not fail (review 2 of `m6-clock-tests`).
+    let _ = done(Channel::Screen, "other.test", &agent("s9", "other", Authority::Lead), "");
+    let seen = {
+        let s = state();
+        assert!(s.log.back().is_some_and(|e| e.seq == s.seq), "the event is in the feed the waiters read");
+        s.seq
+    };
+    until_looked(&["waiter-0", "waiter-1", "waiter-2"], seen, || waiters.iter().any(|w| w.is_finished()));
     assert_eq!(state().waiters, 3, "a wait ends when the engine stops, not at an event behind its cursor");
     stopping();
     for w in waiters {
         assert!(w.join().unwrap().events.is_empty());
     }
     assert!(t0.elapsed() < Duration::from_secs(5), "answered in {:?}", t0.elapsed());
-    assert!(wait_events(0, false, 10, Duration::from_secs(60)).events.is_empty() && t0.elapsed() < Duration::from_secs(5), "and no new wait begins while stopping");
+    // From past the lead's event (from 0 it would answer by that event, not by the stop).
+    assert!(wait_events(seen, false, 10, Duration::from_secs(60)).events.is_empty() && t0.elapsed() < Duration::from_secs(5), "and no new wait begins while stopping");
     reset_for_test();
     // Past MAX_WAITERS a call answers at once.
     state().waiters = MAX_WAITERS;

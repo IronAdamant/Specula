@@ -1986,26 +1986,51 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_folder_swapped_for_a_junction_mid_delete_stays_inside() {
+        // What the machine ran short of is not the code's fault: OS error 1450 ("insufficient
+        // system resources") from a write of the setup failed this test once in a loaded full run
+        // (2026-11-24), and an `exists()` that fails for that reason reads as a file lost. The
+        // setup's writes and the reading of what is left say their errors; one of the machine's
+        // own shortages (memory, the page file, the disk, system resources) skips the test with
+        // its reason. The delete under test is never asked: its result is not what is held, only
+        // that nothing outside was lost, and a file found missing is always a failure.
         let b = scratch("race");
+        let shortage = |e: &std::io::Error| matches!(e.raw_os_error(), Some(8 | 14 | 112 | 1450 | 1453 | 1455));
+        match junction_race(&b) {
+            Ok(()) => {}
+            Err(e) if shortage(&e) => {
+                let (test, why) = ("a_folder_swapped_for_a_junction_mid_delete_stays_inside", format!("the machine ran short ({e}): not the code under test"));
+                crate::skip_test(test, &why);
+                // Said in the gate's log too, past the harness's capture (a trace event alone is
+                // seen by nobody there), so a test that skips on every run cannot read as a pass.
+                use std::io::Write as _;
+                let _ = writeln!(std::io::stderr(), "{test}: SKIPPED — {why}");
+            }
+            Err(e) => panic!("the test's own setup failed: {e}"),
+        }
+        let _ = std::fs::remove_dir_all(&b);
+    }
+
+    #[cfg(windows)]
+    fn junction_race(b: &Path) -> std::io::Result<()> {
         let outside = b.join("outside");
         let root = b.join("scratch");
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside)?;
+        std::fs::create_dir_all(&root)?;
         const N: usize = 1500;
         for k in 0..N {
-            std::fs::write(outside.join(format!("f{k:05}")), b"precious").unwrap();
+            std::fs::write(outside.join(format!("f{k:05}")), b"precious")?;
         }
         for round in 0..3 {
             let lease = root.join(format!("lease-{round}"));
             let sub = lease.join("sub");
-            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::create_dir_all(&sub)?;
             for k in 0..N {
-                std::fs::write(sub.join(format!("f{k:05}")), b"scratch").unwrap();
+                std::fs::write(sub.join(format!("f{k:05}")), b"scratch")?;
             }
             let jtmp = b.join(format!("jtmp-{round}"));
             if !junction(&jtmp, &outside) {
-                eprintln!("skipped: can't make a junction here");
-                return;
+                crate::skip_test("a_folder_swapped_for_a_junction_mid_delete_stays_inside", "can't make a junction here");
+                return Ok(());
             }
             let (s2, l2, j2) = (sub.clone(), lease.clone(), jtmp.clone());
             let racer = std::thread::spawn(move || {
@@ -2016,13 +2041,26 @@ mod tests {
             });
             let _ = remove_tree_inside(&root, &lease);
             racer.join().unwrap();
-            let lost = (0..N).filter(|k| !outside.join(format!("f{k:05}")).exists()).count();
+            // A file is there, or it is not (lost); any other answer is an error said, never
+            // read as either.
+            // (A file found lost fails the test before any error of the reading is answered.)
+            let (mut lost, mut unread) = (0, None);
+            for k in 0..N {
+                match std::fs::symlink_metadata(outside.join(format!("f{k:05}"))) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => lost += 1,
+                    Err(e) => unread = Some(e),
+                }
+            }
             assert_eq!(lost, 0, "round {round}: files outside the root were deleted through a swapped junction");
+            if let Some(e) = unread {
+                return Err(e);
+            }
             let _ = std::fs::remove_dir(&sub);
             let _ = std::fs::remove_dir(&jtmp);
             let _ = std::fs::remove_dir_all(&lease);
         }
-        let _ = std::fs::remove_dir_all(&b);
+        Ok(())
     }
 
     /// A root that is itself a link is resolved once (canonical) and everything below is built from it.

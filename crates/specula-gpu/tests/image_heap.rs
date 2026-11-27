@@ -20,7 +20,7 @@ fn every_adapter(test: &str, f: impl Fn(&str, AdapterPreference)) {
     }
 }
 
-/// Polls (`flush_uploads` adopts what the worker grew) until `done`, at most 20 s.
+/// Polls (`flush_uploads` adopts what the worker grew) until `done`; `HANG_BOUND` only names a hang.
 fn wait_for(gpu: &mut specula_gpu::Gpu, test: &str, what: &str, done: impl Fn(&specula_gpu::MemoryStats) -> bool) {
     let started = Instant::now();
     loop {
@@ -29,7 +29,7 @@ fn wait_for(gpu: &mut specula_gpu::Gpu, test: &str, what: &str, done: impl Fn(&s
         if done(&s) {
             return;
         }
-        assert!(started.elapsed() < Duration::from_secs(20), "{test}: {what}: {:?}", s.image_heap);
+        assert!(started.elapsed() < specula_core::HANG_BOUND, "{test}: still waiting for {what} after {:?}: {:?}", specula_core::HANG_BOUND, s.image_heap);
         std::thread::sleep(Duration::from_millis(2));
     }
 }

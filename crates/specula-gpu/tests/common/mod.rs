@@ -287,6 +287,7 @@ fn crc_and_adler_known_values() {
 /// (`gpu_av`, 2026-11-24), the build being slow and not stuck. A build that fails, or that was
 /// never asked for these variants, fails here and says which.
 pub fn wait_variants(gpu: &mut Gpu, skinned: bool, textured: bool) {
+    let _watchdog = specula_core::Watchdog::arm("the GPU's background pipeline build");
     let v = gpu.wait_for_pipelines();
     assert!((!skinned || v.skinned) && (!textured || v.textured), "the background build ended without the variants (skinned {skinned}, textured {textured}): {v:?}");
 }

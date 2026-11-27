@@ -11,9 +11,11 @@
 use std::path::{Path, PathBuf};
 
 /// `(file, outputs allowed)`: the files that had console output on 2026-10-29.
-const ALLOWED: [(&str, usize); 69] = [
+const ALLOWED: [(&str, usize); 70] = [
     ("crates/specula/src/capture.rs", 2),
-    ("crates/specula/src/disk.rs", 4),
+    // (And one test's skip line, written past the harness's capture so the gate's log shows
+    // it: AGENTS.md rule 7, a test that can't run says why.)
+    ("crates/specula/src/disk.rs", 5),
     ("crates/specula/src/evidence.rs", 5),
     ("crates/specula/src/fpguard.rs", 1),
     // The command line's commands (`specula projects`, `call`...): their answer IS their
@@ -64,6 +66,9 @@ const ALLOWED: [(&str, usize); 69] = [
     ("crates/specula/src/write_policy.rs", 7),
     ("crates/specula-core/src/dmath/tests.rs", 8),
     ("crates/specula-core/src/jpeg/tests.rs", 1),
+    // `Watchdog`'s "hung: .." line, written to stderr just before it aborts a hung test: the
+    // harness captures a panic's message and the abort loses it, and no trace sink outlives it.
+    ("crates/specula-core/src/lib.rs", 1),
     ("crates/specula-core/src/png.rs", 2),
     ("crates/specula-core/src/profile.rs", 1),
     ("crates/specula-gpu/src/gpu.rs", 10),

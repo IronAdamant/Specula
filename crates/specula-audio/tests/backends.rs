@@ -39,21 +39,58 @@ fn pull_needs_manual_mode() {
     assert_eq!(audio.pull(&mut [0.0; 4]).unwrap_err().code, ErrorCode::WrongMode);
 }
 
+/// Polls `done` (a poll's interval, 2 ms) until it holds; `HANG_BOUND` only names a hang.
+fn until(what: &str, mut done: impl FnMut() -> bool) {
+    let started = Instant::now();
+    while !done() {
+        assert!(started.elapsed() < specula_core::HANG_BOUND, "still waiting for {what} after {:?}: hung?", specula_core::HANG_BOUND);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// The null backend mixes on its own clock, in real time: a sound ends when its frames have
+/// been mixed, and the clock never runs ahead of the wall.
+///
+/// By what the backend's own clock did, never by how long this thread slept (before
+/// 2026-11-24: a sleep of 100 ms that a loaded machine overran past 200 ms found the 200 ms
+/// sound over; and 0.8..1.1 times real time over a 500 ms sleep, where a starved audio thread
+/// falls behind on a busy machine). What is held:
+/// - a sound is not reported finished before its frames are mixed (to within the block it
+///   ended in): read in that order, what had finished, then how much had been mixed;
+/// - it is reported finished once they are (waited for, by the frames);
+/// - the clock never mixes ahead of real time: frames mixed are at most the wall time since
+///   before the backend started, at the rate, and one block (the clock renders a block, then
+///   waits for its deadline). A clock that did not wait fails this at once.
+///
+/// What it no longer holds: that the clock keeps up with the wall (the old lower bound, 0.8
+/// times real time over half a second). A clock thread the machine does not run falls behind
+/// whatever the code does, so no bound on that is a guarantee; a clock that never advanced
+/// still fails here (it never reaches 400 ms of frames, and the wait names the hang). The pace
+/// from below is held by the clock's own state instead, without the wall: its period is exact,
+/// it catches up block by block when a few behind, and twenty behind it counts an underrun and
+/// starts again from now (`backend::tests::the_clock_keeps_its_period_catches_up_and_counts_an_underrun`).
 #[test]
 fn null_backend_consumes_audio_in_real_time() {
-    let audio = Audio::start(AudioConfig { backend: Backend::Null, ..Default::default() }).unwrap();
     let start = Instant::now();
-    let id = audio.play(&tone(440.0, 0.2, 0.1, 0.0), PlayParams::default()).unwrap();
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(audio.drain_finished().is_empty(), "a 200 ms sound can't be over after 100 ms");
-    std::thread::sleep(Duration::from_millis(400));
-    let elapsed = start.elapsed().as_secs_f64();
+    let audio = Audio::start(AudioConfig { backend: Backend::Null, ..Default::default() }).unwrap();
     let st = audio.stats();
-    let expected = elapsed * 48_000.0;
-    let ratio = st.frames_mixed as f64 / expected;
-    println!("null backend: {} frames in {elapsed:.3} s (ratio {ratio:.3}), mix mean {:.1} us", st.frames_mixed, st.mix_us_mean);
-    assert!((0.8..1.1).contains(&ratio), "null clock ran at {ratio:.3}× real time");
-    assert_eq!(audio.drain_finished(), vec![id]);
+    let (rate, block) = (st.output_rate as u64, st.buffer_frames as u64);
+    assert!(rate > 0 && block > 0 && block < rate, "{st:?}");
+    let length = rate / 5; // 200 ms
+    let id = audio.play(&tone(440.0, 0.2, 0.1, 0.0), PlayParams::default()).unwrap();
+    let mut finished = Vec::new();
+    until("the 200 ms sound to finish on the null clock", || {
+        finished.extend(audio.drain_finished());
+        let mixed = audio.stats().frames_mixed;
+        assert!(finished.is_empty() || mixed + block >= length, "a {length}-frame sound was over when {mixed} frames had been mixed");
+        !finished.is_empty()
+    });
+    assert_eq!(finished, vec![id]);
+    until("400 ms of frames mixed", || audio.stats().frames_mixed >= 2 * length);
+    let st = audio.stats();
+    let elapsed = start.elapsed().as_secs_f64();
+    let ahead = st.frames_mixed as f64 - elapsed * rate as f64;
+    assert!(ahead <= block as f64, "the null clock mixed {} frames in {elapsed:.3} s: {ahead:.0} frames ahead of real time", st.frames_mixed);
     assert_eq!(st.backend, BackendState::Null);
     audio.shutdown().unwrap();
 }
@@ -61,7 +98,9 @@ fn null_backend_consumes_audio_in_real_time() {
 #[test]
 fn auto_backend_always_starts_and_stops_cleanly() {
     let audio = Audio::start(AudioConfig::default()).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
+    // Until it has left Starting (by its state, not after a fixed 50 ms a loaded machine may not
+    // have given it): then it is on a device, on the null clock, or reconnecting.
+    until("the backend to leave Starting", || audio.stats().backend != BackendState::Starting);
     let st = audio.stats();
     assert!(matches!(st.backend, BackendState::Device | BackendState::Null | BackendState::Reconnecting), "{st:?}");
     audio.shutdown().unwrap();
@@ -69,6 +108,8 @@ fn auto_backend_always_starts_and_stops_cleanly() {
 
 /// Opens the real default output device and plays 200 ms: 100 ms of silence then a quiet
 /// (-30 dBFS) 440 Hz tone. Skips cleanly when there is no device (CI, headless, non-Windows).
+/// It waits for the sound to finish on the device's clock (not 600 ms by the wall, which a
+/// loaded machine can overrun or a starved device thread not fill).
 #[test]
 fn live_device_plays_silence_then_tone() {
     let audio = match Audio::start(AudioConfig { backend: Backend::Device, ..Default::default() }) {
@@ -83,14 +124,19 @@ fn live_device_plays_silence_then_tone() {
     let st = audio.stats();
     assert_eq!(st.backend, BackendState::Device);
     let id = audio.play(&tone(440.0, 0.1, 0.0316, 0.1), PlayParams::default()).unwrap();
-    std::thread::sleep(Duration::from_millis(600));
+    let mut finished = Vec::new();
+    until("the 200 ms sound to finish on the device clock", || {
+        finished.extend(audio.drain_finished());
+        !finished.is_empty()
+    });
     let st = audio.stats();
     println!(
         "device: {} Hz, {} ch, buffer {} frames, latency {:.1} ms, {} mix calls, mix mean {:.1} us max {:.1} us, underruns {}",
         st.output_rate, st.device_channels, st.buffer_frames, st.latency_ms, st.mix_calls, st.mix_us_mean, st.mix_us_max, st.underruns
     );
-    assert!(st.frames_mixed as f64 > 0.4 * st.output_rate as f64, "device pulled {} frames in 600 ms", st.frames_mixed);
+    assert_eq!(finished, vec![id], "the 200 ms sound finished on the device clock");
+    // Its frames were pulled by the device before it was over (to within a buffer).
+    assert!(st.frames_mixed + st.buffer_frames as u64 >= st.output_rate as u64 / 5, "the device pulled {} frames, and a 200 ms sound was over", st.frames_mixed);
     assert!(st.latency_ms > 0.0 && st.latency_ms < 200.0);
-    assert_eq!(audio.drain_finished(), vec![id], "the 200 ms sound finished on the device clock");
     audio.shutdown().unwrap();
 }

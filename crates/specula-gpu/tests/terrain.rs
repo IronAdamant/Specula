@@ -291,6 +291,7 @@ fn a_form_pipeline_that_fails_later_loses_the_set_and_comes_back() {
         gpu.request_terrain_pipelines();
         // Until the worker ends (a join, not a deadline), then what it ended with.
         let settle = |gpu: &mut Gpu, done: &dyn Fn(&specula_gpu::PipelineVariants) -> bool| {
+            let _watchdog = specula_core::Watchdog::arm("the GPU's background pipeline build");
             let v = gpu.wait_for_pipelines();
             assert!(done(&v), "{test}: the build ended without what was waited for: {v:?}");
             v
