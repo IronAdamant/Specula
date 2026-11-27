@@ -2243,6 +2243,12 @@ fn build_parts(
                 gen.run(node)?
             }
         };
+        // A part that gives its own smooth angle is shaded by it, facets and all: the faceted
+        // forms of the shape library (a cut stone) are hard-edged whatever the recipe's default
+        // says, and smoothed when the part asks (an include's parts have their own).
+        if part.smooth_angle.is_some() && !matches!(part.source, Source::Include { .. }) {
+            pieces.iter_mut().for_each(|p| p.shape.unfacet());
+        }
         // Textures: the part's material key names its texture set; UVs from its scale.
         if let Some(t) = &part.texture {
             let scale = match &part.uv_scale {

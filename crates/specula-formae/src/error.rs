@@ -118,6 +118,24 @@ impl Error {
             Error::TooManyPoints { .. } => "too_many_points",
         }
     }
+
+    /// For a parameter the form took before stage 4's remake and takes no longer: the name that
+    /// took its place or what to give instead ([`crate::table::RENAMED`]), which the refusal's
+    /// words also say.
+    pub fn renamed(&self) -> Option<&'static crate::table::Renamed> {
+        match self {
+            Error::UnknownParam { form, param, .. } => crate::table::renamed(form, param),
+            _ => None,
+        }
+    }
+}
+
+/// What a refusal of an old parameter name adds: the new name, or what to give instead.
+pub fn renamed_words(r: &crate::table::Renamed) -> String {
+    match r.new {
+        Some(n) => format!("\"{}\" is now \"{n}\": {}", r.old, r.instead),
+        None => format!("\"{}\" is gone: {}", r.old, r.instead),
+    }
 }
 
 impl fmt::Display for Error {
@@ -131,7 +149,13 @@ impl fmt::Display for Error {
                 let ks: Vec<&str> = kinds.iter().map(|k| k.name()).collect();
                 write!(f, "\"{name}\" names a form of each kind {ks:?}: say which kind")
             }
-            Error::UnknownParam { form, param, takes } => write!(f, "{form} takes no \"{param}\"; it takes {takes:?}"),
+            Error::UnknownParam { form, param, takes } => {
+                write!(f, "{form} takes no \"{param}\"; it takes {takes:?}")?;
+                match crate::table::renamed(form, param) {
+                    Some(r) => write!(f, "; {}", renamed_words(r)),
+                    None => Ok(()),
+                }
+            }
             Error::DuplicateParam { form, param } => write!(f, "{form}: \"{param}\" is given twice"),
             Error::FixedByAlias { alias, param, value } => write!(f, "{alias} fixes \"{param}\" at {value}: it cannot be given"),
             Error::OutOfRange { form, param, value, min, max } => write!(f, "{form}: \"{param}\" is {value}; it must be a number from {min} to {max}"),

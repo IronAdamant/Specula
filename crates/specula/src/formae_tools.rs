@@ -297,12 +297,15 @@ fn kind_arg(args: &Json) -> Result<Option<Kind>, String> {
     })
 }
 
-/// A parameter in a few words: `radius=1 m`, `sides=6`, `angle=60 deg`.
+/// A parameter in a few words: `radius=1 m`, `sides=6`, `angle=60 deg`, `height_ratio=1.5
+/// ratio`. (It compared `Unit::name()`, which says `m` and `deg`, with `metres` and `degrees`,
+/// so no row showed a unit: review 1 of stage 4, finding 3.)
 fn param_short(p: &formae::Param) -> String {
-    let unit = match p.unit.name() {
-        "metres" => " m",
-        "degrees" => " deg",
-        _ => "",
+    let unit = match p.unit {
+        formae::Unit::Metres => " m",
+        formae::Unit::Degrees => " deg",
+        formae::Unit::Ratio => " ratio",
+        formae::Unit::Count => "",
     };
     format!("{}={}{unit}", p.name, p.default)
 }
@@ -338,8 +341,55 @@ fn row(f: &formae::Form) -> Json {
 /// The first answer, with nothing asked: every name by kind and family, one line a family, and
 /// how to ask for more. A few hundred tokens: the rows are asked for.
 fn index() -> Json {
-    let rows: Vec<(Kind, &str, &str)> = formae::forms().iter().map(|f| (f.kind, f.family.name(), f.name)).collect();
-    index_of(&rows, formae::aliases().len())
+    index_of(&commonest_first(formae::forms()), formae::aliases().len())
+}
+
+/// Within each family longer than the first answer's cut, the names an agent building a game
+/// reaches for first, in that order, set by hand (stage 4's review found the cut kept
+/// `lune` and `bicone` and hid `stadium`, `rounded_rectangle` and `capsule`). A family's other
+/// names follow in the table's order. The first answer keeps a family's first names, so these are
+/// the ones a cold agent sees.
+pub(crate) const COMMONEST: &[&str] = &[
+    // circle
+    "circle", "semicircle", "rounded_rectangle", "stadium", "annulus", "sector", "lens",
+    // oval
+    "ellipse", "oval", "heart", "teardrop", "superellipse", "ovoid",
+    // band
+    "sine_band", "zigzag_band", "battlement_band", "sawtooth_band", "catenary_band", "archimedean_spiral_band",
+    // symbol
+    "arrow", "cross", "shield", "banner", "chevron", "double_arrow",
+    // cylinder
+    "cylinder", "cone", "tube", "capsule", "rounded_cylinder", "frustum",
+    // sphere
+    "sphere", "hemisphere", "icosphere", "ellipsoid", "spherical_cap", "cube_sphere",
+    // revolution
+    "barrel", "hourglass", "spindle", "egg_of_revolution", "teardrop_of_revolution", "paraboloid",
+    // prismatoid
+    "prism", "pyramid", "pyramid_frustum", "bipyramid", "antiprism", "trapezohedron",
+    // platonic
+    "tetrahedron", "octahedron", "icosahedron", "dodecahedron",
+    // archimedean
+    "truncated_icosahedron", "cuboctahedron", "truncated_cube", "truncated_octahedron", "rhombicuboctahedron", "icosidodecahedron",
+    // catalan (the dice among them first)
+    "rhombic_dodecahedron", "rhombic_triacontahedron", "deltoidal_icositetrahedron", "pentakis_dodecahedron", "tetrakis_hexahedron", "triakis_tetrahedron",
+];
+
+/// The table's rows, each family's names reordered commonest first ([`COMMONEST`]), the families
+/// in the table's order.
+fn commonest_first(forms: &[formae::Form]) -> Vec<(Kind, &'static str, &'static str)> {
+    let mut rows: Vec<(usize, usize, (Kind, &'static str, &'static str))> = Vec::with_capacity(forms.len());
+    let mut first: Vec<(Kind, &'static str)> = Vec::new();
+    for (i, f) in forms.iter().enumerate() {
+        let fam = (f.kind, f.family.name());
+        let at = first.iter().position(|x| *x == fam).unwrap_or_else(|| {
+            first.push(fam);
+            first.len() - 1
+        });
+        let rank = COMMONEST.iter().position(|n| *n == f.name).unwrap_or(COMMONEST.len() + i);
+        rows.push((at, rank, (f.kind, fam.1, f.name)));
+    }
+    rows.sort_by_key(|r| (r.0, r.1));
+    rows.into_iter().map(|r| r.2).collect()
 }
 
 /// A kind's families in the table's order, each with its forms' names.

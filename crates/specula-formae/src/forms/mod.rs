@@ -64,8 +64,10 @@ macro_rules! alias {
 pub(crate) mod curved;
 pub(crate) mod curves;
 pub(crate) mod flat;
+pub(crate) mod ornamenta;
 pub(crate) mod polygons;
 pub(crate) mod round;
+pub(crate) mod supellex;
 
 use crate::anchor::Anchor;
 use crate::spec::Args;

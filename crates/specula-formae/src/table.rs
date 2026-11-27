@@ -100,6 +100,20 @@ pub enum Family {
     Sweep,
     /// Solids from other solids: the intersection of cylinders, an arrow.
     Compound,
+    /// Moulding profiles: the cavetto and the two cymas, to sweep along a wall.
+    Moulding,
+    /// Stairs: a flight's side as a figure, and the flight as a solid.
+    Stair,
+    /// Leaves and petals.
+    Leaf,
+    /// Fractals of a bounded depth: the Koch snowflake, the Sierpinski carpet.
+    Fractal,
+    /// Hollow vessels with a wall: cups, bells, goblets.
+    Vessel,
+    /// Turned props: bottles, vases, balusters, mushrooms.
+    Lathe,
+    /// Crystals and cut stones.
+    Crystal,
 }
 
 impl Family {
@@ -138,6 +152,13 @@ impl Family {
             Family::Shell => "shell",
             Family::Sweep => "sweep",
             Family::Compound => "compound",
+            Family::Moulding => "moulding",
+            Family::Stair => "stair",
+            Family::Leaf => "leaf",
+            Family::Fractal => "fractal",
+            Family::Vessel => "vessel",
+            Family::Lathe => "lathe",
+            Family::Crystal => "crystal",
         }
     }
 }
@@ -290,15 +311,79 @@ impl Form {
     pub fn param(&self, name: &str) -> Option<&'static Param> {
         self.params.iter().find(|p| p.name == name)
     }
+
+    /// Whether the form is **faceted**: a solid whose flat faces are the point of it, so that the
+    /// modeller shades each face flat, with a hard edge against every face not within a degree
+    /// of its plane, whatever the recipe's default smooth angle (a part's own `smooth_angle`
+    /// still wins). The Platonic, Archimedean, Catalan and stellated solids, the chamfered box,
+    /// the crystal and the cut stone ([`FACETED_NAMES`]). Every other form follows the smooth
+    /// angle: a prism or a pyramid of many sides, a rounded form's flat patches, and every
+    /// plane figure raised.
+    pub fn faceted(&self) -> bool {
+        self.kind == Kind::Solid && (matches!(self.family, Family::Platonic | Family::Archimedean | Family::Catalan | Family::Stellated) || FACETED_NAMES.contains(&self.name))
+    }
+}
+
+/// The faceted forms outside the four families of polyhedra ([`Form::faceted`]).
+pub const FACETED_NAMES: &[&str] = &["chamfered_box", "crystal", "gem"];
+
+/// A parameter a form took before stage 4's remake (2026-11-24) and takes no longer: the name
+/// that took its place, or what to give instead where nothing did. A refusal of the old name
+/// ([`crate::Error::UnknownParam`]) says it ([`renamed`]), so a recipe written before is mended
+/// by its error and not by a search.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Renamed {
+    /// The form.
+    pub form: &'static str,
+    /// The name it took.
+    pub old: &'static str,
+    /// The parameter that took its place, if one did (its unit may differ: `instead` says).
+    pub new: Option<&'static str>,
+    /// What to give instead, in a sentence.
+    pub instead: &'static str,
+}
+
+const fn rn(form: &'static str, old: &'static str, new: Option<&'static str>, instead: &'static str) -> Renamed {
+    Renamed { form, old, new, instead }
+}
+
+/// The parameters of stage 4's forms renamed or gone at its remake (review 1 of stage 4, finding
+/// 3: one unit for one name; review 2, finding 3: say the new name).
+pub const RENAMED: &[Renamed] = &[
+    rn("bell", "height", Some("height_ratio"), "the height as a share of the lip's radius (a bell 0.6 m tall with a 0.5 m lip is 1.2)"),
+    rn("bell", "crown", None, "the top is a shoulder rounding into a flat crown: waist_ratio (the waist's radius, a share of the lip's) and shoulder_ratio (the shoulder's radius, a share of the waist's) set it"),
+    rn("bell", "curve", None, "the flare is an S of two arcs from the lip up to the waist: flare_ratio (how high it rises, a share of the height) and waist_ratio set it"),
+    rn("bottle", "height", Some("height_ratio"), "the height as a share of the body's radius"),
+    rn("bottle", "neck", Some("neck_ratio"), "the neck's radius as a share of the body's"),
+    rn("bottle", "neck_length", Some("neck_length_ratio"), "the neck's length, with its lip, as a share of the height"),
+    rn("bottle", "shoulder", Some("shoulder_ratio"), "the shoulder's height as a multiple of the step in from the body to the neck"),
+    rn("vase", "foot", Some("foot_ratio"), "the foot's radius as a share of the belly's"),
+    rn("vase", "neck", Some("neck_ratio"), "the neck's radius as a share of the belly's"),
+    rn("vase", "mouth", Some("mouth_ratio"), "the mouth's radius as a share of the neck's (over 1: a flared lip)"),
+    rn("vase", "neck_length", None, "the neck stands at a fixed share of the height: height_ratio (the height, a share of the belly's radius) sets it"),
+    rn("baluster", "base", None, "radius is now the plinth's and the cap's radius (it was the ball's), and bulb_ratio the belly's as a share of it"),
+    rn("baluster", "thickness", None, "the plinth and the cap are moulded, their heights shares of the baluster's: height_ratio (the height, a share of the plinth's radius) sets them"),
+    rn("baluster", "neck", Some("neck_ratio"), "the neck's radius as a share of the belly's"),
+    rn("baluster", "neck_length", None, "the neck runs from the belly to the collar, at fixed shares of the height: height_ratio sets it"),
+    rn("gem", "table", Some("table_ratio"), "the table's circumradius as a share of the girdle's"),
+    rn("leaf", "width", Some("width_ratio"), "the blade's width at its widest, as a share of its length"),
+    rn("leaf", "widest", Some("widest_ratio"), "how far up the blade it is widest, as a share of its length"),
+];
+
+/// What became of the parameter `param` of the form or alias `word`, if it is one [`RENAMED`]
+/// lists.
+pub fn renamed(word: &str, param: &str) -> Option<&'static Renamed> {
+    let name = form(word).map(|f| f.name).or_else(|| aliases().iter().find(|a| a.name == word).map(|a| a.of))?;
+    RENAMED.iter().find(|r| r.form == name && r.old == param)
 }
 
 /// The families' own lists, in catalogue order. A new family adds its list here; a new form in
 /// a family is one entry in that family's file.
-fn lists() -> [&'static [Form]; 5] {
-    [crate::forms::polygons::FORMS, crate::forms::round::FORMS, crate::forms::curves::FORMS, crate::forms::flat::FORMS, crate::forms::curved::FORMS]
+fn lists() -> [&'static [Form]; 7] {
+    [crate::forms::polygons::FORMS, crate::forms::round::FORMS, crate::forms::ornamenta::FORMS, crate::forms::curves::FORMS, crate::forms::flat::FORMS, crate::forms::curved::FORMS, crate::forms::supellex::FORMS]
 }
-fn alias_lists() -> [&'static [Alias]; 5] {
-    [crate::forms::polygons::ALIASES, crate::forms::round::ALIASES, crate::forms::curves::ALIASES, crate::forms::flat::ALIASES, crate::forms::curved::ALIASES]
+fn alias_lists() -> [&'static [Alias]; 7] {
+    [crate::forms::polygons::ALIASES, crate::forms::round::ALIASES, crate::forms::ornamenta::ALIASES, crate::forms::curves::ALIASES, crate::forms::flat::ALIASES, crate::forms::curved::ALIASES, crate::forms::supellex::ALIASES]
 }
 
 /// Every form, in catalogue order.

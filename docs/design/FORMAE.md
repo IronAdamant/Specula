@@ -86,9 +86,17 @@ In the three senses the word has in games, all built:
   solid in the 2D world has at most 4,096 points and 4,096 faces (hidden faces are found pair by
   pair where the solid is not convex), and at most 64 layers.
 - **Two read-only tools**, in a family of their own (`formae`):
-  - `formae_list`: the catalogue. **With nothing asked, every name by kind and family, a line a
-    family, and how to ask for more, in under 3 KB** (about 600 tokens: stage 3b, a cheap first
-    read for a cold agent; it was 39 KB). With a kind, a family or a word, or `rows: true`: rows
+  - `formae_list`: the catalogue. **With nothing asked, every family by kind, a line a family
+    with its first names, and how to ask for more, in under 3 KB** (about 600 tokens: stage 3b, a
+    cheap first read for a cold agent; it was 39 KB). Until stage 4 every name fitted; since, a
+    family longer than the rest keeps its first names (as many as fit for every family alike: six
+    or seven) and says how many more it has (`"circle (10): circle semicircle ... +3 more"`).
+    **Within a family the names are ordered by hand, the ones an agent building a game reaches
+    for first** (`COMMONEST` in `formae_tools.rs`: `stadium` and `rounded_rectangle` before
+    `lune`, `capsule` and `rounded_cylinder` before `bicone`, `truncated_icosahedron` first of
+    its family), then the rest in the table's order; so the names cut from the first answer are
+    the rarer ones, one `word` or `family` call away. A test holds that every hand-ordered name
+    among its family's first six is in the first answer. With a kind, a family or a word, or `rows: true`: rows
     that paste (the recipe shape, a plane figure's outline in an extrusion and its `shape2d`
     item), each parameter with its default, at most 200 rows and 8 KB a page. `figures: true`
     adds the measured human figure: the `figure` shape and the `figure` rig, with their fields
@@ -126,9 +134,253 @@ In the three senses the word has in games, all built:
   The small stellated dodecahedron and the stella octangula are here as their outer surfaces.
 - **A cross of three boxes as one surface**: a union, which the modeller's booleans make.
 - **A hollow sphere**: two surfaces (the dome and the bowl, shells with an opening, are here).
-- **Letters and symbols; organic shapes** (leaves, bones): part 5's libraries.
+- **Letters and symbols; organic shapes** (bones, bodies): part 5's libraries. A leaf (and a
+  petal) is here, as two arcs a side.
 - **An involute gear**: the gear's teeth have straight flanks.
-- **The Johnson solids and simple fractals**: the next stage's.
+- **The Johnson solids** (cupolas, rotundas, augmented and diminished solids): rarely what a game
+  asks for; a later stage.
+- **Fractals whose parts touch**: the Sierpinski triangle (its holes meet the outline at points:
+  not simple rings) and tetrahedron (its pieces meet at points: not one closed surface). The
+  Menger sponge is one closed surface, but its count and its genus grow twentyfold a level:
+  later. The Koch snowflake and the Sierpinski carpet are here, to a bounded depth.
+- **Pipe tees and crosses**: two tubes' union, which the modeller's booleans make; the saddle
+  where they meet is not a construction this library proves sound.
+- **A screw's thread**: sound by construction (each section star-shaped about the axis), but its
+  distance has no closed form and its build's field is past the field's ceiling at any useful
+  detail: later.
+- **What a recipe already says in one line from the table**: a chamfered or bevelled prism of
+  any figure, a pillow, a plaque (the raise of a figure: `bevelled`, `pillow`, `slab`); an arch's
+  ring and a barrel vault (`annular_sector` raised and turned upright); a ramp (`wedge`). The
+  rounded cylinder is here although the raise of a circle bevelled round is the same solid,
+  because turned it has exact measures and a field of a few operations, where the raise's is its
+  build's.
+
+## Stage 4: further families (2026-11-24)
+
+What an agent building props, buildings, machines, plants and creatures reaches for and the first
+table lacked: 12 plane figures and 13 solids, in seven new families and four old ones, each
+entered once with its parameters, measures, anchors, count and field by the rules above.
+
+**One unit for one name** (review 1 of stage 4, finding 3). A parameter that is a length is in
+metres under a plain name (`radius`, `height`, `wall`); a parameter that is a share of another
+has a name that says so (`height_ratio`, `waist_ratio`, `table_ratio`) and the unit `ratio`. A
+form whose proportions must be shares to build across its ranges (drawn as free lengths over
+eight decades, the bell and the bottle never built once in 300 draws) keeps them as named
+ratios, and keeps its wall in metres like every vessel's. The rows `formae_list` gives say each
+parameter's unit (`radius=0.5 m, height_ratio=1.5 ratio`). Older stages have three ratios under
+length names (`pointed_arch.radius`, `ogee_arch.radius`, `flower.inner`); they are left as they
+are, since recipes name them.
+
+- **Plane figures** (lines and arcs only, so everything about them is exact): four moulding
+  profiles in a profile's frame (back on `x = 0`, bed on `y = 0`, face toward `+x`, so an outline
+  by name sweeps along a wall): `cavetto`, `cyma_recta`, `cyma_reversa` (each S is two equal arcs
+  of at most a quarter turn, point-symmetric about its middle, so its area is a polygon's; an S
+  flatter than fifty to one is refused, as its arcs' centres would be too far off to keep the
+  measures' digits) and `bead` (a half disc on its back: `astragal`, `half_round`);
+  `arch_portal` (the wall round an arched opening); `stair_profile`; `grate` and `truss`
+  (figures with holes; their border has a point level with every hole's corner on it, so a
+  raise's cap between the border and the holes is cut into rectangles a bar wide, where a side
+  with no point on it made a triangle from a hole's corner to the side's far end, `b g / 2L`
+  across, under the mesh's floor for a ladder of a grate 65 m tall with bars of 2.5 mm);
+  `banner`; `leaf` (on its stalk: a blade rounded at its base, widest where asked, and drawn out
+  to a point at its tip by a convex arc and a concave one); `koch_snowflake` (depth 0 to 5) and
+  `sierpinski_carpet` (depth 1 to 3). New words for old shapes: `ovolo` and `quarter_round` (the
+  sector at 90 degrees, which is in the frame).
+- **Solids**: turned (a profile of lines and arcs from the axis to the axis: exact measures, a
+  bounded error, an exact field): `rounded_cylinder`; the hollow vessels `cup`, `bell`, `goblet`,
+  `bottle` and `vase`, each open at its mouth, its cavity part of the one profile (in from the
+  floor's middle, round the rim, down the outside), its wall `wall` thick measured across the
+  wall (the inside is the outside moved along its normal: lines parallel, arcs about the same
+  centres); the props `baluster` and `mushroom`. Where a turned profile swells and narrows (the
+  vase's foot, waist, belly, neck and lip; the bottle's shoulder; the baluster's bulb, neck,
+  collar and throat) each stretch is an S of two arcs of one radius between two points where
+  the profile runs upright, so every join is smooth; an S whose rise is under its step across
+  (its arcs would turn past a quarter) or over fifty times it is refused with its numbers. The
+  bell (remade in round 3, after the second picture check read its old lip as "a flat
+  plate-like flange, a top hat or a plunger knob"): from the mouth, upright at the lip, an S of
+  two arcs up to the waist, the lower one convex (the sound bow, rounding in from the lip, three
+  tenths of the two radii) and the upper one concave and longer (the flare curving in to the
+  waist; both turn by one angle, so the join is smooth), a short straight waist, a quarter round
+  into a flat crown; the inside is the outside moved a wall across all the way down, and the
+  mouth is a ring a wall wide. Its wall is one thickness: a sound bow thicker than the waist, as
+  a cast bell has, is not built. Its error does not fall a steady four times when the detail
+  doubles (its volume is the outside's less the inside's, whose chords' errors cancel in part);
+  what holds across its range, and is tested, is that each measure is within the bound the build
+  states. The baluster (remade in round 3, after "a thin spindle with plain disc ends"): a plinth
+  with a torus (a quarter round) and a cavetto off it, a full belly at 0.27 of the height
+  (95% of the plinth's radius by default), an S in along a long neck, a collar of a fillet, a bead
+  and a fillet, a cyma out to the abacus; its mouldings are the library's own profiles turned. The
+  cup's defaults are a drinking cup, a beaker with no handle (6.4 cm across at the foot, 8 at the
+  rim, 10 tall); a bucket or a pot is its arguments (radius 0.4, top 0.45, height 0.5 were its
+  old defaults). The proportions of the bell, the vase and the baluster are the engine's own
+  (the research library holds no bells, vessels or balusters), and said in the code. Flat: `chamfered_box` (every edge cut at 45
+  degrees and a triangle at each corner: 24 points, 26 faces), `stairs`, `crystal`, `gem` (a
+  crown of triangles between the girdle and a table turned half a side, an upright girdle band
+  `girdle` tall, 0 for a knife edge; the table's corners must lie inside the girdle's sides). And
+  `chain_link`: a round wire along a stadium, two half tori and two cylinders with every quad
+  planar, whose field is the stadium's plane field lifted (`wire`: the distance to the curve less
+  the wire's radius, exact on both sides while the wire is thinner than the bend, which the form
+  requires).
+- **The leaf** (round 3): where the blade meets the stalk a concave round, tangent to the
+  stalk's side and crossing the blade's base at 25 degrees, takes the place of the blunt cusp the
+  picture check saw (tangent at both ends, the two arcs made an inflection whose chords lay on one
+  line at a coarse detail, and an extrusion's cap a triangle under the modeller's floor);
+  its radius is an eighth of the blade's half width, halved until its foot lies in the stalk's
+  upper half and below the blade's base. Such a round turns by the base's angle off upright at
+  the stalk's top less its crossing, so (review 3, finding 1, which found every narrow blade
+  widest high up refused): **where the base leaves the stalk at 25 degrees or less off upright**
+  (a willow's, a lanceolate leaf's) **there is no round**, the base meeting the stalk at a turn no
+  sharper than the round's own crossing; between 25 and 50 degrees the round crosses at half the
+  base's angle, so it always turns by at least half of it; and where ten halvings do not fit it,
+  or its arc would be under a millionth of the leaf's height, there is no round either. No leaf
+  is refused for its round. The review's 498 draws build as at `d6172439` (444; the other 54 are
+  `edge_under_floor`, a blade of 0.1 mm on a stalk of metres), and a grid over the three ranges
+  builds (`tests_stage4.rs`).
+
+**Facets** (review 2 of stage 4, finding 1; round 3). A form is **faceted** when its flat faces
+are the point of it (`Form::faceted`): the Platonic, Archimedean, Catalan and stellated solids,
+and `chamfered_box`, `crystal` and `gem` (`FACETED_NAMES`): 40 forms. The modeller tags the faces
+of a faceted form `TAG_FACET`, and shades each face flat, with a hard edge against every face not
+within a degree of its plane, whatever the recipe's smooth angle or its default of 30 degrees: a
+cut stone's crown facets meet at under 30 degrees and were shaded as one curve. Every other form
+carries no tag and is shaded by the smooth angle exactly as before the tag existed: a prism or a
+pyramid of many sides, a rounded form's flat patches, every plane figure raised (a slab's cap and
+walls). **So do a `box`, a prism or a pyramid of few sides, and a bipyramid**: they follow the
+recipe's smooth angle like any other form, so `box` at a smooth angle of 120 shades as a blob
+while `cube_in_sphere` stays flat (and a `bipyramid` of 4 sides as one, while `octahedron`
+stays flat), and the default hexagonal `prism` at 60 has its sides shaded round. An author who wants one
+flat gives its part a `smooth_angle` below the angle between its faces (a part's own angle wins,
+below). Round 2 had tagged every flat surface of every form, which put seams at tangent joins (a
+raised stadium's walls into its ends, a rounded box's faces into its rounds, an arch's legs into
+its arch) and faceted a 64-sided prism at a smooth angle of 60; that is undone.
+
+- **Two faces within a degree of each other are one surface** at a shared corner, tag or none:
+  a facet never creases against a face within a degree of its plane, and a plain face already
+  took the smooth angle as at least one degree.
+- **A part's own `smooth_angle` wins over the tag**: a part that gives one is shaded by it,
+  facets and all (`{"name": "stone", "smooth_angle": 60, "shape": {"op": "form", "form":
+  "gem"}}` is a smoothed gem). The recipe's own `smooth_angle` and the default of 30 do not
+  un-facet a faceted form: they are the recipe's general setting, and a part's is the author's
+  word for that shape. (A `form` op has no `smooth_angle` of its own: the modeller's smooth angle
+  is a part's, applied when the part is finished, so the part is the nearest place it can be
+  said explicitly.)
+- **The modeller's vertex count of a faceted form** is not the library's point count: each point
+  is a vertex once for every plane its faces lie in (faces in one plane, as the stella
+  octangula's, share their corners). At their defaults: the gem has 25 library points and
+  33 faces, and 112 vertices and 46 triangles in the model; the crystal 14 and 18,
+  60 and 24; the chamfered box 24 and 26, 96 and 44. What the catalogue promises before a
+  build (`count`) is the library's points and faces; what a recipe's budget holds is triangles
+  (`budget.max_triangles`, the studio's `max_triangles`), which a split vertex does not change,
+  and the modeller predicts triangles only (`2V − 4 + 4g` from the library's count). No budget
+  counts vertices.
+- **Held by tests** (`crates/specula-model/tests/formae_facets.rs`): every form that is not
+  faceted makes the same model, every level's positions, normals and indices, as at `939185c7`
+  (the working line before the tag), at its defaults, at the recipe's default smooth angle and
+  at 60 (110 forms pinned; the stage-4 forms are new since and not pinned); no form, at its
+  defaults and at one drawn set of arguments, solid or raised as a slab, at 30 or at 60 (the
+  spindle at 60 left out, below), has two normals under a degree apart at one position; each
+  faceted form at its defaults and two drawn sets, at 30, 60 and 120, has every corner on its
+  face's normal and its vertices as above, and the gem at 64 sides and the crystal at 24 (facets
+  a few degrees apart: a gem's girdle facets at 64 sides are 5.6 degrees apart) have exactly
+  their faces' corners as vertices (896 and 240); a part's smooth angle smooths the gem and the
+  recipe's does not. More draws are not held by a test: what they show is the next point.
+- **Pairs of normals under a degree apart that the modeller's smoothing makes**, not the facet
+  tag's (review 3 of stage 4, finding 3, over the defaults and five drawn sets of every form,
+  solid or raised six ways, at 30 and 60): where a fan of faces turns past the smooth angle
+  around one point, each corner takes the faces within the angle of its own face, which is not
+  the same set at each corner, so one position carries normals a fraction of a degree apart.
+  **173 models of older forms have such pairs, the same 173 at `939185c7`** (before this stage)
+  and now: bevelled (64), bevelled-and-rounded (50) and pillow (55) raises of 33 plane figures
+  (the semicircle, the circular segment, the sector, the cross, the annular sector, the
+  epicycloid and others), and four solids at some arguments (the ellipsoid, the bicone, and the
+  spindle at two: its tips at a smooth angle of 60 are the case the test leaves out). The angles
+  in a pair are 0.007 to 0.997 degrees (median 0.55): a step in shading under 2 percent even at a
+  grazing light, a seam a normals view shows. This stage adds none among older forms. Among its
+  own forms, 52 such models are in bevelled, bevelled-and-rounded and pillow raises of `bead`,
+  `banner`, `stair_profile`, `cyma_recta`, `cyma_reversa` and `arch_portal` (none in the bell,
+  the baluster, the cup or the leaf). They are not mended: mending them (gathering a point's
+  normals into groups before averaging) would change older models' bytes, and the lead decided
+  to leave them.
+
+**Old parameter names** (review 2 of stage 4, finding 3). A name a stage-4 form took before its
+remake is refused (`unknown_param`) with the name that took its place, or, where none did, with
+what to give instead (`RENAMED`, `Error::renamed`): `bell` `height` is now `height_ratio`;
+`crown` and `curve` are gone (the shoulder and the flare's S, set by `waist_ratio`,
+`shoulder_ratio`, `flare_ratio`); `bottle` `height`, `neck`, `neck_length`, `shoulder` and `vase`
+`foot`, `neck`, `mouth` are their `_ratio`s; `vase.neck_length`, `baluster.base`, `thickness`
+and `neck_length` are gone; `baluster.neck` is `neck_ratio`; `gem.table` is `table_ratio`; `leaf`
+`width` and `widest` are `width_ratio` and `widest_ratio`. The modeller's parse-time refusal
+says the same. A name whose meaning changed and kept its spelling (`baluster.radius`, once the
+ball's and now the plinth's; `bell.wall`, a share at `bc2f5a91` and metres since) cannot be told
+from its value and is not caught.
+
+**Not done in stage 4:**
+- A relief of a ladder grate with a margin far under a bar is refused `edge_under_floor` with
+  words that are not true of it (the plate's rim has only its four corners and makes a sliver
+  against the grate's border): review 2's finding 2, in `raise.rs`, which another lane (soft
+  edges) holds; left for it.
+- The leaf's round crosses the blade's base at an angle, not tangent, because the modeller's
+  `extrude` of the outline refuses the tangent round at ordinary details (20, 33, 100, 128, 150,
+  256: its cap's triangulation drops near-collinear ears and the extrusion is not closed), while
+  the library's own slab (`"raise": {"as": "slab"}`) builds the tangent one at every detail tried
+  (review 3 of stage 4, finding 4). The kink this leaves is the cusp the picture check saw. And
+  the modeller's extrusion of the default leaf at detail 200 builds a sliver, a triangle whose
+  altitude is 7.2e-7 of its longest edge (1.9e-9 m2, above the floor), at the inflection between
+  the blade's two upper arcs, which did not change in this round. Both are the modeller's to
+  mend, not done here: route a library outline's `extrude` through the library's slab (its cap
+  cutter), or drop points collinear within rounding before ear clipping; then the round can be
+  tangent.
+- The bell's sound bow is not thicker than its waist; the bell has no crown loop to hang it by.
+- The cup has no handle.
+
+**What the second picture check saw that is not in the forms** (round 3, measured):
+- *A faint horizontal line* on the mushroom's stem and the bottle's body. The mushroom's stem is one
+  band of the mesh from the ground to the cap (rings at y = 0 and 0.06 only; 1,790 triangles, `2V − 4`
+  of its 897 points): no edge is there. The line is the rasterised silhouette: the camera looks down
+  on the stem, so its sides lean in by about a pixel over its height and step one pixel at one row,
+  both sides at the same row (4x crops of two different sheets). On the bottle, the line near 60% is
+  where the straight body meets the shoulder's arc: the profile turns there smoothly but its
+  curvature steps, which clay's raking light shows as a change of tone. Neither is mended.
+- *A diagonal light and dark band* in clay on rounded forms: clay has no shadows (`form.glsl`); it is
+  the terminator of clay's raking key from the upper left, weak fill from the right. The library's
+  sphere shows the same band (`sphere_ref`), and the lit colour pass of the same forms has none. The
+  stage is as FORM.md designs it ("clay's key rakes"); nothing in the engine was changed.
+
+**The raise's cap cutter** (`cap.rs`; review 1 of stage 4, findings 1, 2 and 7). A quarter of
+the trusses the figure accepted could not be raised (`not_well_made`, the cap not cut), at every
+scale: not for their bars' thinness (the lane had guarded bars under a ten-millionth of the size,
+a cause that was not the cause; the guard is gone) but for three faults of the cutter, each
+mended there and held by a test of its own (`tests_cap.rs`), and one of quality:
+
+1. A bridge from a hole's corner was checked against the other holes' edges with a box test that
+   a point a rounding off a level line falls outside; a truss's hole corners lie on its chords'
+   lines to a rounding, so a bridge along a chord ran through another hole's base and the cut
+   found no ear. "On a segment" is now within rounding of its line and between its ends along it.
+2. Two holes bridged to one corner of the outer ring were spliced in at whichever of its two
+   places came first, which crosses the polygon where the second bridge leaves on the wrong side
+   of the first; the place whose corner opens toward the hole is taken.
+3. The rounding bound of a turn was 16 ε times the product of the longer sides, far more than
+   the error of the computation where two sides are long and nearly parallel (a 0.3 mm side and
+   two of 7,500 m: a true turn of 9e-8 held flat against 2e-7), which left the strip between a
+   long side and a column of holes with no ear. A cut is now tried by that wide bound first (so
+   whatever it cut is cut as before, byte for byte, and corners that line up to a rounding are
+   kept out of one triangle) and, where it finds none, by the computation's own bound, 8 ε times
+   the sum of the two products' sizes. The proof holds by either.
+4. Not a fault of the proof but of the cut's quality: an ear clipper's greedy order can leave a
+   fan from one far corner across a strip whose sides' points are not level (a bevelled ladder
+   of a grate, whose holes grew by the inset and whose border did not: triangles 4.5e-8 m across
+   in a strip 1.3 mm wide, under the mesh's floor). Where a cut of a region with holes still has a
+   triangle under the floor after the old sliver flips, it is made Delaunay by Lawson's flips
+   (each keeps the proof's premises; they are checked after). Only a cut that the floor would
+   have refused is touched.
+
+Every truss of review 1's scan (length 4, heights 0.05 to 6.4 m, bars 3 to 18% of the height,
+1 to 100 bays, at scales 0.37, 1 and 1,000), every grate of a grid over its ranges and every
+arched wall of a grid over its ranges is raised by every profile or refused by a true rule
+(`inset_too_deep`, or `edge_under_floor` where a part is within a few decades of the floor),
+never `not_well_made`. The raises of every older plane figure (slab, bevelled, pillow, stepped
+and relief, random arguments) and every older solid were dumped before and after these mends:
+the same bytes.
 
 ## Adding a form
 
@@ -174,6 +426,7 @@ How each kind of form gets its field, and what it rests on:
 | The same through part of a turn | its meeting with the turn's wedge | exact inside up to a half turn, else a bound; a bound outside | 3.3 |
 | On an ellipse (ellipsoids, the elliptic cylinder) | the turned field scaled unevenly | a bound | 2.5 |
 | Spheres built any way, the rounded box, the bicylinder | in closed form | exact; the bicylinder exact inside only | 2.1, below; 3.3 |
+| A wire along a plane figure's boundary (the chain link) | the plane field's size at `(x, −z)`, lifted: `√(d² + (y − y₀)²) − r` | exact while `r` is under the curve's reach | 4.3; `field::Plan::wire` |
 | Any other solid (polyhedra, pyramids, bevelled, pillowed and stepped figures, superellipsoids, sweeps) | its build at the detail: the nearest face, edge or corner where it is convex, else the nearest triangle with the winding number's sign | exact for the build | 2.1 |
 | Curves | refused: a curve has no inside | | |
 
@@ -278,6 +531,18 @@ Every form at its defaults and detail 64 (made from the crate; held by `crates/s
 | `epicycloid` | plane | plane | exact | exact | samples (error estimated) | 66 / 1 / 0 |
 | `hypocycloid` | plane | plane | exact | exact | samples (error estimated) | 64 / 1 / 0 |
 | `superformula` | plane | plane | exact | exact | samples (error estimated) | 66 / 1 / 0 |
+| `cavetto` | plane | plane | exact | exact | the form | 5 / 2 / 0 |
+| `cyma_recta` | plane | plane | exact | exact | the form | 6 / 3 / 0 |
+| `cyma_reversa` | plane | plane | exact | exact | the form | 7 / 3 / 0 |
+| `bead` | plane | plane | exact | exact | the form | 2 / 2 / 0 |
+| `arch_portal` | plane | plane | exact | exact | the form | 8 / 2 / 0 |
+| `stair_profile` | plane | plane | exact | exact | the form | 12 / 1 / 0 |
+| `grate` | plane | plane | exact | exact | the form | 100 / 1 / 0 |
+| `truss` | plane | plane | exact | exact | the form | 53 / 1 / 0 |
+| `banner` | plane | plane | exact | exact | the form | 5 / 1 / 0 |
+| `leaf` | plane | plane | exact | exact | the form | 11 / 9 / 0 |
+| `koch_snowflake` | plane | plane | exact | exact | the form | 192 / 1 / 0 |
+| `sierpinski_carpet` | plane | plane | exact | exact | the form | 40 / 1 / 0 |
 | `line_segment` | curve | refused | - | - | refused: `a_curve_has_no_inside` | - |
 | `zigzag` | curve | refused | - | - | refused: `a_curve_has_no_inside` | - |
 | `arc` | curve | refused | - | - | refused: `a_curve_has_no_inside` | - |
@@ -380,6 +645,19 @@ Every form at its defaults and detail 64 (made from the crate; held by `crates/s
 | `mobius_band` | solid | mesh_build | exact | exact | samples (error estimated) | 1024 / 3073 / 1024 |
 | `steinmetz_solid` | solid | meeting | bound | exact | the form | 0 / 2 / 0 |
 | `round_arrow` | solid | turned | exact | exact | the form | 5 / 2 / 0 |
+| `rounded_cylinder` | solid | turned | exact | exact | the form | 6 / 4 / 0 |
+| `chamfered_box` | solid | convex_build | exact | exact | the form | 122 / 1 / 0 |
+| `stairs` | solid | mesh_build | exact | exact | the form | 44 / 133 / 44 |
+| `cup` | solid | turned | exact | exact | the form | 6 / 2 / 0 |
+| `bell` | solid | turned | exact | exact | the form | 12 / 8 / 0 |
+| `goblet` | solid | turned | exact | exact | the form | 8 / 4 / 0 |
+| `bottle` | solid | turned | exact | exact | the form | 14 / 6 / 0 |
+| `vase` | solid | turned | exact | exact | the form | 21 / 16 / 0 |
+| `baluster` | solid | turned | exact | exact | the form | 19 / 11 / 0 |
+| `mushroom` | solid | turned | exact | exact | the form | 5 / 3 / 0 |
+| `crystal` | solid | convex_build | exact | exact | the form | 78 / 1 / 0 |
+| `gem` | solid | convex_build | exact | exact | the form | 145 / 1 / 0 |
+| `chain_link` | solid | wire | exact | exact | the form | 4 / 4 / 0 |
 <!-- fields-table: end -->
 
 ## The table of every form
@@ -513,6 +791,53 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 | `epicycloid` | the curve a point of a circle traces rolling round the outside of another | `cusps` count 3 (1..24), `radius` m 0.1 (0.0001..10000) |
 | `hypocycloid` | the curve a point of a circle traces rolling round the inside of another | `cusps` count 4 (3..24), `radius` m 0.125 (0.0001..10000) |
 | `superformula` | Gielis's superformula, a polar curve (closed and simple wherever it is accepted) | `m` count 6 (0..40), `n1` ratio 1 (0.5..20), `n2` ratio 7 (0.5..20), `n3` ratio 8 (0.5..20), `a` ratio 1 (0.25..4), `b` ratio 1 (0.25..4), `scale` m 0.5 (0.0001..10000) |
+
+#### plane forms, moulding
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `cavetto` | a cove moulding: a block less a quarter disc at its outer upper corner (back on x = 0, bed on y = 0) | `width` m 0.1 (0.0001..10000), `height` m 0.1 (0.0001..10000), `radius` m 0.08 (0.0001..10000) |
+| `cyma_recta` | an ogee moulding: an S of two equal arcs, convex below and concave above, level at its ends (a crown moulding's) | `width` m 0.1 (0.0001..10000), `height` m 0.1 (0.0001..10000), `fillet` m 0.012 (0.0001..10000) |
+| `cyma_reversa` | a reverse ogee moulding: an S of two equal arcs, concave below and convex above, upright at its ends | `width` m 0.3 (0.0001..10000), `height` m 0.45 (0.0001..10000), `fillet` m 0.04 (0.0001..10000) |
+| `bead` | a bead moulding's profile: a half disc whose flat side is the back (back on x = 0, bed on y = 0, bulging toward +x); raised as a slab as long as the run, or swept along a wall, it is the moulding | `radius` m 0.02 (0.0001..10000) |
+
+#### plane forms, arch
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `arch_portal` | a wall with a round-arched opening from its floor (a doorway or a gate's wall) | `width` m 2 (0.0001..10000), `height` m 3 (0.0001..10000), `opening` m 1 (0.0001..10000), `spring` m 1.6 (0.0001..10000) |
+
+#### plane forms, stair
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `stair_profile` | the side of a flight of steps rising along +x, down to the floor | `steps` count 5 (1..100), `rise` m 0.18 (0.0001..10000), `run` m 0.28 (0.0001..10000) |
+
+#### plane forms, frame
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `grate` | a panel with a grid of rectangular holes (a grille, a vent, a window's bars) | `width` m 1 (0.0001..10000), `height` m 1 (0.0001..10000), `columns` count 4 (1..8), `rows` count 4 (1..8), `bar` m 0.05 (0.0001..10000) |
+| `truss` | a Warren truss panel: chords, end posts and diagonals of one width, with triangular holes | `length` m 4 (0.0001..10000), `height` m 0.6 (0.0001..10000), `bays` count 4 (1..100), `bar` m 0.05 (0.0001..10000) |
+
+#### plane forms, symbol
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `banner` | a swallowtail banner: a rectangle with a V cut into its fly end | `length` m 1 (0.0001..10000), `height` m 0.6 (0.0001..10000), `notch` m 0.25 (0.0001..10000) |
+
+#### plane forms, leaf
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `leaf` | a leaf on its stalk: a blade rounded at its base and drawn out to a point at its tip, widest where asked (arcs only) | `length` m 0.1 (0.0001..10000), `width_ratio` ratio 0.5 (0.1..0.9), `widest_ratio` ratio 0.38 (0.15..0.6), `stalk` m 0.02 (0.0001..10000) |
+
+#### plane forms, fractal
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `koch_snowflake` | the Koch snowflake to a depth: each side of a triangle replaced by four, again and again | `side` m 1 (0.0001..10000), `depth` count 3 (0..5) |
+| `sierpinski_carpet` | the Sierpinski carpet to a depth: a square with its middle ninth taken out, and each of the eight left the same | `size` m 1 (0.0001..10000), `depth` count 2 (1..3) |
 
 #### curve forms, line
 
@@ -711,6 +1036,54 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 | `steinmetz_solid` | the bicylinder: where two cylinders of one radius, along x and along z, cross | `radius` m 0.5 (0.0001..10000) |
 | `round_arrow` | an arrow as one solid of revolution along +Y: a shaft and a conical head | `shaft` m 0.05 (0.0001..10000), `length` m 0.8 (0.0001..10000), `head` m 0.12 (0.0001..10000), `head_length` m 0.25 (0.0001..10000) |
 
+#### solid forms, cylinder
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `rounded_cylinder` | a cylinder with its two rims rounded to a true radius (a puck, a coin, a button, a cushion) | `radius` m 0.5 (0.0001..10000), `height` m 0.2 (0.0001..10000), `fillet` m 0.05 (0.0001..10000) |
+
+#### solid forms, block
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `chamfered_box` | a box with every edge cut at 45 degrees and a triangle at each corner (the bevelled cube of modelling tools) | `width` m 1 (0.0001..10000), `height` m 1 (0.0001..10000), `depth` m 1 (0.0001..10000), `chamfer` m 0.1 (0.0001..10000) |
+
+#### solid forms, stair
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `stairs` | a straight flight of steps rising along +x, solid down to the floor | `steps` count 5 (1..100), `rise` m 0.18 (0.0001..10000), `run` m 0.28 (0.0001..10000), `width` m 1 (0.0001..10000) |
+
+#### solid forms, vessel
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `cup` | a drinking cup, a beaker with no handle: hollow, open at the top, a floor and a wall of one thickness measured across it, straight or tapered (wider than tall, a bucket or a pot: radius 0.4, top 0.45, height 0.5) | `radius` m 0.032 (0.0001..10000), `top` m 0.04 (0.0001..10000), `height` m 0.1 (0.0001..10000), `wall` m 0.003 (0.0001..10000), `floor` m 0.006 (0.0001..10000) |
+| `bell` | a hollow bell open below: from the lip a sound bow rounding in and a flare curving in to the waist (an S), a round shoulder and a flat crown, its wall one thickness | `radius` m 0.5 (0.0001..10000), `height_ratio` ratio 1.5 (0.6..3), `waist_ratio` ratio 0.55 (0.25..0.95), `flare_ratio` ratio 0.7 (0.05..0.9), `shoulder_ratio` ratio 0.4 (0.05..0.95), `wall` m 0.025 (0.0001..10000) |
+| `goblet` | a goblet: a hollow half-ball cup on a stem and a round foot | `radius` m 0.04 (0.0001..10000), `wall` m 0.003 (0.0001..10000), `stem` m 0.005 (0.0001..10000), `length` m 0.08 (0.0001..10000), `foot` m 0.035 (0.0001..10000), `base` m 0.004 (0.0001..10000) |
+| `bottle` | a hollow bottle open at the mouth: a straight body, a shoulder curving in to the neck (an S, smooth at both ends), a neck and a lip ring; its wall one thickness | `radius` m 0.038 (0.0001..10000), `height_ratio` ratio 8 (3..30), `neck_ratio` ratio 0.36 (0.1..0.9), `neck_length_ratio` ratio 0.28 (0.05..0.6), `shoulder_ratio` ratio 1.6 (1..10), `wall` m 0.003 (0.0001..10000) |
+| `vase` | a hollow vase open at the mouth: a foot, a waist, a belly, a neck and a lip flaring out, every join smooth; its wall one thickness down to a floor at the waist | `radius` m 0.12 (0.0001..10000), `height_ratio` ratio 3 (1.5..8), `foot_ratio` ratio 0.6 (0.2..0.98), `waist_ratio` ratio 0.6 (0.1..0.95), `neck_ratio` ratio 0.4 (0.1..0.95), `mouth_ratio` ratio 1.5 (1.05..4), `wall` m 0.006 (0.0001..10000) |
+
+#### solid forms, lathe
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `baluster` | a turned baluster (a balustrade's post, a table's leg): a plinth with a torus and a cavetto, a full belly low down, a long neck, a collar bead, a cyma out to the cap's block | `radius` m 0.06 (0.0001..10000), `height_ratio` ratio 9 (6..20), `bulb_ratio` ratio 0.95 (0.5..1), `neck_ratio` ratio 0.36 (0.2..0.7) |
+| `mushroom` | a mushroom: a stem under a spherical cap | `stem` m 0.02 (0.0001..10000), `stem_height` m 0.06 (0.0001..10000), `cap` m 0.06 (0.0001..10000), `cap_height` m 0.04 (0.0001..10000) |
+
+#### solid forms, crystal
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `crystal` | a crystal: a prism on a regular polygon with a pyramid on its top and, if asked, under its foot | `sides` count 6 (3..64), `radius` m 0.1 (0.0001..10000), `height` m 0.3 (0.0001..10000), `tip` m 0.1 (0.0001..10000), `foot` m 0.05 (0..10000) |
+| `gem` | a cut stone: a flat table, a crown of triangles, an upright girdle band (or a knife edge) and a pointed pavilion, every facet flat | `sides` count 8 (3..64), `radius` m 0.05 (0.0001..10000), `table_ratio` ratio 0.55 (0.1..0.95), `crown` m 0.016 (0.0001..10000), `girdle` m 0.0015 (0..10000), `pavilion` m 0.043 (0.0001..10000) |
+
+#### solid forms, torus
+
+| Form | What it is | Parameters |
+|---|---|---|
+| `chain_link` | a chain link: a round wire along a stadium (two half tori and two cylinders), lying flat | `radius` m 0.03 (0.0001..10000), `length` m 0.04 (0.0001..10000), `wire` m 0.008 (0.0001..10000) |
+
 #### Aliases
 
 | Word | Kind | Is | With |
@@ -772,6 +1145,27 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 | `deltoid` | plane | `hypocycloid` | `cusps` = 3 |
 | `astroid` | plane | `hypocycloid` | `cusps` = 4 |
 | `gielis` | plane | `superformula` | - |
+| `cove` | plane | `cavetto` | - |
+| `cove_moulding` | plane | `cavetto` | - |
+| `ogee_moulding` | plane | `cyma_recta` | - |
+| `crown_moulding` | plane | `cyma_recta` | - |
+| `reverse_ogee` | plane | `cyma_reversa` | - |
+| `ovolo` | plane | `sector` | `angle` = 90 |
+| `quarter_round` | plane | `sector` | `angle` = 90 |
+| `astragal` | plane | `bead` | - |
+| `half_round` | plane | `bead` | - |
+| `doorway` | plane | `arch_portal` | - |
+| `archway` | plane | `arch_portal` | - |
+| `stair_side` | plane | `stair_profile` | - |
+| `grille` | plane | `grate` | - |
+| `grid_panel` | plane | `grate` | - |
+| `warren_truss` | plane | `truss` | - |
+| `girder` | plane | `truss` | - |
+| `swallowtail` | plane | `banner` | - |
+| `pennon` | plane | `banner` | - |
+| `petal` | plane | `leaf` | - |
+| `snowflake` | plane | `koch_snowflake` | - |
+| `menger_carpet` | plane | `sierpinski_carpet` | - |
 | `segment` | curve | `line_segment` | - |
 | `polyline_zigzag` | curve | `zigzag` | - |
 | `circular_arc` | curve | `arc` | - |
@@ -861,4 +1255,22 @@ Made from the crate; held by `crates/specula-formae/tests/doc_table.rs`.
 | `mobius_strip` | solid | `mobius_band` | - |
 | `bicylinder` | solid | `steinmetz_solid` | - |
 | `arrow_solid` | solid | `round_arrow` | - |
+| `puck` | solid | `rounded_cylinder` | - |
+| `tablet` | solid | `rounded_cylinder` | - |
+| `bevelled_box` | solid | `chamfered_box` | - |
+| `beveled_box` | solid | `chamfered_box` | - |
+| `staircase` | solid | `stairs` | - |
+| `steps` | solid | `stairs` | - |
+| `bucket` | solid | `cup` | - |
+| `pail` | solid | `cup` | - |
+| `tumbler` | solid | `cup` | - |
+| `flowerpot` | solid | `cup` | - |
+| `chalice` | solid | `goblet` | - |
+| `wine_glass` | solid | `goblet` | - |
+| `urn` | solid | `vase` | - |
+| `toadstool` | solid | `mushroom` | - |
+| `gemstone` | solid | `gem` | - |
+| `jewel` | solid | `gem` | - |
+| `brilliant` | solid | `gem` | - |
+| `link` | solid | `chain_link` | - |
 <!-- formae-table: end -->

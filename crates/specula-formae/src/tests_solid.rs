@@ -897,3 +897,42 @@ fn t4_solids_closed_forms_hold_against_the_build_3() {
 fn t4_solids_closed_forms_hold_against_the_build_4() {
     t4(false, (3, PARTS));
 }
+
+/// **The bell's true convergence** (review 1 of stage 4, finding 5). The defaults' check above
+/// asks a curved solid's error to fall three to five times when the detail doubles. That is not a
+/// property of the bell: its volume is the outside's less the inside's, whose chords' errors
+/// cancel in part (measured at 1.4 to 8.6 times over its range), and a short arc's segments do
+/// not double exactly (`ceil`), which moves the area's ratio too (2.7 at a strong flare). What
+/// does hold across its range, and is held here over a grid of it: at every detail each measure
+/// is within the bound the build states for it (twice the chord error times the area, and the
+/// faceting's), and that bound falls as the detail rises.
+#[test]
+fn the_bells_error_is_within_its_bound_across_its_range() {
+    let mut checked = 0;
+    for hr in [1.5, 2.0, 2.5, 3.0] {
+        for wr in [0.45, 0.55, 0.7, 0.9] {
+            for fr in [0.45, 0.6, 0.8] {
+                for sr in [0.1, 0.4, 0.9] {
+                    for wall in [0.002, 0.025, 0.05] {
+                        let given = [("height_ratio", hr), ("waist_ratio", wr), ("flare_ratio", fr), ("shoulder_ratio", sr), ("wall", wall)];
+                        let Ok(s) = Spec::new("bell", Some(Kind::Solid), &given) else { continue };
+                        let Ok(c) = s.closed() else { continue };
+                        let mut last = f64::INFINITY;
+                        for d in [64, 128, 256] {
+                            let Ok(b) = s.build(d) else { continue };
+                            let m = mesh_of(&b);
+                            let g = m.measures();
+                            let (lv, la) = allowed(m);
+                            let (ev, ea) = ((c.size.unwrap() - g.size.unwrap()).abs(), (c.boundary.unwrap() - g.boundary.unwrap()).abs());
+                            assert!(ev <= lv && ea <= la, "bell {given:?} at {d}: volume off {ev} (allowed {lv}), area off {ea} (allowed {la})");
+                            assert!(lv < last, "bell {given:?}: the volume's bound did not fall at {d}");
+                            last = lv;
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked >= 300, "{checked}");
+}

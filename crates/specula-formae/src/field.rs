@@ -482,6 +482,9 @@ pub(crate) enum Repr {
     RoundBox { c: P3, half: P3, r: f64 },
     /// A cylinder of radius `r` about the line through `c` along axis `axis` (0 x, 2 z), unending.
     Rod { c: P3, axis: usize, r: f64 },
+    /// A round wire of radius `r` along the boundary of a figure in `(u, v) = (x, −z)` lying at
+    /// height `y`: the distance in space to that boundary curve, less `r` (see [`Plan::wire`]).
+    Wire { plane: Plane2, y: f64, r: f64 },
     /// The greatest of the fields (a meeting: 3.3), in a box.
     Meet(Vec<Repr>, (P3, P3)),
     /// The least of the fields (a union: 3.2).
@@ -583,6 +586,12 @@ impl Repr {
                 c.roots += 1;
                 (u * u + v * v).sqrt() - r
             }
+            Repr::Wire { plane, y, r } => {
+                let d = plane.at([p[0], -p[2]], c).abs();
+                let h = p[1] - y;
+                c.roots += 1;
+                (d * d + h * h).sqrt() - r
+            }
             Repr::Meet(list, _) => list.iter().map(|x| x.at(p, c)).fold(f64::NEG_INFINITY, f64::max),
             Repr::Union(list) => list.iter().map(|x| x.at(p, c)).fold(f64::INFINITY, f64::min),
             Repr::Convex { planes, faces, .. } => {
@@ -643,7 +652,7 @@ impl Repr {
                 c.roots += 1;
                 c
             }
-            Repr::Turned { prof, .. } => {
+            Repr::Turned { prof, .. } | Repr::Wire { plane: prof, .. } => {
                 let mut c = prof.worst();
                 c.roots += 1;
                 c
@@ -675,6 +684,10 @@ impl Repr {
                 let [a, b] = stretch.unwrap_or([1.0, 1.0]);
                 let r = hi[0].max(-lo[0]).max(0.0);
                 ([-a * r, lo[1], -b * r], [a * r, hi[1], b * r])
+            }
+            Repr::Wire { plane, y, r } => {
+                let (lo, hi) = plane.bounds();
+                ([lo[0] - r, y - r, -hi[1] - r], [hi[0] + r, y + r, -lo[1] + r])
             }
             Repr::Ball { c, r } => ([c[0] - r, c[1] - r, c[2] - r], [c[0] + r, c[1] + r, c[2] + r]),
             Repr::RoundBox { c, half, r } => ([0, 1, 2].map(|k| c[k] - half[k] - r), [0, 1, 2].map(|k| c[k] + half[k] + r)),
@@ -781,6 +794,19 @@ impl Plan {
     pub(crate) fn round_box(c: P3, half: P3, r: f64) -> Plan {
         Plan { repr: Repr::RoundBox { c, half: half.map(|h| h - r), r }, sides: EXACT, sampled: false }
     }
+    /// A round wire of radius `r` along the boundary of the figure `rings` (in `(u, v) = (x, −z)`)
+    /// lying at height `y`. The solid is the points within `r` of that curve, so outside its
+    /// distance is the curve's less `r` (DISTANCE_FIELDS.md 4.3); inside, a surface point is at
+    /// least `r − d` from a point at `d` from the curve (the distance to a curve changes no faster
+    /// than the point moves), and the point at `r` along the ray from the nearest point of the
+    /// curve through it is that far, while `r` is under the curve's reach (it keeps that nearest
+    /// point): exact on both sides then, which the construction that asks for it holds (the
+    /// chain link refuses a wire as thick as its bend).
+    pub(crate) fn wire(rings: &[Vec<Seg>], detail: u32, y: f64, r: f64) -> Plan {
+        let mut sampled = false;
+        let plane = Plane2::of_rings(rings, detail, [0.0, 0.0], None, &mut sampled);
+        Plan { repr: Repr::Wire { plane, y, r }, sides: EXACT, sampled }
+    }
     /// The bicylinder of radius `r` standing on y = 0: where the cylinders along x and along z
     /// meet (3.3).
     pub(crate) fn bicylinder(r: f64) -> Plan {
@@ -831,6 +857,7 @@ fn how_of(repr: &Repr) -> &'static str {
         Repr::Turned { .. } => "turned",
         Repr::Ball { .. } => "ball",
         Repr::RoundBox { .. } => "rounded_box",
+        Repr::Wire { .. } => "wire",
         Repr::Rod { .. } | Repr::Meet(..) => "meeting",
         Repr::Union(_) => "relief",
         Repr::Convex { .. } => "convex_build",

@@ -732,7 +732,7 @@ fn superf_geom(a: &Args) -> Result<Geom, Refusal> {
 
 // ---------------------------------------------------------------- the table
 
-const KIN_CIRCLE: &[&str] = &["cylinder", "cone", "sphere", "icosphere", "cube_sphere", "spherical_segment", "hourglass", "hyperboloid"];
+const KIN_CIRCLE: &[&str] = &["cylinder", "cone", "sphere", "icosphere", "cube_sphere", "spherical_segment", "hourglass", "hyperboloid", "rounded_cylinder"];
 
 pub(crate) const FORMS: &[Form] = &[
     plane!("circle", Circle, "a circle", "the centre", P_CIRCLE, curved: true, kin: KIN_CIRCLE, circle_geom, circle_closed, circle_anchors),
@@ -743,7 +743,7 @@ pub(crate) const FORMS: &[Form] = &[
     plane!("annular_sector", Circle, "a sector of a ring (a thick arc)", "the circles' centre", P_ASECTOR, curved: true, kin: &["torus_sector", "dome", "bowl"], asector_geom, asector_closed, super::no_anchors),
     plane!("lune", Circle, "a crescent: a disc less an overlapping disc", "the first circle's centre", P_LUNE, curved: true, kin: &[], lune_geom, lune_closed, lune_anchors),
     plane!("lens", Circle, "the common part of two equal discs", "midway between the centres", P_LENS, curved: true, kin: &["biconvex_lens", "spindle"], lens_geom, lens_closed, lens_anchors),
-    plane!("stadium", Circle, "a rectangle with half discs on its ends (the plane capsule)", "the centre", P_STADIUM, curved: true, kin: &["capsule"], stadium_geom, stadium_closed, stadium_anchors),
+    plane!("stadium", Circle, "a rectangle with half discs on its ends (the plane capsule)", "the centre", P_STADIUM, curved: true, kin: &["capsule", "chain_link"], stadium_geom, stadium_closed, stadium_anchors),
     plane!("rounded_rectangle", Circle, "a rectangle with corners of a true radius", "the centre", P_RRECT, curved: true, kin: &["rounded_box"], rrect_geom, rrect_closed, rrect_anchors),
     plane!("ellipse", Oval, "an ellipse", "the centre", P_ELLIPSE, curved: true, kin: &["elliptic_cylinder", "ellipsoid", "elliptic_torus"], ellipse_geom, ellipse_closed, ellipse_anchors),
     plane!("superellipse", Oval, "a superellipse (Lamé curve)", "the centre", P_SUPER, curved: true, kin: &["superellipsoid"], super_geom, super_closed, super_anchors),
