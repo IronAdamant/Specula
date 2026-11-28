@@ -523,6 +523,20 @@ the piece is level). With `f = (t − t_j) / Δ`, the piece's slope is `δ` time
 of `[0, 2]²` it is `6f(1 − f)`, `2 − 2f`, `2f` and `6(f − ½)² + ½`, none negative on `[0, 1]`. So
 it never has the sign opposite to `δ`. The slopes agree at each station by construction. ∎
 
+**A station at a joint that runs on is one station of both bones.** Where two bones meet end to
+end (7.8) bent by under 40 degrees, their end stations are at the joint (`t = 0` at a head,
+`t = 1` at a tail), their end sections differ by at most a quarter in each half size, and
+neither end is in another such joint, the slope of `A` at that end of each is the harmonic mean
+of the rises of the two pieces beside the joint, one in each bone, measured along the run (0
+where they differ in sign); `q`'s slope there stays 0. Without it each bone's end was level, and
+a run of bones whose sections fall or rise through its joints (a trunk, a tapering tail, a
+serpent) was a staircase of level steps: an outline that waves at every joint. With it, `A` has
+a continuous slope along the run through the joint, and a run that tapers at one rate is
+straight (each slope is then the rate itself, which the cubic keeps). The end slope is still
+`α δ` with `α ∈ [0, 2]` of its own piece's `δ`, so the proof above holds as it stands (the code
+also holds every end slope to that, whatever it is given). What follows past such an end is
+7.3's tilted cap.
+
 So on a piece `A` lies between `A_j` and `A_{j+1}`, and the greatest of `|A′|` is the greatest
 of a quadratic on `[0, 1]` (at an end or where it turns): the code takes it exactly, from the
 numbers it stores. Write `g` for a number at least the steepest growth of the least half size
@@ -558,6 +572,31 @@ the sign of `K`'s signed distance and is zero exactly on `K`'s surface, so **`F`
 `K`, outside and inside**: `|F(x)| ≤ d(x, ∂K)`; (4) it reads short by at most a ratio near the
 bone and a constant far from it: outside, where `n ≤ 2`, `F ≥ s / (L ρ)` with `ρ = M / m` of the
 station (or end) nearest along the axis, and everywhere outside `F ≥ s − (R − m_min)`.
+
+**Past an end whose slope is not level, the cap is tilted to meet it.** At an end where 7.1's
+slope of `A` is not 0 (a joint that runs on), let `σ = m A′ / A` there, `A′` taken outward
+(a number of the end, stored with it), `ℓ = |t − τ| / m ≥ 0` the outward distance in `m`, and
+`w = n_τ(y)`. Past that end `n = √((1 + σ²) ℓ² + w²) − σ ℓ`, which is `√(ℓ² + w²)` for `σ = 0`.
+Its flesh there is `(ℓ − σ)² + w² ≤ 1 + σ²`: at the end exactly the end's section; the section
+scaled by `√(1 + 2σℓ − ℓ²)`, whose slope at `ℓ = 0` is `σ`, so the surface meets the bone's
+with the bone's own slope `A′` (and `B′ = q A′`, as `q`'s end slope is 0); reaching
+`m (σ + √(1 + σ²))` beyond the end. Then (1) to (4) hold with these changes: **`L` is also at
+least `√(1 + σ²)` at each end with `σ ≥ 0`, and `√(1 + σ²) + |σ|` at each with `σ < 0`**; `R`
+is at least `κ` times the end's `M`, `κ = σ⁺ + √(1 + σ⁺²)` (`σ⁺` the greater of `σ` and 0); and
+(4)'s ratio past such an end is `L ρ κ`.
+
+*Proof, past a tilted end.* `n` is continuous (at `ℓ = 0` it is `w`, the bone's own) and of
+degree one in `(ℓ, w)`. With `S = √((1 + σ²) ℓ² + w²)`, `∂n/∂ℓ = (1 + σ²) ℓ / S − σ` and
+`∂n/∂w = w / S`; with `a = ℓ / S` and `b = w / S`, `(1 + σ²) a² + b² = 1`, and the square of
+their length is `((1 + σ²) a − σ)² + b² = (1 + σ²)(1 − σ a)²` (multiply out). Past the end
+`0 ≤ a ≤ 1/√(1 + σ²)`, so `|1 − σ a|` is at most 1 for `σ ≥ 0` and at most
+`1 + |σ| / √(1 + σ²)` for `σ < 0`. As `|∇_y w| ≤ 1/m` (7.2) and `ℓ` changes by `1/m` a metre
+along, `|∇ψ| = m |∇n|` is at most the two numbers of the statement. For the flesh: where
+`1 + σ ℓ ≥ 0`, `n ≤ 1` is `S ≤ 1 + σ ℓ`, squared `(ℓ − σ)² + w² ≤ 1 + σ²`; on that set
+`1 + σℓ > 0` (for `σ < 0`, `ℓ ≤ σ + √(1 + σ²) < 1/|σ|`), and where `1 + σ ℓ < 0`, `n > 1`. A point
+of it is within `M √(ℓ² + w²)` of the end, and `ℓ² + w² = (ℓ − σ)² + w² + 2σℓ − σ² ≤ 1 + 2σℓ`,
+at most `κ²` for `σ ≥ 0` (as `ℓ ≤ σ + √(1 + σ²)`) and at most 1 for `σ < 0`. (4) as before,
+with the end's point `(x − b)/n` now within `M κ` of the end. ∎
 
 *A lemma first.* **A continuous function that is Lipschitz near every point, and whose gradient,
 wherever it has one, is at most `L` long, changes by at most `L` for each metre.** Take `x`, `y`
@@ -651,7 +690,8 @@ L_i`), and 7.3 (4) gives `s_i ≤ L_i ρ_i F_i`. For equal fields `q(f, f) = f �
 
 The join is the sculpt's quadratic one, but the order is by value, not by the recipe: the
 pairwise join depends on its order (5.5), and the cull below needs every order to give one
-answer.
+answer. (The body's field now joins by 7.9's join, which keeps (1) and (3), halves the bounds
+of (2) and (4) for many parts, and does not depend on the order of the values at all.)
 
 **Which join, and what it does at a joint.** The research on skinning at a joint (round 9,
 R9-A3, sections 3 and 4, not yet in this repository) names three ways to compose two bones'
@@ -692,7 +732,7 @@ the skeleton, is 7.8's, which also finds the chain's factor `1 + Λ` whatever it
 the parts with `c_i(x) ≤ ε` are joined**, every `x`. So a sample asks only the parts whose
 capsule, widened by `ε`, holds it; a block of radius `r` about `o` needs only the parts with
 `c_i(o) ≤ ε + r`; and the culled value is `H` itself, a bound (7.5 (3)) and 1-Lipschitz, which
-is all the mesher's skip needs.
+is all the mesher's skip needs. (With 7.9's join, `ε = T + 3K/2`, and with groups `T + 7K/2`.)
 
 *Proof.* Let `S` be the kept parts and `m_S` the least of their values. Every other value is
 above `ε`. If `m_S ≤ ε − K`: in the sorted chain the running value is at most `m_S` from its
@@ -725,8 +765,14 @@ meet end to end (a child's head at its parent's tail, or two children's heads at
 each with its **outward direction** from the joint (`e` at a head, `−e` at a tail), and the
 **bend** `θ` between one's direction into the joint and the other's out of it
 (`cos θ = −o₁ · o₂`; 0 straight on). The joint's **width** is the body's `K` times
-`s(u)`, `u = (1 − cos θ) / (1 − cos 40°)` held to `[0, 1]`, `s(u) = u² (3 − 2u)`, or its own
-where the body gives one (at most `K`): nothing straight on, all of `K` from 40 degrees. Its
+`s(u)`, `u = θ / 40°` held to `[0, 1]`, `s(u) = u² (3 − 2u)`, **or `s(v)`
+where that is greater**, `v` the step in size between the two bones' sections at the joint (the
+greater difference of their half breadths and half depths, over the greater) over a tenth, held
+to `[0, 1]`; or its own where the body gives one (at most `K`): nothing straight on between
+bones of one size, all of `K` from 40 degrees or from a step of a tenth. (Without the step's
+share, a straight joint between bones of different sizes was the plain union round the step,
+with its crease: 11 degrees at the forked body's trunk joint and at the biped's chin, 5 at the
+quadruped's tail root, by the crease measure below. The tenth is the engine's own estimate.) Its
 **seam** `Z` is the solid disc about the joint square to `o₂ − o₁`, of radius `R + K` and half
 thickness `Λ R` (`R` the greater reach of the two bones, `Λ = 1/2`). The width at a point is
 
@@ -745,6 +791,19 @@ width `K(x)` at each point: that is `G`, and the body's field is `H = (G ∧ T) 
    still `T + 2K`, and it is still exact. (This is the form with one width a point; the body's
    field joins groups first, "Where three or more bones meet" below, whose cull takes
    `T + 5K`.)
+
+**The width as the body takes it, softened** (since 7.9). The least of the seams' widths and
+`K` has a corner where it takes over from one to another, and the distance to a disc a corner
+on the disc's face; where a join acts, the width's corner is a break of the joined surface's
+slope (2.6 degrees at the biped's chest joint, by the crease measure). So the body takes
+`φ(d) = d² / (2K)` up to `d = K` and `d − K/2` beyond (level at the seam, slope 1 past `K`),
+and of `K` and every `K_j + Λ φ(d(x, Z_j))` of the group not the least but 7.9's join at half
+the body's width, held at least 0. It is still `Λ`-Lipschitz (`φ` changes by at most one for
+one, and 7.9 (3)), still between 0 and `K` (7.9 (4)), and `K` itself wherever every seam's is
+`K/2` above it (7.9 (6)), which a seam's ball holds with `K/2 + K/(2Λ)` more radius; and it
+has a continuous slope (the distance to a convex solid has one outside it, `φ` is level where
+it starts, 7.9 (5)) except where it is held at 0, where no join acts but between tied values.
+So (1) to (4) hold as they stand for it.
 
 *Proof.* (1) The distance to a solid disc is 1-Lipschitz (2.1; the disc is convex), so each
 `K_j + Λ d(x, Z_j)` changes by at most `Λ`, and so do their least and its least with `K` (3.1).
@@ -823,10 +882,10 @@ groups' same values. If `m > ε − 3K`: every value exceeds `ε − 3K`, every 
 `ε` a little above `T + 5K`, by `2⁻¹³ (ε + K)`; held bit for bit by test on the four
 skeletons jointed and on random chains.
 
-The order of the outer chain is by value, so where three groups are within `K` of one another
-(two legs and a pelvis's run) the outer chain's slope may break by a little where two of them
-change places (7.5's chain is continuous, not smooth, where its second and third values are
-equal); this is measured, not bounded. **Held by test**
+The order of the outer chain was by value, so where three groups were within `K` of one
+another (two legs and a pelvis's run) its slope broke by a little where two of them changed
+places (a sorted chain is continuous, not smooth, where its second and third values are equal).
+7.9's join, which does not depend on their order, removes it. **Held by test**
 (`a_limb_meets_a_straight_run_with_no_crease_and_no_ring`): a T (a run of two bones of radius
 5 cm straight through, a limb of 3 cm at right angles) and a pelvis (a spine and a tail in one
 line, two legs down from the joint), `K` 15 mm. **The crease measure:** on twelve half planes
@@ -837,16 +896,132 @@ neighbours. A crease turns by the whole angle of its two surfaces in one step ho
 the points; a smooth join by its curvature times the step (0.43 degrees at 75 µm on a radius
 of 1 cm). The plain union of the same bones turns by 38.5 (the T) and 43.6 degrees (the
 pelvis) at its crease. **Measured: the T turns by at most 0.32 degrees** at 75 µm as at
-0.3 mm (its curvature: smooth); **the pelvis by 2.62**, the same at both steps, so a break
-and not curvature: below the run, on each side, where one leg's value and the run's group's
-change places as the second and third values of the outer chain (the other leg's the least,
-all three within `K`), which is the order-swap break just described, not a width's crease
-(the run's width does not act there). Tolerances: under 1 degree for the T, under 3 for the
-pelvis, and under a tenth of the plain union's crease for both. A join of the groups that is
-smooth where three are within `K` of one another (one that does not depend on their order)
-would remove it; none is proved here. Along the run, away from the limbs, the surface lies within a thousandth of the run's
+0.3 mm (its curvature: smooth); **the pelvis by 0.33 with 7.9's join, and by 2.62 with the
+sorted chain**, the same at both steps then, so a break and not curvature: below the run, on
+each side, where one leg's value and the run's group's changed places as the second and third
+values of the chain. Tolerances: under 1 degree for both, and under a tenth of the plain union's
+crease. Along the run, away from the limbs, the surface lies within a thousandth of the run's
 radius of the plain union: no ring. A body that wants a joint's width otherwise gives that
 joint its own.
+
+**7.9. A join of any number of parts that does not depend on their order.** 7.5 to 7.8 join the
+values one after another, sorted, and a chain so made is continuous and not smooth where its
+second and third values change places (the pelvis of 7.8 kept a break of 2.6 degrees so). The
+body's field joins by this instead, at each of 7.8's two levels. For values `a₁ … a_n`, the
+least `m`, and a width `k > 0`, let
+
+`J_k(a) = min over w of ( Σ w_i a_i − (k/2) (1 − Σ w_i²) )`, over the shares `w_i ≥ 0` with
+`Σ w_i = 1`,
+
+and `J₀(a) = m`. Then:
+
+1. `J_k` is a function of the values and not of their order.
+2. For two values it is the quadratic join of section 5: `J_k(a, b) = q(a, b)`.
+3. **It changes no faster than its inputs**: by at most `max_i |a_i − a′_i|` when the values
+   change, and by at most `(1 − 1/n) |k − k′| / 2`, under half, when the width does.
+4. **It dips by less than half the width, however many are joined**:
+   `m − (k/2)(1 − 1/n) ≤ J_k(a) ≤ m`, the lower bound reached where all `n` are equal (for two,
+   `k/4`).
+5. **It is smooth wherever its values are**: for `k > 0` it has continuous partial derivatives,
+   shares `w*_i(a) ≥ 0` that add to one; so of fields with continuous slopes, the join has a
+   continuous slope `Σ w*_i ∇a_i`, wherever the values are and in whatever order they stand.
+6. **A value `k` or more above the least does not take part**: its share is 0, and leaving it out
+   gives the same number.
+7. **How it is worked out.** Let `d_i = a_i − m` for the values with `d_i < k`, sorted
+   (`d₍₁₎ = 0`), `λ_s = (k + Σ_{i ≤ s} d₍ᵢ₎) / s`, and `s*` the largest `s` with `d₍ₛ₎ < λ_s`;
+   with `λ = λ_{s*}`, `w_i = (λ − d_i) / k` for the first `s*` and 0 beyond, and
+   `J_k = m + λ − k/2 − Σ_{i ≤ s*} (λ − d_i)² / (2k)`. Equivalently (the form the tests' reference
+   uses, apart from the code) `J_k = λ − k/2 − Σ_i ((λ − a_i) ∨ 0)² / (2k)` with `λ` where the
+   shares `Σ_i (λ − a_i) ∨ 0` add to `k`. A value costs a difference and a comparison; one
+   within the width, its place among the sorted few, two sums, a division and a product.
+
+*Proof.* (1) The set of shares and both sums are the same whatever the order. (2) With shares
+`(w, 1 − w)`, `1 − w² − (1 − w)² = 2w(1 − w)`, so the function is `w a + (1 − w) b − k w (1 − w)`,
+least at `w = (1 + (b − a)/k)/2` held to `[0, 1]`: where `|a − b| ≥ k` at an end, and the value
+is `m`; else the value is `(a + b)/2 − k/4 − (a − b)²/(4k)`, which is `m − k h²/4` with
+`h = 1 − |a − b|/k` (multiply out). (3) `J_k` is the least, over all shares `w`, of functions of
+`(a, k)` that are each affine: in `a`, `Σ w_i a_i` changes by at most
+`Σ w_i |a_i − a′_i| ≤ max_i |a_i − a′_i|`; in `k`, the slope is `−(1 − |w|²)/2`, and
+`1/n ≤ |w|² ≤ 1` (Cauchy and Schwarz: `1 = (Σ w_i)² ≤ n |w|²`). The least of functions that each
+change by at most `c` changes by at most `c`. At `k′ = 0` each function is `Σ w_i a_i ≥ m`,
+equal to it at the least's share, so the bound holds there too. (4) The least's share alone
+gives `m`; every share gives at least `m − (k/2)(1 − 1/n)` by the two bounds just used; equal
+values with equal shares give it. (5) The sum is `(k/2) |w + a/k|² − |a|²/(2k) − k/2`, so the
+least is at `w* = P(−a/k)`, the nearest point of the set of shares to `−a/k`: unique (the set is
+closed and convex), and moving `−a/k` moves it no farther (the nearest point on a convex set), so
+`w*` is continuous in `a`. As `J_k` is the least, over a closed bounded set, of functions affine
+in `a`, and that least is taken at one `w*`, its partial derivatives are `w*`'s own slopes,
+`w*_i` (Danskin's theorem). Then the chain rule. (6), (7) At the nearest point
+`w_i = ((λ − a_i) ∨ 0)/k` for the `λ` at which they add to one (the conditions for a least under
+`Σ w_i = 1`, `w_i ≥ 0`); the least value's share is at most 1, so `λ ≤ m + k`, and a value
+`a_i ≥ m + k` has share 0. The least over a smaller set of shares that still holds the old least
+is the same number. For `s*`: let `λ*` be where `φ(λ) = Σ (λ − d_i) ∨ 0` reaches `k` (`φ` rises
+strictly past 0). If `d₍ₛ₎ < λ*`, the first `s` all count in `φ(λ*)`, so
+`Σ_{i ≤ s} (λ* − d₍ᵢ₎) ≤ k` and `λ_s ≥ λ* > d₍ₛ₎`. If `d₍ₛ₎ ≥ λ*`, then
+`λ_s = λ* + Σ_{i ≤ s, d₍ᵢ₎ ≥ λ*} (d₍ᵢ₎ − λ*) / s ≤ λ* + (d₍ₛ₎ − λ*) = d₍ₛ₎`. So the test holds for
+exactly the first `#{d_i < λ*}`, and `λ_{s*} = λ*`. For the value,
+`Σ w_i a_i = m + Σ w_i d_i = m + λ − k |w|²`; the dual form is the same condition read the other
+way. ∎
+
+**The body with this join.** 7.5's `G` is `J_K` of the parts' values; with groups (7.8, "Where
+three or more bones meet"), `V_g = J_{K_g(x)}` of the group's values and `G = J_K` of the `V_g`.
+What that changes against 7.5 to 7.8:
+
+- 7.5 (1) and (3) hold as they stand, by (3) and (1). 7.5 (2) becomes
+  `F_min − (K/2)(1 − 1/n) ≤ G ≤ F_min`, and **7.5 (4)'s bulge for any number of parts is under
+  `(K/2) L ρ`** (the chain's was `K L ρ`); for two, `(K/4) L ρ` as before.
+- **7.8 (2) becomes `|∂G/∂K| ≤ 1/2`** (the chain's was 1), so `G` changes by at most `1 + Λ/2`
+  a metre and **the field is divided by `1 + Λ/2 = 1.25`** (was 1.5): the mesher skips more.
+  With groups, each `V_g` changes by at most `1 + Λ/2` (3, at the width `K_g(x)`), and the outer
+  join by at most the greatest change of the `V_g`.
+- 7.8 (6) becomes `F_min − K < G ≤ F_min` with groups (each level under `K/2`), and
+  `F_min − K/2 < G` without: the range's far bound and the box use `K` and `K/2`.
+- **The cull is exact with `ε = T + 3K/2` at one level and `ε = T + 7K/2` with groups.** *Proof.*
+  Let `m` be the least kept value; every dropped one exceeds `ε`. One level: if `m ≤ ε − K`, a
+  dropped value is `K` or more above the least, so (6) leaves it out of both; else every value
+  exceeds `ε − K` and both `G` exceed `ε − 3K/2 = T`. With groups: if `m ≤ ε − 5K/2`, a group
+  whose least kept value is at most `ε − K` has the same `V_g` culled and whole (6, at
+  `K_g ≤ K`); every other group's `V_g`, culled or whole, exceeds `ε − 3K/2`, which is `K` or more
+  above `m` and so above the least `V_g`, and (6) leaves it out of both outer joins. Else every
+  value exceeds `ε − 5K/2`, every `V_g` exceeds `ε − 3K`, and both `G` exceed `ε − 7K/2 = T`. ∎
+  (The chain's were `T + 2K` and `T + 5K`: fewer parts are asked.)
+- **Where the capsule takes over.** A part's field is `max(ψ/L, c)`, and where `c` takes over
+  its slope breaks (7.3's "do not say"); outside the widest section of a bone with `L > 1`, or
+  along a flat section's deep side, that is right at its surface, where a join acts on it and
+  carries the break into the joined surface (3.6 degrees at the quadruped's thigh, measured).
+  So the body widens each part's `R` by `δ = 2K (L R / m_min − 1)`, at most `4K` (`m_min` the bone's least
+  half size; for a swell `2K (r_max / r_min − 1)`): **outside, within a value of `2K` of its
+  surface, a part's field is then `ψ/L`**, where `2K < m_min / L` and `L R / m_min ≤ 3` (a flatter
+  part, whose `δ` is held at `4K`, keeps its own field to a value of `4K / (L R / m_min − 1)`: the
+  biped's head, 10 cm deep and 3 cm at its tip, has about 3.3, by hand from its sections). *Proof.* At such a point
+  `x`, with `v = ψ/L ≤ 2K`, `n ≤ 2` and 7.3 (4) gives the distance to the surface
+  `s ≤ L ρ v` with `ρ ≤ R / m_min`; the nearest surface point `q` is within `R` of its own
+  nearest axis point, so `x` is within `s + R` of the axis and `c ≤ s − δ ≤ (L ρ − 1) v + v − δ`,
+  which is at most `v` as `δ ≥ (L ρ − 1) 2K`. ∎ Every join acts only where its values are
+  within `K` (one level) or `2K` (two) of the least, which is at most 0 near the surface. 7.3
+  asks of `R` only that it hold every section and cap, so the bound, the factor and the cull's
+  proofs are unchanged; the cull asks a little more (each capsule is wider by `δ`), and 7.3
+  (4)'s far bound is weaker by `δ`.
+- **The order-swap break is gone**: by (5) the joined field has a continuous slope wherever every
+  part's field and every group's width has one.
+
+**In `f32`.** The code (`caro::blend`) takes the least, then each value's difference to it, and
+keeps those under the width: a difference of `k` or more rounds to `k` or more, so a value past
+the width is never seen, culled or whole, and (6) holds bit for bit. The values within the width
+are sorted, so the number is one in any order of the parts (ties add alike). Each level is
+within `u (100 K + |value|)` of the exact join of the same inputs (`caro`'s count); the cull's
+`ε` is taken a little above, by `2⁻¹⁴ (ε + K)` at one level and `2⁻¹³ (ε + K)` with groups.
+
+**What 7.9 does not say.** Its second derivatives step where a value enters or leaves the
+shares (as the quadratic join's do at `|a − b| = k`): the joined surface's curvature can step
+there, its slope does not. It makes the join smooth, not the parts: 7.3's own breaks of slope
+(the gauge's clamp at 2, `m` changing from `A` to `B`, the capsule's takeover, which the widened `R`
+above keeps beyond where joins act) still pass into the joined surface where a join acts on them,
+and so would a width with corners (7.8's, softened since for that reason). Held by test:
+the join itself over a million lists of up to 64 values
+(`a_join_of_any_number_is_one_number_in_any_order`); the field's factor, the reference and the
+cull as before; and the turn at every join of the four skeletons
+(`every_join_of_the_four_skeletons_turns_smoothly`).
 
 **What 7.3 to 7.6 do not say.**
 
@@ -855,8 +1030,8 @@ joint its own.
 - The surface is exactly the sections and the caps in exact arithmetic; in `f32` it lies within
   `L ρ σ` of them. How smooth it is between pieces is not stated: `A` and `q` have continuous
   slopes, so the surface along a bone does, and a cap meets its end with a continuous slope
-  because the end slopes are 0. How smooth the joined surface is, beyond what section 5 says of
-  one join, is not stated either.
+  (a level end's cap starts level, a sloped end's is tilted to its slope: 7.3). How smooth the
+  joined surface is, beyond what section 5 and 7.9 say of the join, is not stated either.
 - The bulge is bounded, not removed, at a bend. With 7.5's one width a straight joint bulges as
   much as a bend (7.5 (4)); 7.8's width removes the ring at a straight joint (measured, not
   proved to be nothing) and keeps `K/4` at a bend.
@@ -892,6 +1067,11 @@ states and where) are in [the citations](../research/library/I6-distance-fields-
   Igel, ICML 2024 (equations 5 and 6).
 - The quadratic join's quarter of `k`: Li et al., "SDFStent", *Computer Methods and Programs
   in Biomedicine* 287, 2026.
+- The join of any number of values of 7.9 is the least over the simplex with a quadratic
+  penalty, which machine learning calls "sparsemax", and its working out is the projection onto
+  the simplex: Held, Wolfe and Crowder, *Mathematical Programming* 6, 1974; Duchi, Shalev-Shwartz,
+  Singer and Chandra, ICML 2008; Martins and Astudillo, ICML 2016. Named from memory by the
+  body's builder, not read for this page; every step is proved in 7.9.
 - The cubic join's sixth of `k`, and the general `k / (2n)` of 5.2: stated as a result in no
   peer-reviewed paper found. It is proved above.
 
