@@ -88,8 +88,25 @@ pub const EXTENT: f32 = crate::recipe::MAX_EXTENT_M;
 pub const LEAST_LENGTH: f32 = 1e-6;
 /// The least gap between two stations, as a share of the bone.
 pub const LEAST_GAP: f32 = 1e-3;
-/// The gauge is held at this many sections out (7.3): past it the capsule carries the field.
+/// The gauge is held from this many sections out (7.3): eased over one more section to level,
+/// and past it the capsule carries the field.
 const CLAMP: f32 = 2.0;
+
+/// 7.3's gauge held, eased: `n` up to [`CLAMP`], then `n − (n − 2)²/2` to `2.5` at `3`, level
+/// beyond. Its slope falls from 1 to 0 without a step, so a part held where a join acts brings
+/// no break of slope into the joined surface (a hard hold at 2 broke the biped's neck base by
+/// 2.5 degrees where the head, held, took part in the neck's join; DISTANCE_FIELDS.md 7.3).
+#[inline]
+fn eased(n: f32) -> f32 {
+    if n <= CLAMP {
+        n
+    } else if n < CLAMP + 1.0 {
+        let o = n - CLAMP;
+        n - 0.5 * o * o
+    } else {
+        CLAMP + 0.5
+    }
+}
 /// `2⁻¹⁴`: the slack's share of `|x|₁ + W` (see the module's doc).
 const SLACK: f32 = 1.0 / 16384.0;
 
@@ -254,7 +271,7 @@ impl Part {
                 // and a level end's numbers, 1 and 0, change no bit).
                 let end = usize::from(l[0] > b.t1);
                 let n = (b.cap_one[end] * e * e + ns * ns).sqrt() - b.cap[end] * e.abs();
-                let psi = m * (n.min(CLAMP) - 1.0);
+                let psi = m * (eased(n) - 1.0);
                 (psi / b.lip).max(c)
             }
             Part::Egg(e) => {
@@ -615,7 +632,8 @@ fn shaft(bone: &Bone, index: usize, ends: [f64; 2]) -> Result<Shaft, CaroError> 
     }
     // 7.3's tilted caps: `σ = m A′ / A` outward at each end (`q`'s end slope is 0), and what
     // each asks of `L` and `R`, from the numbers stored.
-    let mut lip = (1.0 + (g + 2.0 * k) * (g + 2.0 * k)).sqrt() * (1.0 + 1e-6);
+    // (7.3 with the eased clamp: `|∂ψ/∂t| ≤ 2k + (3/2) g`.)
+    let mut lip = (1.0 + (1.5 * g + 2.0 * k) * (1.5 * g + 2.0 * k)).sqrt() * (1.0 + 1e-6);
     let (mut cap, mut cap_one) = ([0.0f32; 2], [1.0f32; 2]);
     if n >= 2 {
         for (s, (j, out)) in [(0, -sa[0]), (n - 1, sa[n - 1])].into_iter().enumerate() {
@@ -716,6 +734,12 @@ pub struct Joint {
 /// How fast the width may change a metre (7.8's `Λ`): the joined field is divided by `1 + Λ/2`
 /// wherever a joint's width is under the body's.
 pub const WIDTH_SLOPE: f32 = 0.5;
+/// The width at which the seams' widths and the body's are joined (7.8, softened), as a share
+/// of the body's: 7.9's join of them dips under the least by up to half this width, so where two
+/// seams of nearly one width overlap (the biped's spine and chest joints) the half of the body's
+/// width it was took a width of 4 mm to under 0.1 mm, and the bend there kept a break of about
+/// 4 degrees; an eighth leaves at least 3 mm of it.
+pub const WIDTH_SOFT: f32 = 0.125;
 /// The bend (degrees) from which a joint has the body's whole width; under it the width falls
 /// smoothly to nothing at a straight joint ([`bend_share`]).
 pub const FULL_BEND: f64 = 40.0;
@@ -964,7 +988,7 @@ fn make_seams(bones: &[Bone], parts: &[Part], of: &[PartOf], joints: &[Joint], s
         let half = f64::from(WIDTH_SLOPE) * reach + gap;
         // Past the ball every point's width is the body's: there the seam's is at least `K`
         // and a half again, out of its softened join with `K` (7.8: `φ` loses half the softening).
-        let ball = ((half * half + radius * radius).sqrt() + (1.5 * k - own) / f64::from(WIDTH_SLOPE) + 0.5 * k) * (1.0 + 1e-3) + 1e-6;
+        let ball = ((half * half + radius * radius).sqrt() + ((1.0 + f64::from(WIDTH_SOFT)) * k - own) / f64::from(WIDTH_SLOPE) + 0.5 * k) * (1.0 + 1e-3) + 1e-6;
         out.push(Seam { centre: f3(centre), normal: f3(normal), half: up(half), radius: up(radius), width: down(own), ball: up(ball), soft: smooth, pair, group: 0 });
     }
     Ok(out)
@@ -1133,7 +1157,7 @@ impl Flesh {
                     m += 1;
                 }
             }
-            out[usize::from(g)] = blend(&vals[..m], 0.5 * self.smooth).max(0.0);
+            out[usize::from(g)] = blend(&vals[..m], WIDTH_SOFT * self.smooth).max(0.0);
         }
     }
 

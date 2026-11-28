@@ -565,7 +565,9 @@ do.** Let `τ` be `t` held to `[t₀, t_J]`, `m = m(τ)`, `e = (t − τ) / m`, 
 it (a half ellipsoid for `p = 2`). Let `R` be at least the largest `M` along the bone, `c` the
 distance from `x` to the axis's segment from `t₀` to `t_J`, less `R`, and
 
-`ψ = m · (min(n, 2) − 1)`, `L = √(1 + (g + 2k)²)`, `F = max(ψ / L, c)`.
+`ψ = m · (h(n) − 1)`, `L = √(1 + (3g/2 + 2k)²)`, `F = max(ψ / L, c)`,
+
+with the gauge **held, eased**: `h(n) = n` up to 2, `n − (n − 2)²/2` from 2 to 3, and `5/2` beyond.
 
 Then (1) `ψ` changes by at most `L` for each metre moved; (2) `F` is 1-Lipschitz; (3) `F` has
 the sign of `K`'s signed distance and is zero exactly on `K`'s surface, so **`F` is a bound for
@@ -606,21 +608,23 @@ that segment the function is Lipschitz in one variable, the integral of its deri
 derivative is the gradient's component, at most `L |x − y|`. So it changes by at most
 `L |x − y|` between `x + z` and `y + z`, and by continuity between `x` and `y`. ∎
 
-*Proof of (1).* `ψ` is continuous (at the ends `e = 0` from both sides; at `n = 2` both
-branches agree) and Lipschitz near every point. Where it has a gradient:
+*Proof of (1).* `ψ` is continuous (at the ends `e = 0` from both sides; `h` is continuous) and Lipschitz near every point. Where it has a gradient:
 
-- *Along the bone, `n < 2`.* Across, `∇_y ψ = m ∇n_τ`, at most 1 long (7.2). Along, write
+- *Along the bone, `n < 3`.* Across, `∇_y ψ = m h′(n) ∇n_τ`, at most 1 long (7.2; `0 ≤ h′ ≤ 1`). Along, write
   `α = A′/A`, `β = B′/B`. Since `N_p` is of degree one, `ũ ∂N/∂ũ + ṽ ∂N/∂ṽ = N` with both terms
   `|z_i|^p N^{1−p} ≥ 0` (Euler); so `∂n/∂t = −n (ω_u α + ω_v β)` with shares `ω_u, ω_v ≥ 0`
   adding to one, and `∂ψ/∂t = n (m′ − m Λ) − m′`, `Λ = ω_u α + ω_v β`. Where `m = A`,
   `m′ − m Λ = ω_v A (α − β) = −ω_v A q′/q`, and `q ≥ 1` there; where `m = B = qA`,
   `m′ − m Λ = ω_u B (β − α) = ω_u A q′`. Where `A = B` and `m` has a slope, `A′ = B′`, `q′ = 0`
-  and the term is 0. So `|m′ − m Λ| ≤ A |q′| ≤ k`, and `|∂ψ/∂t| ≤ n k + g ≤ 2k + g`. Across
-  and along are square to each other: `|∇ψ|² ≤ 1 + (g + 2k)² = L²`.
-- *Along the bone, `n > 2`.* `ψ = m(τ)`, whose gradient is `m′ e`: at most `g ≤ L`.
+  and the term is 0. So `|m′ − m Λ| ≤ A |q′| ≤ k`. With the hold,
+  `∂ψ/∂t = m′ (h − 1) + m h′ ∂n/∂t = h′ n (m′ − m Λ) + m′ (h − 1 − h′ n)`; `h′ n` is `n ≤ 2` below 2
+  and `n (3 − n) ≤ 2` from 2 to 3, and `h − 1 − h′ n` is −1 below 2 and `n²/2 − 3`, from −1 to
+  3/2, from 2 to 3. So `|∂ψ/∂t| ≤ 2k + 3g/2`. Across and along are square to each other:
+  `|∇ψ|² ≤ 1 + (3g/2 + 2k)² = L²`.
+- *Along the bone, `n > 3`.* `ψ = 3m(τ)/2`, whose gradient is `3m′ e/2`: at most `3g/2 ≤ L`.
 - *Past an end.* `A`, `B` and `m` are the end's. `n` is the gauge of the cap's body, and
   `|∇n|² = (e² / m² + n_τ² |∇n_τ|²) / n² ≤ (e² + n_τ²) / (m² n²) = 1 / m²` (7.2), so
-  `|∇ψ| ≤ 1`.
+  `|∇ψ| = m h′ |∇n| ≤ 1`.
 
 The lemma gives (1). ∎ (2) `ψ / L` and `c` are 1-Lipschitz (2.1 for `c`), and so is their
 greater (3.1). (3) `K` lies in the capsule `c ≤ 0`: a point of a section is within `M ≤ R` of
@@ -636,8 +640,17 @@ point of the axis's segment nearest `x`: `K` holds the disc (or half ball, at an
 
 **Where the proportions change.** This is where 2.7 found no factor for the sculpt's column:
 far out to one side a field that follows one section's gauge changes along the bone by
-`n k` for `n` sections out, without limit. **The clamp at `n = 2` is what removes it**: it
-costs `L` nothing beyond `2k`, and beyond it the capsule `c` carries the field. Nothing is
+`n k` for `n` sections out, without limit. **The hold at `n = 2` is what removes it**: it
+costs `L` nothing beyond `2k` (and, eased, `g/2`), and beyond it the capsule `c` carries the field.
+**Why it is eased** (2026-11-28): held hard at 2, `ψ`'s slope stepped from its whole to nothing
+there, a break wherever a part so held takes part in a join. Where a joint takes the body's
+width for a step in size (7.8), a part's held value can lie within the width: the biped's head,
+held at its tip's `m / L` (2.45 cm), took part in the neck's join at the neck base, the chin and
+the collar bones, and the joined surface broke there by 2.5, 1.8 and 2.1 degrees (measured with
+the crease measure's slopes 20 µm apart; 0.17, 0.25 and 0.63, curvature, since). Eased, `h′` falls
+from 1 to 0 without a step, so a held part's field has a continuous slope and 7.9 (5) carries
+none into the join. It reads the same as before wherever `n ≤ 2`, so (4) and the surface are
+unchanged; it costs `L` the `g/2` (a bone tapering by a fifth of a metre a metre: 1.044 for 1.020). Nothing is
 asked of how the proportions change but that the profile is 7.1's: `k` is 0 when they do not,
 and `L = √(1 + g²)`, the sculpt column's own factor. For one section all along a bone and
 `p = 2`, `ψ` is the decisions' candidate itself: a capsule of radius `m` in the space stretched
@@ -797,13 +810,19 @@ width `K(x)` at each point: that is `G`, and the body's field is `H = (G ∧ T) 
 on the disc's face; where a join acts, the width's corner is a break of the joined surface's
 slope (2.6 degrees at the biped's chest joint, by the crease measure). So the body takes
 `φ(d) = d² / (2K)` up to `d = K` and `d − K/2` beyond (level at the seam, slope 1 past `K`),
-and of `K` and every `K_j + Λ φ(d(x, Z_j))` of the group not the least but 7.9's join at half
-the body's width, held at least 0. It is still `Λ`-Lipschitz (`φ` changes by at most one for
+and of `K` and every `K_j + Λ φ(d(x, Z_j))` of the group not the least but 7.9's join at an eighth
+of the body's width, held at least 0. It is still `Λ`-Lipschitz (`φ` changes by at most one for
 one, and 7.9 (3)), still between 0 and `K` (7.9 (4)), and `K` itself wherever every seam's is
-`K/2` above it (7.9 (6)), which a seam's ball holds with `K/2 + K/(2Λ)` more radius; and it
+`K/8` above it (7.9 (6)), which a seam's ball holds with `K/2 + K/(8Λ)` more radius; and it
 has a continuous slope (the distance to a convex solid has one outside it, `φ` is level where
 it starts, 7.9 (5)) except where it is held at 0, where no join acts but between tied values.
-So (1) to (4) hold as they stand for it.
+So (1) to (4) hold as they stand for it. **Why an eighth** (2026-11-28): 7.9's join dips
+under the least of what it joins by up to half its width (7.9 (4)), so where two seams of
+nearly one width overlap, the join at half the body's width took their width far under either:
+at the biped's spine joint on its chest, two seams of about 4 mm gave 0.09 mm, and the bend of
+10.5 degrees there kept a break of 3.9 degrees (constant from steps of 0.3 to 0.15 mm). At an
+eighth the width there is 0.9 mm and the turn 0.31 degrees at 75 µm, halving with the step.
+The dip is now at most `K/16`; the corner of the width is rounded over `K/(8Λ)`.
 
 *Proof.* (1) The distance to a solid disc is 1-Lipschitz (2.1; the disc is convex), so each
 `K_j + Λ d(x, Z_j)` changes by at most `Λ`, and so do their least and its least with `K` (3.1).
@@ -1015,8 +1034,8 @@ within `u (100 K + |value|)` of the exact join of the same inputs (`caro`'s coun
 **What 7.9 does not say.** Its second derivatives step where a value enters or leaves the
 shares (as the quadratic join's do at `|a − b| = k`): the joined surface's curvature can step
 there, its slope does not. It makes the join smooth, not the parts: 7.3's own breaks of slope
-(the gauge's clamp at 2, `m` changing from `A` to `B`, the capsule's takeover, which the widened `R`
-above keeps beyond where joins act) still pass into the joined surface where a join acts on them,
+(`m` changing from `A` to `B`, the capsule's takeover, which the widened `R` above keeps beyond
+where joins act; the gauge's hold at 2 did, and is eased since: 7.3) still pass into the joined surface where a join acts on them,
 and so would a width with corners (7.8's, softened since for that reason). Held by test:
 the join itself over a million lists of up to 64 values
 (`a_join_of_any_number_is_one_number_in_any_order`); the field's factor, the reference and the
@@ -1026,10 +1045,46 @@ seams of differing widths and groups, over a million points and two million pair
 bit, the field changes no faster than the distance and is at most the distance to the surface,
 the same bits in debug and release); the capsule's takeover beyond where joins act, and the
 widening held to `4K`, over a million points about random bones and swells
-(`the_capsule_takes_over_beyond_where_joins_act`); and the turn at every join of the four
-skeletons (`every_join_of_the_four_skeletons_turns_smoothly`). Unheld, the widening reached
-far: a drawn chain's flattest bone (`L R / m_min` far over 3) widened the box the mesher takes
-to 57 m, where no block could be skipped.
+(`the_capsule_takes_over_beyond_where_joins_act`); the turn at every join the picture checks
+named (`every_join_of_the_test_skeletons_turns_smoothly`); and along the whole valley where two
+limbs part (`the_parting_of_two_limbs_turns_smoothly_along_its_valley`). Unheld, the widening
+reached far: a drawn chain's flattest bone (`L R / m_min` far over 3) widened the box the
+mesher takes to 57 m, where no block could be skipped.
+
+**The measures, and what they missed** (2026-11-28). The crease measure (7.8) compares the
+field's slopes at neighbouring surface points; it took each slope by differences 0.1 mm apart,
+wider than its step of 75 µm, and so averaged a break over 0.2 mm: a break then read as
+curvature that halves with the step. With differences 20 µm apart (the least at which the
+`f32` field's rounding stays under a tenth of a degree: a straight run reads 0.11 to 0.14), two
+breaks showed that it had read as curvature, both mended (7.3's hold, eased; 7.8's width,
+softened at an eighth). The turns, at 75 µm, before (hard hold, width softened at half) and
+after, with the turn at 37.5 µm after in brackets: biped spine 0.14, 0.14 (0.14); chest 0.70,
+0.31 (0.21); neck base **2.47**, 0.17 (0.16); chin **1.81**, 0.25 (0.19); collar bone **2.11**,
+0.63 (0.39); arm root 0.65, 0.64 (0.37); hip 0.16, 0.16 (0.11); quadruped tail root 0.14, 0.14;
+thigh 0.35, 0.35 (0.20); foreleg 0.38, 0.36 (0.21); neck on chest 0.26, 0.26 (0.18); forked
+trunk above the fork 0.11, 0.11; crotch 0.12, 0.12 (0.07); neck base 0.11, 0.11; neck top
+0.18, 0.19 (0.11); serpent 0.36, 0.36 (0.34). The crease measure also looked at the forked
+crotch from one prong's root only, crossing the valley between the prongs at two points; the
+valley measure (`valley_turns`) follows it, along the plane between the limbs, from the front
+through the crotch to the back.
+
+**What the mesh shows.** The field along the forked body's crotch is smooth: across the valley
+the slope turns by 0.10 degrees at 75 µm on its front and back slopes and 0.51 at the crotch
+itself, halving with the step at all ten points measured; a fillet of about 16 mm radius at
+the crotch, turning by 46 degrees across 15 mm. The mesher's cell there is 14.8 mm, and dual
+contouring sets a vertex where a cell's crossings' planes meet: a fillet within one cell is
+made a crease, and as the valley lies in the plane `x = 0`, which is a plane of the grid, a
+straight one (the pictures' "straight vertical edge"). Its dihedral angles there are at most 73
+degrees at that cell, 42 at half the cell and 23 at a quarter, and the face normals' error 22,
+11.5 and 5.9 degrees: halving with the cell, the mesher's. The person's crotch
+(`pelvis_legs`, thighs 1 cm apart below the pelvis) is tighter: a fillet of about 7 mm, 1.24
+degrees at 75 µm and 0.66 at 37.5; normal errors 25, 19 and 13 degrees at its cell of 12.9 mm,
+a half and a quarter. The prongs' "serrated" facets are the same: a prong 5.6 cm deep in cells
+of 14.8 mm, normal errors 16 degrees, 7.7 at half the cell. And the biped's neck base, after
+its break is mended, is curvature under its cell (16.7 mm): normal error 6.0, 3.2 and 1.8
+degrees at one, a half and a quarter of the cell. The sculpt's grid is at most 160 cells a
+side, so a body of 1.8 m gets cells of 11 mm at best; a fillet of a few millimetres is made a
+crease by the mesher at any resolution it allows.
 
 **What 7.3 to 7.6 do not say.**
 
@@ -1043,7 +1098,7 @@ to 57 m, where no block could be skipped.
 - The bulge is bounded, not removed, at a bend. With 7.5's one width a straight joint bulges as
   much as a bend (7.5 (4)); 7.8's width removes the ring at a straight joint (measured, not
   proved to be nothing) and keeps `K/4` at a bend.
-- The field is continuous, not smooth. Its slope breaks where the gauge is held at 2, where
+- The field is continuous, not smooth. Its slope breaks where
   `m` changes from `A` to `B`, and where the capsule takes over from `ψ / L`; the last can lie
   within `K` of a surface (just outside the widest station of a bone whose `L > 1`), so a join
   that acts there can carry a small break of slope into the joined surface. Skinning by

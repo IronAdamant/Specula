@@ -90,7 +90,7 @@ fn random_flesh(r: &mut Rng) -> Flesh {
     Flesh::new(&bones, &swells, smooth, r.range(0.005, 0.1) as f32).expect("a random body is valid")
 }
 
-const BODIES: [&str; 4] = ["biped", "quadruped", "serpent", "forked"];
+const BODIES: [&str; 5] = ["biped", "quadruped", "serpent", "forked", "pelvis_legs"];
 
 /// The bones of one of the earlier body lane's four test bodies (`tests/bodies/*.json`): only
 /// their heads, tails, sides, squareness and sections, and the body's smoothing.
@@ -105,6 +105,7 @@ fn test_skeleton(name: &str) -> (Vec<Bone>, Vec<Option<usize>>, f32) {
         "biped" => include_str!("../../tests/bodies/biped.json"),
         "quadruped" => include_str!("../../tests/bodies/quadruped.json"),
         "serpent" => include_str!("../../tests/bodies/serpent.json"),
+        "pelvis_legs" => include_str!("../../tests/bodies/pelvis_legs.json"),
         _ => include_str!("../../tests/bodies/forked.json"),
     };
     let json = Json::parse(text).expect("the body's file is JSON");
@@ -291,7 +292,15 @@ fn ref_part(part: &Part, x: D3) -> Ref {
             // Past an end, the tilted cap of 7.3 (`σ` and `1 + σ²` as the code stores them).
             let end = usize::from(l[0] > f64::from(b.t1));
             let n = (f64::from(b.cap_one[end]) * e * e + ns * ns).sqrt() - f64::from(b.cap[end]) * e.abs();
-            let psi = m * (n.min(2.0) - 1.0);
+            // 7.3's hold, eased from 2 to level at 3.
+            let held = if n <= 2.0 {
+                n
+            } else if n < 3.0 {
+                n - 0.5 * (n - 2.0) * (n - 2.0)
+            } else {
+                2.5
+            };
+            let psi = m * (held - 1.0);
             let along = l[0] - tau;
             let c = (along * along + l[1] * l[1] + l[2] * l[2]).sqrt() - f64::from(b.radius);
             Ref { psi, field: (psi / f64::from(b.lip)).max(c) }
@@ -532,7 +541,7 @@ fn a_bones_surface_is_its_sections_and_caps() {
 }
 
 /// 7.6, "In `f32`": the module's value is within its slack of the reference's, for single
-/// parts, random bodies and the four skeletons.
+/// parts, random bodies and the five skeletons.
 #[test]
 fn every_value_is_within_its_slack_of_the_reference() {
     let mut r = Rng(0xCA20_0004);
@@ -758,7 +767,7 @@ fn ref_width_of(f: &Flesh, x: D3, g: u8) -> f64 {
         let soft = if e < a { e * e / (2.0 * a) } else { e - 0.5 * a };
         v.push(f64::from(s.width) + f64::from(WIDTH_SLOPE) * soft);
     }
-    ref_blend(&v, 0.5 * k).max(0.0)
+    ref_blend(&v, f64::from(WIDTH_SOFT) * k).max(0.0)
 }
 
 /// Where the joined surface is along the ray from `from` toward `dir`, found by stepping out
@@ -906,7 +915,14 @@ fn limbs_on_a_run(limbs: &[D3]) -> (Flesh, Flesh, Vec<(D3, D3, f64)>) {
 
 /// The field's direction of slope at `x` (central differences, 0.1 mm), unit length.
 fn slope_at(f: &Flesh, x: D3) -> D3 {
-    let h = 1e-4;
+    slope_by(f, x, 1e-4)
+}
+
+/// The field's direction of slope at `x` by central differences `h` apart, unit length. A
+/// measure that compares slopes at points `s` apart takes `h` under `s`: differences wider than
+/// the step average a break over them, and a break of 2.5 degrees then reads as curvature that
+/// halves with the step (the biped's neck base read 1.07 and 0.54 so, with `h` 0.1 mm).
+fn slope_by(f: &Flesh, x: D3, h: f64) -> D3 {
     let g = [0, 1, 2].map(|c| {
         let (mut a, mut b) = (x, x);
         a[c] += h;
@@ -960,7 +976,7 @@ fn crease_from(f: &Flesh, origin: D3, axis: D3, rings: usize, sweep: (f64, f64),
         let at = |deg: f64| -> Seen {
             let (sa, ca) = dmath::sin_cos_f64(deg * dmath::PI / 180.0);
             let p = surface_on(f, origin, add(dscale(u, ca), dscale(w, sa)), 0.003);
-            (deg, p, slope_at(f, p))
+            (deg, p, slope_by(f, p, (step / 4.0).max(2e-5)))
         };
         let mut last = at(sweep.0);
         for i in 1..=steps {
@@ -1093,6 +1109,7 @@ fn skeleton_names(name: &str) -> Vec<String> {
         "biped" => include_str!("../../tests/bodies/biped.json"),
         "quadruped" => include_str!("../../tests/bodies/quadruped.json"),
         "serpent" => include_str!("../../tests/bodies/serpent.json"),
+        "pelvis_legs" => include_str!("../../tests/bodies/pelvis_legs.json"),
         _ => include_str!("../../tests/bodies/forked.json"),
     };
     let json = Json::parse(text).expect("the body's file is JSON");
@@ -1101,11 +1118,11 @@ fn skeleton_names(name: &str) -> Vec<String> {
     rows.iter().map(|b| b.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string()).collect()
 }
 
-/// The joins of the four skeletons the first picture check named, and how each is measured: the
+/// The joins of the test skeletons the picture checks named, and how each is measured: the
 /// bone whose head the join is at, and the sweep of the crease measure about its axis from its
 /// head (20 to 75 degrees: from a limb over its root onto what it grows from; 45 to 135: across
 /// a joint where two bones run on, its plane at 90).
-const JOINS: [(&str, &str, (f64, f64)); 16] = [
+const JOINS: [(&str, &str, (f64, f64)); 18] = [
     ("biped", "spine", (45.0, 135.0)),
     ("biped", "chest", (45.0, 135.0)),
     ("biped", "neck", (45.0, 135.0)),
@@ -1122,6 +1139,8 @@ const JOINS: [(&str, &str, (f64, f64)); 16] = [
     ("forked", "neck", (45.0, 135.0)),
     ("forked", "head", (45.0, 135.0)),
     ("serpent", "seg16", (45.0, 135.0)),
+    ("pelvis_legs", "spine", (45.0, 135.0)),
+    ("pelvis_legs", "thigh_l", (20.0, 75.0)),
 ];
 
 /// The greatest turn (degrees) by the crease measure at each of [`JOINS`], on six half planes,
@@ -1143,20 +1162,26 @@ fn turn_at(&(body, bone, sweep): &(&str, &str, (f64, f64)), step: f64) -> (Strin
     (format!("{body} {bone}"), most, far)
 }
 
-/// 7.9: **every join of the four skeletons the first picture check named turns smoothly**: by
-/// the crease measure ([`crease_from`]), at each (the trunk's joints, the neck at both ends,
-/// the shoulder and the arm's root, the hip; the tail's root, the thigh and the foreleg's root,
-/// the neck on the chest; the trunk above the fork, the crotch, the neck at both ends; one of
-/// the serpent's joints) the surface's slope turns by under 1.2 degrees between neighbouring
-/// points under 75 µm apart, and **wherever it turns by more than half a degree it turns by at
-/// most 0.6 of that between points half as far apart**: curvature, which halves with the
-/// step, and not a break, which turns by its whole angle however close the points (the
-/// biped's neck on its chest turns by 1.07 at 75 µm and 0.54 at 37.5 µm: a fillet of about
-/// 4 mm where the neck, the chest and the collar bones meet; before 7.9 and the mends of 7.1,
-/// 7.3 and 7.8 with it, breaks of 11 degrees at the biped's chin and at the forked body's trunk
-/// joint, 5 at the quadruped's tail root and 3.5 at its thigh).
+/// 7.9: **every join of the test skeletons the picture checks named turns smoothly**: by the
+/// crease measure ([`crease_from`], each slope by differences 20 µm apart), at each (the
+/// trunk's joints, the neck at both ends, the shoulder and the arm's root, the hip; the tail's
+/// root, the thigh and the foreleg's root, the neck on the chest; the trunk above the fork, the
+/// crotch, the neck at both ends; one of the serpent's joints; the person's spine on its pelvis
+/// and thigh) the surface's slope turns by under 1.2 degrees between neighbouring points under
+/// 75 µm apart, and **wherever it turns by more than half a degree it turns by at most 0.6 of
+/// that, and the measure's floor of 0.15, between points half as far apart**: curvature, which
+/// halves with the step, and not a break, which turns by its whole angle however close the
+/// points (a straight run reads 0.11 to 0.14 at both steps: the `f32` field's rounding over
+/// differences 20 µm apart). With differences 0.1 mm apart, wider than the step, the measure
+/// read a break as curvature: the biped's neck base, chin and collar bone, 2.5, 1.8 and 2.1
+/// degrees at both steps where the head, held at its gauge's clamp, took part in the neck's
+/// join (DISTANCE_FIELDS.md 7.3, the clamp eased since), read 1.07, 0.73 and 0.76, halving;
+/// and the spine's joint on the chest, 3.9 degrees where two seams' softened width fell under
+/// 0.1 mm (7.8, softened at an eighth since). Before 7.9 and the mends of 7.1, 7.3 and 7.8 with
+/// it: breaks of 11 degrees at the biped's chin and at the forked body's trunk joint, 5 at the
+/// quadruped's tail root and 3.5 at its thigh.
 #[test]
-fn every_join_of_the_four_skeletons_turns_smoothly() {
+fn every_join_of_the_test_skeletons_turns_smoothly() {
     let turns = turns_at_the_joins(CREASE_STEP);
     let table: Vec<String> = turns.iter().map(|(n, t, far)| format!("{n}: {t:.3} ({far} apart)")).collect();
     let steep: Vec<usize> = (0..turns.len()).filter(|&i| turns[i].1 > 0.5).collect();
@@ -1166,12 +1191,12 @@ fn every_join_of_the_four_skeletons_turns_smoothly() {
     for i in steep {
         let (name, most, _) = &turns[i];
         let half = turn_at(&JOINS[i], CREASE_STEP / 2.0).1;
-        assert!(half <= 0.6 * most, "{name} turns by {most} at 75 µm and {half} at 37.5 µm: a break, not curvature ({table:?})");
+        assert!(half <= 0.6 * most + 0.15, "{name} turns by {most} at 75 µm and {half} at 37.5 µm: a break, not curvature ({table:?})");
     }
 }
 
 /// 7.8: over a million pairs of points about random chains (straight and bent joints, swells,
-/// sections of every kind) and the four skeletons jointed, the field changes by at most the
+/// sections of every kind) and the five skeletons jointed, the field changes by at most the
 /// distance and the two points' slack, and every value is within its slack of the reference in
 /// `f64` (whose width is worked out apart, from the seams' numbers).
 #[test]
@@ -1211,7 +1236,7 @@ fn a_jointed_body_changes_no_faster_than_the_distance() {
 // 7.6: the cull.
 
 /// 7.6: the culled value is the whole value, the same number, over a million samples of the
-/// four skeletons (in their boxes and near their bones), and over random bodies.
+/// five skeletons (in their boxes and near their bones), and over random bodies.
 #[test]
 fn the_culled_field_is_the_whole_field() {
     let mut r = Rng(0xCA20_0006);
@@ -1387,7 +1412,7 @@ fn many_parts_at_one_point_keep_the_cull_and_the_bound() {
 }
 
 /// What [`many_parts_at_one_point_keep_the_cull_and_the_bound`] read, in debug and in release.
-const HUB_BITS: u64 = 0x3edd_184a_414c_9fe9;
+const HUB_BITS: u64 = 0x4cfc_628e_0848_fb66;
 
 /// 7.9, "Where the capsule takes over": outside a random bone or swell, within a value of `2K`
 /// of its surface (`4K / (ρ − 1)` where `ρ = L R / m_min` is over 3, and below the gauge's
@@ -1434,7 +1459,7 @@ fn the_capsule_takes_over_beyond_where_joins_act() {
     assert!(took_over > 1000 && flat > 100, "without the widening the capsule took over at {took_over} of {checked} points; {flat} parts flatter than 3");
 }
 
-/// 7.6, "Over a ball": over a million balls (four skeletons and random bodies; centres in
+/// 7.6, "Over a ball": over a million balls (five skeletons and random bodies; centres in
 /// their boxes and near their bones; radii from a hair to half a metre), two samples each,
 /// one on the rim: every value lies in the ball's range, every part a sample asks is among
 /// those [`Flesh::meets`] gives, and asking only those gives the same value.
@@ -1521,7 +1546,7 @@ fn the_same_bits_in_every_build() {
 /// What [`the_same_bits_in_every_build`] read in a debug build and in a release build (moved on
 /// 2026-11-28, on purpose: 7.9's join, the sloped ends of 7.1 and their caps, the step's share
 /// and the softened width of 7.8, the widened reach and its hold at `4K`).
-const BITS: u64 = 0x4165_97bd_ac02_0f5e;
+const BITS: u64 = 0x87e7_e62f_cd19_70b0;
 
 /// Every refusal names what failed.
 #[test]
@@ -1626,7 +1651,7 @@ fn what_a_sample_costs() {
 // ---------------------------------------------------------------------------------------
 // Bodies the sculpt's tests take (`crate::sdf`'s tests: the checklist's).
 
-/// One of the four skeletons, jointed (7.8), held at `keep`.
+/// One of the five skeletons, jointed (7.8), held at `keep`.
 pub(crate) fn test_flesh(name: &str) -> Flesh {
     jointed(name)
 }
@@ -1645,3 +1670,63 @@ pub(crate) fn swollen_biped() -> Flesh {
 pub(crate) fn drawn_chain(seed: u64) -> Flesh {
     random_chain(&mut Rng(seed), 150.0)
 }
+
+/// **The valley measure** where two limbs part, symmetric about the plane square to `across`
+/// through `origin` (inside the body): rays from `origin` in that plane, every 5 degrees from
+/// `front` (0) through `outward` (90) to the back (180), each to the surface; at each such point
+/// of the valley's line, the turn (degrees) of the field's slope between the surface points `s`
+/// to either side of the plane, each slope by differences a quarter of `s` apart (at least
+/// 20 µm: under that the `f32` field's rounding shows). The greatest turn at `s` = 75 µm, and at
+/// the same point at 37.5 µm.
+fn valley_turns(f: &Flesh, origin: D3, across: D3, front: D3, outward: D3) -> (f64, f64, D3) {
+    let at = |p: D3, n: D3, s: f64| -> f64 {
+        let base = add(p, dscale(n, -0.002));
+        let a = surface_on(f, add(base, dscale(across, s)), n, 0.0005);
+        let b = surface_on(f, add(base, dscale(across, -s)), n, 0.0005);
+        let h = (s / 4.0).max(2e-5);
+        dmath::acos_f64(ddot(slope_by(f, a, h), slope_by(f, b, h)).clamp(-1.0, 1.0)) * 180.0 / dmath::PI
+    };
+    let mut most = (0.0f64, 0.0f64, [0.0; 3]);
+    for i in 1..36 {
+        let (sn, cs) = dmath::sin_cos_f64(f64::from(i) * 5.0 * dmath::PI / 180.0);
+        let p = surface_on(f, origin, add(dscale(front, cs), dscale(outward, sn)), 0.002);
+        let n = slope_by(f, p, 2e-5);
+        let t = at(p, n, 7.5e-5);
+        if t > most.0 {
+            most = (t, at(p, n, 3.75e-5), p);
+        }
+    }
+    most
+}
+
+/// 7.9: **where two limbs part, the valley between them turns smoothly along its whole line,
+/// front, crotch and back**: on the forked body (two prongs from one point, 56 degrees apart)
+/// and on `pelvis_legs` (a standing person's thighs from hip joints 18 cm apart), by the valley
+/// measure ([`valley_turns`]) at 35 points of the line between the limbs, the slope turns by
+/// under 1.5 degrees between surface points 150 µm apart across it, and by at most 0.6 of that
+/// (and the measure's floor of 0.15) at half the distance: curvature, not a break. The plain
+/// union of the same bones turns by its crease's whole angle there (over 10 degrees: the measure
+/// sees one). Measured (2026-11-28): the forked crotch 0.55 and 0.31, the person's 1.24 and 0.66
+/// (a fillet of about 7 mm where the thighs, 1 cm apart below the pelvis, are bridged). The straight
+/// edge the pictures showed at the forked crotch is the mesher's: its cell is about the
+/// valley's fillet (DISTANCE_FIELDS.md 7.9, "What the mesh shows").
+#[test]
+fn the_parting_of_two_limbs_turns_smoothly_along_its_valley() {
+    let cases: [(&str, D3, D3, D3); 2] = [("forked", [0.0, 0.3, -0.45], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]), ("pelvis_legs", [0.0, 0.86, 0.01], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0])];
+    for (name, origin, front, outward) in cases {
+        let f = jointed(name);
+        let (bones, _, _) = test_skeleton(name);
+        let plain = Flesh::new(&bones, &[], 0.0, 0.04).unwrap();
+        assert!(f.value(f3(origin)) < 0.0 && plain.value(f3(origin)) < 0.0, "{name}: the rays start inside");
+        let (most, half, at) = valley_turns(&f, origin, [1.0, 0.0, 0.0], front, outward);
+        // (The person's thighs are 1 cm apart below the pelvis: their plain union has no valley
+        // there to see, only the join's bridge between them.)
+        if name == "forked" {
+            let (bare, _, _) = valley_turns(&plain, origin, [1.0, 0.0, 0.0], front, outward);
+            assert!(bare > 10.0, "{name}: the measure sees the plain union's crease ({bare})");
+        }
+        assert!(most < 1.5, "{name}: the valley turns by {most} degrees at {at:?}");
+        assert!(half <= 0.6 * most + 0.15, "{name}: the valley turns by {most} at 75 µm and {half} at 37.5 µm at {at:?}: a break, not curvature");
+    }
+}
+

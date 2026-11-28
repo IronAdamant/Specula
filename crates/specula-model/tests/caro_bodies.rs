@@ -12,11 +12,12 @@ use specula_model::caro::{joints_of, Bone, Carnis, Flesh};
 use specula_model::sdf::{mesh, Kind, MeshOptions, Modifiers, Prim, SdfNode};
 use specula_model::{build, BuildParams, ErrorCode, MeshData, Model, RecipeError, Style};
 
-const BODIES: [(&str, &str); 4] = [
+const BODIES: [(&str, &str); 5] = [
     ("biped", include_str!("bodies/biped.json")),
     ("quadruped", include_str!("bodies/quadruped.json")),
     ("serpent", include_str!("bodies/serpent.json")),
     ("forked", include_str!("bodies/forked.json")),
+    ("pelvis_legs", include_str!("bodies/pelvis_legs.json")),
 ];
 
 fn style() -> Style {
@@ -62,7 +63,7 @@ fn pieces(l: &MeshData) -> usize {
     (0..up.len()).filter(|&i| root(&mut up, i) == i).count()
 }
 
-/// Each of the four skeletons builds through a recipe into one closed surface: no open edge,
+/// Each of the five skeletons builds through a recipe into one closed surface: no open edge,
 /// one piece (no rim where parts were stitched: there are none), the modeller's checks passed.
 #[test]
 fn each_test_body_meshes_closed_as_one_surface() {
@@ -98,12 +99,12 @@ fn each_test_body_meshes_closed_as_one_surface() {
 /// What [`the_same_bytes_every_time`] read, in debug and in release (moved on 2026-11-28, on
 /// purpose: DISTANCE_FIELDS.md 7.9's join, 7.1's sloped ends and their caps, 7.8's step and
 /// softened width, the widened reach and its hold at 4K, which moved three of the four again).
-const HASHES: [u64; 4] = [0xa95c_028c_5c63_f6fd, 0xe526_b4e9_ad1e_4ba1, 0x153e_692a_72e3_61bd, 0xcbd8_d938_40ae_a60a];
+const HASHES: [u64; 5] = [0x666a_e3d3_a9e5_cd64, 0x8b01_fe29_978f_df1c, 0xf006_379d_ac5c_c261, 0xe0c2_de47_da38_8376, 0xf8a8_b30e_c37d_dc16];
 
 /// The same recipe makes the same bytes twice, and the same in a debug and a release build.
 #[test]
 fn the_same_bytes_every_time() {
-    let mut got = [0u64; 4];
+    let mut got = [0u64; 5];
     for (i, (name, text)) in BODIES.iter().enumerate() {
         let (a, b) = (make(text).unwrap(), make(text).unwrap());
         assert_eq!(a.lods[0].content_hash(), b.lods[0].content_hash(), "{name}: two builds differ");
