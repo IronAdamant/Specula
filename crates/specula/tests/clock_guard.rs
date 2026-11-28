@@ -9,7 +9,8 @@
 //! order ("asked second, back first"), an output that doesn't depend on the tail of its input.
 //! Where a speed is the point (a budget: "picking over 512 galleries takes under 20 ms"), the
 //! bound is written `speed_budget(tight)` (`specula_core::speed_budget`): the tight bound when
-//! the test runs alone in the gate's `speed` step, and a liveness bound ([`MIN_SECONDS`]: far
+//! the test runs alone in the gate's `speed` step (scaled by how loaded the gate measured the
+//! machine to be), and a liveness bound ([`MIN_SECONDS`]: far
 //! above anything a busy run adds) in every other run. A bare bound must be at least
 //! [`MIN_SECONDS`] itself.
 //!
@@ -126,7 +127,7 @@ fn names_the_path(name: &str, path: &str, text: &str) -> bool {
 }
 
 /// `specula_core::speed_budget`, and each copy of it, with `pub` and whitespace dropped.
-const SPEED_BUDGET: &str = "fn speed_budget(tight: std::time::Duration) -> std::time::Duration { if std::env::var_os(\"SPECULA_SPEED_TESTS\").is_some() { tight } else { tight.max(std::time::Duration::from_secs(5)) } }";
+const SPEED_BUDGET: &str = "fn speed_budget(tight: std::time::Duration) -> std::time::Duration { match std::env::var(\"SPECULA_SPEED_TESTS\") { Ok(factor) => tight.mul_f64(factor.trim().parse::<f64>().ok().filter(|f| (1.0..=1000.0).contains(f)).unwrap_or(1.0)), Err(std::env::VarError::NotPresent) => tight.max(std::time::Duration::from_secs(5)), Err(std::env::VarError::NotUnicode(_)) => tight, } }";
 
 /// Values that read as times and may be bounded tightly, because they aren't how fast something
 /// ran: (file, what the left side contains, what it is).
