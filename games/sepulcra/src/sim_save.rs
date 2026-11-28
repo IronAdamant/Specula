@@ -598,6 +598,11 @@ impl State {
         if enemies.iter().any(|e| e.id >= next_enemy) || projectiles.iter().any(|p| p.id >= next_projectile) || pending.iter().any(|p| p.seq >= next_seq) {
             return Err(invalid(&r, "an id is not below the next id".into()));
         }
+        // A spent cell is barred against the dead living when its rubble went, so its bar is at
+        // most the next id: one above it would bar the cell against enemies not yet born.
+        if let Some((cell, bar)) = spent.iter().find(|&(_, &bar)| bar > next_enemy) {
+            return Err(invalid(&r, format!("spent cell {} is barred against enemy {bar}, which is not born yet (next id {next_enemy})", cell.0)));
+        }
         if usize::from(wave) > b.waves {
             return Err(invalid(&r, format!("wave {wave} (the content has {})", b.waves)));
         }

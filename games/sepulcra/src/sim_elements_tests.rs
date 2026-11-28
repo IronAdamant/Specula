@@ -1740,6 +1740,24 @@ fn a_line_heave_asks_about_each_enemy_it_reaches() {
     assert!(f.hp < f.max_hp && f.el.stagger_until > s.tick(), "not in furor: hurt and staggered: {f:?}");
 }
 
+/// A save's spent cells are range-checked: a bar at the next id loads (and steps alike), a bar
+/// above it, against enemies not yet born, is refused as a state that does not fit.
+#[test]
+fn a_save_refuses_a_spent_cell_barred_against_enemies_not_yet_born() {
+    let c = proving();
+    let mut s = quiet(&c);
+    plant(&mut s, "shambler", GORGE);
+    let cell = at(&c, "top:9,17");
+    let next = s.w.next_enemy;
+    s.w.spent.insert(cell, next);
+    let loaded = State::from_bytes(Arc::clone(&c), &s.to_bytes()).expect("a bar at the next id loads");
+    assert_eq!(loaded.hash(), s.hash());
+    s.w.spent.insert(cell, next + 1);
+    let e = State::from_bytes(Arc::clone(&c), &s.to_bytes()).unwrap_err();
+    assert_eq!(e.code, "bad_state", "{e:?}");
+    assert!(e.message.contains("spent cell") && e.offset.is_some(), "{e:?}");
+}
+
 /// No rubble rises while an enemy in furor stands in the lane, though the heave's own target is
 /// of a wave not yet begun (so not in furor); the control, with nobody in furor, raises it.
 #[test]
