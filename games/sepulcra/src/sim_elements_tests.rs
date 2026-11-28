@@ -1415,7 +1415,7 @@ fn a_cell_whose_rubble_went_takes_none_while_its_dead_stand() {
     let cell = ev.iter().find_map(|e| if let Event::RubbleRaised { cell } = e { Some(*cell) } else { None }).expect("rubble rose");
     let ev = steps(&mut s, 20 * TICK_HZ);
     assert!(ev.contains(&Event::WallCrumbled { cell }), "it crumbled");
-    assert!(!ev.iter().any(|e| *e == Event::RubbleRaised { cell }), "and never rose there again while the shambler stood: {ev:?}");
+    assert!(!ev.contains(&Event::RubbleRaised { cell }), "and never rose there again while the shambler stood: {ev:?}");
     assert!(s.w.barred(cell));
     // The shambler goes; a newcomer does not bar the cell.
     let i = idx(&s, id);
@@ -1443,8 +1443,7 @@ fn the_reviews_rubble_lets_a_lone_enemy_through_by_its_own_rule() {
     let t = c.stone(c.stone_kind("saxum").unwrap()).tiers[2].el;
     let claws = c.enemy(c.enemy_kind("shambler").unwrap()).wall_damage;
     let each = u64::from(t.rubble_ticks).min((t.rubble_hp as u64).div_ceil(claws as u64));
-    println!("FUROR-PROBE rubble: control {control:?}; review {r:?}; each {each}");
-    assert!(r.gone && r.leaked && r.furor == 0, "{r:?}");
+    assert!(r.gone && r.leaked && r.furor == 0, "{r:?} (control {control:?}, each rubble at most {each} ticks)");
     assert_eq!(r.most_on_a_cell, 1, "{r:?}");
     assert!(r.ticks <= control.ticks + u64::from(r.raised) * each, "{r:?} against {} + {} x {each}", control.ticks, r.raised);
 }
@@ -1590,6 +1589,109 @@ fn furor_crumbles_rubble_raises_none_and_calls_no_summons() {
     assert_eq!(ev.iter().filter(|x| matches!(x, Event::Spawned { .. })).count(), 2, "{ev:?}");
 }
 
+/// The owner's rule, on the one cell a heave's line can share with standing rubble (the target's
+/// own, when the heave kills it there): a heave on standing rubble the dead have half broken and
+/// that has aged restores neither its health nor its life.
+#[test]
+fn a_heave_on_damaged_ageing_rubble_restores_neither_its_health_nor_its_life() {
+    let c = saxum_iii("{ \"cost\": 110, \"range_m\": 7.0, \"cooldown_s\": 1.0, \"damage\": 36, \"line\": 1, \"rubble\": { \"hp\": 2000, \"s\": 60 } }");
+    let mut s = quiet(&c);
+    s.w.tick = 600;
+    let cell = at(&c, "top:9,17");
+    let id = plant(&mut s, "shambler", "top:9,17");
+    hold_still(&mut s);
+    let i = idx(&s, id);
+    s.w.enemies[i].hp = 1;
+    s.w.walls.insert(cell, Wall { hp: 900_000, max_hp: 2_000_000, cost: 0 });
+    s.w.rubble.insert(cell, (100, 100 + 60 * TICK_HZ));
+    s.w.set_blocked(&c, cell, true);
+    let stone = c.map.cell_name(nearest_build_cells(&c, "top:9,17", 1)[0]);
+    place(&mut s, "saxum", &stone, 2);
+    let before = s.rubble().find(|r| r.cell == cell).unwrap();
+    let ev = steps(&mut s, 1);
+    assert!(ev.iter().any(|e| matches!(e, Event::Heaved { affected: 1, .. })) && s.enemy(id).is_none(), "the heave killed it on the rubble's cell: {ev:?}");
+    assert!(!ev.contains(&Event::RubbleRaised { cell }), "{ev:?}");
+    let after = s.rubble().find(|r| r.cell == cell).expect("still standing");
+    assert_eq!((before.hp, before.max_hp, before.raised, before.until), (900_000, 2_000_000, 100, 100 + 60 * TICK_HZ));
+    assert_eq!((after.hp, after.max_hp, after.raised, after.until), (before.hp, before.max_hp, before.raised, before.until), "neither its health nor its life came back");
+}
+
+/// What a rubble bar shows is the lesser of its health and its life: health the lesser in one
+/// case, life in the other, and the two equal at the boundary.
+#[test]
+fn a_rubble_bar_is_the_lesser_of_health_and_life() {
+    let r = |hp: i32, tick: u32| RubbleStand { cell: CellId(0), hp, max_hp: 1_000_000, raised: 0, until: 1000 }.left_permille(tick);
+    assert_eq!(r(300_000, 100), 300, "health the lesser (life 900)");
+    assert_eq!(r(900_000, 700), 300, "life the lesser (health 900)");
+    assert_eq!(r(500_000, 500), 500, "the two equal");
+    assert_eq!((r(0, 0), r(1_000_000, 1000), r(1_000_000, 2000)), (0, 0, 0), "broken, or its life over");
+}
+
+/// An enemy in furor standing on a rooted cell walks at its own pace; the same enemy before its
+/// hour is slowed by the roots alone (no stone's slow on it).
+#[test]
+fn the_roots_do_not_slow_an_enemy_in_furor() {
+    let c = proving();
+    assert!(c.rules.nature.slow > 0);
+    let (mut s, id, _) = held_at_the_hour(&c);
+    steps(&mut s, 2);
+    let e = *s.enemy(id).unwrap();
+    assert!(s.w.in_furor(&c, &e) && !e.is_slowed(s.tick()));
+    s.w.rooted[e.cell().unwrap().index()] = true;
+    assert_eq!(s.w.speed_permille(&c, &e, false), 1000, "in furor: no roots");
+    let mut s = quiet(&c);
+    let j = plant(&mut s, "shambler", "top:9,15");
+    let e = *s.enemy(j).unwrap();
+    s.w.rooted[e.cell().unwrap().index()] = true;
+    assert!(!e.is_slowed(s.tick()));
+    assert_eq!(s.w.speed_permille(&c, &e, false), i64::from(1000 - c.rules.nature.slow), "before its hour the roots slow it");
+}
+
+/// No rubble rises while an enemy in furor stands in the lane, though the heave's own target is
+/// of a wave not yet begun (so not in furor); the control, with nobody in furor, raises it.
+#[test]
+fn no_rubble_rises_while_an_enemy_in_furor_stands() {
+    let c = saxum_iii("{ \"cost\": 110, \"range_m\": 2.5, \"cooldown_s\": 1.0, \"line\": 4, \"rubble\": { \"hp\": 2000, \"s\": 60 } }");
+    let run = |furor: bool| {
+        let mut s = quiet(&c);
+        let hour = s.w.hour_of(&c, 1).unwrap();
+        s.w.tick = if furor { hour + 1 } else { hour - 100 };
+        let far = plant(&mut s, "shambler", GORGE);
+        let near = plant(&mut s, "shambler", "top:9,18");
+        let i = idx(&s, near);
+        s.w.enemies[i].wave = 2;
+        s.w.enemies[i].el.stagger_until = u32::MAX;
+        let stone = c.map.cell_name(nearest_build_cells(&c, "top:9,18", 1)[0]);
+        place(&mut s, "saxum", &stone, 2);
+        let ev = steps(&mut s, 1);
+        assert_eq!(s.w.in_furor(&c, s.enemy(far).unwrap()), furor);
+        assert!(!s.w.in_furor(&c, s.enemy(near).unwrap()));
+        assert!(ev.iter().any(|e| matches!(e, Event::Heaved { affected: 1, .. })), "it heaved at the near one only: {ev:?}");
+        ev.iter().any(|e| matches!(e, Event::RubbleRaised { .. }))
+    };
+    assert!(run(false), "the control raises rubble");
+    assert!(!run(true), "none rises while the far one is in furor");
+}
+
+/// A save holds rubble that rose at its own tick or before, and refuses rubble said to rise
+/// after it: at the save's tick, one before, one after.
+#[test]
+fn a_save_takes_rubble_risen_at_its_tick_and_refuses_one_after() {
+    let c = saxum_iii(REVIEW_RUBBLE);
+    let save_with = |raised: u32| {
+        let mut s = quiet(&c);
+        s.w.tick = 500;
+        let cell = at(&c, "top:9,17");
+        s.w.walls.insert(cell, Wall { hp: 2_000_000, max_hp: 2_000_000, cost: 0 });
+        s.w.rubble.insert(cell, (raised, raised + 100));
+        s.w.set_blocked(&c, cell, true);
+        State::from_bytes(Arc::clone(&c), &s.to_bytes()).map(|l| l.hash() == s.hash())
+    };
+    assert_eq!(save_with(499).ok(), Some(true));
+    assert_eq!(save_with(500).ok(), Some(true), "risen at the save's tick");
+    assert!(save_with(501).is_err(), "risen after the save's tick");
+}
+
 /// Furor is decided by ticks alone: a save in furor loads in furor and steps exactly like the
 /// game it was taken from.
 #[test]
@@ -1616,11 +1718,11 @@ fn a_runs_length_is_the_sum_design_states() {
     let b = c.run_bound();
     assert_eq!(b.hour, u64::from((20 + 50 + 55 + 60 + 55 + 90 + 24) * TICK_HZ + crate::content::WAVE_HOUR_TICKS), "{b:?}");
     assert_eq!(b.ticks, b.hour + b.walk + b.leaps + 1);
-    assert!(b.walk > 0 && b.leaps > 0, "{b:?}");
+    // The walk is the longest way on the open slab (no walls), and the leaps the runner's.
+    assert_eq!((b.walk, b.leaps, b.ticks), (2_757, 440, 49_818), "{b:?}");
     let shipped = Content::builtin();
     let s = shipped.run_bound();
     assert_eq!(s.ticks, s.hour + s.walk + s.leaps + 1);
-    println!("FUROR-PROBE run bound: proving {b:?}; shipped {s:?}");
 }
 
 /// A run that cannot end (the player's own walls, of the most HP the format takes, close every
@@ -1842,7 +1944,11 @@ fn prop_run(c: &Arc<Content>, stones: &[(StoneKind, CellId, u8)], planted: Optio
 
 /// The reviews' own extremes, as content (the proving ground with these tiers put in), where
 /// their stones stood, and the lone enemy and its cell.
-fn review_extremes() -> Vec<(&'static str, Vec<(&'static str, String)>, Vec<(&'static str, Vec<CellId>, u8)>, &'static str, &'static str)> {
+/// One of the reviews' extremes: its name, the stones.json text put in (what, by what), its
+/// stones (kind, cells, tier), and the lone enemy's kind and cell.
+type Extreme = (&'static str, Vec<(&'static str, String)>, Vec<(&'static str, Vec<CellId>, u8)>, &'static str, &'static str);
+
+fn review_extremes() -> Vec<Extreme> {
     let c = proving();
     let ring: Vec<CellId> = RING.iter().map(|x| at(&c, x)).collect();
     let amid = nearest_build_cells(&c, AMID, 1);
@@ -1921,8 +2027,9 @@ fn the_property(cases: u64, seed: u64) -> (PropRun, String, u32, u32) {
 #[test]
 fn every_run_ends_inside_its_stated_length() {
     let (nearest, what, runs, furious) = the_property(8, 0x5e9_f0e0);
-    println!("FUROR-PROBE property: {runs} runs, {furious} reached furor; nearest its figure: {nearest:?} ({})", what.lines().next().unwrap_or(""));
-    assert!(furious > 0, "some drawn content held a run to its wave's hour: the property met furor");
+    let near = what.lines().next().unwrap_or("");
+    assert!(nearest.ticks <= nearest.figure, "{runs} runs; the nearest passed its figure: {nearest:?} ({near})");
+    assert!(furious > 0, "some drawn content held a run to its wave's hour: the property met furor ({runs} runs, {furious} reached furor; nearest {nearest:?}, {near})");
 }
 
 /// The same property over a hundred times as many contents: `cargo test -p sepulcra --release
@@ -1931,5 +2038,6 @@ fn every_run_ends_inside_its_stated_length() {
 #[ignore = "800 drawn contents: run by hand, in release"]
 fn every_run_ends_inside_its_stated_length_at_length() {
     let (nearest, what, runs, furious) = the_property(800, 0x5e9_f0e1);
-    println!("FUROR-PROBE property at length: {runs} runs, {furious} reached furor; nearest its figure: {nearest:?} ({})", what.lines().next().unwrap_or(""));
+    let near = what.lines().next().unwrap_or("");
+    assert!(nearest.ticks <= nearest.figure, "{runs} runs, {furious} reached furor; the nearest passed its figure: {nearest:?} ({near})");
 }

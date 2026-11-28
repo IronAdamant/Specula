@@ -1445,6 +1445,19 @@ mod tests {
         assert_eq!((e.code, e.field.as_str()), (ErrorCode::OutOfRange, "enemies[1].jump.chance"), "{e}");
     }
 
+    /// A run's leaps term counts a leaper that leaps by chance, and only that: a leaper whose
+    /// chance is 0 (it leaps only where a ledge is the only way, which the walk already counts)
+    /// adds none; the smallest chance the format takes adds the same as the stock 0.4.
+    #[test]
+    fn a_runs_leaps_count_only_a_leaper_that_leaps_by_chance() {
+        let stock = Content::builtin().run_bound();
+        assert!(stock.leaps > 0, "{stock:?}");
+        let zero = with("enemies.json", "\"chance\": 0.4", "\"chance\": 0").unwrap().run_bound();
+        assert_eq!((zero.leaps, zero.walk), (0, stock.walk), "{zero:?}");
+        let least = with("enemies.json", "\"chance\": 0.4", "\"chance\": 0.001").unwrap().run_bound();
+        assert_eq!((least.leaps, least.walk), (stock.leaps, stock.walk), "{least:?}");
+    }
+
     /// Review finding: a leaping summoner can reach a ledge-only island; a summon that can't
     /// leap would be born there with no way out. Validation must catch it.
     #[test]
