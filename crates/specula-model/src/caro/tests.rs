@@ -1730,3 +1730,117 @@ fn the_parting_of_two_limbs_turns_smoothly_along_its_valley() {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// The seam measure: the turn across every place where two parts meet.
+
+/// Part `i`'s own value at `x` (7.3's field, the capsule's where it takes over).
+fn part_value(f: &Flesh, i: usize, x: D3) -> f64 {
+    let p = &f.parts[i];
+    let l = p.local(f3(x));
+    f64::from(p.field(l, p.capsule(l)))
+}
+
+/// The slope of `v` at `x` by central differences `h` apart (not made unit).
+fn slope_of(v: &dyn Fn(D3) -> f64, x: D3, h: f64) -> D3 {
+    [0, 1, 2].map(|c| {
+        let (mut a, mut b) = (x, x);
+        a[c] += h;
+        b[c] -= h;
+        (v(a) - v(b)) / (2.0 * h)
+    })
+}
+
+/// The body's surface nearest `x` along the field's slope (Newton's steps on the field), or
+/// `None` where they do not settle within a micrometre.
+fn onto(f: &Flesh, mut x: D3) -> Option<D3> {
+    let v = |y: D3| f64::from(f.value(f3(y)));
+    for _ in 0..12 {
+        let g = slope_of(&v, x, 1e-5);
+        let gg = ddot(g, g);
+        if gg < 1e-6 {
+            return None;
+        }
+        let h = v(x);
+        x = dsub(x, dscale(g, h / gg));
+        if h.abs() * f64::from(f.div) < 1e-7 {
+            return Some(x);
+        }
+    }
+    None
+}
+
+/// The two parts least at `x`, least first, with their values.
+fn two_least(f: &Flesh, x: D3) -> Option<((usize, f64), (usize, f64))> {
+    let mut v: Vec<(usize, f64)> = (0..f.parts.len()).map(|i| (i, part_value(f, i, x))).collect();
+    v.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+    (v.len() >= 2).then(|| (v[0], v[1]))
+}
+
+/// One seam point found from a surface point `x`: the two parts least there, if within `K`
+/// of one another, slid along the surface to where their values are equal; the point and the
+/// direction across the seam (along the surface, from the first part toward the second).
+fn seam_from(f: &Flesh, x: D3) -> Option<(D3, D3, usize, usize)> {
+    let mut x = onto(f, x)?;
+    let ((i, a), (j, b)) = two_least(f, x)?;
+    if b - a >= f64::from(f.smooth) {
+        return None;
+    }
+    for _ in 0..16 {
+        let d = |y: D3| part_value(f, i, y) - part_value(f, j, y);
+        let n = slope_of(&|y| f64::from(f.value(f3(y))), x, 1e-5);
+        let n = dscale(n, 1.0 / dlen(n));
+        let g = slope_of(&d, x, 1e-5);
+        let t = dsub(g, dscale(n, ddot(g, n)));
+        let tt = ddot(t, t);
+        if tt < 1e-8 {
+            return None;
+        }
+        let dv = d(x);
+        if dv.abs() < 1e-8 {
+            return Some((x, dscale(t, -1.0 / tt.sqrt()), i, j));
+        }
+        x = onto(f, dsub(x, dscale(t, dv / tt)))?;
+    }
+    None
+}
+
+/// The turn (degrees) of the field's slope between the surface points `s` either side of a
+/// seam point `p` across it (`u`), each slope by differences a quarter of `s` apart.
+fn turn_across(f: &Flesh, p: D3, u: D3, s: f64) -> Option<f64> {
+    let v = |y: D3| f64::from(f.value(f3(y)));
+    let (a, b) = (onto(f, add(p, dscale(u, s)))?, onto(f, add(p, dscale(u, -s)))?);
+    let h = (s / 4.0).max(2e-5);
+    let (ga, gb) = (slope_of(&v, a, h), slope_of(&v, b, h));
+    let c = ddot(ga, gb) / (dlen(ga) * dlen(gb));
+    Some(dmath::acos_f64(c.clamp(-1.0, 1.0)) * 180.0 / dmath::PI)
+}
+
+/// 7.9: **every place where two parts meet turns smoothly**, on the five skeletons: from points
+/// near each part, the two parts least on the surface nearby, if within the body's width of one
+/// another, are followed along the surface to where their values are equal ([`seam_from`]: a
+/// valley between them, or the line where one runs into the other), and there the slope turns
+/// across it ([`turn_across`]) by under 1.5 degrees between surface points 150 µm apart, and by
+/// at most 0.6 of that, and the measure's floor of 0.15, at half the distance. The crease
+/// measure looks at the joins from one bone's root; this looks wherever two parts meet.
+/// Measured (2026-11-28, twelve points a part): the most turn on each, at 75 µm and at 37.5 µm,
+/// biped 0.43 and 0.21 (the thighs on the pelvis), quadruped 0.73 and 0.38 (an ear on the
+/// head), serpent 0.45 and 0.22, forked 0.86 and 0.44 (the prongs in the crotch), pelvis_legs
+/// 1.06 and 0.56 (the thighs on the pelvis, in the crotch): every one curvature.
+#[test]
+fn every_seam_of_the_five_skeletons_turns_smoothly() {
+    for name in BODIES {
+        let f = jointed(name);
+        let mut r = Rng(0xCA20_0101);
+        let mut seen = 0usize;
+        for i in 0..f.parts.len() {
+            for _ in 0..6 {
+                let x = near_part(&mut r, &f, i);
+                let Some((p, u, a, b)) = seam_from(&f, d3(x)) else { continue };
+                let (Some(t), Some(half)) = (turn_across(&f, p, u, 7.5e-5), turn_across(&f, p, u, 3.75e-5)) else { continue };
+                seen += 1;
+                assert!(t < 1.5 && half <= 0.6 * t + 0.15, "{name}: parts {a} and {b} meet at {p:?} turning by {t} at 75 µm and {half} at 37.5 µm");
+            }
+        }
+        assert!(seen >= 2 * f.parts.len().min(8), "{name}: only {seen} seam points found");
+    }
+}
