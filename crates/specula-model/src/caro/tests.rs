@@ -538,12 +538,32 @@ fn a_joint_keeps_the_bound_and_bulges_by_a_quarter_of_the_width() {
                 }
                 let bound = width / 4.0;
                 assert!(bulge <= bound * (1.0 + 1e-3) + 1e-5, "{degrees} deg, r {radius}, K {width}: bulge {bulge} over {bound}");
-                if degrees == 0 {
-                    assert!(bulge >= 0.9 * bound, "a straight joint bulges by K/4: {bulge} of {bound}");
-                }
+                assert!(bulge >= 0.9 * bound, "{degrees} deg: the joint bulges by K/4 where its fields are equal: {bulge} of {bound}");
             }
         }
     }
+}
+
+/// 7.7: the quadratic join changes by at most the greater change of its two values plus a
+/// quarter of the change of its width, over a million pairs of inputs, near and far apart;
+/// and the quarter is reached (two equal values: the join is `a − K/4`).
+#[test]
+fn a_join_of_changing_width_changes_by_a_quarter_of_it() {
+    let mut r = Rng(0xCA20_000A);
+    for _ in 0..1_000_000 {
+        let k = r.log(1e-4, 1.0);
+        let a = r.range(-1.0, 1.0);
+        let b = if r.unit() < 0.5 { a + r.range(-k, k) } else { r.range(-1.0, 1.0) };
+        let step = r.log(1e-9, 1.0);
+        let (da, db, dk) = (step * r.range(-1.0, 1.0), step * r.range(-1.0, 1.0), step * r.range(-1.0, 1.0));
+        let k2 = (k + dk).max(1e-5);
+        let change = (ref_join(a + da, b + db, k2) - ref_join(a, b, k)).abs();
+        let bound = da.abs().max(db.abs()) + (k2 - k).abs() / 4.0;
+        assert!(change <= bound * (1.0 + 1e-9) + 1e-14, "{change} over {bound}");
+    }
+    let (k, dk) = (0.1, 1e-6);
+    let reached = (ref_join(0.5, 0.5, k + dk) - ref_join(0.5, 0.5, k)).abs() / (dk / 4.0);
+    assert!(reached > 0.999, "the quarter is reached: {reached}");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -705,6 +725,7 @@ fn hostile_bodies_are_refused_with_a_reason() {
 /// caro::tests::what_a_sample_costs -- --ignored --nocapture`.
 #[test]
 #[ignore = "a measurement: run in release with --nocapture"]
+#[allow(clippy::disallowed_methods, reason = "a measurement of this build's speed, outside every result (rule 20 of the lanes: timed from outside the code timed)")]
 fn what_a_sample_costs() {
     let mut r = Rng(0xCA20_0009);
     let mut among = Vec::new();

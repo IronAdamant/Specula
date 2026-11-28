@@ -191,6 +191,7 @@ struct Egg {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant, reason = "parts sit in one Vec and are asked at every sample; a box would add a step to each, and swells are few")]
 enum Part {
     Bone(Shaft),
     Egg(Egg),
@@ -497,7 +498,7 @@ fn shaft(bone: &Bone, index: usize) -> Result<Shaft, CaroError> {
                 return Err(err("section_size", Some(f64::from(h)), Some(SIZE)));
             }
         }
-        if j > 0 && !(s[0] - bone.sections[j - 1][0] >= LEAST_GAP) {
+        if j > 0 && s[0] - bone.sections[j - 1][0] < LEAST_GAP {
             return Err(err("section_order", Some(f64::from(s[0] - bone.sections[j - 1][0])), Some((LEAST_GAP, ALONG.1 - ALONG.0))));
         }
     }
@@ -506,7 +507,7 @@ fn shaft(bone: &Bone, index: usize) -> Result<Shaft, CaroError> {
     }
     // The stations in metres, as stored: the profile is defined by these numbers.
     let stations: Vec<f32> = bone.sections.iter().map(|s| (f64::from(s[0]) * length) as f32).collect();
-    if stations.windows(2).any(|w| !(w[1] > w[0])) {
+    if stations.windows(2).any(|w| w[1] <= w[0]) {
         return Err(err("section_order", None, None));
     }
     let ts: Vec<f64> = stations.iter().map(|&t| f64::from(t)).collect();
@@ -589,7 +590,7 @@ fn egg(bones: &[Bone], swell: &Swell, index: usize) -> Result<Egg, CaroError> {
         return Err(err("swell_along", Some(f64::from(swell.at[0])), Some(ALONG)));
     }
     for &o in &swell.at[1..] {
-        if !(o.abs() <= OFFSET) {
+        if o.is_nan() || o.abs() > OFFSET {
             return Err(err("swell_offset", Some(f64::from(o)), Some((-OFFSET, OFFSET))));
         }
     }
