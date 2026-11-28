@@ -39,8 +39,12 @@ rounds.
   - **On branches, not merged, each with its decisions in
     `.swarmnotes/m6/part4/lanes-2026-11-24/*-decisions.md` (the last parts) and the lead's queue
     in `C:/lv/lanes/QUEUE.md` (items 32 to 48):** the body's outline pass (`C:/sl-ora`,
-    `m6-ora`: a mesh follows its field to a stated tolerance; refined inside a build on three of
-    five test bodies, the biped not yet: its work weights are being retimed); **the first
+    `m6-ora`, `c680aedf`: a mesh follows its field to a stated tolerance, worst places first, so
+    that running out of work is never a loss; inside a build every one of the five test bodies
+    is improved for about 0.1 s; an independent off-and-on check is green: thin tips and the
+    notch where limbs part are rounder, nothing is worse, and at a game's distance nothing
+    differs; not reviewed; limited at the biped's armpits by two triangles the mesher hands
+    over turned); **the first
     person** (`C:/sl-homo`, `m6-homo`: built from the measured body on the old figure's rig;
     every length within 1% and girth within 2% save the chest's; forty bodies build; **reads
     "barely" as a person**: a second slice is owed: a section with a front, a back and a place,
