@@ -219,6 +219,12 @@ does not run everything again; fix on top if it fails.
   sixteen test threads share the machine. A bare bound under 5 s on a time fails
   `crates/specula/tests/clock_guard.rs` (its header lists the forms it reads, and the two it can't). GPU time is a
   time too: it is measured on a queue other processes use.
+- **The speed step scales the budgets by the machine's load** (`tools/examen/src/mensura.rs`). Before each
+  package it times a fixed reference workload against the least time it ever took in this checkout (kept in
+  `<target>/gate/speed-reference.txt`) and sets `SPECULA_SPEED_TESTS` to the ratio (at least 1). The factor is in the
+  step's lines and the summary. Past 8 the step fails as too loaded to judge, and names no test.
+- **A budget is still written as five times the quiet measurement**, with the measurement in a comment beside it.
+  The factor covers load. It does not cover a budget written too tight.
 
 ## Live checks (GPU + desktop; CI can't run these)
 
