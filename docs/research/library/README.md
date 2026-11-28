@@ -431,3 +431,37 @@ is typed in.
   one file, and the phrases naming a time zone taken out. **Nothing of it has been checked against
   its sources here** (the delivery holds no source files, only the text); it is where to read and
   what to cite.
+
+## Round nine: procedural generation, the methods (2026-11-28)
+
+Asked for in [LIBRARY_RESEARCH_BRIEF_ROUND9.md](../LIBRARY_RESEARCH_BRIEF_ROUND9.md) the morning the
+owner set the order a person or a creature is made in ([FABRICA.md](../../design/FABRICA.md)), and
+delivered the same day. The measured numbers were largely in the library already; this round is
+**method only**: how others have built generators from such numbers, and how bounds are carried
+through a computation. No code, model file, weights or data of any body or face model was opened or
+used; several have licences that forbid it. **Nothing of it is in the engine yet**: each file goes to
+its lane, every formula is derived again in the repository's own words and held by a test.
+
+| File | What it answers |
+|---|---|
+| [R9-A1](R9-A1-bodies-from-measurements.md) | A few numbers to a whole body: which numbers matter and in what order (stature, then weight or girth, then sex, then the trunk's proportions); how shape and pose are separated |
+| [R9-A2](R9-A2-muscle-and-fat-shapes.md) | Muscles and fat as shapes on a skeleton; a muscle's section against the joint's angle; the muscles a silhouette cannot do without; fat by site and sex (no open continuous map was found) |
+| [R9-A3](R9-A3-surface-at-a-joint.md) | Why linear blending collapses an elbow and twists a wrist, with the mathematics; what each remedy costs and where it fails; what implicit skinning needs from a field |
+| [R9-B1](R9-B1-face-from-measurements.md) | A face from measurements in two steps: draw a consistent set, then fit a surface under them; its stated failures. Read from the author's thesis: the paper itself has no legal free copy |
+| [R9-B2](R9-B2-hand-and-nails.md) | A hand from its surface anatomy; where the joints lie under the creases; the nail plate's numbers |
+| [R9-B3](R9-B3-ear-as-shape.md) | The ear as a shape from numbers |
+| [R9-C1](R9-C1-shape-grammars.md) | Five ways of making shapes by rule, and what each does when a rule does not fit |
+| [R9-C2](R9-C2-interval-and-affine-bounds.md) | Bounds carried through a computation: interval and affine arithmetic, rounding outward, why bounds blow up |
+| [R9-C3](R9-C3-constraint-solving.md) | Constraints between numbers: under- and over-determined systems; the sources give no method for naming the one constraint that cannot be met |
+| [R9-D1](R9-D1-what-shipped-spore-and-sims.md) | Creatures from a skeleton by rule in a shipped game: retargeting one animation to any body; **how its skin was made is not in any source found** |
+| [R9-D2](R9-D2-allometric-templates-canids-felids-bovids.md) | Proportion across a family as a few rules; head, neck and trunk across canids and felids are missing |
+| [R9-E1](R9-E1-plausibility-by-numbers.md) | Knowing a generated body is right by numbers alone: outline tolerances, mass from volume, the centre of gravity, where weight sits over the feet |
+| [R9-E2](R9-E2-perceptual-thresholds.md) | The few measured thresholds for how far a proportion may stray |
+| [as delivered](R9-README-as-delivered.md), [substitutes](R9-blocked-downloads-ALTERNATIVES.md) | The delivery's own overview and coverage map, and which sources were replaced by a labelled substitute |
+
+- **Each file has a second checker's file beside it** (`.verify.md`), by the same researcher, row by
+  row. What a check marks WEAK (mostly readings off a plot or a figure) is not used as a number.
+- **Gaps the delivery states:** no open continuous map of fat thickness; no method for a shipped
+  creature's skin; no measured threshold for whole-body proportions; a symmetry tolerance in
+  millimetres. By the owner's rule these are filled by the engine's own estimates, labelled as its
+  own.
