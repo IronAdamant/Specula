@@ -18,9 +18,14 @@
 //!   little for rounding), holds the point, and is the same number as [`Flesh::whole`], which
 //!   joins them all (7.6).
 //!
-//! What the next slice calls: [`Flesh::value`] (or [`Flesh::value_among`] with the list a block
-//! got from [`Flesh::meets`]), and [`Flesh::range`] over a ball. Not wired into the recipe or
-//! the mesher.
+//! - **A joint** ([`Joint`], found by [`joints_of`]) is two bones meeting end to end; with
+//!   [`Flesh::jointed`] the join's width falls from `smooth` to nothing as the two run straight
+//!   on, near the joint only, changing by at most [`WIDTH_SLOPE`] a metre, and the joined value
+//!   is divided by `1 + WIDTH_SLOPE` so that it stays 1-Lipschitz (7.8): no ring at a spine's
+//!   or a tail's joints, the body's width at a bend.
+//!
+//! The sculpt's `body` node ([`crate::sdf::Prim::Body`]) asks [`Flesh::value_among`] with the
+//! list a block got from [`Flesh::meets`], and [`Flesh::range`] over a ball.
 //!
 //! **In `f32`, and what each allowance covers** (7.6, "In `f32`"). With `u = 2⁻²⁴` the unit
 //! roundoff and `W` = [`Flesh::scale`], every value is within [`Flesh::slack`]
@@ -36,7 +41,10 @@
 //! - *the gauge and `ψ`*: a division each way, the norm (a root, or two correctly rounded
 //!   powers), `e`, `n` and the product: under `25 u m`; the capsule: under `4 u (|d| + R)`;
 //! - *the join of up to 64 values*: each join under `u (8 smooth + |value|)`, with
-//!   `|value| ≤ keep + smooth + R`.
+//!   `|value| ≤ keep + smooth + R`;
+//! - *7.8's width*: a seam's distance in a few roundings of numbers under `|d| + ball`, so the
+//!   width is within `10 u (|x|₁ + W)` of the exact one, and the joined value moves by no more
+//!   than the width does (7.8 (2)); the division by `1 + Λ` one rounding.
 //!
 //! That is under `350 u` of `|x|₁ + W` with `W` = the greatest `|a|₁ + R` of the parts plus
 //! `9 smooth + keep`; `2⁻¹⁴` is `1024 u`. The numbers `L`, `R` and a swell's radii are worked
@@ -614,8 +622,172 @@ fn egg(bones: &[Bone], swell: &Swell, index: usize) -> Result<Egg, CaroError> {
     Ok(Egg { origin: f3(o), frame: frame.map(f3), inv, least, most })
 }
 
+/// Which end of a bone meets a joint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum End {
+    Head,
+    Tail,
+}
+
+/// Two bones that meet end to end (DISTANCE_FIELDS.md 7.8): bone `bones[0]` at its end
+/// `ends[0]` and bone `bones[1]` at `ends[1]`. `smooth` is the joint's own width where its body
+/// says so (at most the body's, and at most the smaller reach of the two bones); else the width
+/// falls from the body's as the two bones come into line ([`bend_share`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Joint {
+    pub bones: [usize; 2],
+    pub ends: [End; 2],
+    pub smooth: Option<f32>,
+}
+
+/// How fast the width may change a metre (7.8's `Λ`): the joined field is divided by `1 + Λ`
+/// wherever a joint's width is under the body's.
+pub const WIDTH_SLOPE: f32 = 0.5;
+/// The bend (degrees) from which a joint has the body's whole width; under it the width falls
+/// smoothly to nothing at a straight joint ([`bend_share`]).
+pub const FULL_BEND: f64 = 40.0;
+/// `1 − cos FULL_BEND`.
+const FULL_BEND_ONE_LESS_COS: f64 = 1.0 - 0.766_044_443_118_978;
+
+/// The share of the body's width a joint takes when its two bones run on from one another at
+/// `cos_bend` (the cosine of the angle between the one's direction into the joint and the
+/// other's out of it: 1 straight on): `s(u)`, `u = (1 − cos θ) / (1 − cos 40°)` held to
+/// `[0, 1]`, `s` the smooth step `u² (3 − 2u)`. 0 straight on, 1 from 40 degrees of bend.
+pub fn bend_share(cos_bend: f64) -> f64 {
+    let u = ((1.0 - cos_bend) / FULL_BEND_ONE_LESS_COS).clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
+}
+
+/// The joints of a skeleton (`parents[i]` the parent of bone `i`): a bone and its parent where
+/// the child's head is at the parent's tail (or head), and two children of one parent whose
+/// heads are at one place; "at" is within a quarter of the smaller reach of the two. Bones
+/// without flesh, and bones shorter than [`LEAST_LENGTH`], meet nothing.
+pub fn joints_of(bones: &[Bone], parents: &[Option<usize>]) -> Vec<Joint> {
+    let reach = |b: &Bone| b.sections.iter().map(|s| s[1].max(s[2])).fold(0.0f32, f32::max);
+    let long = |b: &Bone| !b.sections.is_empty() && frame_of(b).1 > 0.0;
+    let near = |p: V3, q: V3, tol: f32| {
+        let d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() <= tol
+    };
+    let mut out = Vec::new();
+    for (i, b) in bones.iter().enumerate() {
+        let Some(Some(p)) = parents.get(i) else { continue };
+        let Some(pb) = bones.get(*p) else { continue };
+        if !(long(b) && long(pb)) {
+            continue;
+        }
+        let tol = 0.25 * reach(b).min(reach(pb));
+        if near(b.head, pb.tail, tol) {
+            out.push(Joint { bones: [*p, i], ends: [End::Tail, End::Head], smooth: None });
+        } else if near(b.head, pb.head, tol) {
+            out.push(Joint { bones: [*p, i], ends: [End::Head, End::Head], smooth: None });
+        }
+    }
+    for (i, b) in bones.iter().enumerate() {
+        for (k, c) in bones.iter().enumerate().skip(i + 1) {
+            let (Some(pi), Some(pk)) = (parents.get(i).copied().flatten(), parents.get(k).copied().flatten()) else { continue };
+            if pi != pk || !(long(b) && long(c)) {
+                continue;
+            }
+            if near(b.head, c.head, 0.25 * reach(b).min(reach(c))) {
+                out.push(Joint { bones: [i, k], ends: [End::Head, End::Head], smooth: None });
+            }
+        }
+    }
+    out
+}
+
+/// Where a joint's width is less than the body's (7.8): a disc about the joint, square to the
+/// line the two bones run on, of radius `radius` and half thickness `half`; the width there is
+/// `width`, and `width + Λ d` at a distance `d` from it. `ball` holds every point where that is
+/// under the body's width, with room to spare for rounding.
+#[derive(Clone, Copy, Debug)]
+struct Seam {
+    centre: V3,
+    normal: V3,
+    half: f32,
+    radius: f32,
+    width: f32,
+    ball: f32,
+}
+
+impl Seam {
+    /// The seam's width at `x`, or `None` where it is the body's or more.
+    #[inline]
+    fn at(&self, x: V3) -> Option<f32> {
+        let d = [x[0] - self.centre[0], x[1] - self.centre[1], x[2] - self.centre[2]];
+        let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        if r2 > self.ball * self.ball {
+            return None;
+        }
+        let z = d[0] * self.normal[0] + d[1] * self.normal[1] + d[2] * self.normal[2];
+        let rho = (r2 - z * z).max(0.0).sqrt();
+        let (dz, dr) = ((z.abs() - self.half).max(0.0), (rho - self.radius).max(0.0));
+        Some(self.width + WIDTH_SLOPE * (dz * dz + dr * dr).sqrt())
+    }
+}
+
+/// Most joints in one body.
+pub const MAX_SEAMS: usize = 128;
+
+/// The seams of `joints` (7.8): of each whose width is under the body's `smooth`, the disc
+/// about it and its ball, worked out in `f64` and rounded the safe way.
+fn make_seams(bones: &[Bone], parts: &[Part], of: &[PartOf], joints: &[Joint], smooth: f32) -> Result<Vec<Seam>, CaroError> {
+    if joints.len() > MAX_SEAMS {
+        return Err(fail("too_many_joints", None, None, Some(joints.len() as f64), Some((0.0, MAX_SEAMS as f32))));
+    }
+    let mut out = Vec::new();
+    let k = f64::from(smooth);
+    for j in joints {
+        let mut reach = 0.0f64;
+        let mut ends = [[0.0f64; 3]; 2];
+        let mut outward = [[0.0f64; 3]; 2];
+        for s in 0..2 {
+            let b = j.bones[s];
+            let Some(bone) = bones.get(b) else {
+                return Err(fail("joint_bone", Some(b), None, Some(b as f64), Some((0.0, bones.len() as f32 - 1.0))));
+            };
+            let Some(Part::Bone(shaft)) = of.iter().position(|o| *o == PartOf::Bone(b)).map(|p| &parts[p]) else {
+                return Err(fail("joint_flesh", Some(b), None, None, None));
+            };
+            let (frame, length) = frame_of(bone);
+            if length == 0.0 {
+                return Err(fail("joint_point", Some(b), None, None, None));
+            }
+            reach = reach.max(f64::from(shaft.radius));
+            (ends[s], outward[s]) = match j.ends[s] {
+                End::Head => (d3(bone.head), frame[0]),
+                End::Tail => (d3(bone.tail), dscale(frame[0], -1.0)),
+            };
+        }
+        let own = match j.smooth {
+            Some(w) => {
+                let most = k.min(reach);
+                if !(f64::from(w) >= 0.0 && f64::from(w) <= most) {
+                    return Err(fail("joint_smooth", Some(j.bones[1]), None, Some(f64::from(w)), Some((0.0, most as f32))));
+                }
+                f64::from(w)
+            }
+            // The two run on from one another when their outward directions are opposite.
+            None => k * bend_share(-ddot(outward[0], outward[1])),
+        };
+        if own >= k {
+            continue;
+        }
+        let centre = dscale([ends[0][0] + ends[1][0], ends[0][1] + ends[1][1], ends[0][2] + ends[1][2]], 0.5);
+        let line = dsub(outward[1], outward[0]);
+        let normal = if dlen(line) > 1e-3 { dscale(line, 1.0 / dlen(line)) } else { outward[1] };
+        let gap = dlen(dsub(ends[0], ends[1]));
+        let radius = reach + k + gap;
+        let half = f64::from(WIDTH_SLOPE) * reach + gap;
+        let ball = ((half * half + radius * radius).sqrt() + (k - own) / f64::from(WIDTH_SLOPE)) * (1.0 + 1e-3) + 1e-6;
+        out.push(Seam { centre: f3(centre), normal: f3(normal), half: up(half), radius: up(radius), width: down(own), ball: up(ball) });
+    }
+    Ok(out)
+}
+
 /// A body's flesh: its bones' and swells' fields joined (DISTANCE_FIELDS.md 7.5), culled
-/// exactly (7.6).
+/// exactly (7.6), with a width that falls at straight joints (7.8).
 #[derive(Clone, Debug)]
 pub struct Flesh {
     parts: Vec<Part>,
@@ -624,12 +796,22 @@ pub struct Flesh {
     keep: f32,
     reach: f32,
     scale: f32,
+    seams: Vec<Seam>,
+    /// 7.8's `1 + Λ` where any seam narrows the width, else 1: what the joined value is
+    /// divided by.
+    div: f32,
 }
 
 impl Flesh {
     /// The flesh of `bones` (those with sections) and `swells`, joined with width `smooth`,
     /// culled exactly below `keep` (7.6's `T`).
     pub fn new(bones: &[Bone], swells: &[Swell], smooth: f32, keep: f32) -> Result<Flesh, CaroError> {
+        Flesh::jointed(bones, swells, smooth, keep, &[])
+    }
+
+    /// [`Flesh::new`], with the width at each of `joints` falling as its two bones come into
+    /// line (7.8; [`joints_of`] finds a skeleton's).
+    pub fn jointed(bones: &[Bone], swells: &[Swell], smooth: f32, keep: f32, joints: &[Joint]) -> Result<Flesh, CaroError> {
         if !(smooth >= SMOOTH.0 && smooth <= SMOOTH.1) {
             return Err(fail("smooth", None, None, Some(f64::from(smooth)), Some(SMOOTH)));
         }
@@ -665,7 +847,45 @@ impl Flesh {
         let size = |v: V3| v[0].abs() + v[1].abs() + v[2].abs();
         let widest = parts.iter().map(|p| f64::from(size(p.origin())) + f64::from(p.reach_of())).fold(0.0f64, f64::max);
         let scale = up(widest + 9.0 * k + t);
-        Ok(Flesh { parts, of, smooth, keep, reach, scale })
+        let seams = make_seams(bones, &parts, &of, joints, smooth)?;
+        let div = if seams.is_empty() { 1.0 } else { 1.0 + WIDTH_SLOPE };
+        Ok(Flesh { parts, of, smooth, keep, reach, scale, seams, div })
+    }
+
+    /// 7.8's width at `x`: the body's, or less within a seam's ball. `seams` rising indices
+    /// into the body's seams, or every seam.
+    #[inline]
+    fn width(&self, x: V3, seams: Option<&[u16]>) -> f32 {
+        let mut k = self.smooth;
+        match seams {
+            None => {
+                for s in &self.seams {
+                    if let Some(w) = s.at(x) {
+                        k = k.min(w);
+                    }
+                }
+            }
+            Some(list) => {
+                for &i in list {
+                    if let Some(w) = self.seams.get(usize::from(i)).and_then(|s| s.at(x)) {
+                        k = k.min(w);
+                    }
+                }
+            }
+        }
+        k
+    }
+
+    /// The joined value of `n` part values at `x`, held at `keep` and divided by 7.8's factor.
+    #[inline]
+    fn joined(&self, values: &mut [f32], x: V3, seams: Option<&[u16]>) -> f32 {
+        let k = if values.len() > 1 && !self.seams.is_empty() { self.width(x, seams) } else { self.smooth };
+        let h = chain(values, k).min(self.keep);
+        if self.div == 1.0 {
+            h
+        } else {
+            h / self.div
+        }
     }
 
     /// The body's field at `x`: only the parts whose capsule widened by [`Flesh::reach`] holds
@@ -681,15 +901,18 @@ impl Flesh {
                 n += 1;
             }
         }
-        chain(&mut values[..n], self.smooth).min(self.keep)
+        self.joined(&mut values[..n], x, None)
     }
 
     /// [`Flesh::value`] asking only the parts in `among` (rising, as [`Flesh::meets`] gives
-    /// them): the same number wherever `among` holds every part [`Flesh::value`] would ask.
+    /// them; past the parts, the seams it gives): the same number wherever `among` holds every
+    /// part [`Flesh::value`] would ask and every seam whose ball holds `x`.
     pub fn value_among(&self, x: V3, among: &[u16]) -> f32 {
         let mut values = [0.0f32; MAX_PARTS];
         let mut n = 0;
-        for &i in among.iter().take(MAX_PARTS) {
+        let parts = self.parts.len();
+        let split = among.partition_point(|&i| usize::from(i) < parts);
+        for &i in among[..split].iter().take(MAX_PARTS) {
             let Some(p) = self.parts.get(usize::from(i)) else { continue };
             let l = p.local(x);
             let c = p.capsule(l);
@@ -698,27 +921,43 @@ impl Flesh {
                 n += 1;
             }
         }
-        chain(&mut values[..n], self.smooth).min(self.keep)
+        let mut seams = [0u16; MAX_SEAMS];
+        let mut m = 0;
+        for &i in among[split..].iter().take(MAX_SEAMS) {
+            seams[m] = i - parts as u16;
+            m += 1;
+        }
+        self.joined(&mut values[..n], x, Some(&seams[..m]))
     }
 
-    /// The body's field asking every part: 7.5's `H`, what [`Flesh::value`] is defined to equal.
+    /// The body's field asking every part: 7.5's `H` (7.8's, divided by its factor), what
+    /// [`Flesh::value`] is defined to equal.
     pub fn whole(&self, x: V3) -> f32 {
         let mut values = [0.0f32; MAX_PARTS];
         for (v, p) in values.iter_mut().zip(&self.parts) {
             let l = p.local(x);
             *v = p.field(l, p.capsule(l));
         }
-        chain(&mut values[..self.parts.len()], self.smooth).min(self.keep)
+        self.joined(&mut values[..self.parts.len()], x, None)
     }
 
-    /// The parts any point of the ball of radius `r` about `o` can ask, rising: every part
-    /// [`Flesh::value`] asks at such a point is among them.
+    /// The parts any point of the ball of radius `r` about `o` can ask, rising, and after them
+    /// (numbered from [`Flesh::parts`] on) the seams whose ball such a point can be in: every
+    /// part and seam [`Flesh::value`] asks at such a point is among them.
     pub fn meets(&self, o: V3, r: f32, out: &mut Vec<u16>) {
         out.clear();
-        let limit = self.reach + r + 2.0 * self.slack_ball(o, r);
+        let sb = self.slack_ball(o, r);
+        let limit = self.reach + r + 2.0 * sb;
         for (i, p) in self.parts.iter().enumerate() {
             if p.capsule(p.local(o)) <= limit {
                 out.push(i as u16);
+            }
+        }
+        for (i, s) in self.seams.iter().enumerate() {
+            let d = [o[0] - s.centre[0], o[1] - s.centre[1], o[2] - s.centre[2]];
+            let room = (s.ball + r) * (1.0 + 1e-4) + 2.0 * sb;
+            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= room * room {
+                out.push((self.parts.len() + i) as u16);
             }
         }
     }
@@ -728,10 +967,27 @@ impl Flesh {
     pub fn range(&self, o: V3, r: f32) -> (f32, f32) {
         let h = self.value(o);
         let s = self.slack_ball(o, r);
-        let hi = (h + r + 2.0 * s).min(self.keep);
+        let top = if self.div == 1.0 { self.keep } else { self.keep / self.div };
+        let hi = (h + r + 2.0 * s).min(top);
         let least = self.parts.iter().map(|p| p.capsule(p.local(o))).fold(f32::INFINITY, f32::min);
-        let far = (least - r - self.smooth - s).min(self.keep) - s;
+        let low = (least - r - self.smooth - s).min(self.keep);
+        let far = if self.div == 1.0 { low } else { low / self.div } - s;
         ((h - r - 2.0 * s).max(far), hi)
+    }
+
+    /// How many seams (joints whose width is under the body's) the body has.
+    pub fn seams(&self) -> usize {
+        self.seams.len()
+    }
+
+    /// 7.8's width at `x` (the body's smoothing, or less near a straight joint).
+    pub fn width_at(&self, x: V3) -> f32 {
+        self.width(x, None)
+    }
+
+    /// What the joined value is divided by (7.8's `1 + Λ`, or 1 where no width changes).
+    pub fn divisor(&self) -> f32 {
+        self.div
     }
 
     /// How far a value at `x` may be from the exact field: `2⁻¹⁴ (|x|₁ + W)`.

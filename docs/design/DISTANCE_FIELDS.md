@@ -685,7 +685,7 @@ So a width that falls toward nothing where two bones run on from one another, an
 they bend, can be had with a stated factor (`Λ` from how fast the width is made to change):
 dividing by that factor keeps the field a bound. Held by test
 (`a_join_of_changing_width_changes_by_a_quarter_of_it`). Which width, and how it is made from
-the skeleton, is the next slice's.
+the skeleton, is 7.8's, which also finds the chain's factor `1 + Λ` whatever its length.
 
 **7.6. The body's cull is exact.** Let `c_i` be each part's capsule term (7.3's `c`; a swell's
 `|x − o| − r_max`), so `F_i ≥ c_i`, and let `ε = T + 2K`. **`H(x)` is the same number when only
@@ -720,6 +720,78 @@ by line here):
   little above `T + 2K`, by `2⁻¹⁴ (ε + K)`, for the rounding of a chain of up to 64 joins;
 - a range over a ball and the parts it needs are widened by `2 σ` at the ball's farthest point.
 
+**7.8. A width that falls where two bones run straight on.** A **joint** is two bones that
+meet end to end (a child's head at its parent's tail, or two children's heads at one place),
+each with its **outward direction** from the joint (`e` at a head, `−e` at a tail), and the
+**bend** `θ` between one's direction into the joint and the other's out of it
+(`cos θ = −o₁ · o₂`; 0 straight on). The joint's **width** is the body's `K` times
+`s(u)`, `u = (1 − cos θ) / (1 − cos 40°)` held to `[0, 1]`, `s(u) = u² (3 − 2u)`, or its own
+where the body gives one (at most `K`): nothing straight on, all of `K` from 40 degrees. Its
+**seam** `Z` is the solid disc about the joint square to `o₂ − o₁`, of radius `R + K` and half
+thickness `Λ R` (`R` the greater reach of the two bones, `Λ = 1/2`). The width at a point is
+
+`K(x) = min(K, min over joints of (K_j + Λ d(x, Z_j)))`,
+
+the body's everywhere but near a joint that runs on. Join the sorted values as in 7.5 with the
+width `K(x)` at each point: that is `G`, and the body's field is `H = (G ∧ T) / (1 + Λ)` (and
+`G ∧ T` where no joint's width is under `K`). Then:
+
+1. `K(x)` changes by at most `Λ` a metre, and `0 ≤ K(x) ≤ K`.
+2. For fixed values, `G` changes by at most the change of the width: `|∂G/∂K| ≤ 1`, **however
+   many parts are joined** (7.7 alone gives `(n − 1)/4`).
+3. So `G` changes by at most `1 + Λ` a metre, and `H` by at most one: **`H` is 1-Lipschitz**
+   and, as it has `G`'s sign and zeros, a bound for the joined body, both sides.
+4. 7.5 (2) and (4) and 7.6 hold as they stand with `K` the greatest width: the cull's `ε` is
+   still `T + 2K`, and it is still exact.
+
+*Proof.* (1) The distance to a solid disc is 1-Lipschitz (2.1; the disc is convex), so each
+`K_j + Λ d(x, Z_j)` changes by at most `Λ`, and so do their least and its least with `K` (3.1).
+(2) Fix the values, sorted, and let `r` be the running value and `y ≥ r` the next (a join is at
+most its lesser input and the first value is the least, so the running value never passes the
+next). With `h = 1 − (y − r)/K`, 7.7 gives `∂q/∂K = −h(2 − h)/4`, and from `q = r − K h²/4`,
+`∂q/∂r = 1 − h/2`. Write `D` for `−∂G/∂K` after a join: `D₁ = h(2 − h)/4 ≤ 1/4`, and
+`D ← (1 − h/2) D + h(2 − h)/4`; if `D ≤ 1` before, after it is at most
+`1 − h/2 + h/2 − h²/4 = 1 − h²/4 ≤ 1`. Where `|y − r| ≥ K` the join is the lesser and both
+derivatives are 0 and 1; `q` has continuous derivatives in `K` across `y − r = K` (7.7), and
+`G → F_min` as `K → 0` (7.5 (2)), so `G` changes by at most `|K − K′|` between any two widths.
+(3) Between `x` and `x′`: `|G(F(x), K(x)) − G(F(x′), K(x))| ≤ max_i |F_i(x) − F_i(x′)| ≤ |x − x′|`
+(7.5 (1), at the fixed width `K(x)`), and `|G(F(x′), K(x)) − G(F(x′), K(x′))| ≤ |K(x) − K(x′)| ≤
+Λ |x − x′|` by (2) and (1). Then 3.1 for `∧ T`, and the positive divisor keeps signs and zeros.
+(4) 7.5 (2) needs only `K(x) ≤ K`. In 7.6's first case a dropped value is at least `K ≥ K(x)`
+above the running value, so its join returns the running value; in the second both chains are
+at least `ε − 2K = T`. The division comes after `∧ T`, so both are the same number divided. ∎
+
+**Why the bend of the joint, and not the angle of the fields' gradients.** R9-A3 (section 3)
+describes composing a joint by the angle between its two fields' gradients at the point: no
+blend where they are aligned, a blend or a contact where they bend. That angle changes without
+bound near a bone's axis and across the places where a field's slope breaks (the gauge's clamp,
+the capsule's takeover: "What 7.3 to 7.6 do not say"), so no `Λ` bounds it, and dividing by
+`1 + Λ` would need one. The bend is a number of the joint, constant in space; only the seam's
+place depends on `x`, and through a distance, whose `Λ` is the one chosen.
+
+**Why the seam is that size, and what it costs.** At a straight joint of two round bones of
+radius `r ≤ R`, `z` from the joint plane along the surface, the two fields differ by
+`√(z² + r²) − r`, so the join acts where that is under `K(x)`; with `K_j = 0` and the width
+growing as `Λ (z − a)` past the seam's half thickness `a`, the join can act at the surface only
+where `√(z² + r²) − r < Λ (z − a)`, and with `a = Λ R` that leaves next to nothing: to second
+order in `z / r` the difference is `z²/(2r)` and `z² − 2rΛz + 2rΛ²R ≥ (z − rΛ)² ≥ 0`. That the
+ring is nothing is not proved beyond that order; it is measured. Measured (`a_straight_joint_has_no_ring`): chains of round bones of radius 2
+to 10 cm through two straight joints, widths 5 mm to 4 cm, 1,500 rays each: the joined surface
+lies within `5 · 10⁻⁵` of `K/4` of the plain union (the halving's own precision), against the
+whole `K/4` before; bent by 1 or 2 degrees, within `6 · 10⁻⁵` of it. At a bend of 45 degrees and
+more the width is the body's and the bulge is `K/4` as before
+(`a_bent_joint_keeps_its_bulge_under_the_bound`, 0 to 150 degrees: never past `K/4`). The
+price: where any joint runs on, the field reads short by another `1 + Λ = 1.5` (the mesher
+skips less), and within a seam a swell meets its bone with less smoothing, as the joint's two
+bones do. Held by test: the factor over a million pairs (`a_jointed_body_changes_no_faster_than_the_distance`),
+each value within its slack of a reference in `f64` that works out the width apart, and the
+cull bit for bit on the four skeletons jointed and random chains.
+
+**Where three or more bones meet** (a pelvis, a fork) each pair that meets end to end is a
+joint, and the width is the least of them: two hips in one line through their joint take no
+width there, and a third bone meeting the two inside that seam (a spine) meets them with a
+crease in the seam's thickness. A body that wants otherwise gives that joint its own width.
+
 **What 7.3 to 7.6 do not say.**
 
 - The field is no distance: it reads short by `L ρ` near a flat bone and by `R − m` far out,
@@ -729,9 +801,9 @@ by line here):
   slopes, so the surface along a bone does, and a cap meets its end with a continuous slope
   because the end slopes are 0. How smooth the joined surface is, beyond what section 5 says of
   one join, is not stated either.
-- The bulge is bounded, not removed. A straight joint bulges as much as a bend (7.5 (4)): a
-  width that falls as two bones run on from one another is not part of this field (7.7 says
-  what it would cost).
+- The bulge is bounded, not removed, at a bend. With 7.5's one width a straight joint bulges as
+  much as a bend (7.5 (4)); 7.8's width removes the ring at a straight joint (measured, not
+  proved to be nothing) and keeps `K/4` at a bend.
 - The field is continuous, not smooth. Its slope breaks where the gauge is held at 2, where
   `m` changes from `A` to `B`, and where the capsule takes over from `ψ / L`; the last can lie
   within `K` of a surface (just outside the widest station of a bone whose `L > 1`), so a join

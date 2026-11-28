@@ -95,6 +95,12 @@ const BODIES: [&str; 4] = ["biped", "quadruped", "serpent", "forked"];
 /// The bones of one of the earlier body lane's four test bodies (`tests/bodies/*.json`): only
 /// their heads, tails, sides, squareness and sections, and the body's smoothing.
 fn test_body(name: &str) -> (Vec<Bone>, f32) {
+    let (bones, _, smooth) = test_skeleton(name);
+    (bones, smooth)
+}
+
+/// [`test_body`] with each bone's parent.
+fn test_skeleton(name: &str) -> (Vec<Bone>, Vec<Option<usize>>, f32) {
     let text = match name {
         "biped" => include_str!("../../tests/bodies/biped.json"),
         "quadruped" => include_str!("../../tests/bodies/quadruped.json"),
@@ -107,10 +113,10 @@ fn test_body(name: &str) -> (Vec<Bone>, f32) {
         let a = j.as_array().expect("three numbers");
         [a[0].as_f64().unwrap() as f32, a[1].as_f64().unwrap() as f32, a[2].as_f64().unwrap() as f32]
     };
-    let bones = shape
-        .get("bones")
-        .and_then(|b| b.as_array())
-        .expect("bones")
+    let rows = shape.get("bones").and_then(|b| b.as_array()).expect("bones");
+    let names: Vec<&str> = rows.iter().map(|b| b.get("name").and_then(|n| n.as_str()).unwrap_or("")).collect();
+    let parents = rows.iter().map(|b| b.get("parent").and_then(|p| p.as_str()).and_then(|p| names.iter().position(|n| *n == p))).collect();
+    let bones = rows
         .iter()
         .map(|b| {
             let head = v3(b.get("head").unwrap());
@@ -123,12 +129,58 @@ fn test_body(name: &str) -> (Vec<Bone>, f32) {
             }
         })
         .collect();
-    (bones, shape.get("smooth").and_then(|s| s.as_f64()).unwrap_or(0.02) as f32)
+    (bones, parents, shape.get("smooth").and_then(|s| s.as_f64()).unwrap_or(0.02) as f32)
 }
 
 fn skeleton(name: &str) -> Flesh {
     let (bones, smooth) = test_body(name);
     Flesh::new(&bones, &[], smooth, 0.04).unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+/// [`skeleton`] with its joints (7.8).
+fn jointed(name: &str) -> Flesh {
+    let (bones, parents, smooth) = test_skeleton(name);
+    Flesh::jointed(&bones, &[], smooth, 0.04, &joints_of(&bones, &parents)).unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+/// A random chain of two to five bones, end to end, bending by up to `most` degrees at each
+/// joint (some straight on), with random sections, and swells now and then; jointed.
+fn random_chain(r: &mut Rng, most: f64) -> Flesh {
+    loop {
+        let n = 2 + r.pick(4);
+        let mut head = [r.range(-0.3, 0.3), r.range(-0.3, 0.3), r.range(-0.3, 0.3)];
+        let mut dir = r.dir();
+        let mut bones = Vec::new();
+        let mut parents = Vec::new();
+        for i in 0..n {
+            let length = r.log(0.03, 0.4);
+            let tail = add(head, dscale(dir, length));
+            let mut b = random_bone(r);
+            b.head = f3(head);
+            b.tail = f3(tail);
+            if r.unit() < 0.5 {
+                // Sections from end to end, as a limb's are.
+                let s = r.log(0.01, 0.12);
+                b.sections = vec![[0.0, s as f32, (s * r.log(0.6, 1.6)) as f32], [1.0, (s * r.log(0.6, 1.6)) as f32, (s * r.log(0.6, 1.6)) as f32]];
+            }
+            bones.push(b);
+            parents.push(i.checked_sub(1));
+            head = tail;
+            let bend = if r.unit() < 0.4 { 0.0 } else { r.range(0.0, most) };
+            let (s, c) = dmath::sin_cos_f64(bend * dmath::PI / 180.0);
+            let side = r.dir();
+            let across = dsub(side, dscale(dir, ddot(side, dir)));
+            if dlen(across) > 1e-3 {
+                dir = add(dscale(dir, c), dscale(across, s / dlen(across)));
+                dir = dscale(dir, 1.0 / dlen(dir));
+            }
+        }
+        let swells: Vec<Swell> = (0..r.pick(3)).map(|_| random_swell(r, n)).collect();
+        let smooth = r.range(0.002, 0.06) as f32;
+        if let Ok(f) = Flesh::jointed(&bones, &swells, smooth, r.range(0.005, 0.1) as f32, &joints_of(&bones, &parents)) {
+            return f;
+        }
+    }
 }
 
 /// A point near part `i`: on or about its axis, from a hair to several of its reaches away.
@@ -567,6 +619,197 @@ fn a_join_of_changing_width_changes_by_a_quarter_of_it() {
 }
 
 // ---------------------------------------------------------------------------------------
+// 7.8: the width that falls at a straight joint.
+
+/// 7.8's width in `f64`, from the numbers each seam stores.
+fn ref_width(f: &Flesh, x: D3) -> f64 {
+    let mut k = f64::from(f.smooth);
+    for s in &f.seams {
+        let d = dsub(x, d3(s.centre));
+        let z = ddot(d, d3(s.normal));
+        let rho = (ddot(d, d) - z * z).max(0.0).sqrt();
+        let (dz, dr) = ((z.abs() - f64::from(s.half)).max(0.0), (rho - f64::from(s.radius)).max(0.0));
+        k = k.min(f64::from(s.width) + f64::from(WIDTH_SLOPE) * (dz * dz + dr * dr).sqrt());
+    }
+    k
+}
+
+/// 7.8's field in `f64`.
+fn ref_jointed(f: &Flesh, x: D3) -> f64 {
+    let mut v: Vec<f64> = f.parts.iter().map(|p| ref_part(p, x).field).collect();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let k = ref_width(f, x);
+    let g = v[1..].iter().fold(v[0], |r, &y| ref_join(r, y, k));
+    g.min(f64::from(f.keep)) / f64::from(f.div)
+}
+
+/// Where the joined surface is along the ray from `from` toward `dir`, found by stepping out
+/// from inside and halving.
+fn surface_on(f: &Flesh, from: D3, dir: D3, step: f64) -> D3 {
+    let p = |t: f64| f3(add(from, dscale(dir, t)));
+    let mut t = 0.0;
+    while f.value(p(t)) <= 0.0 && t < 2.0 {
+        t += step;
+    }
+    let (mut lo, mut hi) = ((t - step).max(0.0), t);
+    for _ in 0..60 {
+        let mid = 0.5 * (lo + hi);
+        if f.value(p(mid)) <= 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    d3(p(0.5 * (lo + hi)))
+}
+
+/// 7.8: the share of the width a joint takes runs smoothly from nothing straight on to all of
+/// it at 40 degrees, and a chain straight on has no width at its joints, a bent one the body's.
+#[test]
+fn the_width_falls_to_nothing_as_two_bones_come_into_line() {
+    let mut last = -1.0;
+    for i in 0..=1000 {
+        let deg = 0.09 * f64::from(i);
+        let (_, c) = dmath::sin_cos_f64(deg * dmath::PI / 180.0);
+        let s = bend_share(c);
+        assert!(s >= last && (0.0..=1.0).contains(&s), "{deg}: {s}");
+        last = s;
+    }
+    assert_eq!(bend_share(1.0), 0.0);
+    let (_, c40) = dmath::sin_cos_f64(40.0 * dmath::PI / 180.0);
+    assert!(bend_share(c40) > 0.999_999);
+    let round = |at: f32| [at, 0.05, 0.05];
+    let line = |bend: f64| {
+        let (s, c) = dmath::sin_cos_f64(bend * dmath::PI / 180.0);
+        let bones = vec![
+            Bone { head: [0.0, -0.3, 0.0], tail: [0.0; 3], side: None, square: 2.0, sections: vec![round(0.0), round(1.0)] },
+            Bone { head: [0.0; 3], tail: [(0.3 * s) as f32, (0.3 * c) as f32, 0.0], side: None, square: 2.0, sections: vec![round(0.0), round(1.0)] },
+        ];
+        Flesh::jointed(&bones, &[], 0.02, 0.05, &joints_of(&bones, &[None, Some(0)])).unwrap()
+    };
+    let straight = line(0.0);
+    assert_eq!((straight.seams(), straight.divisor()), (1, 1.0 + WIDTH_SLOPE));
+    assert_eq!(straight.width_at([0.05, 0.0, 0.0]), 0.0, "on the ring the width is nothing");
+    assert!((straight.width_at([0.0, 0.25, 0.0]) - 0.02).abs() < 1e-7, "far along, the body's");
+    let bent = line(90.0);
+    assert_eq!((bent.seams(), bent.divisor()), (0, 1.0), "a joint bent past 40 degrees keeps the body's width");
+}
+
+/// 7.8: chains of round bones of one size run straight on through two joints have no ring:
+/// the joined surface lies within a thousandth of the bones' radius of their plain union
+/// (exact distances), against `K/4` for the width that does not fall (7.5 (4)); and a joint
+/// bent a degree or two keeps under a fiftieth of `K/4`.
+#[test]
+fn a_straight_joint_has_no_ring() {
+    let mut r = Rng(0xCA20_0010);
+    let mut worst = [0.0f64; 3];
+    for (b, &bend) in [0.0f64, 1.0, 2.0].iter().enumerate() {
+        for &radius in &[0.02f64, 0.05, 0.1] {
+            for &width in &[0.005f64, 0.01, 0.02, 0.04] {
+                let (s, c) = dmath::sin_cos_f64(bend * dmath::PI / 180.0);
+                let pts = [[0.0, -0.5, 0.0], [0.0, -0.15, 0.0], [0.0, 0.15, 0.0], [0.3 * s, 0.15 + 0.3 * c, 0.0]];
+                let ring = |at: f32| [at, radius as f32, radius as f32];
+                let bones: Vec<Bone> = (0..3).map(|i| Bone { head: f3(pts[i]), tail: f3(pts[i + 1]), side: None, square: 2.0, sections: vec![ring(0.0), ring(1.0)] }).collect();
+                let f = Flesh::jointed(&bones, &[], width as f32, 0.05, &joints_of(&bones, &[None, Some(0), Some(1)])).unwrap();
+                let mut bulge = 0.0f64;
+                for _ in 0..1500 {
+                    // From the axis near a joint, out in every direction.
+                    let joint = pts[1 + r.pick(2)];
+                    let from = add(joint, [0.0, r.range(-3.0, 3.0) * radius, 0.0]);
+                    let q = surface_on(&f, from, r.dir(), radius / 8.0);
+                    let union = (0..3).map(|i| capsule(q, pts[i], pts[i + 1], radius)).fold(f64::INFINITY, f64::min);
+                    bulge = bulge.max(union);
+                }
+                worst[b] = worst[b].max(bulge / (width / 4.0));
+                if bend == 0.0 {
+                    assert!(bulge <= 1e-3 * radius + 1e-5, "r {radius}, K {width}: a ring of {bulge} at a straight joint");
+                } else {
+                    assert!(bulge <= 0.02 * width / 4.0 + 1e-3 * radius + 1e-5, "{bend} deg, r {radius}, K {width}: a ring of {bulge}");
+                }
+            }
+        }
+    }
+    println!("the ring at a straight joint, as a share of K/4, at 0, 1 and 2 degrees: {worst:?}");
+}
+
+/// 7.8: two round bones of one size meeting at 0 to 150 degrees, jointed: the surface lies
+/// within `K/4` of the plain union at every bend (7.5 (4) with the greatest width), the whole
+/// `K/4` from 45 degrees on, and the field is 1-Lipschitz.
+#[test]
+fn a_bent_joint_keeps_its_bulge_under_the_bound() {
+    let mut r = Rng(0xCA20_0011);
+    for degrees in (0..=150).step_by(15) {
+        let (s, c) = dmath::sin_cos_f64(f64::from(degrees) * dmath::PI / 180.0);
+        for &radius in &[0.02f64, 0.05, 0.1] {
+            for &width in &[0.005f64, 0.01, 0.02, 0.04] {
+                let (a, j, b) = ([0.0, -0.4, 0.0], [0.0, 0.0, 0.0], [s * 0.4, c * 0.4, 0.0]);
+                let ring = |at: f32| [at, radius as f32, radius as f32];
+                let bones = vec![
+                    Bone { head: f3(a), tail: f3(j), side: None, square: 2.0, sections: vec![ring(0.0), ring(1.0)] },
+                    Bone { head: f3(j), tail: f3(b), side: None, square: 2.0, sections: vec![ring(0.0), ring(1.0)] },
+                ];
+                let f = Flesh::jointed(&bones, &[], width as f32, 0.05, &joints_of(&bones, &[None, Some(0)])).unwrap();
+                for _ in 0..2000 {
+                    let x = near(&mut r, &f);
+                    let y = f3(add(d3(x), dscale(r.dir(), r.log(1e-3, 0.2))));
+                    let d = dist(x, y);
+                    let change = f64::from((f.value(x) - f.value(y)).abs());
+                    assert!(change <= d * (1.0 + 1e-6) + f64::from(f.slack(x) + f.slack(y)), "{degrees} deg: {change} over {d}");
+                }
+                let mut bulge = 0.0f64;
+                for _ in 0..3000 {
+                    let q = surface_on(&f, j, r.dir(), radius / 8.0);
+                    bulge = bulge.max(capsule(q, a, j, radius).min(capsule(q, j, b, radius)));
+                }
+                let bound = width / 4.0;
+                assert!(bulge <= bound * (1.0 + 1e-3) + 1e-5, "{degrees} deg, r {radius}, K {width}: bulge {bulge} over {bound}");
+                if degrees >= 45 {
+                    assert!(bulge >= 0.9 * bound, "{degrees} deg: a bent joint keeps the body's width: {bulge} of {bound}");
+                }
+            }
+        }
+    }
+}
+
+/// 7.8: over a million pairs of points about random chains (straight and bent joints, swells,
+/// sections of every kind) and the four skeletons jointed, the field changes by at most the
+/// distance and the two points' slack, and every value is within its slack of the reference in
+/// `f64` (whose width is worked out apart, from the seams' numbers).
+#[test]
+fn a_jointed_body_changes_no_faster_than_the_distance() {
+    let mut r = Rng(0xCA20_0012);
+    let (mut pairs, mut worst, mut off) = (0u32, 0.0f64, 0.0f64);
+    let mut check = |f: &Flesh, r: &mut Rng, pairs: &mut u32| {
+        for _ in 0..500 {
+            let x = near(r, f);
+            let y = f3(add(d3(x), dscale(r.dir(), r.log(1e-4, 0.3))));
+            let d = dist(x, y);
+            let change = f64::from((f.value(x) - f.value(y)).abs());
+            let allowed = d * (1.0 + 1e-6) + f64::from(f.slack(x) + f.slack(y));
+            assert!(change <= allowed, "changed {change} over {d} (allowed {allowed}) at {x:?}, {y:?}");
+            worst = worst.max(change / d);
+            let e = (f64::from(f.value(x)) - ref_jointed(f, d3(x))).abs();
+            assert!(e <= f64::from(f.slack(x)), "{e} from the reference at {x:?}");
+            off = off.max(e / f64::from(f.slack(x)));
+            *pairs += 1;
+        }
+    };
+    for name in BODIES {
+        let f = jointed(name);
+        assert!(f.seams() > 0, "{name} has straight joints");
+        for _ in 0..100 {
+            check(&f, &mut r, &mut pairs);
+        }
+    }
+    while pairs < 1_000_000 {
+        let f = random_chain(&mut r, 150.0);
+        check(&f, &mut r, &mut pairs);
+    }
+    assert!(worst > 0.5, "the pairs reach steep places ({worst})");
+    println!("steepest {worst}; worst error {off} of the slack");
+}
+
+// ---------------------------------------------------------------------------------------
 // 7.6: the cull.
 
 /// 7.6: the culled value is the whole value, the same number, over a million samples of the
@@ -575,10 +818,10 @@ fn a_join_of_changing_width_changes_by_a_quarter_of_it() {
 fn the_culled_field_is_the_whole_field() {
     let mut r = Rng(0xCA20_0006);
     let mut among = Vec::new();
-    for name in BODIES {
-        let f = skeleton(name);
+    for f in BODIES.iter().flat_map(|n| [skeleton(n), jointed(n)]) {
+        let name = "a skeleton";
         let room = bounds(&f, 0.2);
-        for k in 0..250_000 {
+        for k in 0..125_000 {
             let x = if k % 2 == 0 { in_box(&mut r, room) } else { near(&mut r, &f) };
             let (v, w) = (f.value(x), f.whole(x));
             assert!(v == w, "{name}: culled {v}, whole {w} at {x:?}");
@@ -588,11 +831,16 @@ fn the_culled_field_is_the_whole_field() {
             }
         }
     }
-    for _ in 0..2000 {
-        let f = random_flesh(&mut r);
-        for _ in 0..100 {
+    for i in 0..4000 {
+        let f = if i % 2 == 0 { random_flesh(&mut r) } else { random_chain(&mut r, 150.0) };
+        for k in 0..100 {
             let x = near(&mut r, &f);
-            assert!(f.value(x) == f.whole(x));
+            let w = f.whole(x);
+            assert!(f.value(x) == w);
+            if k % 8 == 0 {
+                f.meets(x, 0.0, &mut among);
+                assert!(f.value_among(x, &among) == w);
+            }
         }
     }
 }
@@ -618,10 +866,9 @@ fn a_range_over_a_ball_holds_every_value_in_it() {
         }
     };
     let mut balls = 0u32;
-    for name in BODIES {
-        let f = skeleton(name);
+    for f in BODIES.iter().flat_map(|n| [skeleton(n), jointed(n)]) {
         let room = bounds(&f, 0.3);
-        for k in 0..125_000 {
+        for k in 0..62_500 {
             let o = if k % 2 == 0 { in_box(&mut r, room) } else { near(&mut r, &f) };
             let rad = r.log(1e-4, 0.5) as f32;
             ball(&f, o, rad, &mut r, &mut among);
@@ -629,7 +876,7 @@ fn a_range_over_a_ball_holds_every_value_in_it() {
         }
     }
     while balls < 1_000_000 {
-        let f = random_flesh(&mut r);
+        let f = if balls % 200 == 0 { random_chain(&mut r, 150.0) } else { random_flesh(&mut r) };
         let room = bounds(&f, 0.3);
         for k in 0..100 {
             let o = if k % 2 == 0 { in_box(&mut r, room) } else { near(&mut r, &f) };
