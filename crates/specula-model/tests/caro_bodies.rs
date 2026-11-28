@@ -97,8 +97,8 @@ fn each_test_body_meshes_closed_as_one_surface() {
 
 /// What [`the_same_bytes_every_time`] read, in debug and in release (moved on 2026-11-28, on
 /// purpose: DISTANCE_FIELDS.md 7.9's join, 7.1's sloped ends and their caps, 7.8's step and
-/// softened width, the widened reach).
-const HASHES: [u64; 4] = [0x5b1a_5758_553d_06d6, 0xe425_fabf_3771_aacb, 0x153e_692a_72e3_61bd, 0x37b3_acc9_e534_962e];
+/// softened width, the widened reach and its hold at 4K, which moved three of the four again).
+const HASHES: [u64; 4] = [0xa95c_028c_5c63_f6fd, 0xe526_b4e9_ad1e_4ba1, 0x153e_692a_72e3_61bd, 0xcbd8_d938_40ae_a60a];
 
 /// The same recipe makes the same bytes twice, and the same in a debug and a release build.
 #[test]

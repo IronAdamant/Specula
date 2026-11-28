@@ -1020,8 +1020,16 @@ above keeps beyond where joins act) still pass into the joined surface where a j
 and so would a width with corners (7.8's, softened since for that reason). Held by test:
 the join itself over a million lists of up to 64 values
 (`a_join_of_any_number_is_one_number_in_any_order`); the field's factor, the reference and the
-cull as before; and the turn at every join of the four skeletons
-(`every_join_of_the_four_skeletons_turns_smoothly`).
+cull as before, and again where up to sixty parts meet within the width of one point, with
+seams of differing widths and groups, over a million points and two million pairs
+(`many_parts_at_one_point_keep_the_cull_and_the_bound`: the culled value is the whole bit for
+bit, the field changes no faster than the distance and is at most the distance to the surface,
+the same bits in debug and release); the capsule's takeover beyond where joins act, and the
+widening held to `4K`, over a million points about random bones and swells
+(`the_capsule_takes_over_beyond_where_joins_act`); and the turn at every join of the four
+skeletons (`every_join_of_the_four_skeletons_turns_smoothly`). Unheld, the widening reached
+far: a drawn chain's flattest bone (`L R / m_min` far over 3) widened the box the mesher takes
+to 57 m, where no block could be skipped.
 
 **What 7.3 to 7.6 do not say.**
 

@@ -1243,6 +1243,197 @@ fn the_culled_field_is_the_whole_field() {
     }
 }
 
+/// A hub: a root bone ending at one point and six to forty bones starting within a tenth of the
+/// width of it, some near straight on from the root and of its size (seams whose widths differ
+/// with their bends: 7.8), some carried on by a second bone (groups), sections of about the
+/// width and some flat (each part's reach widened, some held at `4K`: 7.9); jointed.
+fn hub(r: &mut Rng) -> (Flesh, D3) {
+    loop {
+        let k = r.log(0.004, 0.05);
+        let centre = [r.range(-0.2, 0.2), r.range(-0.2, 0.2), r.range(-0.2, 0.2)];
+        let root = r.dir();
+        let section = |r: &mut Rng| {
+            let s = r.log(0.5, 4.0) * k;
+            let flat = if r.unit() < 0.3 { r.log(0.08, 0.4) } else { r.log(0.6, 1.6) };
+            [s as f32, (s * flat) as f32]
+        };
+        let bone = |r: &mut Rng, head: D3, dir: D3| {
+            let mut b = random_bone(r);
+            b.head = f3(head);
+            b.tail = f3(add(head, dscale(dir, r.log(0.03, 0.3))));
+            if r.unit() < 0.7 {
+                let ([a0, b0], [a1, b1]) = (section(r), section(r));
+                b.sections = vec![[0.0, a0, b0], [1.0, a1, b1]];
+            }
+            b
+        };
+        let [ra, rb] = section(r);
+        let square = [2.0, 2.0, 3.0, 4.0][r.pick(4)];
+        let run = |r: &mut Rng, head: D3, dir: D3| {
+            // Straight on from the root, of its size to a few percent (a seam: 7.8).
+            let s = |r: &mut Rng, v: f32| v * (1.0 + r.range(-0.03, 0.03)) as f32;
+            let (a0, b0, a1, b1) = (s(r, ra), s(r, rb), s(r, ra), s(r, rb));
+            Bone { head: f3(head), tail: f3(add(head, dscale(dir, r.log(0.03, 0.3)))), side: None, square, sections: vec![[0.0, a0, b0], [1.0, a1, b1]] }
+        };
+        let mut bones = vec![run(r, add(centre, dscale(root, -0.3)), root)];
+        bones[0].tail = f3(centre);
+        let mut parents = vec![None];
+        let n = 6 + r.pick(35);
+        for _ in 0..n {
+            let at = add(centre, dscale(r.dir(), 0.1 * k * r.unit()));
+            let straight = r.unit() < 0.35;
+            let dir = if straight {
+                let (s, c) = dmath::sin_cos_f64(r.range(0.0, 45.0) * dmath::PI / 180.0);
+                let side = r.dir();
+                let across = dsub(side, dscale(root, ddot(side, root)));
+                if dlen(across) < 1e-3 { root } else { add(dscale(root, c), dscale(across, s / dlen(across))) }
+            } else {
+                r.dir()
+            };
+            let dir = dscale(dir, 1.0 / dlen(dir));
+            bones.push(if straight { run(r, at, dir) } else { bone(r, at, dir) });
+            // Fourteen children of the root at most (two children at one place are a joint, and a
+            // body has at most `MAX_SEAMS`); the rest are bones of their own there.
+            let children = parents.iter().filter(|p| **p == Some(0)).count();
+            parents.push((children < 14 && (straight || r.unit() < 0.4)).then_some(0));
+            if r.unit() < 0.25 && bones.len() < 60 {
+                let i = bones.len() - 1;
+                let on = d3(bones[i].tail);
+                bones.push(if straight { run(r, on, dir) } else { bone(r, on, dir) });
+                parents.push(Some(i));
+            }
+        }
+        if let Ok(f) = Flesh::jointed(&bones, &[], k as f32, r.range(0.005, 0.1) as f32, &joints_of(&bones, &parents)) {
+            return (f, centre);
+        }
+    }
+}
+
+/// 7.6 and 7.9 with each part's reach widened ("Where the capsule takes over"), where many
+/// parts meet within the width of one point, the widths differ from seam to seam and groups
+/// are joined first: over a million points the culled value is the whole value bit for bit
+/// (and the parts a ball asks give it), the value is within its slack of the reference, it
+/// changes no faster than the distance over a million pairs, and it is at most the distance to
+/// the surface (and at least its negative) over a million more; the bits are pinned
+/// ([`HUB_BITS`]), the same in debug and release.
+#[test]
+fn many_parts_at_one_point_keep_the_cull_and_the_bound() {
+    let mut r = Rng(0xCA20_0030);
+    let mut among = Vec::new();
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let (mut points, mut pairs, mut to_surface, mut crowded, mut grouped, mut differing, mut held) = (0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
+    while points < 1_000_000 {
+        let (f, centre) = hub(&mut r);
+        let k = f64::from(f.smooth);
+        let groups = {
+            let mut g = f.group.clone();
+            g.sort_unstable();
+            g.dedup();
+            g.len()
+        };
+        grouped += u32::from(groups < f.parts.len());
+        let mut widths: Vec<u32> = f.seams.iter().map(|s| s.width.to_bits()).collect();
+        widths.sort_unstable();
+        widths.dedup();
+        differing += u32::from(widths.len() > 1);
+        held += f
+            .parts
+            .iter()
+            .filter(|p| match p {
+                Part::Bone(b) => b.lip * (b.radius - 4.0 * f.smooth) / b.least > 3.0,
+                Part::Egg(_) => false,
+            })
+            .count() as u32;
+        for k_ in 0..2000 {
+            let x = if k_ % 2 == 0 { f3(add(centre, dscale(r.dir(), r.log(1e-4, 6.0 * k)))) } else { near(&mut r, &f) };
+            let (v, w) = (f.value(x), f.whole(x));
+            assert!(v == w, "culled {v}, whole {w} at {x:?}");
+            hash = (hash ^ u64::from(v.to_bits())).wrapping_mul(0x0000_0100_0000_01B3);
+            if k_ % 8 == 0 {
+                f.meets(x, 0.0, &mut among);
+                assert!(f.value_among(x, &among) == w, "the parts a point asks give its value at {x:?}");
+                let e = (f64::from(v) - ref_jointed(&f, d3(x))).abs();
+                assert!(e <= f64::from(f.slack(x)), "{e} from the reference at {x:?}");
+                let fields: Vec<f32> = (0..f.parts.len()).map(|i| f.part_field(i, x)).collect();
+                let least = fields.iter().copied().fold(f32::INFINITY, f32::min);
+                crowded += u32::from(fields.iter().filter(|&&a| f64::from(a - least) < k).count() >= 8);
+            }
+            let y = f3(add(d3(x), dscale(r.dir(), r.log(1e-4, 0.1))));
+            let d = dist(x, y);
+            let change = f64::from((v - f.value(y)).abs());
+            assert!(change <= d * (1.0 + 1e-6) + f64::from(f.slack(x) + f.slack(y)), "changed {change} over {d} at {x:?}, {y:?}");
+            points += 1;
+            pairs += 1;
+        }
+        // The distance to the surface: from points where the field crosses nothing along a ray
+        // from the hub, its value (nearly 0) is the surface's to within the value there.
+        if f.value(f3(centre)) <= 0.0 {
+            for _ in 0..40 {
+                let q = f3(surface_on(&f, centre, r.dir(), 0.25 * k));
+                let at_q = f64::from(f.value(q).abs());
+                for _ in 0..50 {
+                    let x = f3(add(d3(q), dscale(r.dir(), r.log(1e-4, 0.2))));
+                    let d = dist(x, q);
+                    let v = f64::from(f.value(x).abs());
+                    assert!(v <= d * (1.0 + 1e-6) + at_q + f64::from(f.slack(x) + f.slack(q)), "|{v}| past the distance {d} to the surface at {q:?}");
+                    to_surface += 1;
+                }
+            }
+        }
+    }
+    assert!(pairs >= 1_000_000 && to_surface >= 1_000_000, "{pairs} pairs, {to_surface} to the surface");
+    assert!(crowded > 10_000 && grouped > 100 && differing > 100 && held > 100, "the case: {crowded} points with eight parts within the width, {grouped} bodies with groups, {differing} with widths differing, {held} parts whose widening is held at 4K");
+    assert_eq!(hash, HUB_BITS, "the hubs' bits changed: {hash:#x}");
+}
+
+/// What [`many_parts_at_one_point_keep_the_cull_and_the_bound`] read, in debug and in release.
+const HUB_BITS: u64 = 0x3edd_184a_414c_9fe9;
+
+/// 7.9, "Where the capsule takes over": outside a random bone or swell, within a value of `2K`
+/// of its surface (`4K / (ρ − 1)` where `ρ = L R / m_min` is over 3, and below the gauge's
+/// clamp), its widened capsule term is at most its own `ψ / L`, so its field is `ψ / L`; and
+/// without the widening (the same part at width 0) the capsule does take over there. Each
+/// part's reach is widened by at most `4K`.
+#[test]
+fn the_capsule_takes_over_beyond_where_joins_act() {
+    let mut r = Rng(0xCA20_0031);
+    let (mut checked, mut took_over, mut flat) = (0u32, 0u32, 0u32);
+    while checked < 1_000_000 {
+        let bones: Vec<Bone> = (0..1 + r.pick(4)).map(|_| random_bone(&mut r)).collect();
+        let swells: Vec<Swell> = (0..r.pick(3)).map(|_| random_swell(&mut r, bones.len())).collect();
+        let k = r.log(0.002, 0.06) as f32;
+        let (Ok(f), Ok(f0)) = (Flesh::new(&bones, &swells, k, 0.05), Flesh::new(&bones, &swells, 0.0, 0.05)) else { continue };
+        for i in 0..f.parts.len() {
+            let (rho, least, lip) = match &f0.parts[i] {
+                Part::Bone(b) => (f64::from(b.lip) * f64::from(b.radius) / f64::from(b.least), f64::from(b.least), f64::from(b.lip)),
+                Part::Egg(e) => (f64::from(e.most) / f64::from(e.least), f64::from(e.least), 1.0),
+            };
+            let kk = f64::from(k);
+            // The widening is at most `4K`: a flat part's capsule does not reach far (unheld, a
+            // drawn chain's box grew to 57 m and the mesher could skip none of it).
+            let (wide, bare) = (f64::from(f.parts[i].reach_of()), f64::from(f0.parts[i].reach_of()));
+            assert!(wide >= bare && wide <= (bare + 4.0 * kk) * (1.0 + 4e-6), "part {i} (ρ {rho}): reach {bare} widened to {wide} at K {k}");
+            let most = if rho <= 3.0 { 2.0 * kk } else { 4.0 * kk / (rho - 1.0) }.min(0.999 * least / lip);
+            flat += u32::from(rho > 3.0);
+            for _ in 0..400 {
+                let x = near_part(&mut r, &f, i);
+                let (p, p0) = (&f.parts[i], &f0.parts[i]);
+                let l = p.local(x);
+                let v = p.field(l, f32::NEG_INFINITY);
+                if !(v > 0.0 && f64::from(v) <= most) {
+                    continue;
+                }
+                let tol = f.slack(x);
+                let c = p.capsule(l);
+                assert!(c <= v + tol, "part {i} (ρ {rho}): the capsule {c} takes over from ψ/L {v} at {x:?}");
+                took_over += u32::from(p0.capsule(p0.local(x)) > v + tol);
+                checked += 1;
+            }
+        }
+    }
+    assert!(took_over > 1000 && flat > 100, "without the widening the capsule took over at {took_over} of {checked} points; {flat} parts flatter than 3");
+}
+
 /// 7.6, "Over a ball": over a million balls (four skeletons and random bodies; centres in
 /// their boxes and near their bones; radii from a hair to half a metre), two samples each,
 /// one on the rim: every value lies in the ball's range, every part a sample asks is among
@@ -1329,8 +1520,8 @@ fn the_same_bits_in_every_build() {
 
 /// What [`the_same_bits_in_every_build`] read in a debug build and in a release build (moved on
 /// 2026-11-28, on purpose: 7.9's join, the sloped ends of 7.1 and their caps, the step's share
-/// and the softened width of 7.8, the widened reach).
-const BITS: u64 = 0xf3f2_d1b1_4add_1d64;
+/// and the softened width of 7.8, the widened reach and its hold at `4K`).
+const BITS: u64 = 0x4165_97bd_ac02_0f5e;
 
 /// Every refusal names what failed.
 #[test]

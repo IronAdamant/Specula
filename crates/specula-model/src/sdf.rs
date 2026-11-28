@@ -9469,7 +9469,7 @@ mod tests {
             (crate::caro::tests::swollen_biped(), 48),
             (crate::caro::tests::test_flesh("serpent"), 128),
             (crate::caro::tests::test_flesh("forked"), 80),
-            (crate::caro::tests::drawn_chain(0xB0D1_0002), 96),
+            (crate::caro::tests::drawn_chain(0xB0D1_0002), 64),
             (crate::caro::tests::drawn_chain(0xB0D1_0003), 48),
             (crate::caro::tests::test_flesh("biped"), 64),
             (crate::caro::tests::test_flesh("quadruped"), 80),
