@@ -586,6 +586,10 @@ fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued, spent: &mut Spent, seen:
         }
         let q = local(n, c);
         let r = reach / (m.scale * m.stretch[0].min(m.stretch[1]).min(m.stretch[2]));
+        // (Cutting the list asks each listed part's capsule: charged as a range's capsules.)
+        spent.work += body_range_cost(b);
+        #[cfg(test)]
+        DID.with(|d| d.borrow_mut().body_capsules += b.kinds_asked().0.iter().sum::<u64>());
         return keep_all(PKind::Prim(Prim::Body(b.near(q, r))));
     }
     let PKind::Group { op, kids, smooth } = &n.kind else { return n.clone() };
@@ -2062,12 +2066,13 @@ fn body_range_cost(b: &crate::caro::Carnis) -> u64 {
     BODY_CAPSULE * (kinds[0] + kinds[1] + kinds[2])
 }
 
-/// A body's weights, past a primitive's 48: the frame, the chain and the division; a bone by
-/// roots; a bone by powers; a swell; a seam. Measured (PROCEDURAL_MODELLING.md, the sculpt's
-/// weights).
-const BODY_WEIGHTS: [u64; 5] = [0, 60, 300, 60, 15];
-/// A part's capsule in a body's range.
-const BODY_CAPSULE: u64 = 20;
+/// A body's weights, past a primitive's 48: the frame, the groups' sorts and chains and the
+/// division; a bone by roots; a bone by powers; a swell; a seam. Timed in the sculpt's one
+/// unit, two runs, each the upper end rounded up to ten (PROCEDURAL_MODELLING.md, the
+/// sculpt's weights: "a body" is 330, so 282 here past the 48).
+const BODY_WEIGHTS: [u64; 5] = [282, 110, 520, 70, 20];
+/// A part's capsule in a body's range (timed as the rest).
+const BODY_CAPSULE: u64 = 150;
 
 fn group_cost(kids: u64, count: usize, smooth: f32) -> u64 {
     8 + kids + count as u64 * if smooth > 0.0 { 20 } else { 3 }

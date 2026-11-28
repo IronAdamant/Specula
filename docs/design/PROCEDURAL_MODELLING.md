@@ -514,12 +514,12 @@ where balls run near 1.4 and flat ellipsoids 1.1.
 | a pair the reach meets | 20 | a pair of a smooth group's children in the reach |
 | a place of a column's table | 6 | a place of a column's table at a level the reach asks |
 | a flat ellipsoid's range from its middle | 13 | a prune's range of an ellipsoid within twice of round the ball does not reach into, from its value at the middle (`ellipsoid_span`; 15 when timed in its own units) |
-| a body | 48 | an evaluation of a `body` node past its list: the frame, the sort and the chain, the division (`body_cost`) |
-| a body's bone by roots | 60 | each bone in a body node's list at squareness 2, 4 or 8, at each evaluation |
-| a body's bone by powers | 300 | each bone in the list at any other squareness |
-| a body's swell | 60 | each swell in the list |
-| a body's seam | 15 | each seam (a joint whose width falls) in the list |
-| a body's capsule in a range | 20 | each part of the list in a body node's range, past its evaluation (`body_range_cost`) |
+| a body | 330 | an evaluation of a `body` node past its list: the frame, the sorts and the chains of its groups, the division (`body_cost`, past the 48 of every primitive; timed, below) |
+| a body's bone by roots | 110 | each bone in a body node's list at squareness 2, 4 or 8, at each evaluation (timed) |
+| a body's bone by powers | 520 | each bone in the list at any other squareness (timed) |
+| a body's swell | 70 | each swell in the list (timed) |
+| a body's seam | 20 | each seam (a joint whose width falls) in the list (timed) |
+| a body's capsule in a range | 150 | each part of the list in a body node's range, past its evaluation (`body_range_cost`; timed) |
 
 **A new node** (a primitive or a modifier) joins the sculpt with every one of these, or a test
 cannot see its fault:
@@ -602,6 +602,30 @@ in its scratch folder and mounted into `crate::sdf` for a release build that is 
   Its bounds are up to `short` looser than the distance's, so a tree can keep a child the walk
   lets go: the test holds the two trees that showed it.
 
+- **A body's weights** (2026-11-28, the body lane's probe, mounted into `crate::sdf` for a
+  release build that is not a test's, then removed): in the same one unit (a ball's evaluation
+  at its 4,096 points, before and after each run, the lesser taken so that the weights come
+  out the greater), a body's evaluation at 4,096 points about a bundle of 8 bones by roots, 8
+  by powers, 8 swells (1 part against 8 gives a part's weight and the base), a spine of nine
+  bones in one group with four limbs off it (8 seams; the grouped join's base past its parts
+  and seams), and each one's range past its evaluation (a capsule's). **Each weight is the
+  upper end of the two runs, rounded up to ten**; the machine was never quiet (other lanes
+  building), and the runs disagree by up to twice on the small rows:
+
+  | Run | ns a unit (before, after) | load (processor, build processes) | body | roots | powers | swell | seam | capsule |
+  |---|---|---|---|---|---|---|---|---|
+  | 1 | 1.791, 1.780 | 71% to 91%, 12 to 14 | 184 | 104 | 302 | 51 | 18.7 | 144 |
+  | 2 | 1.169, 1.850 | 96% to 88%, 16 to 24 | 323 | 90 | 514 | 61 | 7.0 | 122 |
+  | set | | | 330 | 110 | 520 | 70 | 20 | 150 |
+
+  ("body" is the whole evaluation past its list, the 48 of a primitive with it.) A body's
+  prune (the list cut to a block's ball) is charged as its range's capsules. **A unit over the
+  four test bodies' builds** (best of three, their levels of detail left out, at the weights
+  set): biped 2.52 and 2.29 ns, quadruped 2.78 and 2.84, serpent 3.09 and 2.72, forked 2.76
+  and 2.58 in runs 1 and 2. **Above the 2.0 promised, at a load past the one it was promised
+  at**: the ball's unit itself took 1.17 to 1.85 ns in these runs, against 1.0 to 1.09 in the
+  runs that set the promise, so in the ball's units of the same run a body's unit is 1.2 to
+  2.4 of them. Not shown at or under 2.0 ns: measure again on a quiet machine.
 - **A part thinner than a cell meshes with edges that four triangles share** (looked into on
   2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
   It is not the join and not the box: **one crescent** (`{"op": "difference", "of": [{"op":
