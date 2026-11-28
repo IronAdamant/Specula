@@ -268,10 +268,13 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
 - [ ] Where rubble has gone, no rubble rises again while any of the dead that were on the slab
       then still stand; once they have all gone it may.
 - [ ] *Rubble's health bar:* place a Saxum of tier II or III by a lane and let a wave reach it. A
-      bar shows 1.6 m over each rubble from the tick it rises, full: a dark back, a pale green
-      fill.
+      bar shows over each rubble from the tick it rises, full: a dark back, a pale green fill,
+      drawn in the interface over the rubble's place, never smaller than about 49 by 8 pixels at
+      1080 high (32 by 5 at 720), and above the rubble so that the dead at it stay in sight.
+- [ ] From the game's usual camera, with the whole slab in view, the bar's level can be read.
 - [ ] The bar empties from the right as the dead claw the rubble (`play_state`'s walls give its
-      hp and max_hp: the fill is that share of the bar, or less).
+      hp and max_hp, and for rubble `life_ticks`, `life_left_ticks` and `bar_permille`: the fill
+      is the lesser share).
 - [ ] With nobody at it, the bar still empties as the rubble's life runs out (6 s at II, 8 s at
       III), and is gone the tick the rubble crumbles or breaks.
 - [ ] The bar shows the lesser of health and life: rubble half broken with most of its life left

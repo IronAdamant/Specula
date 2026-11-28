@@ -1515,8 +1515,11 @@ impl Game for SepulcraGame {
         if let Some(scene) = &self.scene {
             let vp = overlay.camera.view_proj(overlay.size.0.max(1), overlay.size.1.max(1));
             for (b, _) in scene.bars(&self.state, &vp, overlay.size) {
+                // A dark back with a pale rim, so the empty part reads against the dark slab.
                 let [r, g, bl] = palette::FISSURE;
-                overlay.quads.push(specula_gpu::OverlayQuad::solid(b.back, [r, g, bl, 0.85]));
+                let rim = (b.fill[1] - b.back[1]).max(1.0);
+                let back = specula_gpu::OverlayQuad::solid(b.back, [r, g, bl, 0.9]);
+                overlay.quads.push(specula_gpu::OverlayQuad { border: rim, border_color: [[0.82, 0.84, 0.86, 0.95]; 2], ..back });
                 let [r, g, bl] = palette::GRAVE_GLOW;
                 overlay.quads.push(specula_gpu::OverlayQuad::solid(b.fill, [r, g, bl, 1.0]));
             }
