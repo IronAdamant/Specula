@@ -796,3 +796,6 @@ impl Flesh {
     }
 }
 
+
+#[cfg(test)]
+mod tests;
