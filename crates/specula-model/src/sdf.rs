@@ -2246,7 +2246,10 @@ fn own_range_cost(n: &Prepared) -> u64 {
     match &n.kind {
         PKind::Prim(p @ Prim::Column { .. }) => prim_cost(p) + COLUMN_RANGE,
         PKind::Prim(p @ Prim::Rounded { .. }) => prim_cost(p) + ROUNDED_RANGE,
-        PKind::Prim(Prim::Body(b)) => body_cost(b) + body_range_cost(b),
+        // (Its evaluation is `prim_cost`'s, the 48 every primitive costs with it: a range charged
+        // `body_cost` alone fell 48 short at every ask, which a body whose range the box's
+        // search asks showed.)
+        PKind::Prim(p @ Prim::Body(b)) => prim_cost(p) + body_range_cost(b),
         PKind::Prim(p) => prim_cost(p),
         PKind::Group { kids, smooth, .. } => 2 * group_cost(0, kids.len(), *smooth) + RANGE_GROUP,
     }
@@ -7850,6 +7853,22 @@ mod tests {
         chain.m.rotate = [20.0, 35.0, 0.0];
         chain.m.at = [0.3, 0.0, 0.1];
         trees.push(chain);
+        // (Bodies twisted, one beside a loose child, a flat ellipsoid: the box's search passes
+        // a twist's bounds and asks the body's range there, so a body's rows of charged work
+        // are done and held to their charge. A body's own bounds are its reach, so untwisted
+        // it asks no search.)
+        for (i, f) in [crate::caro::tests::test_flesh("forked"), crate::caro::tests::swollen_biped(), crate::caro::tests::drawn_chain(0xB0D1_0001)].into_iter().enumerate() {
+            let mut flat = prim(Prim::Ellipsoid { radii: [0.25, 0.03, 0.15] });
+            flat.m.at = [0.05, -0.2, 0.0];
+            let body = prim(Prim::Body(crate::caro::Carnis::new(f)));
+            let mut t = if i == 0 { group(Combine::Union, vec![body, flat], 0.02) } else { body };
+            t.m.twist = 25.0;
+            trees.push(t);
+        }
+        // (The four test skeletons, jointed, as the recipe makes them.)
+        for name in ["biped", "quadruped", "serpent", "forked"] {
+            trees.push(prim(Prim::Body(crate::caro::Carnis::new(crate::caro::tests::test_flesh(name)))));
+        }
         trees
     }
 
@@ -9435,21 +9454,50 @@ mod tests {
             old_wrong += usize::from(mesh_hash(&old) != mesh_hash(&all.0));
         }
         // Bodies: each block's list of parts and seams, and the blocks skipped by its value at
-        // the mesher's held level, lose nothing of the body sampled whole.
-        let bodies = [crate::caro::tests::swollen_biped(), crate::caro::tests::test_flesh("serpent"), crate::caro::tests::test_flesh("forked"), crate::caro::tests::drawn_chain(0xB0D1_0002), crate::caro::tests::drawn_chain(0xB0D1_0003)];
-        for (i, f) in bodies.into_iter().enumerate() {
+        // the mesher's held level, lose nothing of the body sampled whole: the four test
+        // skeletons, the biped with swells, two drawn chains (one turned and scaled). Each at a
+        // resolution where some block is clear: a block is eight cells, and where the body is
+        // thinner than a block's reach every way (the serpent, 0.14 m thick and 1.7 m long, at
+        // 64: its grid is 3 by 2 by 9 blocks, none clear by a block's half diagonal) there is
+        // none to skip.
+        let bodies = [
+            (crate::caro::tests::swollen_biped(), 48),
+            (crate::caro::tests::test_flesh("serpent"), 128),
+            (crate::caro::tests::test_flesh("forked"), 80),
+            (crate::caro::tests::drawn_chain(0xB0D1_0002), 64),
+            (crate::caro::tests::drawn_chain(0xB0D1_0003), 48),
+            (crate::caro::tests::test_flesh("biped"), 64),
+            (crate::caro::tests::test_flesh("quadruped"), 80),
+        ];
+        for (i, (f, res)) in bodies.into_iter().enumerate() {
             let mut tree = prim(Prim::Body(crate::caro::Carnis::new(f)));
             if i == 3 {
                 tree.m.rotate = [10.0, 0.0, 30.0];
                 tree.m.scale = 1.5;
             }
-            let o = opts([48, 64, 80][i % 3]);
+            let o = opts(res);
             let (now, st) = mesh(&tree, &o).unwrap();
             let all = whole(&tree, &o);
-            assert!(st.blocks_skipped > 0, "body {i}: no block was skipped");
+            assert!(st.blocks_skipped > 0, "body {i}: no block was skipped at {res}: {st:?}");
             assert_eq!(mesh_hash(&now), mesh_hash(&all.0), "body {i}: {} triangles, {} sampled whole", now.tris.len(), all.0.tris.len());
         }
         // (By the factors alone some of these lost surface: the set can see the fault.)
         assert!(old_wrong > 0, "none of the drawn cases differed by the factors alone");
+    }
+
+    /// **A body's mesh is charged for every evaluation it makes**: the four test skeletons
+    /// meshed, each sample weighed at its block's list ([`body_cost`]) and every range's steps
+    /// ([`did_shares`]) together never pass the work charged.
+    #[test]
+    fn a_bodys_mesh_is_charged_for_every_evaluation() {
+        for name in ["biped", "quadruped", "serpent", "forked"] {
+            let tree = prim(Prim::Body(crate::caro::Carnis::new(crate::caro::tests::test_flesh(name))));
+            PRIM_WEIGHED.with(|w| w.set(0));
+            Did::taken();
+            let (_, s) = mesh(&tree, &MeshOptions { max_work: u64::MAX, ..opts(64) }).unwrap();
+            let weighed = PRIM_WEIGHED.with(|w| w.get());
+            let besides: u64 = did_shares(&Did::taken(), 0).iter().filter(|(n, _)| *n != "primitives' ranges").map(|s| s.1).sum();
+            assert!(weighed > 0 && weighed + besides <= s.work, "{name}: evaluations weighing {weighed} and ranges {besides} for {} work", s.work);
+        }
     }
 }
