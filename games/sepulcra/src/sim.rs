@@ -241,11 +241,21 @@ pub struct RubbleStand {
 }
 
 impl RubbleStand {
+    /// The life it was raised with, ticks (beside `max_hp`, its full health).
+    pub fn life(&self) -> u32 {
+        self.until.saturating_sub(self.raised)
+    }
+
+    /// The life it has left at `tick`, ticks (beside `hp`, the health it has left).
+    pub fn life_left(&self, tick: u32) -> u32 {
+        self.until.saturating_sub(tick)
+    }
+
     /// What its health bar shows at `tick`, permille: the lesser of the health it has left and the
     /// life it has left, since either ending first ends it. 0 when it is gone.
     pub fn left_permille(&self, tick: u32) -> i32 {
         let health = i64::from(self.hp.max(0)) * 1000 / i64::from(self.max_hp.max(1));
-        let life = i64::from(self.until.saturating_sub(tick)) * 1000 / i64::from(self.until.saturating_sub(self.raised).max(1));
+        let life = i64::from(self.life_left(tick)) * 1000 / i64::from(self.life().max(1));
         health.min(life).clamp(0, 1000) as i32
     }
 }

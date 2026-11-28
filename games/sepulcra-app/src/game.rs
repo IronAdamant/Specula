@@ -1511,6 +1511,16 @@ impl Game for SepulcraGame {
             let cam = overlay.camera;
             self.fill_hud(Some(&cam), overlay.size);
         }
+        // Rubble's bars, under the HUD's panels (the window and captures alike).
+        if let Some(scene) = &self.scene {
+            let vp = overlay.camera.view_proj(overlay.size.0.max(1), overlay.size.1.max(1));
+            for (b, _) in scene.bars(&self.state, &vp, overlay.size) {
+                let [r, g, bl] = palette::FISSURE;
+                overlay.quads.push(specula_gpu::OverlayQuad::solid(b.back, [r, g, bl, 0.85]));
+                let [r, g, bl] = palette::GRAVE_GLOW;
+                overlay.quads.push(specula_gpu::OverlayQuad::solid(b.fill, [r, g, bl, 1.0]));
+            }
+        }
         self.hud.overlay(overlay, self.now);
     }
 

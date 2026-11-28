@@ -531,7 +531,13 @@ fn state(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
                 ])
             }),
             "walls" => page(s.walls(), offset, limit, |(c, w)| {
-                obj([("cell", Json::from(map.cell_name(c))), ("hp", Json::from(w.hp as f64 / 1000.0)), ("max_hp", Json::from(w.max_hp as f64 / 1000.0))])
+                let mut o = obj([("cell", Json::from(map.cell_name(c))), ("hp", Json::from(w.hp as f64 / 1000.0)), ("max_hp", Json::from(w.max_hp as f64 / 1000.0))]);
+                // Rubble (temporary): its life beside its health, and what its bar shows.
+                if let Some(r) = s.rubble().find(|r| r.cell == c) {
+                    let tick = s.tick();
+                    o.set("rubble", obj([("life_ticks", Json::from(r.life())), ("life_left_ticks", Json::from(r.life_left(tick))), ("bar_permille", Json::from(r.left_permille(tick)))]));
+                }
+                o
             }),
             "waves" => page(s.wave_stats().iter().enumerate(), offset, limit, |(i, w)| {
                 obj([

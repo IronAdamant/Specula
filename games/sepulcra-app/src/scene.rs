@@ -111,33 +111,57 @@ struct WallView {
     bucket: u8,
 }
 
-/// A rubble's health bar (transient presentation, `/live/bars/<cell>`): its group, its fill, and
-/// the hundredth of full it shows.
-#[derive(Clone)]
-struct BarView {
-    group: u64,
-    fill: u64,
-    shown: i32,
-}
-
-/// The rubble bar's size (metres) and its height above the cell: over the rubble, under a
-/// stone's muzzle, flat so the slab's camera reads it from above.
-const BAR_W: f32 = 1.2;
-const BAR_H: f32 = 0.08;
-const BAR_D: f32 = 0.22;
-const BAR_Y: f32 = 1.6;
+/// The rubble bar's length in the world (metres) and the height above the cell it stands at:
+/// over the rubble, under a stone's muzzle. Close up it is drawn this long.
+pub const BAR_W: f32 = 1.2;
+pub const BAR_Y: f32 = 1.6;
+/// **Its least size on screen**, as parts of the window's shorter side (so it grows with the
+/// window): 4.5% long and 0.75% high (49 by 8 pixels at 1080 high, 32 by 5 at 720), and never
+/// under 24 by 4 pixels. The finisher's wide frames showed the bar drawn only at its world size
+/// as dashes a few pixels wide whose level could not be read.
+pub const BAR_MIN_LEN: f32 = 0.045;
+pub const BAR_MIN_HIGH: f32 = 0.0075;
+pub const BAR_MIN_PX: (f32, f32) = (24.0, 4.0);
 
 /// What a rubble's bar shows (0..1): the lesser of the health and the life it has left, as the
-/// rules count them ([`sepulcra::RubbleStand::left_permille`]).
+/// rules count them ([`sepulcra::RubbleStand::left_permille`], from its `hp` of `max_hp` and
+/// its `life_left` of `life`).
 pub fn bar_fraction(r: &sepulcra::RubbleStand, tick: u32) -> f32 {
     r.left_permille(tick) as f32 / 1000.0
 }
 
-/// The bar's fill for `fraction` of full: its width and the x of its centre, so it empties from
-/// the right end towards the left.
-pub fn bar_fill(fraction: f32) -> (f32, f32) {
-    let w = BAR_W * fraction.clamp(0.0, 1.0);
-    (w, -BAR_W / 2.0 + w / 2.0)
+/// Where a rubble's bar is drawn on screen (pixels: x, y, width, height), in the interface
+/// layer: its dark back, and its fill, which empties from the right end towards the left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarRects {
+    pub back: [f32; 4],
+    pub fill: [f32; 4],
+}
+
+/// The bar of a rubble whose bar point (the cell's anchor, [`BAR_Y`] up) is `at`, seen through
+/// `view_proj` in an image of `size`, `fraction` full. As long as [`BAR_W`] projects to, and
+/// never smaller than the least size; its bottom edge stands a bar's height above the point, so
+/// it covers neither the rubble nor the dead clawing at it. `None` behind the camera or off
+/// the image.
+pub fn bar_rects(view_proj: &specula_core::math::Mat4, size: (u32, u32), at: Vec3, fraction: f32) -> Option<BarRects> {
+    use specula_core::math::project_to_screen;
+    let (w, h) = (size.0.max(1), size.1.max(1));
+    let (x, y, _) = project_to_screen(view_proj, at, w, h)?;
+    let half = Vec3::new(BAR_W / 2.0, 0.0, 0.0);
+    let world = match (project_to_screen(view_proj, at - half, w, h), project_to_screen(view_proj, at + half, w, h)) {
+        (Some(a), Some(b)) => ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt(),
+        _ => 0.0,
+    };
+    let short = w.min(h) as f32;
+    let len = world.max(short * BAR_MIN_LEN).max(BAR_MIN_PX.0);
+    let high = (len / 12.0).max(short * BAR_MIN_HIGH).max(BAR_MIN_PX.1);
+    let edge = (high / 4.0).max(1.0);
+    let (left, top) = (x - len / 2.0, y - 2.0 * high);
+    let back = [left - edge, top - edge, len + 2.0 * edge, high + 2.0 * edge];
+    if back[0] > w as f32 || back[1] > h as f32 || back[0] + back[2] < 0.0 || back[1] + back[3] < 0.0 {
+        return None;
+    }
+    Some(BarRects { back, fill: [left, top, len * fraction.clamp(0.0, 1.0), high] })
 }
 
 #[derive(Clone, Copy)]
@@ -174,9 +198,6 @@ pub struct Scene {
     fx_g: u64,
     stones: BTreeMap<CellId, StoneView>,
     walls: BTreeMap<CellId, WallView>,
-    /// Rubble health bars, by cell (under `/live/bars`).
-    bars_g: u64,
-    bars: BTreeMap<CellId, BarView>,
     roots: BTreeMap<CellId, u64>,
     enemies: BTreeMap<EnemyId, Mob>,
     corpses: Vec<Corpse>,
@@ -240,7 +261,6 @@ impl Scene {
         let (stones_g, walls_g, roots_g, tombs_g) = (sub(world, units, "stones"), sub(world, units, "walls"), sub(world, units, "roots"), sub(world, units, "tombstones"));
         let live = ents::transient_group(world, agent, "live", Layer::World, &["game", "transient"]);
         let (enemies_g, bolts_g, fx_g) = (sub(world, live, "enemies"), sub(world, live, "bolts"), sub(world, live, "fx"));
-        let bars_g = sub(world, live, "bars");
         let vfx = effects::Effects::new(world, agent, live);
         let ui = ents::transient_group(world, agent, "cursor", Layer::Ui, &["ui"]);
         let cursor_part = Part::cube("cell", Vec3::ZERO, Vec3::ONE, highlight::VALID.color).glow(highlight::VALID.emissive);
@@ -263,8 +283,6 @@ impl Scene {
             fx_g,
             stones: BTreeMap::new(),
             walls: BTreeMap::new(),
-            bars_g,
-            bars: BTreeMap::new(),
             roots: BTreeMap::new(),
             enemies: BTreeMap::new(),
             corpses: Vec::new(),
@@ -328,7 +346,6 @@ impl Scene {
         self.sync_stones(world, state);
         self.props.sync(world, &self.agent, state);
         self.sync_walls(world, state);
-        self.sync_bars(world, state);
         self.sync_roots(world, state);
         self.sync_tombstones(world, state);
     }
@@ -423,40 +440,21 @@ impl Scene {
     }
 
     /// A health bar over every standing rubble (DESIGN.md, "Saxum": the owner's "health bar to
-    /// that stone"): it shows from the tick the rubble rises, full, and empties as the dead
-    /// break it or as its life runs out, whichever leaves less ([`bar_fraction`]); it goes with
-    /// the rubble. The app draws no other bar, so this one is its own: a dark back, a pale green
-    /// fill that shrinks from the right.
-    fn sync_bars(&mut self, world: &mut GameWorld<'_>, state: &State) {
+    /// that stone"), drawn in the interface layer at the rubble's projected place so that it
+    /// can be read from the game's usual camera ([`bar_rects`]): it shows from the tick the
+    /// rubble rises, full, and empties as the dead break it or as its life runs out, whichever
+    /// leaves less ([`bar_fraction`]); it goes with the rubble. Each is the bar's rects and the
+    /// fraction it shows, in cell order.
+    pub fn bars(&self, state: &State, view_proj: &specula_core::math::Mat4, size: (u32, u32)) -> Vec<(BarRects, f32)> {
         let map = &state.content().map;
-        let gone: Vec<CellId> = self.bars.keys().copied().filter(|c| !state.rubble().any(|r| r.cell == *c)).collect();
-        for c in gone {
-            if let Some(v) = self.bars.remove(&c) {
-                ents::delete(world, v.group);
-            }
-        }
-        for r in state.rubble() {
-            let f = bar_fraction(&r, state.tick());
-            let shown = (f * 100.0).round() as i32;
-            let (w, x) = bar_fill(f);
-            let (pos, scale) = (Vec3::new(x, 0.02, 0.0), Vec3::new(w.max(0.001), BAR_H, BAR_D));
-            match self.bars.get_mut(&r.cell) {
-                Some(v) if v.shown == shown => {}
-                Some(v) => {
-                    ents::place(world, &self.agent, v.fill, Some(pos), None, Some(scale));
-                    v.shown = shown;
-                }
-                None => {
-                    let (anchor, _) = self.geo.anchor(map, r.cell);
-                    let name = map.cell_name(r.cell);
-                    let props = Json::obj([("cell", Json::from(name.as_str())), ("max_hp", Json::from(r.max_hp / 1000))]);
-                    let group = ents::group(world, &self.agent, Some(self.bars_g), &name, anchor + Vec3::new(0.0, BAR_Y, 0.0), Vec3::ZERO, &["rubble_bar"], props);
-                    ents::part_named(world, &self.agent, group, "back", &Part::cube("", Vec3::ZERO, Vec3::new(BAR_W + 0.06, BAR_H, BAR_D + 0.06), FISSURE).rough(1.0));
-                    let fill = ents::part_named(world, &self.agent, group, "fill", &Part::cube("", pos, scale, GRAVE_GLOW).glow(0.8));
-                    self.bars.insert(r.cell, BarView { group, fill, shown });
-                }
-            }
-        }
+        state
+            .rubble()
+            .filter_map(|r| {
+                let f = bar_fraction(&r, state.tick());
+                let at = self.geo.anchor(map, r.cell).0 + Vec3::new(0.0, BAR_Y, 0.0);
+                bar_rects(view_proj, size, at, f).map(|b| (b, f))
+            })
+            .collect()
     }
 
     fn sync_roots(&mut self, world: &mut GameWorld<'_>, state: &State) {
@@ -1100,15 +1098,56 @@ mod tests {
                 let want = health.min(left);
                 let got = f64::from(bar_fraction(&r, s.tick()));
                 assert!((got - want).abs() <= 0.0011, "{}: bar {got}, want {want} (health {health}, life {left})", content.map.cell_name(r.cell));
-                let (width, x) = bar_fill(got as f32);
-                assert!((f64::from(width) - got * f64::from(BAR_W)).abs() < 1e-4 && (x - width / 2.0 + BAR_W / 2.0).abs() < 1e-4);
+                // The rules' answer says the same life the events do.
+                assert_eq!((r.life(), r.life_left(s.tick())), (life, rose + life - s.tick()));
                 seen += 1;
                 damaged += u32::from(w.hp < w.max_hp);
             }
         }
         assert!(!raised.is_empty() && seen > 0 && damaged > 0, "rubble rose ({raised:?}), was seen ({seen}) and was broken into ({damaged})");
-        assert_eq!(bar_fill(1.0), (BAR_W, 0.0));
-        assert_eq!(bar_fill(0.0).0, 0.0);
+    }
+
+    /// The bar can be read from the game's usual camera: seen from far off it is never smaller
+    /// than its least size (4.5% by 0.75% of the window's shorter side, at least 24 by 4
+    /// pixels), which grows with the window; close up it is as long as it stands in the world;
+    /// its fill is the shown share of it from the left; and it stands above its point, so it
+    /// covers neither the rubble nor the dead at it.
+    #[test]
+    fn a_rubble_bar_keeps_its_least_size_on_screen_and_grows_with_the_window() {
+        use specula::sight::Camera;
+        let at = Vec3::new(0.0, BAR_Y, 0.0);
+        let far = Camera::new(Vec3::new(0.0, 60.0, 45.0), Vec3::ZERO, 45.0);
+        let near = Camera::new(Vec3::new(0.0, 3.0, 3.0), at, 45.0);
+        for size in [(1280u32, 720u32), (1920, 1080), (2560, 1440), (640, 360)] {
+            let short = size.0.min(size.1) as f32;
+            let (want_len, want_high) = ((short * BAR_MIN_LEN).max(BAR_MIN_PX.0), (short * BAR_MIN_HIGH).max(BAR_MIN_PX.1));
+            let b = bar_rects(&far.view_proj(size.0, size.1), size, at, 1.0).expect("on screen");
+            // From far off, the world's 1.2 m would be a few pixels: the least size holds.
+            let world = {
+                let vp = far.view_proj(size.0, size.1);
+                let p = |v: Vec3| specula_core::math::project_to_screen(&vp, v, size.0, size.1).unwrap();
+                let (a, c) = (p(at - Vec3::new(BAR_W / 2.0, 0.0, 0.0)), p(at + Vec3::new(BAR_W / 2.0, 0.0, 0.0)));
+                c.0 - a.0
+            };
+            assert!(world < want_len, "{size:?}: the far camera shows the world bar {world} px, under the least {want_len}");
+            assert!((b.fill[2] - want_len).abs() < 1e-3 && (b.fill[3] - want_high).abs() < 1e-3, "{size:?}: {b:?}, want {want_len} by {want_high}");
+            let (x, y, _) = specula_core::math::project_to_screen(&far.view_proj(size.0, size.1), at, size.0, size.1).unwrap();
+            assert!((b.fill[0] + b.fill[2] / 2.0 - x).abs() < 1e-3, "centred over its point");
+            assert!(b.back[1] + b.back[3] < y, "{size:?}: the bar stands above its point: {b:?} over y {y}");
+            let half = bar_rects(&far.view_proj(size.0, size.1), size, at, 0.5).unwrap();
+            assert_eq!((half.fill[0], half.back), (b.fill[0], b.back));
+            assert!((half.fill[2] - want_len / 2.0).abs() < 1e-3, "half full is half the length, from the left");
+            assert_eq!(bar_rects(&far.view_proj(size.0, size.1), size, at, 0.0).unwrap().fill[2], 0.0);
+            // Close up it is the world's length, longer than the least.
+            let c = bar_rects(&near.view_proj(size.0, size.1), size, at, 1.0).unwrap();
+            assert!(c.fill[2] > want_len * 2.0, "{size:?}: close up {c:?}");
+        }
+        // It grows with the window: twice the window, twice the least size.
+        let small = bar_rects(&far.view_proj(1280, 720), (1280, 720), at, 1.0).unwrap();
+        let big = bar_rects(&far.view_proj(2560, 1440), (2560, 1440), at, 1.0).unwrap();
+        assert!((big.fill[2] - 2.0 * small.fill[2]).abs() < 1e-3 && (big.fill[3] - 2.0 * small.fill[3]).abs() < 1e-3);
+        // Behind the camera: nothing.
+        assert!(bar_rects(&far.view_proj(1280, 720), (1280, 720), Vec3::new(0.0, 120.0, 90.0), 1.0).is_none());
     }
 
     /// The cursor and the range dots wear the `looks::highlight` glows (colour and emissive),
