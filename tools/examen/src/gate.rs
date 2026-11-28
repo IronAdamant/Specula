@@ -223,6 +223,8 @@ struct Gate {
     steps: Vec<(String, Json)>,
     failures: Vec<String>,
     said: Vec<(String, String, String)>,
+    /// The machine's speed reference, first measured at the gate's start (`mensura.rs`).
+    reference: Option<mensura::Reference>,
 }
 
 impl Gate {
@@ -374,14 +376,16 @@ impl Gate {
         if total == 0 {
             self.fail("speed: found no test that holds a speed budget (has `speed_budget(` been renamed?)".to_owned());
         }
-        // How slow the machine is now against its best (`mensura.rs`): the budgets are scaled by it.
-        let kept = target_dir().join("gate").join("speed-reference.txt");
-        let best = mensura::remember(&kept, mensura::reference_ms());
+        // How slow the machine is now against its best (`mensura.rs`): the budgets are scaled by
+        // it. The best is the least sample this checkout ever took, the gate's start included.
+        let mut reference = self.reference.take().unwrap_or_else(|| mensura::Reference::open(mensura::kept_at(&target_dir())));
         let mut packages = Vec::new();
         for (package, names) in &budgets {
-            let now = mensura::reference_ms();
+            let now = mensura::median(&reference.take());
+            let best = reference.best();
             let factor = mensura::factor(now, best);
-            let load = format!("speed: the machine is {factor:.2} times slower than its best (reference {best:.0} ms, now {now:.0} ms): budgets scaled by {factor:.2}");
+            let young = reference.youth_on(&mensura::today());
+            let load = format!("speed: the machine is {factor:.2} times slower than its best (reference {best:.0} ms, now {now:.0} ms): budgets scaled by {factor:.2}{young}");
             println!("  {package}: {load}");
             let measured = [("best_ms", Json::Num((best * 10.0).round() / 10.0)), ("now_ms", Json::Num((now * 10.0).round() / 10.0)), ("factor", Json::Num(factor)), ("load", Json::Str(load))];
             if mensura::too_loaded(factor) {
@@ -511,8 +515,17 @@ pub fn main(mut args: Args) -> i32 {
     for line in &lines {
         println!("{line}");
     }
-    let mut gate = Gate { opts, root, steps: Vec::new(), failures: Vec::new(), said: Vec::new() };
     let has = |s: &str| steps.contains(&s);
+    // A set of reference samples before any cargo step, when the machine is at its quietest for
+    // this gate: it only lowers the best (`mensura.rs`).
+    let reference = has("speed").then(|| {
+        let mut r = mensura::Reference::open(mensura::kept_at(&target_dir()));
+        let now = mensura::median(&r.take());
+        let since = if r.since().is_empty() { String::new() } else { format!(" (kept since {})", r.since()) };
+        println!("speed reference: {now:.0} ms now, best {:.0} ms{since}", r.best());
+        r
+    });
+    let mut gate = Gate { opts, root, steps: Vec::new(), failures: Vec::new(), said: Vec::new(), reference };
 
     gate.step_rust();
     if TEST_STEPS.iter().any(|s| has(s)) {
