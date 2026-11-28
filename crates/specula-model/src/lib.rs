@@ -92,6 +92,7 @@
 #![forbid(unsafe_code)]
 
 pub mod building;
+pub mod caro;
 pub mod collider;
 pub mod csg;
 pub mod dmath;
