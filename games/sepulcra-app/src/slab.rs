@@ -268,7 +268,7 @@ fn ground(world: &mut GameWorld<'_>, agent: &str, id: u64) {
 }
 
 /// Builds the slab under `/slab` (replacing an old one). Returns the group's id.
-pub fn build(world: &mut GameWorld<'_>, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
+pub fn build(world: &mut GameWorld<'_>, agent: &str, map: &Map, fuel: &[CellId], geo: &SlabGeo) -> u64 {
     if let Some(old) = ents::top_level(world, "slab") {
         ents::delete(world, old);
     }
@@ -417,7 +417,7 @@ pub fn build(world: &mut GameWorld<'_>, agent: &str, map: &Map, geo: &SlabGeo) -
     }
 
     // Real grass on the graveyard and the rock's edges (alpha-cutout tufts swaying in the wind).
-    crate::grass::build(world, agent, map, geo, slab);
+    crate::grass::build(world, agent, map, fuel, geo, slab);
 
     // Cliffs: strata bands of rock, recessed climbing lanes, ledges with shelves, dark mouths
     // at the base where climbers come from. The south face has no cells: plain strata.

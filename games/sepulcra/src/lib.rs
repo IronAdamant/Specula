@@ -24,9 +24,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod blaze;
 pub mod content;
 pub mod error;
 pub mod fixed;
+pub mod fuel;
 pub mod lex;
 pub mod map;
 pub mod path;
@@ -39,4 +41,4 @@ pub use error::{DataError, ErrorCode};
 pub use fixed::{Pos, TICK_HZ};
 pub use map::{CellId, CellKind, Face, Map};
 pub use script::{run, Player, RunReport, Script};
-pub use sim::{step, Command, Enemy, Event, Motion, Outcome, Projectile, Rejection, State};
+pub use sim::{step, Command, Enemy, Event, Motion, Outcome, Projectile, Rejection, RubbleStand, State};

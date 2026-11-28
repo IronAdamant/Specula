@@ -9,7 +9,12 @@
 //! **Where:** the graveyard's cells, and the fragment cells at the edges of the rock (STYLE.md:
 //! moss and roots at fragment edges), never on a lane (the dead's paths stay readable), at most
 //! [`MAX_PATCHES`]; and on every cell roots take (the flat moss patches of earlier builds), from
-//! wave 5. Picked by a hash of the cell, so every run's slab is the same.
+//! wave 5. Picked by a hash of the cell, so every run's slab is the same. Content with the
+//! elements also has grass on every cell its rules burn (`Content::fuel`: in the proving ground,
+//! dry grass laid on two lane stretches; the same patch stands in for its look), drawn first, so
+//! the fire burns only where grass is seen (`sepulcra::fuel::grass_shown`, held equal below)
+//! while the budget holds it; the rules allow more fuel than that, and then [`build`] says in a
+//! trace (`sepulcra.grass_dropped`) how many burning cells it left out.
 //!
 //! **Budget (iGPU):** a patch is 12 tufts of three upright quads (72 triangles; 4 mm boxes were
 //! 432, with both broad faces shaded); the far side of the slab thins out by a dithered fade from
@@ -51,9 +56,47 @@ fn hash(c: CellId) -> u32 {
     (c.0 as u32).wrapping_mul(2_654_435_761).rotate_left(13) ^ 0x5e9c
 }
 
-/// The top-face cells that get grass: graveyard cells, and fragment cells at the rock's edge (a
-/// lane or the rim beside them), about two in three of those by hash, at most [`MAX_PATCHES`].
-pub fn cells(map: &Map) -> Vec<CellId> {
+/// The top-face cells that get grass, at most [`MAX_PATCHES`] ([`pick`] without its count).
+pub fn cells(map: &Map, fuel: &[CellId]) -> Vec<CellId> {
+    pick(map, fuel).0
+}
+
+/// What [`pick`] left out to keep the budget: cells that burn (more than the budget: the rules
+/// allow any number, and those left out burn unseen) and grass that does not burn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Dropped {
+    pub fuel: usize,
+    pub grass: usize,
+}
+
+/// The top-face cells that get grass, at most [`MAX_PATCHES`], in cell order: **the cells of
+/// `fuel` first** (the content's burning cells; none on the shipped maps), so what burns is seen
+/// whenever the budget can hold it, then graveyard cells and fragment cells at the rock's edge (a
+/// lane or the rim beside them), about two in three of those by hash, while there is room. What
+/// does not fit is dropped by the same hash, fuel only when there is more fuel than the budget,
+/// and the count of each is returned ([`build`] says it in a trace).
+pub fn pick(map: &Map, fuel: &[CellId]) -> (Vec<CellId>, Dropped) {
+    let mut out: Vec<CellId> = fuel.to_vec();
+    out.sort();
+    out.dedup();
+    let mut rest: Vec<CellId> = edge_cells(map).into_iter().filter(|c| out.binary_search(c).is_err()).collect();
+    let mut dropped = Dropped::default();
+    if out.len() > MAX_PATCHES {
+        out.sort_by_key(|&id| (hash(id), id.0));
+        dropped.fuel = out.len() - MAX_PATCHES;
+        out.truncate(MAX_PATCHES);
+        out.sort();
+    }
+    rest.sort_by_key(|&id| (hash(id), id.0));
+    let room = MAX_PATCHES - out.len();
+    dropped.grass = rest.len().saturating_sub(room);
+    rest.truncate(room);
+    out.extend(rest);
+    out.sort();
+    (out, dropped)
+}
+
+fn edge_cells(map: &Map) -> Vec<CellId> {
     let Some(top) = map.face(Face::Top).copied() else { return Vec::new() };
     let kind = |c: i32, r: i32| -> Option<CellKind> {
         if c < 0 || r < 0 || c >= i32::from(top.cols) || r >= i32::from(top.rows) {
@@ -89,9 +132,15 @@ pub fn cells(map: &Map) -> Vec<CellId> {
 }
 
 /// Spawns the slab's grass under `slab` (a group `grass`); returns the group's id.
-pub fn build(world: &mut GameWorld<'_>, agent: &str, map: &Map, geo: &SlabGeo, slab: u64) -> u64 {
+pub fn build(world: &mut GameWorld<'_>, agent: &str, map: &Map, fuel: &[CellId], geo: &SlabGeo, slab: u64) -> u64 {
     let g = ents::group(world, agent, Some(slab), "grass", Vec3::ZERO, Vec3::ZERO, &["grass", "foliage"], Json::Null);
-    for id in cells(map) {
+    let (cells, dropped) = pick(map, fuel);
+    if dropped.fuel > 0 {
+        specula_core::trace_event!(&specula::trace_sink::ENGINE, Warn, "sepulcra.grass_dropped", fuel = dropped.fuel, grass = dropped.grass, budget = MAX_PATCHES);
+    } else if dropped.grass > 0 {
+        specula_core::trace_event!(&specula::trace_sink::ENGINE, Info, "sepulcra.grass_dropped", fuel = 0usize, grass = dropped.grass, budget = MAX_PATCHES);
+    }
+    for id in cells {
         let (anchor, _) = geo.anchor(map, id);
         let h = hash(id);
         let yaw = (h % 360) as f32;
@@ -118,16 +167,60 @@ mod tests {
     fn grass_grows_on_graveyard_and_rock_edges_never_on_lanes() {
         let content = sepulcra::content::Content::builtin();
         let map = &content.map;
-        let cells = cells(map);
+        let cells = cells(map, &content.fuel);
         assert!(!cells.is_empty() && cells.len() <= MAX_PATCHES, "{} patches", cells.len());
         for id in &cells {
             let k = map.cell(*id).kind;
             assert!(matches!(k, CellKind::Graveyard | CellKind::Fragment), "grass on a {k:?} cell");
         }
         assert!(cells.iter().any(|id| map.cell(*id).kind == CellKind::Graveyard), "the graveyard has grass");
-        assert_eq!(cells, super::cells(map), "deterministic");
+        assert_eq!(cells, super::cells(map, &content.fuel), "deterministic");
         // A few variants: the GPU instances them.
         let specs: std::collections::BTreeSet<String> = cells.iter().map(|id| format!("{:?}", patch_spec(u64::from(hash(*id) >> 8)))).collect();
         assert!(specs.len() as u64 <= VARIANTS);
+    }
+
+    /// The grass drawn here is the rules' `fuel::grass_shown`, cell for cell, and every cell the
+    /// rules burn is drawn, on the shipped content and on the proving ground's (whose dry grass
+    /// lies on lane cells), so fire burns where grass is seen (DESIGN.md, "What burns on the slab").
+    #[test]
+    fn the_rules_burn_the_grass_that_is_drawn() {
+        let shipped = sepulcra::content::Content::builtin();
+        assert!(shipped.fuel.is_empty());
+        assert_eq!(cells(&shipped.map, &shipped.fuel), sepulcra::fuel::grass_drawn(&shipped.map), "the shipped slab's grass is as it was");
+        assert_eq!(MAX_PATCHES, sepulcra::fuel::MAX_GRASS);
+        let proving = sepulcra::content::Content::proving();
+        let drawn = cells(&proving.map, &proving.fuel);
+        assert_eq!(drawn, sepulcra::fuel::grass_shown(&proving.map, &proving.fuel));
+        assert!(drawn.len() <= MAX_PATCHES, "the budget holds: {} patches", drawn.len());
+        for f in &proving.fuel {
+            assert!(drawn.contains(f), "fuel {} is drawn", proving.map.cell_name(*f));
+        }
+        let lanes: Vec<String> = proving.fuel.iter().filter(|&&f| proving.map.cell(f).kind != CellKind::Fragment).map(|&f| proving.map.cell_name(f)).collect();
+        assert_eq!(lanes.len(), 7, "the dry grass on the two lane stretches is drawn: {lanes:?}");
+        // The proving ground's fuel fills the budget exactly: the graveyard's grass makes way.
+        let (_, dropped) = pick(&proving.map, &proving.fuel);
+        assert_eq!((proving.fuel.len(), dropped.fuel), (MAX_PATCHES, 0));
+        assert!(dropped.grass > 0, "{dropped:?}");
+        assert!(drawn.iter().all(|c| proving.map.cell(*c).kind != CellKind::Graveyard), "no graveyard grass");
+        assert_eq!(pick(&shipped.map, &shipped.fuel).1, Dropped::default(), "the shipped slab drops nothing for fuel");
+    }
+
+    /// More fuel than the budget (legal in the rules): the budget holds, the fuel is drawn first
+    /// (every patch is fuel), and what is dropped is counted, by the same hash every time.
+    #[test]
+    fn more_fuel_than_the_budget_is_drawn_first_and_the_rest_counted() {
+        let shipped = sepulcra::content::Content::builtin();
+        let map = &shipped.map;
+        let fuel: Vec<CellId> = map.cells().iter().filter(|c| c.face == Face::Top && c.kind == CellKind::Fragment).map(|c| c.id).take(MAX_PATCHES + 30).collect();
+        assert_eq!(fuel.len(), MAX_PATCHES + 30);
+        let (drawn, dropped) = pick(map, &fuel);
+        assert_eq!(drawn.len(), MAX_PATCHES);
+        assert!(drawn.iter().all(|c| fuel.contains(c)), "only fuel is drawn");
+        assert_eq!(dropped.fuel, 30);
+        assert_eq!(dropped.grass, cells(map, &[]).iter().filter(|c| !fuel.contains(c)).count(), "all the other grass made way");
+        assert!(drawn.windows(2).all(|w| w[0] < w[1]), "in cell order");
+        assert_eq!(pick(map, &fuel), pick(map, &fuel), "deterministic");
+        assert_eq!(drawn, sepulcra::fuel::grass_shown(map, &fuel), "as the rules say it is seen");
     }
 }

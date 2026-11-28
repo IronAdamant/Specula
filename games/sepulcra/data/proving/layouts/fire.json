@@ -1,0 +1,21 @@
+{
+  "name": "proving: fire",
+  "notes": "Two rogus stones alone (fire). Same build order and dust in every proving layout: two stones under test (top:10,15 beside the grassed middle lane, top:8,12 beside the south gate), three warding stones, walls on the middle lane and the south gate from wave 2 (for the exploding dead), sky obelisks from wave 4.",
+  "commands": [
+    { "wave": 0, "place": "rogus", "at": "top:10,15" },
+    { "wave": 0, "place": "rogus", "at": "top:8,12" },
+    { "wave": 0, "place": "warding", "at": "top:8,15" },
+    { "wave": 0, "place": "warding", "at": "top:12,8" },
+    { "wave": 0, "place": "warding", "at": "top:7,8" },
+    { "wave": 2, "wall": "top:9,14" },
+    { "wave": 2, "wall": "top:9,12" },
+    { "wave": 2, "upgrade": "top:10,15" },
+    { "wave": 2, "upgrade": "top:8,12" },
+    { "wave": 4, "place": "sky_obelisk", "at": "top:12,11" },
+    { "wave": 4, "upgrade": "top:10,15" },
+    { "wave": 4, "upgrade": "top:8,12" },
+    { "wave": 5, "place": "sky_obelisk", "at": "top:7,7" },
+    { "wave": 5, "upgrade": "top:8,15" },
+    { "wave": 5, "upgrade": "top:12,8" }
+  ]
+}

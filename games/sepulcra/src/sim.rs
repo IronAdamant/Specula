@@ -11,7 +11,10 @@
 //!    tombstones.
 //! 5. Stones fire, by cell id.
 //! 6. Projectiles fly and hit, by id.
-//! 7. The dead are removed; wave-cleared, won and lost are decided.
+//! 7. The elements (content that has them only: the proving ground): bursts queued by the
+//!    exploding dead, after each of steps 4 to 6 and then burning, chill, thaws, fuses, rubble and
+//!    the slab's fire (`sim_elements.rs`, `blaze.rs`).
+//! 8. The dead are removed; wave-cleared, won and lost are decided.
 //!
 //! Everything in [`State`] is integers, ordered containers and seeded RNG streams, so the same
 //! seed and the same commands give the same [`State::hash`] on every machine.
@@ -25,6 +28,7 @@ use std::sync::Arc;
 use specula_core::hash::StableHasher;
 use specula_core::rng::Rng;
 
+use crate::blaze::Blaze;
 use crate::content::{Attack, Content, EnemyDef, EnemyKind, Policy, SpawnPoint, StoneDef, StoneKind, Tier};
 use crate::fixed::{Pos, TICK_HZ};
 use crate::map::{Cell, CellId, CellKind, Face};
@@ -32,6 +36,9 @@ use crate::path::{Class, Fields, Route, UNREACHABLE};
 
 #[path = "sim_save.rs"]
 mod save;
+#[path = "sim_elements.rs"]
+mod elements;
+pub use elements::EnemyEl;
 pub use save::{StateError, STATE_VERSION};
 
 pub type EnemyId = u32;
@@ -170,6 +177,37 @@ pub enum Event {
     Lost,
     /// Command `index` of this step was refused.
     Rejected { index: u16, reason: Rejection },
+    // ---- the elements (proving ground; never on the shipped maps) ----
+    /// Lightning hit `enemy`, from `from` (the stone's muzzle or the last enemy of the chain);
+    /// `link` 0 is the first hit, 1.. the jumps.
+    Struck { stone: CellId, enemy: EnemyId, from: Pos, damage: i32, link: u8 },
+    /// A gust shoved `affected` enemies back along their paths; the stone recharges now.
+    /// `dir` is the wind's horizontal direction (permille), from the stone to its target.
+    Gusted { stone: CellId, affected: u16, dir: (i32, i32) },
+    /// Stone spikes erupted along `cells` lane cells from `at`.
+    Heaved { stone: CellId, at: CellId, cells: u8, affected: u16 },
+    Ignited { enemy: EnemyId },
+    /// Its fire went out before it burnt down (frost, earth).
+    Extinguished { enemy: EnemyId },
+    Frozen { enemy: EnemyId },
+    /// It thawed: by time, or by fire (`steam`). It is wet now.
+    Thawed { enemy: EnemyId, steam: bool },
+    /// A hit on a frozen enemy shattered the ice, with its bonus damage.
+    Shattered { enemy: EnemyId, damage: i32 },
+    /// An exploding enemy burst at `pos`, destroying `walls` walls and hitting `hit` enemies.
+    Detonated { enemy: EnemyId, pos: Pos, walls: u16, hit: u16 },
+    /// An earth stone raised rubble on a lane cell: a wall that crumbles.
+    RubbleRaised { cell: CellId },
+    /// Rubble crumbled by itself.
+    WallCrumbled { cell: CellId },
+    /// `enemy`'s wave has passed its hour ([`crate::content::WAVE_HOUR_TICKS`] after its last
+    /// entry) with it still standing: from this tick it is in **furor**, and nothing holds it
+    /// (DESIGN.md, "Furor"). Never on a stock run.
+    Furor { enemy: EnemyId },
+    /// A fuel cell caught fire, burnt out, or was put out.
+    CellCaught { cell: CellId },
+    CellSpent { cell: CellId },
+    CellSmothered { cell: CellId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -187,6 +225,39 @@ pub struct Wall {
     pub hp: i32,
     pub max_hp: i32,
     pub cost: i32,
+}
+
+/// Rubble standing on a lane cell (DESIGN.md, "Saxum"): temporary, by its own rules. It goes
+/// when the dead have broken it (`hp` of `max_hp`, milli-HP: its wall's) or when its life ends
+/// (it rose at `raised` and crumbles at `until`), whichever comes first; a heave never restores
+/// either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RubbleStand {
+    pub cell: CellId,
+    pub hp: i32,
+    pub max_hp: i32,
+    pub raised: u32,
+    pub until: u32,
+}
+
+impl RubbleStand {
+    /// The life it was raised with, ticks (beside `max_hp`, its full health).
+    pub fn life(&self) -> u32 {
+        self.until.saturating_sub(self.raised)
+    }
+
+    /// The life it has left at `tick`, ticks (beside `hp`, the health it has left).
+    pub fn life_left(&self, tick: u32) -> u32 {
+        self.until.saturating_sub(tick)
+    }
+
+    /// What its health bar shows at `tick`, permille: the lesser of the health it has left and the
+    /// life it has left, since either ending first ends it. 0 when it is gone.
+    pub fn left_permille(&self, tick: u32) -> i32 {
+        let health = i64::from(self.hp.max(0)) * 1000 / i64::from(self.max_hp.max(1));
+        let life = i64::from(self.life_left(tick)) * 1000 / i64::from(self.life().max(1));
+        health.min(life).clamp(0, 1000) as i32
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -221,6 +292,8 @@ pub struct Enemy {
     next_summon: u32,
     /// Ticks spent with no route at all.
     stuck: u32,
+    /// What the elements did to it (all zero on the shipped maps).
+    pub el: EnemyEl,
 }
 
 impl Enemy {
@@ -286,6 +359,10 @@ pub struct WaveStats {
     pub pending: u32,
     /// Enemies of this wave on the slab now.
     pub alive: u32,
+    /// Bursts of this wave's exploding enemies that went off: on a wall (no dust, no tombstone)
+    /// or where one was killed (also counted in `killed`). Counted as each goes off, never after a
+    /// loss (elements only).
+    pub detonated: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -336,10 +413,24 @@ struct World {
     walls: BTreeMap<CellId, Wall>,
     projectiles: Vec<Projectile>,
     wave_stats: Vec<WaveStats>,
+    /// The slab's fire (empty without fuel).
+    blaze: Blaze,
+    /// Rubble an earth stone raised: its wall's cell, the tick it rose and the tick it crumbles
+    /// (its health is its wall's).
+    rubble: BTreeMap<CellId, (u32, u32)>,
+    /// Cells whose rubble has gone (broken, blasted, crumbled or taken down), each with the
+    /// [`World::next_enemy`] of the tick it went: while any living enemy's id is below it, no
+    /// rubble rises on that cell again (DESIGN.md, "Saxum": rubble is temporary).
+    spent: BTreeMap<CellId, EnemyId>,
+    /// Exploding enemies to burst before this tick ends (always empty between ticks).
+    bursts: Vec<EnemyId>,
     // Derived from the state above (so not hashed), refreshed eagerly when it changes.
     blocked: Vec<bool>,
     fields: Fields,
     rooted: Vec<bool>,
+    /// Tests only: furor switched off, so a test can hold what another rule holds by itself.
+    #[cfg(test)]
+    no_furor: bool,
 }
 
 /// `step(&mut state, &commands)`: the pure-function form of [`State::step`].
@@ -372,11 +463,39 @@ impl State {
             walls: BTreeMap::new(),
             projectiles: Vec::new(),
             wave_stats: vec![WaveStats::default(); content.waves.len()],
+            blaze: Blaze::new(&content),
+            rubble: BTreeMap::new(),
+            spent: BTreeMap::new(),
+            bursts: Vec::new(),
             blocked,
             fields,
             rooted: vec![false; n],
+            #[cfg(test)]
+            no_furor: false,
         };
         State { content, w }
+    }
+
+    /// The slab's fire (its fuel cells in [`Content::fuel`]'s order, and the gusts' winds).
+    pub fn blaze(&self) -> &Blaze {
+        &self.w.blaze
+    }
+
+    /// Rubble standing, in cell order, with what its bar shows ([`RubbleStand`]).
+    pub fn rubble(&self) -> impl Iterator<Item = RubbleStand> + '_ {
+        self.w.rubble.iter().map(|(&cell, &(raised, until))| {
+            let w = self.w.walls.get(&cell).copied().unwrap_or(Wall { hp: 0, max_hp: 1, cost: 0 });
+            RubbleStand { cell, hp: w.hp, max_hp: w.max_hp, raised, until }
+        })
+    }
+
+    /// How charged the stone on `cell` is, permille (1000: ready). A wind stone's gust spends
+    /// it all, and it fills again over its cooldown: what the player sees filling.
+    pub fn charge(&self, cell: CellId) -> Option<i32> {
+        let s = self.w.stones.get(&cell)?;
+        let cd = i64::from(self.content.stone(s.kind).tiers[usize::from(s.tier)].cooldown.max(1));
+        let left = i64::from(s.ready_at.saturating_sub(self.w.tick)).min(cd);
+        Some((1000 - left * 1000 / cd) as i32)
     }
 
     // ---- read access (presentation, agents, tests) ----
@@ -618,6 +737,7 @@ impl World {
             }
             Command::RemoveWall { cell } => {
                 let w = self.walls.remove(&cell).expect("checked");
+                self.rubble_gone(cell);
                 let refund = (i64::from(w.cost) * i64::from(rules.refund_percent) * i64::from(w.hp.max(0))
                     / (100 * i64::from(w.max_hp.max(1)))) as i32;
                 self.gain(refund, DustSource::Refund, ev);
@@ -687,9 +807,25 @@ impl World {
         self.spawn_due(content, ev);
         self.summon(content, ev);
         self.move_enemies(content, ev);
+        let elemental = content.elemental();
+        if elemental && self.outcome == Outcome::Running {
+            self.run_bursts(content, ev);
+        }
+        // A burst queued by a move before the dead reached the graveyard does not go off after
+        // `Lost` (nothing happens after it this tick); a lost game keeps no queued burst.
+        self.bursts.clear();
         if self.outcome == Outcome::Running {
             self.fire_stones(content, ev);
+            if elemental {
+                self.run_bursts(content, ev);
+            }
             self.move_projectiles(content, ev);
+            if elemental {
+                self.run_bursts(content, ev);
+                // 8. The elements: burning, chill, thaw, fuses, rubble, the slab's fire.
+                self.elements_tick(content, ev);
+                self.run_bursts(content, ev);
+            }
         }
         // After a loss nothing else happens this tick: no shots or kills after `Lost`.
         self.finish_tick(ev);
@@ -773,6 +909,7 @@ impl World {
             carry: 0,
             next_summon: self.tick + def.summon.map_or(0, |s| s.every),
             stuck: 0,
+            el: EnemyEl::default(),
         };
         self.place(content, &mut e);
         ev.push(Event::Spawned { enemy: id, kind, pos: e.pos });
@@ -784,10 +921,13 @@ impl World {
 
     fn summon(&mut self, content: &Content, ev: &mut Vec<Event>) {
         let mut calls = Vec::new();
-        for e in &mut self.enemies {
+        for i in 0..self.enemies.len() {
+            let e = self.enemies[i];
+            // An enemy in furor calls no more: what its wave was to bring has come by its hour,
+            // so no enemy of a wave is born after it (a run's length stays the sum DESIGN states).
             if let (true, Some(s), Some(cell)) = (e.alive, content.enemy(e.kind).summon, e.cell()) {
-                if self.tick >= e.next_summon {
-                    e.next_summon = self.tick + s.every;
+                if self.tick >= e.next_summon && !self.in_furor(content, &e) {
+                    self.enemies[i].next_summon = self.tick + s.every;
                     calls.push((s, cell, e.wave));
                 }
             }
@@ -833,10 +973,12 @@ impl World {
 
     fn speed_permille(&self, content: &Content, e: &Enemy, climbing: bool) -> i64 {
         let mut f = 1000i64;
-        if e.is_slowed(self.tick) {
+        // Slowed and rooted only while it can be held (not in furor: [`World::can_hold`]).
+        let held = self.can_hold(content, e);
+        if held && e.is_slowed(self.tick) {
             f = f * i64::from(1000 - e.slow) / 1000;
         }
-        if let Some(c) = e.cell() {
+        if let (true, Some(c)) = (held, e.cell()) {
             if self.rooted[c.index()] {
                 f = f * i64::from(1000 - content.rules.nature.slow) / 1000;
             }
@@ -862,6 +1004,9 @@ impl World {
             }
             let mut e = self.enemies[i];
             let def = content.enemy(e.kind);
+            if self.in_furor(content, &e) {
+                self.furor(content, &mut e, ev);
+            }
             match e.motion {
                 Motion::Ground { .. } => self.move_ground(content, &mut e, def, ev),
                 Motion::Air { .. } => self.move_air(content, &mut e, def, ev),
@@ -878,6 +1023,11 @@ impl World {
         let map = &content.map;
         let class = class_of(def);
         let Motion::Ground { from, to, .. } = e.motion else { return };
+        // The elements first: frozen or staggered, it stands; shoved, it goes back this tick.
+        if e.el != EnemyEl::default() && self.held_by_elements(content, e, def) {
+            e.attacking = None;
+            return;
+        }
         let climbing = map.cell(from).kind.is_climb() || map.cell(to).kind.is_climb();
         let mut left = World::budget(e, def.speed, self.speed_permille(content, e, climbing));
         let was_attacking = e.attacking.take();
@@ -911,9 +1061,14 @@ impl World {
                     }
                 }
             }
-            let route = self.fields.route(map, class, jumper, &self.blocked, at);
+            let route = if def.sapper { self.fields.sapper_route(map, class, &self.blocked, at) } else { self.fields.route(map, class, jumper, &self.blocked, at) };
             if route != Route::Stuck {
                 e.stuck = 0;
+            }
+            // An exploding sapper that reaches a wall bursts on it.
+            if let (Route::Attack(_), Some(_)) = (route, def.burst) {
+                self.burst_on_wall(e);
+                return;
             }
             match route {
                 Route::Step(n) => {
@@ -1023,6 +1178,7 @@ impl World {
         w.hp -= dmg;
         if w.hp <= 0 {
             self.walls.remove(&cell);
+            self.rubble_gone(cell);
             ev.push(Event::WallBroken { cell });
             self.set_blocked(content, cell, false);
         } else if quarter(w.hp, w.max_hp) != before {
@@ -1096,7 +1252,7 @@ impl World {
                     for i in 0..self.enemies.len() {
                         if self.eligible(content, c, def, &t, &self.enemies[i]) {
                             n = n.saturating_add(1);
-                            self.slow_enemy(i, t.slow, t.slow_ticks);
+                            self.slow_enemy(content, i, t.slow, t.slow_ticks);
                             self.hurt(content, i, t.damage, ev);
                         }
                     }
@@ -1127,6 +1283,9 @@ impl World {
                     }
                     None => false,
                 },
+                Attack::Strike => self.strike(content, cell, c, def, &t, ev),
+                Attack::Gust => self.gust(content, cell, c, def, &t, ev),
+                Attack::Heave => self.heave(content, cell, c, def, &t, ev),
             };
             if fired {
                 self.stones.get_mut(&cell).expect("stone").ready_at = self.tick + t.cooldown;
@@ -1134,28 +1293,50 @@ impl World {
         }
     }
 
-    fn slow_enemy(&mut self, i: usize, permille: i32, ticks: u32) {
+    /// A stone's slow on enemy `i` (none once it is in furor: [`World::can_hold`]).
+    fn slow_enemy(&mut self, content: &Content, i: usize, permille: i32, ticks: u32) {
         let tick = self.tick;
-        let e = &mut self.enemies[i];
-        if permille <= 0 || !e.alive {
+        if permille <= 0 || !self.enemies[i].alive || !self.can_hold(content, &self.enemies[i]) {
             return;
         }
+        let e = &mut self.enemies[i];
         if tick >= e.slow_until || permille >= e.slow {
             e.slow = permille;
             e.slow_until = e.slow_until.max(tick + ticks);
         }
     }
 
-    fn hurt(&mut self, content: &Content, i: usize, dmg: i32, ev: &mut Vec<Event>) {
+    /// Hurts enemy `i`; returns the enemy as it was before the hit ([`elements::Before`]), which
+    /// is what the hit's elements are decided from.
+    fn hurt(&mut self, content: &Content, i: usize, dmg: i32, ev: &mut Vec<Event>) -> elements::Before {
+        let before = self.before(i);
         if dmg <= 0 || !self.enemies[i].alive {
-            return;
+            return before;
         }
+        // A frozen enemy shatters on the next hit, with the frost's bonus (elements only).
+        let dmg = if before.frozen { self.shatter(i, dmg, ev) } else { dmg };
         let e = &mut self.enemies[i];
         e.hp -= dmg;
         if e.hp > 0 {
+            return before;
+        }
+        // Ice that shatters takes the fuse with it: a frozen exploder dies without a blast.
+        self.kill(content, i, !before.frozen, ev);
+        before
+    }
+
+    /// Enemy `i` dies to the player's stones: dust, the wave's count, and (for an exploding
+    /// enemy, when `burst`) its blast.
+    fn kill(&mut self, content: &Content, i: usize, burst: bool, ev: &mut Vec<Event>) {
+        let e = &mut self.enemies[i];
+        if !e.alive {
             return;
         }
         e.alive = false;
+        if burst && content.enemy(e.kind).burst.is_some() {
+            self.bursts.push(e.id);
+        }
+        let e = &self.enemies[i];
         let (id, kind, pos, wave) = (e.id, e.kind, e.pos, e.wave);
         let (lo, hi) = content.enemy(kind).dust;
         let dust = self.rng_drops.range_i32(lo, hi);
@@ -1201,6 +1382,9 @@ impl World {
                     self.hit(content, i, p.id, t, ev);
                 }
             }
+            if t.el.burn > 0 {
+                self.splash_fire(content, p.aim, t.splash);
+            }
             return;
         }
         match p.target.and_then(|id| self.enemy_index(id)) {
@@ -1211,8 +1395,11 @@ impl World {
 
     fn hit(&mut self, content: &Content, i: usize, projectile: ProjectileId, t: &Tier, ev: &mut Vec<Event>) {
         ev.push(Event::Hit { projectile, enemy: self.enemies[i].id, damage: t.damage });
-        self.slow_enemy(i, t.slow, t.slow_ticks);
-        self.hurt(content, i, t.damage, ev);
+        self.slow_enemy(content, i, t.slow, t.slow_ticks);
+        let before = self.hurt(content, i, t.damage, ev);
+        if !t.el.is_zero() {
+            self.hit_elements(content, i, &t.el, before, ev);
+        }
     }
 
     fn finish_tick(&mut self, ev: &mut Vec<Event>) {
@@ -1354,6 +1541,11 @@ impl World {
             w32(&mut h, s.stranded);
             wi(&mut h, s.dust_from_kills);
         }
+        // The elements' state, only where the content has elements (the shipped maps hash as
+        // they did before the elements existed).
+        if content.elemental() {
+            self.hash_elements(&mut h);
+        }
         h.finish()
     }
 
@@ -1432,6 +1624,7 @@ mod tests {
             carry: 0,
             next_summon: 0,
             stuck: 0,
+            el: EnemyEl::default(),
         };
         state.w.place(&state.content, &mut e);
         e

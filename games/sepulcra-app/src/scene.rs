@@ -111,6 +111,199 @@ struct WallView {
     bucket: u8,
 }
 
+/// The rubble bar's length in the world (metres) and the height above the cell it stands at:
+/// over the rubble, under a stone's muzzle. Close up it is drawn this long.
+pub const BAR_W: f32 = 1.2;
+pub const BAR_Y: f32 = 1.6;
+/// Where on its rubble a bar's stem ends and its anchor mark sits: this far over the cell's
+/// anchor, on the rubble's stones (a wall segment stands about a metre high).
+pub const RUBBLE_MARK_Y: f32 = 0.6;
+/// **Its least size on screen**, as parts of the window's shorter side (so it grows with the
+/// window): 7.8% long and 1.4% high (56 by 10 pixels at 720 high, 84 by 15 at 1080), and never
+/// under 24 by 4 pixels. At 4.5% by 0.75% (35 by 8 at 720) the independent picture check of
+/// 2026-11-28 still found the bar too small to read from the game's usual camera.
+pub const BAR_MIN_LEN: f32 = 0.078;
+pub const BAR_MIN_HIGH: f32 = 0.014;
+pub const BAR_MIN_PX: (f32, f32) = (24.0, 4.0);
+
+/// What a rubble's bar shows (0..1): the lesser of the health and the life it has left, as the
+/// rules count them ([`sepulcra::RubbleStand::left_permille`], from its `hp` of `max_hp` and
+/// its `life_left` of `life`).
+pub fn bar_fraction(r: &sepulcra::RubbleStand, tick: u32) -> f32 {
+    r.left_permille(tick) as f32 / 1000.0
+}
+
+/// The bar turns amber below this share (a half) and red below [`BAR_RED_BELOW`] (a quarter),
+/// so full, half and low differ by colour at the frame's own size, where 15 to 20 pixels of fill
+/// alone did not (the independent picture check of 2026-11-28).
+pub const BAR_AMBER_BELOW: f32 = 0.5;
+pub const BAR_RED_BELOW: f32 = 0.25;
+
+/// The bar's amber: a clear orange (`#ff9f1a`). The palette's warm colours are the fire's:
+/// `FIRE_CORE` is a pale cream that the picture check found close to the bar's pale rim, and
+/// `FIRE_FLAME` an orange too near the bar's red to tell apart at a glance.
+pub const BAR_AMBER: [f32; 3] = [1.0, 0.624, 0.102];
+/// The bar's red: a bright saturated red (`#ff2a2a`). The palette's `INVALID` is a muted brick
+/// (kept clear of the cursor's colours) that the picture check found close to the dark ground.
+pub const BAR_RED: [f32; 3] = [1.0, 0.165, 0.165];
+/// The bar's back, under its fill: the slab's darkest stone.
+pub const BAR_BACK: [f32; 3] = FISSURE;
+/// The bar's pale rim, its stem and its anchor mark.
+pub const BAR_RIM: [f32; 3] = [0.82, 0.84, 0.86];
+
+/// A rubble bar's fill colour at `fraction` full: the game's own green ([`GRAVE_GLOW`]) from full
+/// down to a half, [`BAR_AMBER`] under [`BAR_AMBER_BELOW`], and [`BAR_RED`] under
+/// [`BAR_RED_BELOW`].
+pub fn bar_colour(fraction: f32) -> [f32; 3] {
+    if fraction < BAR_RED_BELOW {
+        BAR_RED
+    } else if fraction < BAR_AMBER_BELOW {
+        BAR_AMBER
+    } else {
+        GRAVE_GLOW
+    }
+}
+
+/// Where a rubble's bar is drawn on screen (pixels: x, y, width, height), in the interface
+/// layer: its dark back, and its fill, which empties from the right end towards the left; a
+/// stem from the bar's bottom down to its own rubble, and a small anchor mark on the rubble
+/// where the stem ends ([`RUBBLE_MARK_Y`] over the cell), so it is always clear which rubble a
+/// bar belongs to, lifted or not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarRects {
+    pub back: [f32; 4],
+    pub fill: [f32; 4],
+    pub stem: [f32; 4],
+    pub mark: [f32; 4],
+}
+
+impl BarRects {
+    /// The gap kept between two bars' backs: a third of a back's height, at least 2 pixels.
+    fn gap(&self) -> f32 {
+        (self.back[3] / 3.0).max(2.0)
+    }
+
+    /// Do the two backs overlap, or come within a gap of each other (side by side with no gap,
+    /// two bars read as one)?
+    pub fn crowds(&self, o: &BarRects) -> bool {
+        let g = self.gap().max(o.gap());
+        let (a, b) = (self.back, o.back);
+        a[0] < b[0] + b[2] + g && b[0] < a[0] + a[2] + g && a[1] < b[1] + b[3] + g && b[1] < a[1] + a[3] + g
+    }
+
+    /// Where the stem ends: the anchor mark's centre, on the rubble.
+    pub fn foot(&self) -> (f32, f32) {
+        (self.mark[0] + self.mark[2] / 2.0, self.mark[1] + self.mark[3] / 2.0)
+    }
+
+    fn lift(&mut self, by: f32) {
+        self.back[1] -= by;
+        self.fill[1] -= by;
+        self.set_stem();
+    }
+
+    /// The stem runs from the back's bottom edge straight down to the foot.
+    fn set_stem(&mut self) {
+        let w = (self.back[3] / 5.0).max(2.0);
+        let (x, y) = self.foot();
+        let top = self.back[1] + self.back[3];
+        self.stem = [x - w / 2.0, top, w, (y - top).max(0.0)];
+    }
+}
+
+/// **Bars of neighbouring rubble never cover one another.** From the game's usual camera
+/// neighbouring cells stand 10 to 20 pixels apart on screen and a bar is longer than that, so
+/// they stacked and one hid the other's level. Each bar keeps its place across (centred over its
+/// own rubble) and is lifted straight up, a back's height and a gap at a time, until it crowds
+/// no bar placed before it; the nearest rubble's bar (lowest on screen) is placed first, so a
+/// farther rubble's bar stays above a nearer one's, as the rubble do. Its stem still reaches its
+/// own rubble's mark. This was chosen over one bar for a cluster, which would show one level for
+/// several rubble and hide the rest.
+pub fn lay_out_bars(bars: &mut [BarRects]) {
+    let mut order: Vec<usize> = (0..bars.len()).collect();
+    let bottom = |b: &BarRects| b.back[1] + b.back[3];
+    order.sort_by(|&i, &j| bottom(&bars[j]).total_cmp(&bottom(&bars[i])).then(bars[i].back[0].total_cmp(&bars[j].back[0])).then(i.cmp(&j)));
+    for (k, &i) in order.iter().enumerate() {
+        let step = bars[i].back[3] + bars[i].gap();
+        // Each bar placed before blocks at most two steps, so this many always finds room.
+        for _ in 0..2 * k + 2 {
+            let b = bars[i];
+            if !order[..k].iter().any(|&j| b.crowds(&bars[j])) {
+                break;
+            }
+            bars[i].lift(step);
+        }
+    }
+}
+
+/// The bar of a rubble whose bar point (the cell's anchor, [`BAR_Y`] up) is `at`, seen through
+/// `view_proj` in an image of `size`, `fraction` full. As long as [`BAR_W`] projects to, and
+/// never smaller than the least size; its bottom edge stands a bar's height above the point, so
+/// it covers neither the rubble nor the dead clawing at it; its stem and mark reach down to the
+/// rubble ([`RUBBLE_MARK_Y`] over the anchor). `None` behind the camera or off the image.
+pub fn bar_rects(view_proj: &specula_core::math::Mat4, size: (u32, u32), at: Vec3, fraction: f32) -> Option<BarRects> {
+    use specula_core::math::project_to_screen;
+    let (w, h) = (size.0.max(1), size.1.max(1));
+    let (x, y, _) = project_to_screen(view_proj, at, w, h)?;
+    let half = Vec3::new(BAR_W / 2.0, 0.0, 0.0);
+    let world = match (project_to_screen(view_proj, at - half, w, h), project_to_screen(view_proj, at + half, w, h)) {
+        (Some(a), Some(b)) => ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt(),
+        _ => 0.0,
+    };
+    let short = w.min(h) as f32;
+    let len = world.max(short * BAR_MIN_LEN).max(BAR_MIN_PX.0);
+    let high = (len / 12.0).max(short * BAR_MIN_HIGH).max(BAR_MIN_PX.1);
+    let edge = (high / 4.0).max(1.0);
+    let (left, top) = (x - len / 2.0, y - 2.0 * high);
+    let back = [left - edge, top - edge, len + 2.0 * edge, high + 2.0 * edge];
+    if back[0] > w as f32 || back[1] > h as f32 || back[0] + back[2] < 0.0 || back[1] + back[3] < 0.0 {
+        return None;
+    }
+    // The foot is straight below the bar point, on the rubble (under the point if it does not
+    // project).
+    let foot = project_to_screen(view_proj, at - Vec3::new(0.0, BAR_Y - RUBBLE_MARK_Y, 0.0), w, h).map_or((x, y), |p| (p.0, p.1));
+    let m = (high * 0.7).max(4.0);
+    let mut b = BarRects { back, fill: [left, top, len * fraction.clamp(0.0, 1.0), high], stem: [0.0; 4], mark: [foot.0 - m / 2.0, foot.1 - m / 2.0, m, m] };
+    b.set_stem();
+    Some(b)
+}
+
+/// The quads that draw `bars`, in the order they are drawn. They go in the game's interface
+/// layer (`Game::overlay`), which the engine draws after the whole 3D scene, window and captures
+/// alike, so no enemy, stone or effect is ever drawn over a bar. Within them: every stem and
+/// anchor mark first, then each bar's opaque back (so nothing under it shows through) with its
+/// pale rim, then its fill, so a bar covers any other bar's stem and never the other way round.
+pub fn bar_quads(bars: &[(BarRects, f32)]) -> Vec<specula_gpu::OverlayQuad> {
+    use specula_gpu::OverlayQuad;
+    let rim = [BAR_RIM[0], BAR_RIM[1], BAR_RIM[2], 1.0];
+    let mut out = Vec::with_capacity(bars.len() * 4);
+    for (b, _) in bars {
+        if b.stem[3] > 0.0 {
+            out.push(OverlayQuad::solid(b.stem, rim));
+        }
+        out.push(OverlayQuad { border: 1.0, border_color: [[BAR_BACK[0], BAR_BACK[1], BAR_BACK[2], 1.0]; 2], ..OverlayQuad::solid(b.mark, rim) });
+    }
+    for (b, f) in bars {
+        let back = OverlayQuad::solid(b.back, [BAR_BACK[0], BAR_BACK[1], BAR_BACK[2], 1.0]);
+        out.push(OverlayQuad { border: (b.fill[1] - b.back[1]).max(1.0), border_color: [rim; 2], ..back });
+        let [r, g, bl] = bar_colour(*f);
+        out.push(OverlayQuad::solid(b.fill, [r, g, bl, 1.0]));
+    }
+    out
+}
+
+/// The bars of rubble on `cells` (each with the share it shows), [`BAR_Y`] over each cell's
+/// anchor, laid out clear of one another ([`lay_out_bars`]); those off the image are left out.
+pub fn rubble_bars(geo: &SlabGeo, map: &sepulcra::map::Map, cells: impl Iterator<Item = (CellId, f32)>, view_proj: &specula_core::math::Mat4, size: (u32, u32)) -> Vec<(BarRects, f32)> {
+    let mut out: Vec<(BarRects, f32)> = cells.filter_map(|(cell, f)| bar_rects(view_proj, size, geo.anchor(map, cell).0 + Vec3::new(0.0, BAR_Y, 0.0), f).map(|b| (b, f))).collect();
+    let mut rects: Vec<BarRects> = out.iter().map(|b| b.0).collect();
+    lay_out_bars(&mut rects);
+    for (o, r) in out.iter_mut().zip(rects) {
+        o.0 = r;
+    }
+    out
+}
+
 #[derive(Clone, Copy)]
 struct Fx {
     id: u64,
@@ -195,7 +388,7 @@ impl Scene {
     pub fn build(world: &mut GameWorld<'_>, agent: &str, state: &State) -> Scene {
         let map = &state.content().map;
         let geo = SlabGeo::new(map);
-        slab::build(world, agent, map, &geo);
+        slab::build(world, agent, map, &state.content().fuel, &geo);
         let props = crate::props::Props::build(world, agent, map, &geo);
         // `fx` and `ui` are where earlier versions kept their pools.
         for name in ["units", "live", "cursor", "fx", "ui"] {
@@ -384,6 +577,18 @@ impl Scene {
             let id = ents::spawn(world, &self.agent, spec);
             self.walls.insert(cell, WallView { id, bucket });
         }
+    }
+
+    /// A health bar over every standing rubble (DESIGN.md, "Saxum": the owner's "health bar to
+    /// that stone"), drawn in the interface layer at the rubble's projected place so that it
+    /// can be read from the game's usual camera ([`bar_rects`]): it shows from the tick the
+    /// rubble rises, full, and empties as the dead break it or as its life runs out, whichever
+    /// leaves less ([`bar_fraction`]); it goes with the rubble. Each is the bar's rects and the
+    /// fraction it shows, in cell order; neighbours' bars are laid out clear of one another
+    /// ([`lay_out_bars`]) and each is coloured by its level ([`bar_colour`]).
+    pub fn bars(&self, state: &State, view_proj: &specula_core::math::Mat4, size: (u32, u32)) -> Vec<(BarRects, f32)> {
+        let tick = state.tick();
+        rubble_bars(&self.geo, &state.content().map, state.rubble().map(|r| (r.cell, bar_fraction(&r, tick))), view_proj, size)
     }
 
     fn sync_roots(&mut self, world: &mut GameWorld<'_>, state: &State) {
@@ -685,6 +890,49 @@ impl Scene {
                     let [x, _, z] = map.graveyard_centre.to_f32();
                     self.flash(world, now, Vec3::new(x, 1.5, z), 1.0, 6.0, 0.7, GRAVE_GLOW, 1.0, Some(0.2));
                 }
+                // ---- The elements (proving ground). PLACEHOLDER looks, made only of what the
+                // working line has (glow spheres, the old built-in effects and decals), so that
+                // a person can see that each rule fired; what each will look like is DESIGN.md,
+                // "Elemental stones", and waits for the effects library (Effectus). ----
+                Event::Struck { enemy, .. } | Event::Shattered { enemy, .. } => {
+                    if let Some(e) = state.enemy(enemy) {
+                        let [x, y, z] = e.pos.to_f32();
+                        let p = Vec3::new(x, y + 1.0, z);
+                        self.vfx.hit(world, &self.agent, now, p);
+                        self.flash(world, now, p, 0.2, 0.9, 0.2, RUNE_PALE, 2.0, None);
+                    }
+                }
+                Event::Ignited { enemy } => {
+                    if let Some(e) = state.enemy(enemy) {
+                        let [x, y, z] = e.pos.to_f32();
+                        self.flash(world, now, Vec3::new(x, y + 0.9, z), 0.3, 1.0, 0.4, FIRE_FLAME, 1.6, Some(0.4));
+                    }
+                }
+                Event::Frozen { enemy } | Event::Thawed { enemy, .. } | Event::Extinguished { enemy } => {
+                    if let Some(e) = state.enemy(enemy) {
+                        let [x, y, z] = e.pos.to_f32();
+                        self.flash(world, now, Vec3::new(x, y + 0.9, z), 0.6, 1.3, 0.6, RUNE_PALE, 0.6, Some(0.35));
+                    }
+                }
+                Event::Gusted { stone, .. } => {
+                    let (a, _) = self.geo.anchor(map, stone);
+                    self.disc(world, now, a + Vec3::new(0.0, 0.4, 0.0), 4.0, 0.5);
+                }
+                Event::Heaved { at, .. } | Event::RubbleRaised { cell: at } | Event::WallCrumbled { cell: at } => {
+                    let (a, _) = self.geo.anchor(map, at);
+                    self.vfx.wall_broken(world, &self.agent, now, a);
+                }
+                Event::Detonated { pos, .. } => {
+                    let [x, y, z] = pos.to_f32();
+                    let p = Vec3::new(x, y + 0.5, z);
+                    self.flash(world, now, p, 0.5, 6.0, 0.45, FIRE_FLAME, 2.0, Some(0.35));
+                    self.vfx.splash(world, &self.agent, now, Vec3::new(x, y, z), 3.0);
+                }
+                Event::CellCaught { cell } => {
+                    let (a, _) = self.geo.anchor(map, cell);
+                    self.vfx.splash(world, &self.agent, now, a, 1.0);
+                    self.flash(world, now, a + Vec3::new(0.0, 0.3, 0.0), 0.4, 1.6, 0.6, FIRE_FLAME, 1.4, Some(0.4));
+                }
                 _ => {}
             }
         }
@@ -951,6 +1199,218 @@ mod tests {
     use super::*;
     use sepulcra::content::Content;
     use std::sync::Arc;
+
+    /// A rubble's bar shows what the rules say is left of it: the lesser of its health (its
+    /// wall's HP of its full HP) and its life (the ticks to its crumbling of the ticks it was
+    /// raised for), from the tick it rises to the tick it goes; and the fill is that share of the
+    /// bar, emptying from the right.
+    #[test]
+    fn a_rubble_bar_shows_the_lesser_of_its_health_and_its_life() {
+        let content = Arc::new(Content::proving());
+        let mut s = State::new(Arc::clone(&content), 3);
+        let saxum = content.stone_kind("saxum").unwrap();
+        let cell = content.map.cell_ref("top:10,15").unwrap();
+        let mut ev = Vec::new();
+        s.apply(&sepulcra::Command::PlaceStone { cell, stone: saxum }, &mut ev).unwrap();
+        for _ in 0..2 {
+            s.apply(&sepulcra::Command::Upgrade { cell }, &mut ev).unwrap();
+        }
+        let life = content.stone(saxum).tiers[2].el.rubble_ticks;
+        let (mut raised, mut seen, mut damaged) = (BTreeMap::new(), 0u32, 0u32);
+        for _ in 0..(120 * sepulcra::TICK_HZ) {
+            let tick = s.tick();
+            for e in s.step(&[]) {
+                if let Event::RubbleRaised { cell } = e {
+                    raised.insert(cell, tick);
+                }
+            }
+            for r in s.rubble() {
+                let w = s.wall(r.cell).expect("rubble is a wall");
+                let health = w.hp as f64 / w.max_hp as f64;
+                let rose = raised[&r.cell];
+                let left = f64::from(rose + life - s.tick()) / f64::from(life);
+                let want = health.min(left);
+                let got = f64::from(bar_fraction(&r, s.tick()));
+                assert!((got - want).abs() <= 0.0011, "{}: bar {got}, want {want} (health {health}, life {left})", content.map.cell_name(r.cell));
+                // The rules' answer says the same life the events do.
+                assert_eq!((r.life(), r.life_left(s.tick())), (life, rose + life - s.tick()));
+                seen += 1;
+                damaged += u32::from(w.hp < w.max_hp);
+            }
+        }
+        assert!(!raised.is_empty() && seen > 0 && damaged > 0, "rubble rose ({raised:?}), was seen ({seen}) and was broken into ({damaged})");
+    }
+
+    /// The bar can be read from the game's usual camera: seen from far off it is never smaller
+    /// than its least size (4.5% by 0.75% of the window's shorter side, at least 24 by 4
+    /// pixels), which grows with the window; close up it is as long as it stands in the world;
+    /// its fill is the shown share of it from the left; and it stands above its point, so it
+    /// covers neither the rubble nor the dead at it.
+    #[test]
+    fn a_rubble_bar_keeps_its_least_size_on_screen_and_grows_with_the_window() {
+        use specula::sight::Camera;
+        let at = Vec3::new(0.0, BAR_Y, 0.0);
+        let far = Camera::new(Vec3::new(0.0, 60.0, 45.0), Vec3::ZERO, 45.0);
+        let near = Camera::new(Vec3::new(0.0, 3.0, 3.0), at, 45.0);
+        for size in [(1280u32, 720u32), (1920, 1080), (2560, 1440), (640, 360)] {
+            let short = size.0.min(size.1) as f32;
+            let (want_len, want_high) = ((short * BAR_MIN_LEN).max(BAR_MIN_PX.0), (short * BAR_MIN_HIGH).max(BAR_MIN_PX.1));
+            let b = bar_rects(&far.view_proj(size.0, size.1), size, at, 1.0).expect("on screen");
+            // From far off, the world's 1.2 m would be a few pixels: the least size holds.
+            let world = {
+                let vp = far.view_proj(size.0, size.1);
+                let p = |v: Vec3| specula_core::math::project_to_screen(&vp, v, size.0, size.1).unwrap();
+                let (a, c) = (p(at - Vec3::new(BAR_W / 2.0, 0.0, 0.0)), p(at + Vec3::new(BAR_W / 2.0, 0.0, 0.0)));
+                c.0 - a.0
+            };
+            assert!(world < want_len, "{size:?}: the far camera shows the world bar {world} px, under the least {want_len}");
+            assert!((b.fill[2] - want_len).abs() < 1e-3 && (b.fill[3] - want_high).abs() < 1e-3, "{size:?}: {b:?}, want {want_len} by {want_high}");
+            let (x, y, _) = specula_core::math::project_to_screen(&far.view_proj(size.0, size.1), at, size.0, size.1).unwrap();
+            assert!((b.fill[0] + b.fill[2] / 2.0 - x).abs() < 1e-3, "centred over its point");
+            assert!(b.back[1] + b.back[3] < y, "{size:?}: the bar stands above its point: {b:?} over y {y}");
+            let half = bar_rects(&far.view_proj(size.0, size.1), size, at, 0.5).unwrap();
+            assert_eq!((half.fill[0], half.back), (b.fill[0], b.back));
+            assert!((half.fill[2] - want_len / 2.0).abs() < 1e-3, "half full is half the length, from the left");
+            assert_eq!(bar_rects(&far.view_proj(size.0, size.1), size, at, 0.0).unwrap().fill[2], 0.0);
+            // Close up it is the world's length, longer than the least.
+            let c = bar_rects(&near.view_proj(size.0, size.1), size, at, 1.0).unwrap();
+            assert!(c.fill[2] > want_len * 2.0, "{size:?}: close up {c:?}");
+        }
+        // From far off at 1280 by 720 the least is about 56 by 10 pixels (the picture check's ask).
+        let least = bar_rects(&far.view_proj(1280, 720), (1280, 720), at, 1.0).unwrap();
+        assert!((least.fill[2] - 56.0).abs() < 1.0 && (least.fill[3] - 10.0).abs() < 0.5, "{least:?}");
+        // It grows with the window: twice the window, twice the least size.
+        let small = bar_rects(&far.view_proj(1280, 720), (1280, 720), at, 1.0).unwrap();
+        let big = bar_rects(&far.view_proj(2560, 1440), (2560, 1440), at, 1.0).unwrap();
+        assert!((big.fill[2] - 2.0 * small.fill[2]).abs() < 1e-3 && (big.fill[3] - 2.0 * small.fill[3]).abs() < 1e-3);
+        // Behind the camera: nothing.
+        assert!(bar_rects(&far.view_proj(1280, 720), (1280, 720), Vec3::new(0.0, 120.0, 90.0), 1.0).is_none());
+    }
+
+    /// The bar's colour says its level: the game's green full and at 60%, amber at 40% (under a
+    /// half), red at 20% (under a quarter); the two thresholds themselves are the colour above.
+    #[test]
+    fn a_rubble_bar_is_green_then_amber_under_a_half_then_red_under_a_quarter() {
+        assert_eq!((BAR_AMBER_BELOW, BAR_RED_BELOW), (0.5, 0.25));
+        assert_eq!(bar_colour(1.0), GRAVE_GLOW);
+        assert_eq!(bar_colour(0.6), GRAVE_GLOW);
+        assert_eq!(bar_colour(0.4), BAR_AMBER);
+        assert_eq!(bar_colour(0.2), BAR_RED);
+        assert_eq!((bar_colour(0.5), bar_colour(0.25), bar_colour(0.0)), (GRAVE_GLOW, BAR_AMBER, BAR_RED));
+    }
+
+    /// The three fill colours read on the dark slab and apart from one another, by stated
+    /// measures: a WCAG luminance contrast ratio of at least 3 (the bar for interface parts)
+    /// against the bar's own back, which each fill sits on; an sRGB distance of at least 0.5 from
+    /// the slab's top colour and from the bar's pale rim; and at least 0.4 between any two of
+    /// them. The palette's INVALID and FIRE_CORE, the colours of the round before, fail it.
+    #[test]
+    fn the_bars_colours_stand_out_from_the_slab_and_from_one_another() {
+        fn lum(c: [f32; 3]) -> f32 {
+            let l = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+            0.2126 * l(c[0]) + 0.7152 * l(c[1]) + 0.0722 * l(c[2])
+        }
+        let ratio = |a: [f32; 3], b: [f32; 3]| {
+            let (x, y) = (lum(a), lum(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        };
+        let dist = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+        let ok = |c: [f32; 3]| ratio(c, BAR_BACK) >= 3.0 && dist(c, SLAB_TOP) >= 0.5 && dist(c, BAR_RIM) >= 0.5;
+        for c in [GRAVE_GLOW, BAR_AMBER, BAR_RED] {
+            assert!(ok(c), "{c:?}: contrast {} with the back, {} from the slab, {} from the rim", ratio(c, BAR_BACK), dist(c, SLAB_TOP), dist(c, BAR_RIM));
+        }
+        assert!(dist(GRAVE_GLOW, BAR_AMBER) >= 0.4 && dist(BAR_AMBER, BAR_RED) >= 0.4 && dist(BAR_RED, GRAVE_GLOW) >= 0.4);
+        assert!(!ok(INVALID) && !ok(FIRE_CORE), "the measure tells the dull brick and the cream apart");
+    }
+
+    /// The bar is drawn over everything: its quads go in the interface layer, which the engine
+    /// draws after the 3D scene (the enemies among it); within them every stem and mark comes
+    /// before any back, each back is opaque, and each fill follows its own back.
+    #[test]
+    fn a_rubble_bar_is_drawn_over_the_dead_and_over_other_bars_stems() {
+        use crate::controls::{Orbit, MAX_DIST};
+        let content = Content::builtin();
+        let map = &content.map;
+        let geo = SlabGeo::new(map);
+        let cam = Orbit { dist: MAX_DIST, ..Orbit::default() }.camera();
+        let cells: Vec<CellId> = ["top:9,15", "top:9,16", "top:9,14", "top:7,17"].iter().map(|n| map.cell_ref(n).unwrap()).collect();
+        let bars = rubble_bars(&geo, map, cells.iter().map(|&c| (c, 0.4)), &cam.view_proj(1280, 720), (1280, 720));
+        assert_eq!(bars.len(), 4);
+        let q = bar_quads(&bars);
+        let back = [BAR_BACK[0], BAR_BACK[1], BAR_BACK[2], 1.0];
+        let first_back = q.iter().position(|x| x.color == back).unwrap();
+        assert!(q[..first_back].iter().all(|x| x.color[..3] == BAR_RIM), "stems and marks first");
+        assert_eq!(q[..first_back].len(), 2 * bars.len(), "a stem and a mark for every bar");
+        for (k, (b, _)) in bars.iter().enumerate() {
+            let (bk, fill) = (&q[first_back + 2 * k], &q[first_back + 2 * k + 1]);
+            assert_eq!((bk.rect, bk.color), (b.back, back), "an opaque back");
+            assert_eq!((fill.rect, fill.color), (b.fill, [BAR_AMBER[0], BAR_AMBER[1], BAR_AMBER[2], 1.0]));
+        }
+    }
+
+    /// From the game's usual camera (the orbit it starts with), and that camera zoomed out to
+    /// 90 m and to its farthest (where neighbours' bars would meet), at 720 and 1080 high, no
+    /// two rubble bars cover one another: for rubble on every pair of neighbouring cells of the
+    /// slab (side by side and diagonal), and for every rubble of a five by five block of cells
+    /// together. Each bar keeps its place across, over its own rubble, and is only lifted; every
+    /// bar has a stem from its bottom edge straight down to a mark on its own rubble.
+    #[test]
+    fn bars_of_rubble_on_neighbouring_cells_never_cover_one_another() {
+        use crate::controls::{Orbit, MAX_DIST};
+        let content = Content::builtin();
+        let map = &content.map;
+        let geo = SlabGeo::new(map);
+        let cell = |c: i32, r: i32| if c < 0 || r < 0 { None } else { map.cell_ref(&format!("top:{c},{r}")).filter(|&id| map.cell(id).kind.wallable()) };
+        let mut pairs = 0;
+        let mut lifted_any = false;
+        for dist in [Orbit::default().dist, 90.0, MAX_DIST] {
+            let cam = Orbit { dist, ..Orbit::default() }.camera();
+            let check = |cells: &[CellId], size: (u32, u32)| {
+                let vp = cam.view_proj(size.0, size.1);
+                let natural: Vec<BarRects> = cells.iter().filter_map(|&c| bar_rects(&vp, size, geo.anchor(map, c).0 + Vec3::new(0.0, BAR_Y, 0.0), 0.5)).collect();
+                let bars = rubble_bars(&geo, map, cells.iter().map(|&c| (c, 0.5)), &vp, size);
+                assert_eq!(bars.len(), natural.len());
+                for (i, (a, _)) in bars.iter().enumerate() {
+                    let n = natural[i];
+                    assert_eq!((a.back[0], a.back[2], a.back[3]), (n.back[0], n.back[2], n.back[3]), "kept its place across");
+                    assert!(a.back[1] <= n.back[1], "only ever lifted");
+                    // Every bar, lifted or not, has a stem from its bottom edge to its own
+                    // rubble's mark, where the cell's anchor RUBBLE_MARK_Y up projects.
+                    let foot = specula_core::math::project_to_screen(&vp, geo.anchor(map, cells[i]).0 + Vec3::new(0.0, RUBBLE_MARK_Y, 0.0), size.0, size.1).unwrap();
+                    let (fx, fy) = a.foot();
+                    assert!((fx - foot.0).abs() < 1e-3 && (fy - foot.1).abs() < 1e-3, "the mark sits on its own rubble: {a:?}");
+                    assert!(a.stem[3] > 0.0 && (a.stem[1] - (a.back[1] + a.back[3])).abs() < 1e-3 && (a.stem[1] + a.stem[3] - fy).abs() < 1e-3, "the stem runs from the bar to its rubble: {a:?}");
+                    assert!((a.stem[0] + a.stem[2] / 2.0 - fx).abs() < 1e-3, "straight down onto it");
+                    for (b, _) in &bars[i + 1..] {
+                        assert!(!a.crowds(b), "{size:?} {cells:?}: {a:?} and {b:?}");
+                        let (p, q) = (a.back, b.back);
+                        assert!(p[0] + p[2] <= q[0] || q[0] + q[2] <= p[0] || p[1] + p[3] <= q[1] || q[1] + q[3] <= p[1], "the rects do not intersect");
+                    }
+                }
+            };
+            for size in [(1280u32, 720u32), (1920, 1080)] {
+                for c in 0..40 {
+                    for r in 0..40 {
+                        let Some(a) = cell(c, r) else { continue };
+                        for (dc, dr) in [(1, 0), (0, 1), (1, 1), (1, -1)] {
+                            if let Some(b) = cell(c + dc, r + dr) {
+                                check(&[a, b], size);
+                                pairs += 1;
+                            }
+                        }
+                    }
+                }
+                let block: Vec<CellId> = (7..12).flat_map(|c| (13..18).filter_map(move |r| cell(c, r))).collect();
+                assert!(block.len() >= 6, "{block:?}");
+                check(&block, size);
+                let vp = cam.view_proj(size.0, size.1);
+                let natural: Vec<f32> = block.iter().filter_map(|&c| bar_rects(&vp, size, geo.anchor(map, c).0 + Vec3::new(0.0, BAR_Y, 0.0), 0.5)).map(|b| b.back[1]).collect();
+                lifted_any |= rubble_bars(&geo, map, block.iter().map(|&c| (c, 0.5)), &vp, size).iter().zip(natural).any(|(b, y)| b.0.back[1] < y);
+            }
+        }
+        assert!(pairs > 100, "{pairs} pairs");
+        assert!(lifted_any, "zoomed out, neighbours' bars would have met: some are lifted");
+    }
 
     /// The cursor and the range dots wear the `looks::highlight` glows (colour and emissive),
     /// whatever they showed before: the colour check in `looks::tests` only holds if these are

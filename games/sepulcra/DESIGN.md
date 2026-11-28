@@ -375,6 +375,711 @@ Everything runs without a window, through `games/sepulcra/examples/headless.rs`.
 The rusher balance question was answered by the owner on 2026-11-16: "Keep it risky." Anything still
 undecided is in [HANDOFF.md](../../HANDOFF.md#open-owner-decisions).
 
+## Elemental stones (proving ground; proposal)
+
+The owner, 2026-11-24: "Test the elements by setting up elemental towers in sepulchra. Test fire,
+lightning, frost and wind (non damage but through physics, and wind pushes mobs back, recharges
+each shot)"; then "You can also have one exploding zombie, and upon impact, destroys the walls
+that's placed other lane"; then "And test the fire spread. Also think up earth tower effect for
+sepulchra. It will be a good time to really test out our effects for elements that can be
+generated via code rather than human made images and svg". This section began as the lane's
+proposal (lane `m6-turres`, 2026-11-24): five new stones, the wind's doing no damage and working by
+pushing, and one new enemy. The owner answered its questions the same day; what they decided is
+[at the end](#what-the-owner-decided-2026-11-24), and the numbers are still first guesses.
+
+**They are in a proving ground today, and go on the shipped maps next** (the owner: "Yes, these
+stones go on the shipped maps"). The proving ground is map 1's slab with content of its own
+(`data/proving/`: `stones.json`, `enemies.json`, `waves.json`, `layouts/`), loaded by
+`Content::proving()`, `--ground proving` in the headless example, `--data
+games/sepulcra/data/proving` and `play_new {"data": "games/sepulcra/data/proving"}` in the app. A
+content folder has a `slab_01.json` of its own, or says by a line in its `stones.json`, `"slab":
+"map_1"`, that it plays on map 1's (the proving ground does); a folder with neither is an error
+naming `slab_01.json`. The shipped content is untouched: its content hash, every state hash and
+every save byte are what they were (the elements are hashed and saved only where the content has
+them; a test and the pinned replays hold it), and its sweep prints, line for line, what it printed
+before. **Only map 1 exists as data today**: the frozen wasteland and the volcano of the v1.0 scope
+are not built, so "the three maps' balance" is map 1's. **What putting the stones on the shipped
+map takes (the next round, stage 2)**; nothing in the rules' code changes for it, but much around
+them does:
+
+- *Data:* the five stones' rows, the `elements` rules and the fuel in `data/stones.json`; the
+  Tumidus (and every enemy's `mass`) in `data/enemies.json`; which waves the exploding dead join in
+  `data/waves.json`; a place for each stone in the economy (costs, upgrades) and the waves.
+- *Balance:* the map's four layouts swept before and after, and layouts that use the stones (its
+  balance "stays risky": the stones must make it neither trivial nor unwinnable). The pinned
+  numbers move with it, on purpose and each said: `tests/balance.rs` and `tests/replay.rs`
+  (pinned outcomes and hashes), "Balance so far" above, and the sweep's output (the shipped map's
+  sweep then prints the elements' "all runs" line too).
+- *Saves and recordings:* the content hash changes, so every save a player has, every recording and
+  every pinned replay of the shipped map is refused (`content_changed`, structured), and saves
+  take the elements' layout (version 3). Planned: an old save is refused by name with what to do (start a new run; the
+  game says so on its title rather than failing); recordings and pinned replays are recorded
+  again.
+- *The Lex rules:* `--rules lex` and its parity tests (`tests/lex_parity.rs`, `tests/lex_saves.rs`,
+  the app's `lexmode`) play the shipped content from `lex/sepulcra.lex.json`, which has no
+  elements; once the built-in content is elemental, Lex would accept it (the same content hash)
+  and part ways at the first element. **Planned: `--rules lex` refuses elemental content by name**
+  until the elements are ported to Lex, which is a design of its own and not stage 2's.
+- *The HUD, beyond room for nine:* the placeholder detail strings in `hud.rs` for a strike, a gust
+  and a heave; the Ventus charge meter from `State::charge`; keys **and gamepad picks** for nine
+  stones (F6: no keyboard assumed); the build bar's strings in every language.
+- *Looks:* models for the five stones, the Tumidus and rubble; **several Fulmen together are held to
+  three flashes a second only by the engine's flash governor** (stage 1c), which must exist before
+  lightning effects are shown to a person; the engine's tests read Sepulcra's assets
+  (`cargo test -p specula --lib`), so the new models and sounds must pass them.
+- *The grass:* fuel on map 1 changes what grass is drawn, within the app's budget of 72 patches
+  (every cell that burns is drawn first, and the proving ground's 72 fill it: see "What burns on
+  the slab").
+- *The owner's two open questions* (the blast's radius, fire on the roots of nature) decide numbers,
+  and the wind's hold ("Ventus" below) is closed before the wind reaches players.
+
+### The stones
+
+Costs follow the shipped stones (a basic stone 50, the specialists 60 to 80, upgrades about the
+stone's cost again, then half as much more); ranges sit between the brazier's 6 m and the obelisk's
+9 m. Every number is data (`data/proving/stones.json`) and is a first guess the sweeps below test.
+
+| Stone | Element | Attack | Tier I | Tier II (+cost) | Tier III (+cost) |
+|---|---|---|---|---|---|
+| **Rogus**, the pyre stone | fire | lob that sets alight | 85: 8 dmg, 1.8 m splash / 1.8 s, 6 m; burns 4/s for 3 s | +80: 12, 2 m / 1.7 s, 6.5 m; 6/s for 3.5 s | +110: 18, 2.3 m / 1.6 s, 7 m; 9/s for 4 s |
+| **Fulmen**, the storm menhir | lightning | instant strike that chains | 90: 14 dmg / 1.5 s, 7 m; 2 jumps of 2.5 m keeping 70 %; wet +50 % | +80: 22 / 1.4 s, 7.5 m; 3 jumps of 3 m | +120: 34 / 1.3 s, 8 m; 4 jumps of 3.5 m keeping 75 %; wet +60 % |
+| **Gelu**, the rime stone | frost | bolt that chills and freezes | 75: 6 dmg / 1 s, 6.5 m; 25 % slow 1.5 s; chill 0.4 a hit, frozen 2 s, shatter ×2 | +70: 9, 7 m; 30 %; chill 0.5, 2.5 s, ×2.5 | +100: 14 / 0.9 s, 7.5 m; 35 %; chill 0.6, 3 s, ×3 |
+| **Ventus**, the gale cairn | wind | gust: no damage, a shove | 70: shoves 3 m over 0.5 s, 5.5 m; recharges 6 s | +70: 4 m, 6 m; 5 s | +90: 5 m over 0.6 s, 6.5 m; 4 s |
+| **Saxum**, the heaving stone | earth | spikes along the lane | 90: 15 dmg on 2 lane cells, stagger 0.8 s / 3 s, 6 m | +80: 24 on 3 cells, 1 s / 2.8 s, 6.5 m; rubble 120 HP for 6 s | +110: 36 on 4 cells, 1.2 s / 2.6 s, 7 m; rubble 200 HP for 8 s |
+
+What each does, in the rules' own terms (`src/sim_elements.rs`, `src/blaze.rs`):
+
+- **Rogus (fire).** A lob like the brazier's, weaker on impact, that sets every ground enemy in its
+  splash alight (a burn per tick for a time) and heats the fuel under the splash. A burning enemy,
+  at every spread step (0.5 s), sets alight any other within **1.2 m** (packed dead) and heats the
+  fuel within 2.9 m. Good against columns, and on grassed lanes; useless against the wet and the
+  frozen (fire thaws the frozen, with steam, and the wet do not catch); on bare stone it burns only
+  what it hits. A lob that lands on a frozen enemy shatters the ice with its damage and thaws it
+  with steam: it does not set it alight (the rule below, "How they meet").
+- **Fulmen (lightning).** No projectile: the strike hits the first enemy in range and jumps to the
+  nearest enemy not yet struck within the jump's reach of the last, each jump keeping 70 to 75 % of
+  the damage. The wet take half again (more at III). A staggered enemy (earth) grounds it: the chain
+  ends on it. Good against strings of runners and the thawed; weak against one tough target. One
+  menhir never strikes more than three times a second (a cooldown of at least 10 ticks,
+  `MIN_STRIKE_TICKS`; a shorter one is refused in the content). **Several menhirs together are not
+  held to it by the rules**, and are not meant to be: how often lightning strikes is gameplay. What
+  a person sees is held by the engine's flash governor when the effects arrive (the effects
+  library's next stage, 1c): **until that governor exists the stones must not be shown to a person
+  with lightning effects** (TESTPLAN.md 12.3).
+- **Gelu (frost).** A bolt that slows (as the rune pillar does) and adds chill, divided by the
+  target's **mass**; at full chill the target freezes: it stands, breaks no wall, cannot burst (see
+  the exploding dead below), and
+  the next hit on it shatters the ice for double damage (2.5×, 3×). Chill fades over 4 s; a freeze
+  thaws after its time and leaves the enemy **wet** for 4 s. Frost on a burning enemy puts it out;
+  frost lays rime on the target's cell, which the grass fire does not cross while it lasts. Good
+  against the exploding dead and the colossus's escort; poor against the colossus itself (mass 8:
+  0.075 chill a hit at III) and alone against crowds. **What ends a freeze is the ice's own time, a hit that shatters it, or furor** (below, "Furor"):
+  a tier may chill and freeze with no damage at all (the third review's: chill 1, a 30 s freeze,
+  every tick, which once kept a lone shambler frozen 199,738 ticks of 200,000), and the loader no
+  longer refuses frost for how long it could hold; at its wave's hour the frozen thaw at once and
+  nothing chills them again. The stock stones hold nobody near it: the four ground kinds at the
+  largest wave scale's HP, under Gelu I, II and III, walking through four or set down amid eight
+  that fire together, over three seeds, are through or dead in minutes
+  (`the_stock_frost_lets_a_lone_enemy_through_or_kills_it_long_before_its_waves_hour`).
+- **Ventus (wind).** Deals nothing (the content refuses any damage, slow, burn or chill on a gust,
+  and the wind hurts nobody on any path: what a fanned fire or a shove onto burning grass does is
+  fire's). When any ground enemy is in range, one alone included (the owner: the enemy "gets
+  pushed back in their lane"), it **gusts**: every ground enemy in range is shoved back along its
+  path, 3 m (4, 5) divided by its mass, over half a second, then walks on; burning enemies it
+  shoves are fanned (their fire renewed); the wind lingers 4 s over the area and leans the grass
+  fire; and the cairn's charge is spent. It cannot gust again until it has **recharged** (its
+  cooldown, 6 s, 5 s, 4 s), and the charge is a number the HUD can draw filling
+  (`State::charge`). A leaper in mid-air is not caught: the shove waits and takes it when it
+  lands. **The dead lean into the wind, and take one shove at a time:** each shove an enemy
+  takes, from any cairn or blast, is `shove_fade` weaker than the one before (0.25 here: three
+  quarters of it; a file that leaves it out gets 0.25, and it must lie between 0.05 and 1), and
+  one still being shoved is not shoved again until that shove has ended. **A gust that can move
+  nobody is no gust:** with only enemies in range still being shoved, in furor, or whose series
+  has run out (their next shove from this push rounds to nothing), the cairn keeps its charge and
+  fans no fire (the fourth review: such a gust spent it;
+  `a_gust_at_the_dead_it_cannot_move_keeps_its_charge`). The fade and one shove at a time are
+  rules of play: the dead lean into the wind, and a shove runs its course. They are no longer
+  held as a bound: the loader does not refuse wind for how long it could hold a lone enemy, and a
+  cairn may recharge sooner than its push lasts (it then gusts at the others in range; the one
+  still shoved waits for its shove to end). The third review's extreme (a push of 30 m over 5 s at
+  the slowest fade, which once held a lone shambler 399,108 ticks) is legal, and furor ends it at
+  its wave's hour (below, "Furor"). The stock cairns hold nobody near that hour: a lone enemy of
+  each ground kind through a ring of four tier-III cairns is through in minutes
+  (`the_stock_wind_lets_a_lone_enemy_through_long_before_its_waves_hour`). Without the fade the first proving sweep found runs that never ended (a gust every 5 s
+  pushed a wave's last shamblers back 4 m, as far as they walk in 5 s: 922 of 1,000 `fire_wind`
+  runs unfinished at the time cap). Tests also hold that every wind layout ends and that
+  content without the key still ends. Good for buying time, for keeping the dead in another stone's
+  range, and for pushing a burning one back into the column; useless against flyers, nearly so
+  against the colossus (3 m ÷ 8 is 0.37 m).
+- **Saxum (earth): an upheaval.** Stone spikes erupt along the target's lane: its cell and the next
+  cells of its route (2, 3, 4). Every ground enemy on them takes damage and is staggered (it stands
+  0.8 to 1.2 s), and the fire on them is smothered (the burning dead put out, the fuel covered: sand
+  on flames). Every heave renews the stagger, and a heave may deal nothing (the fourth review's:
+  0.01 damage and a 10 s stagger every 9.9 s once held a lone shambler 200,000 ticks); what ends a
+  stagger renewed without end is furor (below). From tier II the spikes leave **rubble** on the
+  farthest cell of the line a wall can stand on: a wall worth nothing (no refund), with its own HP,
+  that blocks and re-routes like the player's walls, that the dead break and the exploding dead
+  blast, and that crumbles by itself after 6 or 8 s.
+  **Rubble is temporary, by its own rules** (the owner, 2026-11-28: "Add health bar to that stone
+  instead, rendering those stones in the path as temporary"; asked which they meant, rubble only,
+  and furor for the rest). It goes when the dead have broken it or when its life ends, whichever
+  comes first, and nothing gives either back: **a heave never raises rubble where a wall stands**,
+  so standing rubble keeps the health the dead have left it and the tick it crumbles. And **a cell
+  whose rubble has gone (broken, blasted, crumbled, taken down) takes no rubble again while any of
+  the dead living at that moment still stands**: the rules keep, for each such cell, the id the
+  next enemy would have had then (`World::spent`, saved and hashed), and refuse rubble on it while
+  any living enemy's id is below it. Whoever that rubble stopped or held up is among those dead, so
+  rubble never stands twice on a cell in front of the same enemy: in one enemy's life each cell
+  holds it up at most once, each time at most the lesser of the rubble's life and the time its
+  claws take to break it (HP divided by its `wall_dps`). Rubble by itself holds nobody for ever,
+  furor or not. The fourth review's case (a heave of no damage raising 2,000 HP of rubble for 60 s
+  every second, before a lone shambler that breaks 12 HP a second: it stood 100,000 ticks at full
+  health, 168 rubbles raised as each crumbled) now lets it through in **6,319 ticks** with furor
+  switched off: 12 rubbles, never two on a cell, each holding it at most 1,800 ticks, against 975
+  ticks for the same heave with no rubble
+  (`the_reviews_rubble_lets_a_lone_enemy_through_by_its_own_rule`,
+  `a_heave_never_restores_standing_rubble`, `a_cell_whose_rubble_went_takes_none_while_its_dead_stand`).
+  **Rubble shows its health**: the app draws a bar over its cell from the tick it rises, full, and
+  emptying as the dead break it or as its life runs out, showing the lesser of the two
+  (`RubbleStand::left_permille`; the app's `a_rubble_bar_shows_the_lesser_of_its_health_and_its_life`).
+  The app drew no bar before, so this one is its own look: a dark back and a fill that
+  shrinks from the right, 1.6 m over the cell. The fill's colour says its level, so full, half and
+  low differ at the frame's own size: the game's green, orange (`BAR_AMBER`) under a half, bright red
+  (`BAR_RED`) under a quarter (`BAR_AMBER_BELOW`, `BAR_RED_BELOW`). Bars of neighbouring rubble
+  never cover one another: each stays centred over its own rubble and is lifted straight up until
+  it is clear, with a thin stem down to a mark on its own rubble (`lay_out_bars`). The two other first thoughts were weighed and set
+  aside: a *tremor* ring (a slowing ring is the rune pillar's job already) and a *boulder* loosed
+  down a lane (a rolling body needs physics bodies in the rules, which the wind's design below
+  defers; it is the natural tier-III variant once that seam is handed over).
+
+### Furor: one rule for every hold
+
+Four reviews each found legal content that held a lone enemy for ever: the wind, then frost, then
+earth's stagger and its rubble and a slow under the wind. Each answer was a bound for one stone,
+checked when content loaded, and each left the next stone and every combination open; the fourth
+review measured the loader refusing content that was in fact harmless (364 of 364 refused wind
+contents, and 477 of 480 frost, finished inside the run's room). The class is one, **content can
+renew a hold without limit**, so it is closed once, in the rules (the lead and the owner,
+2026-11-28). **It applies only where the content has the elements** (`Content::elemental`: one
+flag decided when the content loads, true if any elemental stone or tier, or any enemy with a
+mass, a sapper's charge or a burst, is defined, placed or not, or the elements' rules are
+switched on). The shipped maps have none, so they have no furor: a player who walls a wave in
+past its hour still has the rune pillar's slow, nature's roots and the colossus's summons acting
+on it, as the Lex rules (`--rules lex`, which have no furor) play them, so the two never part
+there (`in_the_shipped_game_a_wave_walled_in_past_its_hour_is_still_held`). **Before stones are
+placed in a shipped map, furor is ported to Lex** (TESTPLAN, 12.10). Where it applies:
+
+- **A wave's hour** is twenty minutes (`WAVE_HOUR_TICKS`, 36,000 ticks, the room a run has always
+  had) after its last entry. Any enemy of that wave still standing at its hour is **in furor** from
+  that tick (`Event::Furor`, once). It is decided by ticks alone, from the wave's start, which
+  every save and every hash already hold: furor has no state of its own, so a save taken in furor
+  loads in furor and steps alike, and no save layout changed for it.
+- **Nothing holds it.** It cannot be frozen, chilled, staggered, shoved (by a gust or a blast),
+  slowed by a stone or rooted; whatever holds or slows it at that tick ends at once (a freeze thaws,
+  without the wet). One function answers "can this enemy be held" (`World::can_hold`), and every
+  writer of a hold asks it: the chill and freeze (`chill_as`), the stagger (`heave`), the shove
+  (`shove`, for gusts and bursts; and a gust counts no such enemy, so it keeps its charge), the
+  stone's slow (`slow_enemy`), and the roots and slow in its pace (`speed_permille`).
+- **No rubble stands while any of the dead is in furor**: all of it crumbles at once, and no heave
+  raises any (the backstop; rubble's own rule above already makes it temporary). This is wider
+  than "in front of it" on purpose: with the slab open, its way is the open slab's.
+- **It calls no summons** (the colossus): what its wave was to bring has come by its hour, so no
+  enemy of a wave is born after it.
+- **Damage is unchanged**: it can still be killed, burnt and struck. Chance leaps are its own
+  nature and stay (bounded below). The walls the player builds stay too: they are the player's,
+  not content's.
+- What else stops or lengthens an enemy's way, and why it needs nothing more: a shove up another
+  lane (a shove, so ended); a stagger grounding lightning (a stagger); a frozen exploder that
+  cannot burst (a freeze); a stranded enemy (removed after 5 s, and validated content strands
+  nobody); a flyer's circling (its own number of hops, not renewable).
+
+**So a run's length is a sum the rules state** (`Content::run_bound`, and `script::run` stops at
+exactly that figure):
+
+    ticks = hour + walk + leaps + 1
+
+where `hour` is the latest hour of any wave on its schedule (the build time and the durations of
+the waves before it, its last entry, and 36,000: a wave called early only begins sooner); `walk`
+is the longest any kind then takes to go the rest of its way, unhindered: the farthest lane cell
+from the graveyard on the open slab plus one edge (it may stand between two cells or on a leap), at
+its own slowest pace (a climber's whole way at its climb speed), or for a flyer its most ring hops
+and its dive; and `leaps` is what a leaper's chance leaps can add with no shove to send it back:
+once at each jump point, each adding at most its ledge and its `jump_detour`. The one tick is the
+step that ends it. For the proving ground: 46,620 + 2,757 + 440 + 1 = **49,818 ticks** (27.7
+minutes); for the shipped map, 56,700 + 2,757 + 440 + 1 = 59,898. The only thing outside it is the
+player's own walls: a run whose walls of a million HP close every gate stops at exactly the figure
+(`a_run_that_cannot_end_stops_at_its_stated_length`).
+
+**What holds it, and what was removed.** A property test draws random legal content over the
+whole format, weighted on its extremes (no damage, the longest freeze and stagger, the slowest
+recharge and the fastest, the largest push, slows of 0.9 for 600 s, rubble of any health and life,
+up to twelve stones of mixed kinds along one lane), and plays on each a lone enemy of each kind and
+a whole wave: every run ends inside the figure, nobody left standing; the third and fourth
+reviews' extremes are fixed cases in it (`every_run_ends_inside_its_stated_length`; and a release
+run of a hundred times as many contents). A new stone that holds in a new way fails it until furor
+covers it. Removed with this: the loader's wind and frost checks and their figures
+(`check_wind`, `wind_hold`, `check_frost`, `frost_hold`), the refusal of a tier that chills,
+freezes or staggers with no damage, the rule that a cairn recharge longer than its push lasts (it
+served only the wind's bound; one shove at a time does its play's part), and their tests. Stock
+content never reaches a wave's hour: over three seeds of every proving and shipped layout no enemy
+enters furor, and the longest any wave's dead stood past its last entry was 4,170 ticks, under a
+ninth of the hour (`no_stock_run_reaches_a_waves_hour`).
+
+### The exploding dead (Tumidus)
+
+| Enemy | HP | Speed | Movement | Dust | Tombstones |
+|---|---|---|---|---|---|
+| Tumidus, the bloated dead | 40 | 0.9 m/s | Walker from the gorges; a **sapper**: it follows the breach field even while an open route exists, so it walks to the wall on its cheapest way through (a wall costs its length plus 8 m) | 4–6 | 2 |
+
+- **What sets it off:** reaching a wall it would break (it bursts on it: no dust, and not a kill);
+  being killed (it bursts where it falls: dust as a kill); being struck
+  by lightning (at once); being set alight (its 1.5 s fuse burns, then it bursts; frost or earth
+  putting the fire out puts the fuse out). **Frozen, it cannot burst** (the owner: "Killed
+  exploder still bursts", with this exception standing): what counts is whether it was frozen when
+  the strike, hit or blast reached it, read before the hit shatters the ice (the rule in "How they
+  meet"). If it dies of that hit, it dies whole; if it lives, the ice is gone and it is an exploder
+  like any other (the next strike, or a fire that catches it later, sets it off): a fire lob that
+  lands on it frozen thaws it with steam and lights no fuse. A fuse never burns in ice (a freeze
+  puts it out). Tested through each stone's real hit with its real damage
+  (`every_attack_decides_its_elements_from_the_enemy_before_the_hit`: a bolt, a fire lob, a frost bolt, a pulse, a strike
+  and a heave, each on a frozen shambler and a frozen exploder), and on a strike it lives through,
+  another one's blast, a fuse, and a strike and a fire lob in one tick (the stones fire before the
+  projectiles land: the strike shatters the ice, so the lob that lands after it meets an enemy that
+  is no longer frozen, and lights a fuse).
+- **"Detonated"** (a wave's `detonated`, the sweep's "bursts", the single run's "bursts") counts a
+  burst that went off, on a wall or where it was killed, when it goes off; never after the game is
+  lost, since no burst goes off then.
+- **The blast:** radius 3 m from where it stands (the owner has not said whether it should reach
+  the next lane's walls: [open](../../HANDOFF.md#open-owner-decisions); it stays 3 m until they do). **Every wall and rubble whose cell centre is in
+  the radius is destroyed**, with no refund: the wall it hit and any other within 3 m, which on map 1
+  is the cell beside it in a lane two walls thick, or a wall across the neighbouring lane where two
+  lanes run side by side (the reading "walls placed in the other lane" is a radius of about 4 to
+  5 m; it is one number). Every ground enemy in the radius takes 25 damage and is shoved 1 m back;
+  the fuel in it takes a full heat (the blast's heat: it lights the grass). Stones are not hurt
+  (stones in Sepulcra have no hit points; giving them some is a design of its own and is left out).
+- **A wall destroyed mid-wave re-routes everyone:** the flow fields are rebuilt once per burst (a
+  Dijkstra over the slab's cells for each of six fields: well under a millisecond, once per burst
+  and not per tick), from the walls that are left, in a fixed order, so the run stays deterministic
+  and a save taken the tick before continues the same (tested). Every enemy takes its next step
+  from the new fields when it reaches its next cell.
+
+### How they meet (in and out)
+
+In, each by one rule in the code above, and all under one rule of their own: **what an element does
+to an enemy is decided from the enemy's state before the hit**, never from what the hit's own damage
+left (`Before`, read once in `hurt` and handed to the hit's elements). A hit on a frozen enemy
+shatters the ice with its damage; its elements then see the enemy as it was, frozen: fire thaws it
+with steam (no fire, no fuse), frost adds no chill to the ice it has just broken, and a frozen
+exploder does not burst from that hit. Every path that hurts an enemy goes through it: a bolt, a
+lob, a pulse, a strike, a heave, a blast, a burn.
+
+- **Frost then fire:** fire thaws the frozen (steam) instead of burning them; frost puts the burning
+  out and lays rime that stops the grass fire. They undo each other, on purpose.
+- **Frost then lightning:** the thawed are wet; the wet take half again from a strike. Gelu and
+  Fulmen together are the "set up and cash in" pair.
+- **Wind and fire:** a gust fans the fires of the dead it shoves, pushes the burning ones back into
+  the column behind them (where they set others alight), and leans the grass fire: heat moving with
+  the gust's wind is × 1.6, against it × 0.4, for 4 s.
+- **Earth and fire:** the heave smothers fire on its cells, the dead's and the grass's.
+- **Earth and lightning:** a staggered enemy ends a chain (stone grounds the strike).
+- **Earth and the exploding dead:** rubble is a wall to them; they walk to it and blast it.
+- **Lightning and the exploding dead:** struck, they burst at once, wherever they are (well before
+  your wall, or in the middle of the column).
+- **Frost and the exploding dead:** frozen, they cannot burst; shattered, they die whole.
+- **Fire and the exploding dead:** alight, their fuse burns; fire spreading through a column with
+  bloated dead in it sets off a chain of blasts.
+- **Wind and the exploding dead:** a gust pushes them back from the wall they are walking to.
+
+Out, deliberately: wind putting fires out (a gust only fans); wind pushing anyone off the slab or
+off a lane (the shove follows the lane graph; see the physics seam below); flyers and the
+elements (wraiths are the obelisk's, as the owner decided, so every elemental stone targets the
+ground); frost turning wet ground to ice that the dead slide on, and earth to hard ground that
+cracks (both need bodies that slide: the physics hand-over); stones that burn or crack (stones have
+no hit points); fire on the graveyard's grass (hallowed ground: those who reach it are past every
+stone); the dead catching fire from rooted cells (the roots of nature are the player's own and
+would burn the player's slow: [with the owner](../../HANDOFF.md#open-owner-decisions)).
+
+### What burns on the slab (fire's spread)
+
+The slab is stone: fragments, lanes, cliffs and the graveyard's slabs do not burn. **Fuel** is what
+grows on it: the grass the app draws at the rock's edges (`fuel::grass_drawn`, the same rule as
+`sepulcra-app/src/grass.rs`, less the graveyard's), and, in the proving ground, dry grass laid
+along two lane stretches (`top:9,14..top:9,16` on the middle lane, `top:5,17..top:8,17` on the west
+connector), listed in `stones.json`'s `elements.fuel`. **The app draws grass on every fuel cell**
+too (the dry stretches on the lanes have the same grass patch as a placeholder look), so what the
+rules burn and what the player sees are one list (`fuel::grass_shown`), held equal by the app's
+test on the shipped content and on the proving ground's, and held by a test of the rules' own
+(every fuel cell is in it). The app draws at most 72 patches: every cell that burns comes first,
+and grass that does not burn (the graveyard's, and edge grass a content's fuel leaves out) fills
+what room is left, the rest dropped by the same hash as the edge grass's own thinning. **The
+rules hold no budget of the app's drawing:** content may have more fuel than 72 cells; the app
+then draws 72 of them (the rest dropped by the same hash), no other grass, and says in a trace
+(`sepulcra.grass_dropped`, a warning, with the counts of fuel and grass left out and the budget)
+how many it left out; when only grass that does not burn makes way it says so at info level. The
+proving ground's fuel is exactly 72 cells (the rock's-edge grass less the graveyard's, and the
+two dry stretches), so it draws no graveyard grass: the graveyard's 16 cells make way. On the
+shipped map nothing changes (no fuel, nothing dropped). (The word `"grass"` in a fuel list is the
+rock's-edge rule as the app thins it, to 72 by hash: the one place that number is in the rules.)
+
+`src/blaze.rs` is the fire, behind its seam (below). Each fuel cell has a heat, fuel left, a phase
+(fuel, burning, spent) and a cover. Every spread step (0.5 s) each burning cell gives 0.35 of an
+ignition to every fuel cell of its face within **2.9 m** of it (its four neighbours at 2 m and
+four diagonals at 2.83 m), leaned by the wind; the gains are summed first and then taken in, so no
+cell's place in the order changes another's. A cell at a full ignition catches, burns 8 s and is
+spent (char, never again). **A break of bare stone wider than 2.9 m stops it**: one bare cell is a
+gap of 4 m. Frost, earth and the wet cover a cell for 4 s: it takes no heat and goes out. A burning
+cell sets alight the ground dead within 2.9 m of it (so the dead walking past burning grass catch:
+3 damage a second for 2.5 s); a burning enemy heats the fuel within 2.9 m. So **a gap stops grass
+spreading to grass, not fire carried by the dead**: a burning enemy that walks across a break
+lights the grass on its far side. Splash, blast and a burning enemy heat fuel by distance across
+faces; only the grass-to-grass spread is held to one face.
+
+### Rules or physics: where each one's truth lives
+
+Sepulcra's rules are a deterministic integer simulation that runs with no engine (`cargo run -p
+sepulcra --example headless`: 1,000-run sweeps are how balance is tested), with its own hash and
+saves. The engine's physics (`specula-physics`) and Elementa (`specula-elementa`) are deterministic
+too, but they are the engine's, and they are floats (`dmath`-clean `f32`). The decision, from the
+code:
+
+| Effect | Where its truth lives now | Why | Later |
+|---|---|---|---|
+| Fire on the dead (burn, catching, fanning) | the rules (`EnemyEl`) | a status on an enemy the rules own, like the slow; integers; the sweep needs it | stays in the rules: an enemy is not an Elementa node (it moves every tick, and a node that moves costs a grid update; Elementa's own design says a burning creature is the rules' decision) |
+| Fire on the slab (fuel cells) | the rules, behind the seam `Blaze` | the sweep must burn grass too; Elementa is not in the engine yet (stage 6) | Elementa (stage 12, fuel fields), behind the same seam: see "the hand-over" |
+| Lightning's chain | the rules | an instant integer search among the rules' enemies | stays; Elementa's `strike` (stage 10) is for world things that conduct (a metal fence), not for the dead |
+| Frost's chill, freeze, shatter, wet | the rules | statuses on enemies; integers | stays; rime on a cell is a cover in `Blaze` (Elementa's `chill` and `wet` acts when handed over) |
+| Wind's shove | the rules, behind the seam `shove_back` | see below | a physics body, behind the same seam |
+| Earth's spikes, stagger, rubble | the rules | rubble is a wall: walls are the rules' (the flow fields read them) | stays; the spikes' rising and sinking are a look |
+| The exploding dead's blast on walls and the dead | the rules | walls and flow fields are the rules' | stays; its push and heat are Elementa's `blast` (stage 9) only for world things outside the rules |
+
+**The wind, through physics.** The owner's words are "through physics". Today the dead are not
+bodies: the rules move each one along the edges of the lane graph, in millimetres, and the app draws
+them where the rules say. Three ways were weighed:
+
+1. *A dynamic body steered back to the flow field.* The truth would leave the rules: the dead's
+   positions would be the engine's, the headless sweep (which has no engine) could not run the
+   wind, and the rules' integers and hash would depend on the engine's floats.
+2. *A character controller that takes an impulse.* The same, with better behaviour (no tipping);
+   the same problem for the sweep and the hash.
+3. **A kinematic body moved by the rules, with the push as an input.** Chosen. The push is the
+   rules' own deterministic displacement, `World::shove_back`: back along the edge the enemy walks,
+   then onto the cell upstream of it on the flow field (on a shortest route through it, ties to the
+   lowest id), never into a wall, never off the lanes, not in mid-leap, pinned at a spawn. Its
+   amount is divided by the enemy's mass and spread over the gust's time, so it reads as a body
+   pushed (fast, then walking on). The headless sweep runs it exactly; saves hold `shove` and its
+   rate; replays repeat it bit for bit.
+
+**The seam.** The rules' callers give a push (`World::shove(i, push, ticks)`) and read positions as
+before; one function decides where that push puts the enemy. To hand it to physics without
+changing a caller: `specula-physics` is a pure crate (std and `specula-core`), so the rules crate
+may own a physics `Space` of its own, built from the slab's cells (lanes as floor, fragments and
+walls as boxes, the rim as an edge one can fall from), with each pushed enemy a character body
+(`move_character`) for the time of its shove, then snapped back to the nearest lane cell and its
+flow field. That keeps the sweep (the space is in the rules, not the engine) and makes "off the
+slab" possible (a body over the rim falls: a new outcome the rules would then have to name).
+What it costs: floats in the rules' state (Sepulcra's "no floats" pillar would give way to the
+engine's `dmath` rules: DETERMINISM.md accepts both), a physics section in the game's save and hash,
+and a new outcome to design (a body that falls off the slab). The owner's answer (2026-11-24: "'No
+damage, through physics', meaning enemy gets pushed back in their lane") is met by the rules' own
+push, so the hand-over is not asked for and stays a seam. The app's ragdolls (the shamblers'
+deaths) are already engine physics and stay cosmetic.
+
+**Fire's hand-over to Elementa** (`Blaze` is the seam: the rules call only `heat`, `cover`,
+`add_zone`, `is_burning`, `burning`, `step`, and hear `Caught`, `Spent`, `Smothered`). What it
+needs, measured against `crates/specula-elementa` on branch `m6-elementa` as built (stage 5): each fuel cell a
+node of material `grass` (`NodeDesc::new(id, grass, centre, half)`), `heat` an `Act { Ignite }`,
+`cover` an `Act { Wet }` (frost) or a covered material (earth), `step` the node's `Elementa::step`
+and `take_events` mapped to the three events. **The rules crate can depend on `specula-elementa`
+directly** (it is pure), so this needs no engine and keeps the sweep. What does not exist yet:
+**local wind**: Elementa has one world wind (`set_wind`), and a gust is local and brief, so either
+wind zones (stage 9) or the gust setting the whole slab's wind for 4 s (a different rule); the
+**tick rate**: Sepulcra ticks at 30 Hz and Elementa's `spread_hz` must divide it (10 Hz does, so 3
+ticks a step against the rules' 15); **reach**: Elementa's `reach_m` is at most its `cell_m`, so
+`cell_m` 3 m, `reach_m` 0.9 m between grass boxes of 2 m; **ignition by threshold, not by summed
+steps**, which changes the numbers (`elementa_check` predicts them); and the hash and save: an
+`elementa` section inside the game's state (`save_state` / `restore_state` exist). A burning enemy
+heating fuel would be an `Ignite` act on the nodes near it each step (64 acts a tick at most, which
+a column of burning dead can pass: a bound to raise or to batch as a sphere act).
+
+### What each stone shows and sounds like (Effectus entries, by moment)
+
+By the effects library's table (`docs/design/EFFECTUS.md` on branch `m6-effectus`, "The first table"
+and "The table as built"). **Built** means in the table today (stage 1a: `fire`, `smoke`, `explosion`, `sparks`,
+`embers`, `motes`, `trail`, `dust_puff`, `impact`); **planned** means in the first table and not
+built; **missing** means in neither.
+
+| Stone / enemy | Idle | Charging | Firing | Hit | Lingering |
+|---|---|---|---|---|---|
+| Rogus | `fire` (`brazier`, radius 0.16, `light: false`; built) in its bowl | none | `fireball` (planned, radius 0.3, trail 0.6) in flight | `explosion` small (built, radius 0.6, debris 0, smoke 0.2, shockwave false, scorch true) | `burning` (planned, stage 7: Elementa's look) on each burning one; **on fuel cells: `burning` with `extent` 2 × 0.3 × 2 and `fuel`** (stage 7), char as a scorch decal |
+| Fulmen | `motes` (built, tint cyan) or a faint `arc` between its horns (planned) | none | `lightning` (planned, E1/E4, `from_height` 2, `strikes` 1, `branches` 1) from the menhir to the first; `arc` (planned) along each jump, **from one enemy to the next: `to_entity`** | `impact` (built) | none |
+| Gelu | `frost` (planned, E5) on its top | none | a cold `bolt` (planned) or `projectile_trail` (planned) | `ice_shards` (planned); on freeze `freeze_burst` (planned, radius 0.6) | `frost` with `extent` the enemy's box while frozen; thaw: `steam` (planned) one-shot |
+| Ventus | `leaves` (planned, E5/E8) idling about it | **missing: a visible charge** (a ring that fills: the nearest is `charge_up`, planned E3, which is a one-shot that gathers, not a meter; the game can draw the meter from `State::charge` in its HUD) | `wind_gust` (planned, `direction` from the stone to its target, `length` its range, streaks 30, debris true) | `dust_puff` (built) at each shoved enemy's feet | `smoke` drift with wind (E8) over a fanned fire |
+| Saxum | `motes` (built, dust tint) | none | **missing: geometry that rises and sinks** (spikes) | `dust_cloud` (planned), `debris` (planned, E5) | **missing: a crack in the ground as a code-made mark** (the `cracks` decal exists, built in Scintilla, but not as an Effectus entry); rubble is the game's wall model |
+| Tumidus | none (its model) | burning fuse: `sparks` (built, rate 18) at its head | — | `explosion` (built, radius 3, debris 24, smoke 0.6, shockwave true, scorch true, `blast: false`: the rules own the blast) | scorch decal (built in the entry), the wall's rubble (`debris`, planned) |
+| Fuel cell (grass) | the grass model | — | — | — | `burning` (stage 7), `embers` (built), `smoke` (built), char (scorch decal) |
+
+Sounds: every entry with a sound generates its recipe from its arguments (decision 8); the game's
+own recipes (`assets/sounds/*.json`, synthesised) stay for what it has. Missing as sounds: a
+crackle of ice, a rumble of earth, a gust (the entries `freeze_burst`, `dust_cloud`, `wind_gust`
+carry them when built).
+
+### Made by code, or drawn
+
+Searched (2026-11-24): `games/sepulcra/assets` holds 112 JSON files and one TOML file and **no image
+at all**: every texture is a texture-graph recipe (`recipes/tex_grass_blades.json`,
+`recipes/tex_crypt_stone.json`), every sound a synthesis recipe (`sounds/*.json`), the music a
+recipe (`music/*.json`). Scintilla's particle textures (`soft`, `spark`, `smoke`, `flame`, `ring`,
+`rune`, `dust`) and decals (`scorch`, `rune_circle`, `cracks`, `cracks_normal`, `soft`) are drawn
+by functions (`crates/specula-scintilla/src/textures.rs`). **So everything Sepulcra's effects show
+and play today is made by code.** The only drawn shapes the game shows are the letters of its
+interface: the bundled Alegreya and Alegreya Sans faces (`crates/specula-text/fonts/*.ttf`,
+outlines a type designer drew), which are not effects. The elemental stones' looks above keep to
+that, with three things the library does not do yet:
+
+- **Geometry that comes and goes** (Saxum's spikes, rubble, a boulder): a small procedural model
+  from a recipe with a seed, shown by the effect and removed by it. The shape library has the
+  shapes by name (prisms, pyramids, crystals; `formae_get`), and the modeller builds a recipe with
+  a seed; what is missing is an Effectus entry kind that spawns a model for its life (rising from
+  below the ground over 0.15 s, sinking after), with its cost (triangles, draws) counted before.
+  EFFECTUS.md leaves "mesh effects" out ("Left out, and why"): this asks to bring a small one in.
+- **A crack in the ground made by code**: the `cracks` decal exists in Scintilla; an Effectus
+  entry (`ground_crack`, length and branching as args, generated per seed) does not.
+- **A rumble**: a low synthesised sound (noise through a low-pass, a slow envelope), as the other
+  sound recipes are: missing only as an entry.
+
+### The proving ground's waves and layouts
+
+`data/proving/waves.json`, six waves, 450 dust to start and 20 tombstones: (1) a packed column of
+14 shamblers up the grassed middle lane, 0.9 s apart (fire's spread); (2) ten runners strung out
+1.6 s apart, then ten shamblers packed (lightning against spacing); (3) shamblers, then six
+exploding dead (walls destroyed, frost, lightning); (4) eighteen light runners in a rush (the
+wind); (5) the colossus and its escort (frost's shatter; the wind barely moves it); (6) everything,
+with wraiths for the obelisks. `data/proving/layouts/`: one build order for every case, the same
+dust and the same places: the two stones under test at `top:10,15` (beside the grassed middle lane)
+and `top:8,12` (beside the south gate), three warding stones, walls on the middle lane and the
+south gate from wave 2 (for the exploding dead), obelisks from wave 4. `baseline` puts warding
+stones where the elements go; `fire`, `lightning`, `frost`, `wind`, `earth` two of one; the ten
+pairs one of each.
+
+### What the sweeps say
+
+`cargo run -p sepulcra --example headless --release -- --ground proving --layout all --sweep 1000`
+(seeds 1–1000, 2026-11-28, after the fourth review's: rubble temporary by its own rules, and furor;
+before them, after the third review's mends: each shove of one enemy a quarter
+weaker than the one before and none before the last has ended; before them, 2026-11-25, the
+second review's: fire on the frozen thaws them by every path, a cairn recharges longer than its
+push, bursts are counted when they go off). Tombstones out
+of 20; kills are of every enemy spawned (the colossus summons, so the count varies); "bursts" counts
+every burst that went off, on a wall or where the exploder was killed (each wave's `detonated`).
+No run stranded an enemy and every run ended.
+
+| Layout | Won | Tombstones left (mean) | Leaks (mean) | Kills (mean) | Bursts (mean) | Game time (mean) |
+|---|---|---|---|---|---|---|
+| baseline (wardings) | 1000 | 19.65 | 0.3 | 128.5 | 12.0 | 6:39 |
+| fire | 1000 | 18.60 | 1.4 | 127.6 | 12.0 | 6:40 |
+| lightning | 1000 | 19.93 | 0.1 | 126.9 | 12.0 | 6:39 |
+| frost | 972 | 6.51 | 10.7 | 124.6 | 11.8 | 6:38 |
+| wind | 217 | 0.43 | 15.7 | 88.0 | 7.2 | 5:54 |
+| earth | 1000 | 19.03 | 1.0 | 128.7 | 12.0 | 6:40 |
+| fire + lightning | 1000 | 19.80 | 0.2 | 128.8 | 12.0 | 6:39 |
+| fire + frost | 1000 | 9.60 | 6.4 | 130.6 | 12.0 | 6:40 |
+| fire + wind | 972 | 4.48 | 11.5 | 127.1 | 12.0 | 6:49 |
+| fire + earth | 1000 | 18.49 | 1.5 | 144.6 | 12.0 | 6:40 |
+| lightning + frost | 1000 | 10.47 | 5.5 | 131.4 | 12.0 | 6:40 |
+| lightning + wind | 994 | 5.38 | 10.6 | 128.3 | 12.0 | 6:50 |
+| lightning + earth | 1000 | 19.47 | 0.5 | 144.2 | 12.0 | 6:40 |
+| frost + wind | 688 | 8.57 | 9.8 | 119.2 | 11.3 | 6:35 |
+| frost + earth | 1000 | 17.98 | 2.0 | 141.3 | 11.9 | 6:40 |
+| wind + earth | 987 | 12.51 | 6.9 | 126.4 | 11.4 | 6:39 |
+
+Against the sweep of the third review's mends (2026-11-28, `a9395c73`) **only the five layouts
+with earth moved**, and only by rubble's new rule: a cell whose rubble has gone takes none again
+while any of the dead living then still stand. In these waves the dead come in streams, so a cell
+near a Saxum is spent for most of a wave, and less rubble rises. Earth alone kills more (123.1
+to 128.7 a run), its pairs fewer (fire + earth 155.0 to 144.6, lightning + earth 154.1 to 144.2,
+frost + earth 155.8 to 141.3), and the pairs' runs are no longer longer than the rest (6:57, 6:53
+and 7:22 to 6:40). Kills count the shamblers the colossus calls, which follow how long it stands on
+the slab; why earth alone went the other way was not traced run by run. Wind + earth lost a little (994 to 987 won), by the same rule; how, run by run, was not traced. No figure of a layout without earth moved, so neither furor (no stock run
+reaches a wave's hour) nor the gust that now keeps its charge at the dead it cannot move changed
+a stock run; tombstones moved by 0.03 at most outside wind + earth.
+
+Against the sweep of 2026-11-25 (after the second review's mends) **only the layouts with wind
+moved, and earth's and frost + earth's by a hair**: wind 1 → 217 won (tombstones 0.00 → 0.43),
+fire + wind 923 → 972, lightning + wind 981 → 994, frost + wind 774 → 688, wind + earth 991 →
+994; earth's kills 123.2 → 123.1 and frost + earth's game time 7:21 → 7:22. Why: the wind's new
+rules (each shove a quarter weaker than the one before, where the old fade divided the n-th by
+1 + n x 0.5; and no shove of an enemy still being shoved, so a cairn keeps its charge for one it
+can push). The two layouts without a cairn moved by the bursts' shoves, which follow the same two
+rules (a Tumidus's blast pushes the dead around it 1 m).
+
+Against the sweep of 2026-11-24 (after the first review's mends) every figure of 2026-11-25 was
+the same to the last digit but the bursts, which counted bursts on walls only then (0.0 to 1.2 a
+run) and count every burst now: twelve exploders come in the proving ground's waves, and in
+nearly every run all of them burst. Fire thawing the frozen by every path moved no figure of the
+table, and **no proving run takes that path**: the third review counted no fire hit on a frozen
+enemy in 1,200 runs of the six layouts with fire or frost (seeds 1 to 200), so what holds the
+mend is the unit test through the real hit
+(`every_attack_decides_its_elements_from_the_enemy_before_the_hit`). The runs' hashes moved then
+because the bursts' count is part of the hash (each wave's `detonated`), not by fire.
+
+Against the sweep before the first review's mends (commit `f39b9770`): the layouts without wind
+were the same to the last figure except frost (973 won before, 972 since). That is **seed 395**,
+traced by the second review: at tick 10,539 a Tumidus killed by a bolt burst, and its blast shoved
+runner 125 while it was in mid-leap; the old rules held it in the air and spent the shove, the new
+ones let it fly on and keep the shove for its landing (the first review's mend 6), and the run
+went from a win with one tombstone left to a loss at tick 10,855. The wind rows moved: wind 56 → 1
+won, fire + wind 959 → 923, lightning + wind 983 → 981, frost + wind 712 → 774, wind + earth 992 →
+991.
+
+What it says, read honestly:
+
+- **The proving ground is too easy to separate the strong stones**: the baseline of wardings
+  leaks 0.3 in a run, so fire, lightning and earth all sit at the ceiling. A harder wave set (or
+  fewer wardings in every layout) is the next tuning step before any number is called balanced.
+- **Lightning is the strongest single element** (0.1 leaks, better than the wardings it
+  replaces); **frost alone is weak** (10.7 leaks, most in wave 1's packed column and wave 5's
+  colossus, which mass 8 makes nearly unfreezable), as its row says; frost's own payoff (thaw then
+  strike, freeze then shatter) does not make up for it in these waves.
+- **Wind alone mostly loses** (217 wins in 1,000; 1 before the third review's mends): two cairns
+  that deal nothing in place of two wardings leave three wardings to do all the killing, and a
+  cairn that gusts at one straggler has spent its charge when the column comes (now less often:
+  it keeps its charge while the one in range is still being shoved). Paired with a damage stone it
+  mostly holds (lightning + wind 99.4 %, wind + earth 99.4 %, fire + wind 97.2 %) but costs
+  tombstones: in these waves it buys time the other stones do not use. Frost + wind does worse
+  than before (68.8 % from 77.4 %): a lone enemy is pushed back less often now, and so is less
+  often kept in the rime stone's range. That is the shape of
+  the owner's "non damage" stone; its numbers (range, push, recharge) are what to tune.
+- **A lone enemy is not held for ever, by one rule of the game: furor** ("Furor" above). Four
+  rounds of bounds held at load, one stone at a time, each found false by the next review (the
+  fade alone, a cairn that recharged before its push ended, a 30 m push at the slowest fade, frost
+  of no damage, earth of a thousandth of damage, rubble raised again as it crumbled, a slow under
+  the wind); they are gone. Every run of every layout ends, and no stock run comes near a wave's
+  hour.
+- **Earth's pairs kill the most** (141 to 145 kills: the rubble re-routes, and the colossus
+  summons more while it is held up), though less than when rubble rose again and again on one
+  cell (155, and runs of 6:57 to 7:22, before rubble was temporary).
+- **The exploding dead rarely reach a wall** (at most 1.2 bursts on walls a run in the sweep of
+  2026-11-24, which counted those alone; most of the twelve bursts a run now are of exploders
+  killed by a stone): the walls on the middle lane and the south gate stand inside the wardings'
+  range. A layout that puts its walls
+  out on the gorge lanes would show them more; the rules are tested directly
+  (`an_exploder_bursts_on_a_wall_the_wall_goes_and_the_dead_reroute`).
+- **The first sweep found a stall** (fixed: `shove_fade`, above), which is what the sweep is for.
+  **Pushing the lone dead found another fault, of the scripts:** a wave-1 straggler held by the
+  wind stood on the south gate when the wind layout's wall there was due, and the layout skipped
+  the wall in every run. A script now waits for one of the dead to leave a cell, as it waits for
+  dust (no shipped run of the 812 checked, nor of the shipped sweep, ever met it: their results
+  are unchanged).
+
+Single runs of seed 1, the elements' counts (`--layout NAME --seed 1`): fire 155 ignitions and 31
+fuel cells caught; lightning 309 strikes; frost 34 freezes and 32 shatters; wind 90 gusts; earth
+81 heaves and 5 walls (rubble) broken; fire + wind 121 ignitions, 40 gusts; lightning + frost 215
+strikes, 10 freezes.
+
+The shipped map's sweep (`--layout all --sweep 1000`) prints, line for line, what it printed
+before the elements (centre-heavy won 999, tombstones 7.42; no anti-air lost 1000 in wave 6; full
+block lost 1000 in waves 3–6; no defence lost 1000 in wave 2), and the final hashes of seeds 1, 7,
+42 and 999 of each built-in layout are unchanged.
+
+### The other reading: all of them through physics, none through damage
+
+Weighed and not taken: the owner's answer is that the parenthesis is about the wind only. If it
+had been about all four (no stone deals damage; everything works by physics):
+
+- **Fire** would deal nothing itself: burning would *drive* the dead (a burning one flees: a push
+  away from the flames and a speed-up into other stones' range), spread to the grass, and its harm
+  would come only from the blasts it sets off (the exploding dead) and the fall from the rim.
+- **Lightning** would be a shove that chains: each struck enemy knocked back a little (a stagger),
+  the chain's value being time and the exploders it sets off.
+- **Frost** would be the freeze and the slide: a frozen one stands, and on rimed ground the dead
+  slide (a body with low friction), which needs the physics seam handed over.
+- **Wind** as now.
+- **Earth** would be rubble and spikes as obstacles only: re-routing and stagger, no damage.
+
+What changes: the elemental stones' `damage`, `burn_dps` and `shatter` go to 0 (data), the
+content's checks forbid damage on every elemental attack as they do on the gust today (one line
+per attack in `check_tier`), and the game needs a way for physics to kill: **falling off the slab**
+(the physics seam above, then a rule that a body below the rim dies: a new event) or the warding
+stones doing all the killing. The sweeps would then show the elements as time bought, measured as
+leaks and the waves' clear times, not as kills.
+
+### What the elements ask of the engine
+
+Where each piece stands on 2026-11-24. *Working line* is `m6-una` (this branch's base); *lane*
+names the branch it is on and not merged; *planned* names the stage of EFFECTUS.md's build plan;
+*nowhere* is in no plan. The rules need nothing from the engine (they are built, here); what the
+towers need is their **look and sound**, and, for the hand-overs, two crates the rules can use
+without the engine.
+
+| For | Piece | Where |
+|---|---|---|
+| all | the rules' events (`Struck`, `Gusted`, `Heaved`, `Ignited`, `Frozen`, `Thawed`, `Shattered`, `Detonated`, `RubbleRaised`, `WallCrumbled`, `CellCaught`, `CellSpent`, `CellSmothered`) and state (`EnemyEl`, `State::blaze`, `State::rubble`, `State::charge`) that the app turns into looks | **built** (this lane) |
+| all | an Effectus entry played by name and args from the app's Rust (a `vfx` component with `args`, and a one-shot cue at a place) | component `args`: lane `m6-effectus` (stage 1b); one-shot cues (`effectus_play`, the engine's cue instances, the `effects` save section, the flash governor): planned, stage 1c. The app can use components and delete them itself (as it does today) before 1c |
+| Rogus | `fire` (`brazier` alias) idle; `explosion` small on landing | lane `m6-effectus` (1a, built) |
+| Rogus | `fireball` in flight | planned (first table, stage 4) |
+| Rogus, fuel | `burning` on each burning enemy and each burning fuel cell, nearest first within the budget | planned, stage 7 (Elementa's look); the entry itself needs nothing of Elementa: the app can place it from `CellCaught` / `Ignited` |
+| Rogus, fuel | char on spent cells: a scorch decal | working line (`scorch` decal); as an entry's decal, lane `m6-effectus` |
+| Fulmen | `lightning` (menhir to first), `arc` (enemy to enemy, `to_entity`) | planned, stage 2; engine side (E1 beams, E4 targets) on lane `m6-scintilla2` |
+| Fulmen | the flash governor (several strikes and blasts in one second) | planned, stage 1c, with the fraction-of-frame from `flash.rs` (lane `m6-scintilla2`, E1..E4). **A dependency, not a nicety:** several menhirs strike together as often as the rules let them, so no lightning effect is shown to a person before it exists |
+| Gelu | `frost`, `freeze_burst`, `ice_shards`, `steam`, a cold `bolt` | planned, stage 4 (E5 textures: `shard`, decal `frost`) |
+| Ventus | `wind_gust` with `direction` | planned, stage 4 (needs nothing new of Scintilla) |
+| Ventus | a charge meter filling | **nowhere** as an effect; the HUD draws it from `State::charge` (game side, not built: the build bar has four stones) |
+| Ventus | smoke and embers drifting with the gust | planned, E8 wind drift (lane `m6-scintilla2`), with a *local* wind: **nowhere** (E8 reads the world's one wind) |
+| Saxum | spikes rising and sinking: a seeded model shown by an effect for its life | **nowhere** ("mesh effects" are left out of EFFECTUS.md); the modeller can build the spike (formae `pyramid`/`prism`, a recipe with a seed) today, and the app can animate a transient model itself |
+| Saxum | a code-made crack (`ground_crack` with length and branching) | **nowhere** as an entry; the `cracks` decal exists (working line) |
+| Saxum | `dust_cloud`, `debris`, a rumble sound | planned, stage 4 (E5 `chunk`); the rumble is a generated sound like the others (decision 8) |
+| Tumidus | `explosion` (radius 3, debris, shockwave, scorch) | lane `m6-effectus` (1a, built); its ground ring is E2 (stage 3) |
+| Tumidus | a destroyed wall's debris | cosmetic chunks (`debris`, planned stage 4), **not physics bodies**: the rules decide the wall is gone and nothing else may depend on where its pieces fall; physics chunks would be presentation that costs bodies and could block nothing. Today the app's `wall_broken` dust and cracks stand in |
+| Tumidus | `blast` (push, heat, event) for world things | planned, stage 9; **not used by the rules**: the rules' blast is their own (walls, the dead, the fuel). Used only if the slab's props become Elementa nodes |
+| fuel (hand-over) | the rules crate depending on `specula-elementa` | possible now (a pure crate, lane `m6-elementa`, stage 5 built); needs local wind (stage 9 wind zones) or a rule change, and the reach and threshold numbers re-tuned (above) |
+| fuel (hand-over) | fuel fields: grass patches as fuel by cell | planned, stage 12 (for a game whose fuel is the world's); Sepulcra's own fuel list is the rules', so it needs only stage 5's nodes |
+| wind (hand-over) | a physics `Space` inside the rules: the slab as boxes, a pushed enemy a character body (`move_character`), snapped back to its lane | possible now (`specula-physics` is pure, working line); not built, and not asked for: the owner's answer is met by the rules' push |
+| events back to modules | `element.ignited` and the rest at the next tick, `Cx::ignite` | planned, stage 6; **not needed by Sepulcra**: its rules are a Rust crate, not a module, and own their fire, so they hear their own events in the same tick |
+| photosensitivity | lightning never over 3 flashes a second for any args | lane `m6-effectus` (decision 5); here one stone is held to three strikes a second by `MIN_STRIKE_TICKS` (10 ticks) and several stones together only by the governor above |
+
+**The rules' question "how does a rule hear that a thing it owns caught fire":** in Sepulcra it
+does not need to: the rules own the fire (`Blaze`) and the dead's statuses, and hear `Caught` in
+the step that made it. If the fire is handed to Elementa, the rules crate owns the `Elementa` value
+too (it is pure) and reads `take_events()` right after `step()` in the same tick: no next-tick delay
+and no engine. A game that is a module, not a Rust crate, hears them at the next tick (stage 6).
+
+**The smallest set that lets one tower be played end to end, looking right: Tumidus and its
+blast** (rules: built; look: `explosion`, built on `m6-effectus`, plus the app's existing dust and
+cracks for the wall), so the first to come alive is the exploding dead, as soon as stage 1b
+merges (a component with args, deleted by the app as its one-shots are today). Then, in order:
+
+1. **Rogus**: `fire` and a small `explosion` (1a), then `fireball` and `burning` (stages 4, 7):
+   playable with 1b, right with 7.
+2. **Ventus**: `wind_gust` (stage 4, nothing new in Scintilla) and the HUD's charge (game side).
+3. **Fulmen**: needs beams and targets (stage 2, E1 and E4 on `m6-scintilla2`) and the governor
+   (1c): the most engine work, and the most photosensitivity risk.
+4. **Gelu**: needs E5 textures (`shard`, `frost`) and stage 4's cold family.
+5. **Saxum**: needs what no stage plans (a transient model, a ground crack entry): last, unless
+   the lead adds a stage for "geometry that comes and goes".
+
+### What the owner decided (2026-11-24)
+
+Five of the lane's seven questions, and the owner's answers:
+
+1. **"Non damage but through physics": the wind only.** "'No damage, through physics', meaning
+   enemy gets pushed back in their lane." The wind deals nothing and pushes the dead back along
+   their lane; the other stones deal damage. The reading "all of them through physics" above is
+   kept only as the record of what was weighed.
+2. **The push is the rules' own** (the same answer): it runs in the sweeps, saves and replays.
+   A hand-over to physics bodies is not asked for and stays a seam. The lane had made a gust wait
+   for two of the dead in range; that was its own rule, not the owner's, and is gone: one alone is
+   pushed.
+3. **A killed exploder still bursts** ("Killed exploder still bursts"), where it falls; one that
+   is frozen when it is hit does not (the exception stands until the owner says otherwise).
+4. **Earth is the upheaval** ("Earth as rising spikes are good"): spikes and rubble, as built.
+5. **The stones go on the shipped maps** ("Yes, these stones go on the shipped maps"): the next
+   round, as said at the top of this section.
+
+Not answered yet, and kept in [the one list of open decisions](../../HANDOFF.md#open-owner-decisions):
+the blast's radius (3 m as built, or wide enough to reach the next lane's walls; it stays 3 m
+until they say), and fire on the roots of nature (the player's own slow: not burnt, as built,
+until they say).
+
 ## Camera and controls
 
 - **Mouse:** orbit by dragging the right button, zoom with the wheel, click to place.
