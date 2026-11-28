@@ -691,11 +691,15 @@ and `H = G ∧ T`. Then:
    parts' `K/4` is reached wherever their fields are equal on the surface, and that includes a
    **straight joint**: two bones end to end bulge by `K/4` in a ring at their joint.
 
-*Proof.* (1) Where the order of the values is fixed, `G` is a chain of joins, each of which
-changes by at most the greater change of its two inputs (5.3). Where two values are equal, the
-two orders join the same numbers and give the same `G`, so `G` is continuous; along a straight
-path between two lists of values the order changes at finitely many places, and the bound holds
-on each piece between. So `|G(x) − G(y)| ≤ max_i |F_i(x) − F_i(y)| ≤ |x − y|`. `H` by 3.1.
+*Proof.* (1) `G` is the chain of the values sorted, and both steps change by no more than
+their inputs in the greatest of their changes: sorting, because the `k`-th least of two lists
+differ by at most the greatest difference of their entries (`|sort(a)_k − sort(b)_k| ≤
+maxᵢ |aᵢ − bᵢ|`: at most `k − 1` of the `bᵢ` lie below `sort(a)_k − maxᵢ |aᵢ − bᵢ|`, and as
+many above the other side), and the chain, because each join changes by at most the greater
+change of its two inputs (5.3). So `|G(x) − G(y)| ≤ max_i |F_i(x) − F_i(y)| ≤ |x − y|`, with no
+need to count where the order changes (along a path it can change infinitely often, or values
+agree on whole sets, the body's first review found; it measured over 83,716 pairs that straddle
+a change of rank, at most 0.999995 of the distance). `H` by 3.1.
 (2) 5.5's chain, with the first value the least. (3) as 3.1 and 2.3; `T > 0` keeps every zero.
 (4) Where `G ≤ 0`, (2) and 5.1 give `F_min ≤ K/4` for one join and `F_min ≤ K` for a chain.
 At such a point, if `F_i ≤ K < m_i / L_i` then `n < 2` for that part (beyond it `F_i ≥ m_i /
@@ -720,25 +724,6 @@ for its proof**, and the measurement agrees with 7.5 (4): two round bones of one
 reached along the outside, on the plane that halves the bend, where the two fields are equal;
 inside the bend the join fills the crease. `K = 0` gives the plain union: no bulge, the crease
 kept. What a proof can carry toward the third way is 7.7.
-
-**7.7. A width that changes from place to place.** For the quadratic join `q(a, b; K)`,
-`−1/4 ≤ ∂q/∂K ≤ 0`. So if the width is a function `K(x) > 0` that changes by at most `Λ` a
-metre, and `f`, `g` are 1-Lipschitz, then `q(f, g; K(x))` changes by at most `1 + Λ/4` a
-metre; a chain of `n` parts so joined, by at most `1 + (n − 1) Λ/4`.
-
-*Proof.* Where `|a − b| ≥ K`, `q` is the lesser and does not depend on `K`. Elsewhere, with
-`δ = |a − b|` and `h = 1 − δ/K`, `q = a ∧ b − K h²/4` and `∂h/∂K = δ/K² = (1 − h)/K`, so
-`∂q/∂K = −h²/4 − (K h/2)(1 − h)/K = −h (2 − h)/4`, which lies in `[−1/4, 0]` for `h` in
-`[0, 1]`; it is continuous across `δ = K`, where both sides are 0. Along a segment, the change
-of `q(f, g; K)` is at most the greater change of `f` and `g` (5.3) plus a quarter of the change
-of `K`. In a chain each join adds at most a quarter of the change of `K`, and each passes on the
-change of its inputs with shares that add to one. ∎
-
-So a width that falls toward nothing where two bones run on from one another, and rises where
-they bend, can be had with a stated factor (`Λ` from how fast the width is made to change):
-dividing by that factor keeps the field a bound. Held by test
-(`a_join_of_changing_width_changes_by_a_quarter_of_it`). Which width, and how it is made from
-the skeleton, is 7.8's, which also finds the chain's factor `1 + Λ` whatever its length.
 
 **7.6. The body's cull is exact.** Let `c_i` be each part's capsule term (7.3's `c`; a swell's
 `|x − o| − r_max`), so `F_i ≥ c_i`, and let `ε = T + 2K`. **`H(x)` is the same number when only
@@ -773,6 +758,25 @@ by line here):
   little above `T + 2K`, by `2⁻¹⁴ (ε + K)`, for the rounding of a chain of up to 64 joins;
 - a range over a ball and the parts it needs are widened by `2 σ` at the ball's farthest point.
 
+**7.7. A width that changes from place to place.** For the quadratic join `q(a, b; K)`,
+`−1/4 ≤ ∂q/∂K ≤ 0`. So if the width is a function `K(x) > 0` that changes by at most `Λ` a
+metre, and `f`, `g` are 1-Lipschitz, then `q(f, g; K(x))` changes by at most `1 + Λ/4` a
+metre; a chain of `n` parts so joined, by at most `1 + (n − 1) Λ/4`.
+
+*Proof.* Where `|a − b| ≥ K`, `q` is the lesser and does not depend on `K`. Elsewhere, with
+`δ = |a − b|` and `h = 1 − δ/K`, `q = a ∧ b − K h²/4` and `∂h/∂K = δ/K² = (1 − h)/K`, so
+`∂q/∂K = −h²/4 − (K h/2)(1 − h)/K = −h (2 − h)/4`, which lies in `[−1/4, 0]` for `h` in
+`[0, 1]`; it is continuous across `δ = K`, where both sides are 0. Along a segment, the change
+of `q(f, g; K)` is at most the greater change of `f` and `g` (5.3) plus a quarter of the change
+of `K`. In a chain each join adds at most a quarter of the change of `K`, and each passes on the
+change of its inputs with shares that add to one. ∎
+
+So a width that falls toward nothing where two bones run on from one another, and rises where
+they bend, can be had with a stated factor (`Λ` from how fast the width is made to change):
+dividing by that factor keeps the field a bound. Held by test
+(`a_join_of_changing_width_changes_by_a_quarter_of_it`). Which width, and how it is made from
+the skeleton, is 7.8's, which also finds the chain's factor `1 + Λ` whatever its length.
+
 **7.8. A width that falls where two bones run straight on.** A **joint** is two bones that
 meet end to end (a child's head at its parent's tail, or two children's heads at one place),
 each with its **outward direction** from the joint (`e` at a head, `−e` at a tail), and the
@@ -806,15 +810,20 @@ the body's everywhere but near a joint that runs on. Join the sorted values as i
 width `K(x)` at each point: that is `G`, and the body's field is `H = (G ∧ T) / (1 + Λ)` (and
 `G ∧ T` where no joint's width is under `K`). Then:
 
-1. `K(x)` changes by at most `Λ` a metre, and `0 ≤ K(x) ≤ K`.
+1. `K(x)` changes by at most `Λ` a metre, and `0 ≤ K(x) ≤ K`. **A group's width joins every seam
+   of the group:** the code joins `K` and at most 63 seams' widths (`caro::MAX_GROUP_SEAMS`, the
+   64 values of a join), so a body that would give one group more seams is refused when it is
+   made (`group_seams`, naming the group by its first bone, the count and the limit), never
+   built with some left out (before 2026-11-28 the rest were dropped, and a hub of twelve
+   children with widths of their own, 78 seams, changed its width by 4.49 a metre).
 2. For fixed values, `G` changes by at most the change of the width: `|∂G/∂K| ≤ 1`, **however
    many parts are joined** (7.7 alone gives `(n − 1)/4`).
 3. So `G` changes by at most `1 + Λ` a metre, and `H` by at most one: **`H` is 1-Lipschitz**
    and, as it has `G`'s sign and zeros, a bound for the joined body, both sides.
-4. 7.5 (2) and (4) and 7.6 hold as they stand with `K` the greatest width: the cull's `ε` is
-   still `T + 2K`, and it is still exact. (This is the form with one width a point; the body's
-   field joins groups first, "Where three or more bones meet" below, whose cull takes
-   `T + 5K`.)
+4. 7.5 (2) and (4) and 7.6 hold as they stand with `K` the greatest width, and the cull is still
+   exact. (This is the form with one width a point; the body's field joins groups first, "Where
+   three or more bones meet" below, by 7.9's join, whose cull takes `ε = T + 3K/2` at one level
+   and `T + 7K/2` with groups.)
 
 **The width as the body takes it, softened** (since 7.9). The least of the seams' widths and
 `K` has a corner where it takes over from one to another, and the distance to a disc a corner
@@ -1111,10 +1120,18 @@ vertex; the five builds in release with their levels took 0.83, 0.73, 0.21, 0.28
 before and 0.84, 0.68, 0.21, 0.29 and 0.30 s after (one run each: no difference shows).
 **What it does not mend:** the outline keeps the mesh's facets (a crease the mesher makes of a
 fillet still shows in silhouette, and the vertices stay where dual contouring put them); and a
-vertex whose faces turn from the field (a part thinner than a cell, a coarse level's cluster:
-4 of the biped's 11,002 full-level vertices, up to 22 on a coarse level) is shaded by the field
-against its faces. Held by `a_bodys_normals_are_its_fields_slope` and
-`shading_across_a_parting_turns_as_the_field_does`.
+vertex whose faces point more than 90 degrees from the field's slope is shaded by the field
+against its faces. On the biped's full level there are 4 of 11,002: the split corners of two
+triangles at the armpits, near (−0.176, 1.320, −0.036) and its mirror, which the mesher hands
+over turned (their faces turn 116 and 90 degrees from the field at their centroids); the
+renderer culls no back faces, so they now shade as the surface round them. On a coarse level
+(up to 22, the forked body's level 2) they are mostly vertices 2 to 4 mm inside the surface,
+whose faces are 30 to 55 degrees from the field but whose slope there points across a crease;
+these shade as facing away. Both are the mesher's, not the field's (the second review of the
+body, 2026-11-28). Held by `a_bodys_normals_are_its_fields_slope` and
+`shading_across_a_parting_turns_as_the_field_does`; the normals' work is charged before it is
+done (finding the parts near each vertex, then its six samples over them,
+`a_bodys_normals_are_charged_before_they_are_taken`).
 
 **What 7.3 to 7.6 do not say.**
 

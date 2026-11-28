@@ -150,6 +150,18 @@ fn hostile_body_recipes_are_refused_with_a_reason() {
     assert_eq!(refused(bones(&bone(r#""mirror": true"#))).0, ErrorCode::InvalidRig);
     let many: Vec<String> = (0..70).map(|i| format!(r#"{{ "name": "b{i}", "parent": "root", "head": [0, 0.5, 0], "tail": [0, 1, 0] }}"#)).collect();
     assert_eq!(refused(bones(&format!("{root}, {}", many.join(", ")))).0, ErrorCode::Limit);
+    // Twelve children whose heads meet, each with its own width: 78 seams in one group, past
+    // the 63 a group's width can join; refused at the group's first bone, with the count.
+    let round = [(1.0, 0.0), (0.866, 0.5), (0.5, 0.866), (0.0, 1.0), (-0.5, 0.866), (-0.866, 0.5), (-1.0, 0.0), (-0.866, -0.5), (-0.5, -0.866), (0.0, -1.0), (0.5, -0.866), (0.866, -0.5)];
+    let hub: Vec<String> = round
+        .iter()
+        .enumerate()
+        .map(|(i, (c, s))| format!(r#"{{ "name": "c{i}", "parent": "root", "head": [0, 0.5, 0], "tail": [{}, 0.7, {}], "smooth": 0.01, "sections": [[0, 0.03, 0.03], [1, 0.03, 0.03]] }}"#, 0.2 * c, 0.2 * s))
+        .collect();
+    let er = make(&bones(&format!("{root}, {}", hub.join(", ")))).expect_err("78 seams in one group");
+    assert_eq!((er.code, er.path.as_str(), er.measured, er.limit), (ErrorCode::Limit, "parts[0].shape.bones[0]", Some(78.0), Some(63.0)), "{}", er.message);
+    assert!(er.message.contains("group_seams") && er.message.contains("group of bone 0"), "{}", er.message);
+    assert!(make(&bones(&format!("{root}, {}", hub[..10].join(", ")))).is_ok(), "ten children: 55 seams build");
     assert_eq!(refused(arm(r#""smooth": 0.9,"#, "[0.72, 1.4, 0]")).0, ErrorCode::OutOfRange);
     assert_eq!(refused(arm(r#""fine": [{ "bone": "elbow" }],"#, "[0.72, 1.4, 0]")).0, ErrorCode::UnknownName);
 }

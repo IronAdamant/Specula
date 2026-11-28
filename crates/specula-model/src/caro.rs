@@ -136,13 +136,15 @@ pub struct Swell {
     pub radii: V3,
 }
 
-/// Why a body could not be made: a code, the bone or swell it is about, and the number that
-/// failed with its limits.
+/// Why a body could not be made: a code, the bone or swell it is about (or the group of 7.8,
+/// named by its first bone), and the number that failed with its limits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CaroError {
     pub code: &'static str,
     pub bone: Option<usize>,
     pub swell: Option<usize>,
+    /// The group (7.8: bones joined through seams) the refusal is about, by its first bone.
+    pub group: Option<usize>,
     pub measured: Option<f64>,
     pub limits: Option<(f64, f64)>,
 }
@@ -150,7 +152,9 @@ pub struct CaroError {
 impl std::fmt::Display for CaroError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "caro: {}", self.code)?;
-        if let Some(b) = self.bone {
+        if let Some(g) = self.group {
+            write!(f, " (the group of bone {g})")?;
+        } else if let Some(b) = self.bone {
             write!(f, " (bone {b})")?;
         }
         if let Some(s) = self.swell {
@@ -169,7 +173,7 @@ impl std::fmt::Display for CaroError {
 impl std::error::Error for CaroError {}
 
 fn fail(code: &'static str, bone: Option<usize>, swell: Option<usize>, measured: Option<f64>, limits: Option<(f32, f32)>) -> CaroError {
-    CaroError { code, bone, swell, measured, limits: limits.map(|(a, b)| (f64::from(a), f64::from(b))) }
+    CaroError { code, bone, swell, group: None, measured, limits: limits.map(|(a, b)| (f64::from(a), f64::from(b))) }
 }
 
 /// Which bone or swell a part of the body is.
@@ -957,6 +961,10 @@ impl Seam {
 
 /// Most joints in one body.
 pub const MAX_SEAMS: usize = 128;
+/// Most seams in one group (7.8 (1)): a group's width joins the body's and every seam of the
+/// group whose ball holds the point, at most [`MAX_PARTS`] values; a body that would give a
+/// group more is refused (`group_seams`), so that no seam's width is ever left out.
+pub const MAX_GROUP_SEAMS: usize = MAX_PARTS - 1;
 
 /// The seams of `joints` (7.8): of each whose width is under the body's `smooth`, the disc
 /// about it and its ball, worked out in `f64` and rounded the safe way.
@@ -1154,6 +1162,19 @@ impl Flesh {
         let scale = up(widest + 9.0 * k + t);
         let mut seams = make_seams(bones, &parts, &of, joints, smooth)?;
         let group = make_groups(parts.len(), &mut seams);
+        // 7.8 (1) holds only where every seam of a group can be joined into its width.
+        let mut count = [0usize; MAX_PARTS];
+        for s in &seams {
+            count[usize::from(s.group)] += 1;
+        }
+        if let Some(g) = count.iter().position(|&c| c > MAX_GROUP_SEAMS) {
+            // A seam joins two bones, so a group with seams is named by a bone.
+            let first = match of[g] {
+                PartOf::Bone(b) => Some(b),
+                PartOf::Swell(_) => None,
+            };
+            return Err(CaroError { group: first, bone: first, ..fail("group_seams", None, None, Some(count[g] as f64), Some((0.0, MAX_GROUP_SEAMS as f32))) });
+        }
         let grouped = !seams.is_empty();
         let reach = cull_reach(t, k, grouped);
         let div = if grouped { 1.0 + 0.5 * WIDTH_SLOPE } else { 1.0 };
@@ -1163,8 +1184,9 @@ impl Flesh {
 
     /// 7.8's width at `x` of each group (indexed by group): the body's, or less within one of
     /// that group's seams' balls, the seams' widths and the body's joined softly (7.9's join
-    /// at half the body's width, and at least 0), so that the width has a continuous slope.
-    /// `seams` rising indices into the body's seams, or every seam.
+    /// at [`WIDTH_SOFT`] of the body's width, an eighth, and at least 0), so that the width has
+    /// a continuous slope. `seams` rising indices into the body's seams, or every seam. No
+    /// seam is left out: a group has at most [`MAX_GROUP_SEAMS`] (refused when made).
     #[inline]
     fn widths(&self, x: V3, seams: Option<&[u16]>, out: &mut [f32; MAX_PARTS]) {
         let mut seen = [(0u8, 0.0f32); MAX_SEAMS];
@@ -1481,8 +1503,19 @@ impl Flesh {
     /// seams near `x` (`near` is scratch), which gives [`Flesh::value`]'s bits. `None` where
     /// the slope is under a millionth (held at `keep`, or a point where it has no direction).
     pub fn normal_at(&self, x: D3, near: &mut Vec<u16>) -> Option<V3> {
-        let h = f64::from(NORMAL_STEP);
+        self.normal_near(x, near);
+        self.normal_among(x, near)
+    }
+
+    /// The parts and seams [`Flesh::normal_at`] asks at `x` (into `near`): what its six samples
+    /// are charged by before they are taken.
+    pub fn normal_near(&self, x: D3, near: &mut Vec<u16>) {
         self.meets(f3(x), 2.0 * NORMAL_STEP, near);
+    }
+
+    /// [`Flesh::normal_at`] asking the list [`Flesh::normal_near`] gave at `x`.
+    pub fn normal_among(&self, x: D3, near: &[u16]) -> Option<V3> {
+        let h = f64::from(NORMAL_STEP);
         let mut g = [0.0f64; 3];
         for (c, gc) in g.iter_mut().enumerate() {
             let (mut a, mut b) = (x, x);

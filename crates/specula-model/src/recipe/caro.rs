@@ -189,7 +189,7 @@ fn caro_path(n: &Node, defs: &[BodyBone], swells: &[(usize, usize)], er: &caro::
 
 fn caro_error(n: &Node, defs: &[BodyBone], swells: &[(usize, usize)], er: caro::CaroError) -> RecipeError {
     let code = match er.code {
-        "too_many_parts" | "too_many_swells" | "too_many_joints" | "bone_sections" => ErrorCode::Limit,
+        "too_many_parts" | "too_many_swells" | "too_many_joints" | "group_seams" | "bone_sections" => ErrorCode::Limit,
         "point_bone_sections" | "profile_not_positive" | "no_flesh" | "joint_flesh" | "joint_point" | "joint_bone" => ErrorCode::Geometry,
         _ => ErrorCode::OutOfRange,
     };

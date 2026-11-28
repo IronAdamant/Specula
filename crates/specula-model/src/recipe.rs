@@ -1427,7 +1427,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     };
     let skin = rig.as_ref().map(|(r, _)| (r, &bindings[..]));
     charge(&tally, "parts", built.iter().map(|b| b.shape.positions.len() as u64).sum::<u64>() * crate::work::ASSEMBLE_VERTEX)?;
-    let (lod0, assembled) = assemble_counted(&built.iter().map(|b| (&b.shape, b)).collect::<Vec<_>>(), skin);
+    let (lod0, assembled) = assemble_counted(&built.iter().map(|b| (&b.shape, b)).collect::<Vec<_>>(), skin, &tally, "parts")?;
     lod0.validate().map_err(|er| e("parts", ErrorCode::InvalidMesh, er.to_string()))?;
     if lod0.triangle_count() == 0 {
         return Err(e("parts", ErrorCode::Geometry, "the model has no triangles (every part switched off?)"));
@@ -1499,7 +1499,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
             None => Err("no simplification keeps every part within tolerance"),
             Some((shapes, _cell)) => {
                 let pairs: Vec<(&Shape, &BuiltPart)> = shapes.iter().zip(&built).collect();
-                let mesh = assemble(&pairs, skin);
+                let mesh = assemble(&pairs, skin, &tally, &format!("lods[{i}]"))?;
                 mesh.validate().map_err(|er| e(&format!("lods[{i}]"), ErrorCode::InvalidMesh, er.to_string()))?;
                 if saves(&mesh) { Ok(mesh) } else { Err("saves under 10% over the previous LOD") }
             }
@@ -2083,7 +2083,7 @@ fn coarse_level(recipe: &Recipe, params: &BuildParams, seed: u64, built: &[Built
         return Ok(None);
     }
     let pairs: Vec<(&Shape, &BuiltPart)> = coarse.iter().map(|c| &c.shape).zip(built).collect();
-    let mesh = assemble(&pairs, skin);
+    let mesh = assemble(&pairs, skin, main, "lods")?;
     if mesh.validate().is_err() {
         return Ok(None);
     }
@@ -2129,8 +2129,11 @@ struct FieldNormals {
 
 impl FieldNormals {
     /// The field's normals on `m`'s vertices, and its tangents (where it has any) made square
-    /// to them again.
-    fn shade(&self, m: &mut MeshData) {
+    /// to them again. Charged to `tally` before it is done ([`crate::work`]): finding the parts
+    /// near every vertex first, then each vertex's six samples over its list before they are
+    /// taken; past the build's work it fails as any build does, at `path`.
+    fn shade(&self, m: &mut MeshData, tally: &Tally, path: &str) -> Result<(), RecipeError> {
+        charge(tally, path, (m.positions.len() as u64).saturating_mul(crate::sdf::body_normal_near_cost(&self.flesh)))?;
         let a = &self.to_part;
         let col = a.cols.map(|c| c.map(f64::from));
         let cross = |u: [f64; 3], v: [f64; 3]| [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
@@ -2139,13 +2142,15 @@ impl FieldNormals {
         let cof = [cross(col[1], col[2]), cross(col[2], col[0]), cross(col[0], col[1])];
         let det = dot(col[0], cof[0]);
         if det.is_nan() || det.abs() <= 1e-12 {
-            return;
+            return Ok(());
         }
         let mut near = Vec::new();
         for (i, y) in m.positions.iter().enumerate() {
             let d = [f64::from(y[0]) - f64::from(a.t[0]), f64::from(y[1]) - f64::from(a.t[1]), f64::from(y[2]) - f64::from(a.t[2])];
             let x = [dot(cof[0], d) / det, dot(cof[1], d) / det, dot(cof[2], d) / det];
-            if let Some(g) = self.flesh.normal_at(x, &mut near) {
+            self.flesh.normal_near(x, &mut near);
+            charge(tally, path, crate::sdf::body_normal_cost(&self.flesh, &near))?;
+            if let Some(g) = self.flesh.normal_among(x, &near) {
                 m.normals[i] = a.apply_normal(g);
             }
         }
@@ -2154,24 +2159,26 @@ impl FieldNormals {
             let s = math3::normalize([t[0] - along * n[0], t[1] - along * n[1], t[2] - along * n[2]]);
             (t[0], t[1], t[2]) = (s[0], s[1], s[2]);
         }
+        Ok(())
     }
 }
 
 /// Meshes every part and merges them by material. With a rig, each part's vertices are bound
-/// to its bones (`skin.1[k]` belongs to `parts[k]`).
-fn assemble(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Binding])>) -> MeshData {
-    assemble_counted(parts, skin).0
+/// to its bones (`skin.1[k]` belongs to `parts[k]`). A body's normals are charged to `tally`
+/// ([`FieldNormals::shade`], at `path`).
+fn assemble(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Binding])>, tally: &Tally, path: &str) -> Result<MeshData, RecipeError> {
+    Ok(assemble_counted(parts, skin, tally, path)?.0)
 }
 
 /// [`assemble`], with each part's vertices as assembled (split where its faces turn past its
 /// smooth angle and at its texture's seams).
-fn assemble_counted(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Binding])>) -> (MeshData, Vec<usize>) {
+fn assemble_counted(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Binding])>, tally: &Tally, path: &str) -> Result<(MeshData, Vec<usize>), RecipeError> {
     let mut mesh = MeshData::default();
     let mut counts = Vec::with_capacity(parts.len());
     for (k, (shape, info)) in parts.iter().enumerate() {
         let mut m = shape.finalize_with_uvs(info.smooth_angle, &info.material, info.uv_scale);
         if let Some(field) = &info.field {
-            field.shade(&mut m);
+            field.shade(&mut m, tally, path)?;
         }
         if let Some((rig, binds)) = skin {
             let (j, w) = if binds[k].radii.is_empty() {
@@ -2186,7 +2193,7 @@ fn assemble_counted(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Bindin
         mesh.merge(&m);
     }
     mesh.group_by_material();
-    (mesh, counts)
+    Ok((mesh, counts))
 }
 
 // (One scheme for every stream drawn by name: the core's, which a kind's numbers use too.)

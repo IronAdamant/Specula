@@ -2060,6 +2060,23 @@ fn body_cost(b: &crate::caro::Carnis) -> u64 {
     BODY_WEIGHTS[0] + kinds[0] * BODY_WEIGHTS[1] + kinds[1] * BODY_WEIGHTS[2] + kinds[2] * BODY_WEIGHTS[3] + seams * BODY_WEIGHTS[4]
 }
 
+/// What finding the parts and seams near one vertex of a body asks before its normal is taken
+/// (DISTANCE_FIELDS.md 7.10): every part's capsule and every seam's ball, [`BODY_CAPSULE`] each.
+pub(crate) fn body_normal_near_cost(f: &crate::caro::Flesh) -> u64 {
+    BODY_CAPSULE * (f.parts() + f.seams()) as u64
+}
+
+/// What one vertex normal of a body asks past finding its list `near`: the six samples of its
+/// central differences, each a primitive's 48 and [`body_cost`]'s weights over the list.
+pub(crate) fn body_normal_cost(f: &crate::caro::Flesh, near: &[u16]) -> u64 {
+    let parts = f.parts();
+    let one = near.iter().fold(48 + BODY_WEIGHTS[0], |sum, &i| {
+        let i = usize::from(i);
+        sum + if i < parts { BODY_WEIGHTS[1 + f.part_kind(i)] } else { BODY_WEIGHTS[4] }
+    });
+    6 * one
+}
+
 /// A body's range past its evaluation: each part's capsule in its list ([`BODY_CAPSULE`]).
 fn body_range_cost(b: &crate::caro::Carnis) -> u64 {
     let (kinds, _) = b.kinds_asked();

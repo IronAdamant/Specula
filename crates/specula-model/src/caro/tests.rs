@@ -405,29 +405,42 @@ fn every_part_changes_no_faster_than_its_bound() {
     assert!(worst_psi > 0.5 && worst32 > 0.5, "{worst_psi} {worst32}");
 }
 
-/// The surface of a part, sampled densely: its sections along the shaft and its caps.
-fn surface(b: &Shaft) -> Vec<D3> {
-    let p = match b.gauge {
+fn gauge_power(b: &Shaft) -> f64 {
+    match b.gauge {
         Gauge::Two => 2.0,
         Gauge::Four => 4.0,
         Gauge::Eight => 8.0,
         Gauge::Power(p, _) => f64::from(p),
-    };
-    let pow = |c: f64, e: f64| if c == 0.0 { 0.0 } else { c.signum() * dmath::exp_f64(e * dmath::ln_f64(c.abs())) };
-    let ring = |a: f64, bb: f64, k: usize, of: usize| {
-        let (s, c) = dmath::sin_cos_f64(2.0 * dmath::PI * k as f64 / of as f64);
-        (a * pow(c, 2.0 / p), bb * pow(s, 2.0 / p))
-    };
+    }
+}
+
+/// The point of a bone's section at `t` that way `theta` from its axis, by its polar form: at
+/// the radius `1 / N_p(cos/A, sin/B)`, so that points lie evenly by angle at any `p`.
+fn section_point(b: &Shaft, t: f64, theta: f64) -> (f64, f64) {
+    let (a, bb) = ref_sizes(b, t);
+    let (s, c) = dmath::sin_cos_f64(theta);
+    let r = 1.0 / ref_gauge(gauge_power(b), c.abs() / a, s.abs() / bb);
+    (r * c, r * s)
+}
+
+/// A bone's local frame (origin, axes) as a map from `(t, u, v)` to a point.
+fn bone_at(b: &Shaft, t: f64, u: f64, v: f64) -> D3 {
     let (o, fr) = (d3(b.origin), b.frame.map(d3));
-    let at = |t: f64, u: f64, v: f64| add(add(add(o, dscale(fr[0], t)), dscale(fr[1], u)), dscale(fr[2], v));
+    add(add(add(o, dscale(fr[0], t)), dscale(fr[1], u)), dscale(fr[2], v))
+}
+
+/// The surface of a part, sampled densely: its sections along the shaft (by angle, evenly,
+/// [`section_point`]) and its caps.
+fn surface(b: &Shaft) -> Vec<D3> {
+    let at = |t: f64, u: f64, v: f64| bone_at(b, t, u, v);
+    let ring = |t: f64, k: usize, of: usize| section_point(b, t, 2.0 * dmath::PI * k as f64 / of as f64);
     let (t0, t1) = (f64::from(b.t0), f64::from(b.t1));
     let mut out = Vec::new();
     const ROUND: usize = 128;
     for i in 0..=96 {
         let t = t0 + (t1 - t0) * i as f64 / 96.0;
-        let (a, bb) = ref_sizes(b, t);
         for k in 0..ROUND {
-            let (u, v) = ring(a, bb, k, ROUND);
+            let (u, v) = ring(t, k, ROUND);
             out.push(at(t, u, v));
         }
     }
@@ -438,7 +451,7 @@ fn surface(b: &Shaft) -> Vec<D3> {
         for j in 1..=24 {
             let (_, c) = dmath::sin_cos_f64(0.5 * dmath::PI * j as f64 / 24.0);
             for k in 0..ROUND {
-                let (u, v) = ring(a, bb, k, ROUND);
+                let (u, v) = ring(end, k, ROUND);
                 // The tilted cap (7.3): `(ℓ − σ)² + w² = 1 + σ²` past the end, `w` from 1 to 0.
                 let l = sigma + (1.0 + sigma * sigma - c * c).sqrt();
                 out.push(at(end + sign * m * l, c * u, c * v));
@@ -448,17 +461,70 @@ fn surface(b: &Shaft) -> Vec<D3> {
     out
 }
 
+/// The distance from `x` to the nearest of a bone's surface points found three ways, each a
+/// point of the surface (so never nearer than it): the dense cloud ([`surface`]); the nearest
+/// cloud point on the shaft refined by halving steps along the bone and round it; and the point
+/// of the section at `x`'s own place along the bone (held to the shaft) that way round.
+fn to_bone_surface(b: &Shaft, pts: &[D3], x: D3) -> f64 {
+    let d_of = |t: f64, theta: f64| {
+        let (u, v) = section_point(b, t, theta);
+        dlen(dsub(bone_at(b, t, u, v), x))
+    };
+    let (t0, t1) = (f64::from(b.t0), f64::from(b.t1));
+    let cloud = pts.iter().map(|p| dlen(dsub(*p, x))).fold(f64::INFINITY, f64::min);
+    let d = dsub(x, d3(b.origin));
+    let l = [ddot(d, d3(b.frame[0])), ddot(d, d3(b.frame[1])), ddot(d, d3(b.frame[2]))];
+    let own = l[0].clamp(t0, t1);
+    let theta = dmath::atan2_f64(l[2], l[1]);
+    let radial = d_of(own, theta);
+    // From the nearest of the cloud's shaft points (its first 97 rings of 128, [`surface`]),
+    // halving steps along and round.
+    let (mut bt, mut bth, mut best) = (own, theta, radial);
+    let (at, dd) = pts[..97 * 128].iter().enumerate().map(|(j, p)| (j, dlen(dsub(*p, x)))).fold((0, f64::INFINITY), |a, b| if b.1 < a.1 { b } else { a });
+    if dd < best {
+        (bt, bth, best) = (t0 + (t1 - t0) * (at / 128) as f64 / 96.0, 2.0 * dmath::PI * (at % 128) as f64 / 128.0, dd);
+    }
+    let (mut st, mut sth) = ((t1 - t0) / 96.0, 2.0 * dmath::PI / 128.0);
+    for _ in 0..60 {
+        let mut moved = false;
+        for (dt, dth) in [(st, 0.0), (-st, 0.0), (0.0, sth), (0.0, -sth)] {
+            let t = (bt + dt).clamp(t0, t1);
+            let dd = d_of(t, bth + dth);
+            if dd < best {
+                (bt, bth, best, moved) = (t, bth + dth, dd, true);
+            }
+        }
+        if !moved {
+            st *= 0.5;
+            sth *= 0.5;
+        }
+    }
+    cloud.min(radial).min(best)
+}
+
 /// 7.3 (3): a bone's field never exceeds the distance to its surface, outside or inside,
-/// against the nearest of its surface's points sampled densely (which is never nearer than
-/// the surface). Also says how short it reads (measured, not asserted).
+/// against the nearest of its surface points ([`to_bone_surface`]: a cloud placed evenly by
+/// angle, a refined nearest point and the point that way round, none ever nearer than the
+/// surface). A quarter of the bones are round and of one size, where the field is the distance
+/// itself, so a field a hundredth too steep fails (the first review's finding 3: a cloud placed
+/// by `|cos|^{2/p}` and not refined read the distance up to half its spacing long, centimetres
+/// on a long bone). Also says how short it reads (measured, not asserted).
 #[test]
 fn a_bones_field_never_exceeds_the_distance_to_its_surface() {
     let mut r = Rng(0xCA20_0002);
-    let (mut checked, mut inside, mut least_ratio) = (0, 0, f64::INFINITY);
-    for _ in 0..200 {
+    let (mut checked, mut inside, mut least_ratio, mut tight) = (0, 0, f64::INFINITY, 0.0f64);
+    for i in 0..200 {
         let f = loop {
             let f = one(&mut r);
-            if matches!(f.parts[0], Part::Bone(_)) {
+            if i % 4 == 0 {
+                let mut bone = random_bone(&mut r);
+                let s = r.log(0.01, 0.1) as f32;
+                bone.sections = vec![[0.0, s, s]];
+                bone.square = 2.0;
+                if let Ok(f) = Flesh::new(&[bone], &[], 0.0, 0.05) {
+                    break f;
+                }
+            } else if matches!(f.parts[0], Part::Bone(_)) {
                 break f;
             }
         };
@@ -467,9 +533,12 @@ fn a_bones_field_never_exceeds_the_distance_to_its_surface() {
         for _ in 0..25 {
             let x = near_part(&mut r, &f, 0);
             let xd = d3(x);
-            let d = pts.iter().map(|p| dlen(dsub(*p, xd))).fold(f64::INFINITY, f64::min);
+            let d = to_bone_surface(b, &pts, xd);
             let v = f64::from(f.part_field(0, x));
             assert!(v.abs() <= d + f64::from(f.slack(x)), "field {v} where the surface is at most {d} away ({x:?})");
+            if d > 0.01 {
+                tight = tight.max(v.abs() / d);
+            }
             if v < 0.0 {
                 inside += 1;
             } else if d > 1e-3 * f64::from(b.radius) {
@@ -480,11 +549,15 @@ fn a_bones_field_never_exceeds_the_distance_to_its_surface() {
     }
     assert!(checked == 5000 && inside > 200, "{inside} of {checked} inside");
     assert!(least_ratio > 0.0, "outside, the field is above nothing ({least_ratio})");
+    assert!(tight > 0.99, "somewhere the field is the distance ({tight}), so a steeper one fails");
 }
 
-/// 7.3 (3) and its words: the zero set is exactly the sections (along each station's two
-/// axes, at the middle of each piece against the profile) and the caps (along the axis past
-/// each end, at `m` of that end), to within `4 L ρ σ` in `f32`.
+/// 7.3 (3) and its words: the zero set is exactly the sections (in twelve directions across
+/// each station and the middle of each piece, the two axes, the four diagonals and six at
+/// random, against `1 / N_p(cos/A, sin/B)` of the profile there) and the caps (along the axis
+/// past each end, at `m` of that end), to within `L ρ σ` in `f32` (as the page says; `σ` the
+/// slack at the point, in the body's own frame). A capsule that misses a square section's
+/// corners fails it (the first review's seeded fault).
 #[test]
 fn a_bones_surface_is_its_sections_and_caps() {
     let mut r = Rng(0xCA20_0003);
@@ -515,18 +588,29 @@ fn a_bones_surface_is_its_sections_and_caps() {
             0.5 * (lo + hi)
         };
         let lip = f64::from(b.lip);
-        let tol = |a: f64, bb: f64, x: V3| 4.0 * lip * (a.max(bb) / a.min(bb)).max(1.4143) * f64::from(f.slack(x)) + 1e-6 * a.max(bb);
+        let tol = |a: f64, bb: f64, x: V3| lip * (a.max(bb) / a.min(bb)).max(1.4143) * f64::from(f.slack(x)) + 1e-6 * a.max(bb);
         let far = 2.0 * f64::from(b.radius) + 0.01;
+        let p = match b.gauge {
+            Gauge::Two => 2.0,
+            Gauge::Four => 4.0,
+            Gauge::Eight => 8.0,
+            Gauge::Power(p, _) => f64::from(p),
+        };
         let mut stations: Vec<f64> = b.stations[..b.count].iter().map(|&s| f64::from(s)).collect();
         let middles: Vec<f64> = stations.windows(2).map(|w| 0.5 * (w[0] + w[1])).collect();
         stations.extend(middles);
         for t in stations {
             let (a, bb) = ref_sizes(b, t);
-            let u = zero((t, 0.0, 0.0), (0.0, 1.0, 0.0), far);
-            let v = zero((t, 0.0, 0.0), (0.0, 0.0, 1.0), far);
-            let x = at(t, a, 0.0);
-            assert!((u - a).abs() <= tol(a, bb, x) && (v - bb).abs() <= tol(a, bb, x), "at {t}: {u} for {a}, {v} for {bb}");
-            worst = worst.max((u - a).abs()).max((v - bb).abs());
+            for j in 0..12 {
+                let theta = if j < 8 { f64::from(j) * dmath::PI / 4.0 } else { r.range(0.0, 2.0 * dmath::PI) };
+                let (s, c) = dmath::sin_cos_f64(theta);
+                // The section's radius that way: `N_p` of its point at radius 1, inverted.
+                let want = 1.0 / ref_gauge(p, c.abs() / a, s.abs() / bb);
+                let got = zero((t, 0.0, 0.0), (0.0, c, s), far);
+                let x = at(t, want * c, want * s);
+                assert!((got - want).abs() <= tol(a, bb, x), "at {t}, {theta} rad: {got} for {want} ({a} by {bb}, p {p})");
+                worst = worst.max((got - want).abs());
+            }
         }
         for (side, (end, sign)) in [(f64::from(b.t0), -1.0), (f64::from(b.t1), 1.0)].into_iter().enumerate() {
             let sigma = f64::from(b.cap[side]);
@@ -820,6 +904,87 @@ fn the_width_falls_to_nothing_as_two_bones_come_into_line() {
     assert!((straight.width_at([0.0, 0.25, 0.0]) - 0.02).abs() < 1e-7, "far along, the body's");
     let bent = line(90.0);
     assert_eq!((bent.seams(), bent.divisor()), (0, 1.0), "a joint bent past 40 degrees keeps the body's width");
+}
+
+/// 7.8's width for a step in size ([`step_share`], [`FULL_STEP`]: all of `K` from a tenth, the
+/// engine's own estimate): two round bones straight on, untapered, the second's sections smaller
+/// by nothing, a twentieth, a tenth and a half. The joint's width is `K` times the smooth step of
+/// the step over a tenth: nothing, a half, the whole (no seam) and the whole.
+#[test]
+fn a_step_in_size_takes_its_share_of_the_width() {
+    let k = 0.02f32;
+    let seam = |step: f32| {
+        let (a, b) = (0.05f32, 0.05 * (1.0 - step));
+        let bones = vec![
+            Bone { head: [0.0, -0.3, 0.0], tail: [0.0; 3], side: None, square: 2.0, sections: vec![[0.0, a, a], [1.0, a, a]] },
+            Bone { head: [0.0; 3], tail: [0.0, 0.3, 0.0], side: None, square: 2.0, sections: vec![[0.0, b, b], [1.0, b, b]] },
+        ];
+        let f = Flesh::jointed(&bones, &[], k, 0.05, &joints_of(&bones, &[None, Some(0)])).unwrap();
+        f.seams.first().map(|s| s.width)
+    };
+    assert_eq!(seam(0.0), Some(0.0), "one size straight on: no width");
+    let half = seam(0.05).expect("a twentieth: a seam");
+    assert!((f64::from(half) - 0.5 * f64::from(k)).abs() < 1e-6, "a twentieth: half the width, {half}");
+    assert_eq!(seam(0.1), None, "a tenth: the whole width (no seam)");
+    assert_eq!(seam(0.5), None, "a half: the whole width (no seam)");
+    for (step, share) in [(0.0, 0.0), (0.05, 0.5), (0.1, 1.0), (0.5, 1.0)] {
+        let s = step_share([0.05, 0.05], [0.05 * (1.0 - step), 0.05 * (1.0 - step)]);
+        assert!((s - share).abs() < 1e-5, "step {step}: share {s}, not {share}");
+    }
+}
+
+/// A hub: a root and twelve children whose heads meet at its tail, each child with its own
+/// width (a recipe's `smooth`), so every joint is a seam: 12 of parent and child and 66 of two
+/// children, all one group; the first `take` of them.
+fn hub_of_seams(take: usize) -> Result<Flesh, CaroError> {
+    let round = |r: f32| vec![[0.0, r, r], [1.0, r, r]];
+    let mut bones = vec![Bone { head: [0.0, -0.3, 0.0], tail: [0.0; 3], side: None, square: 2.0, sections: round(0.04) }];
+    for i in 0..12 {
+        // Twelve directions over the upper half (a spiral), none along the root.
+        let z = 0.1 + 0.85 * (f64::from(i) + 0.5) / 12.0;
+        let (s, c) = dmath::sin_cos_f64(2.399_963 * f64::from(i));
+        let w = (1.0 - z * z).sqrt();
+        bones.push(Bone { head: [0.0; 3], tail: f3(dscale([w * c, z, w * s], 0.2)), side: None, square: 2.0, sections: round(0.03) });
+    }
+    let parents: Vec<Option<usize>> = (0..13).map(|i| (i > 0).then_some(0)).collect();
+    let mut joints = joints_of(&bones, &parents);
+    assert_eq!(joints.len(), 78, "12 of parent and child, 66 of two children");
+    joints.truncate(take);
+    joints.iter_mut().for_each(|j| j.smooth = Some(0.01));
+    Flesh::jointed(&bones, &[], 0.04, 0.05, &joints)
+}
+
+/// 7.8 (1) and its limit: a group of [`MAX_GROUP_SEAMS`] seams that all hold the hub builds,
+/// and its width changes by at most `Λ` a metre along 300 rays from the hub at 0.1 mm steps
+/// (the second review's probe, where 78 seams, then dropped past 63, changed it by 4.49); one
+/// seam more is refused when the body is made, by name, with the group, the count and the limit.
+#[test]
+fn a_groups_seams_are_all_in_its_width_or_the_body_is_refused() {
+    let f = hub_of_seams(MAX_GROUP_SEAMS).expect("63 seams in one group build");
+    assert_eq!(f.seams(), MAX_GROUP_SEAMS);
+    let mut near = Vec::new();
+    f.meets([0.0; 3], 0.0, &mut near);
+    assert_eq!(near.iter().filter(|&&i| usize::from(i) >= f.parts()).count(), MAX_GROUP_SEAMS, "every seam's ball holds the hub");
+    let mut r = Rng(0xCA20_0040);
+    let mut most = 0.0f64;
+    for _ in 0..300 {
+        let dir = r.dir();
+        let mut last = f.width_at([0.0; 3]);
+        for k in 1..=1500 {
+            let x = f3(dscale(dir, 1e-4 * f64::from(k)));
+            let w = f.width_at(x);
+            let step = dist(x, f3(dscale(dir, 1e-4 * f64::from(k - 1))));
+            // The width's own rounding: a few units of its last place over the step.
+            let change = (f64::from(w) - f64::from(last)).abs() - 4.0 * f64::from(f32::EPSILON) * f64::from(f.smooth);
+            most = most.max(change / step);
+            last = w;
+        }
+    }
+    assert!(most <= f64::from(WIDTH_SLOPE) * (1.0 + 1e-3), "the width changed by {most} a metre (Λ {WIDTH_SLOPE})");
+    let er = hub_of_seams(MAX_GROUP_SEAMS + 1).expect_err("64 seams in one group are refused");
+    assert_eq!((er.code, er.group, er.bone), ("group_seams", Some(0), Some(0)), "{er}");
+    assert_eq!((er.measured, er.limits), (Some(64.0), Some((0.0, MAX_GROUP_SEAMS as f64))), "{er}");
+    assert_eq!(hub_of_seams(78).expect_err("78 are refused").measured, Some(78.0));
 }
 
 /// 7.8: chains of round bones of one size run straight on through two joints have no ring:
@@ -1268,6 +1433,57 @@ fn the_culled_field_is_the_whole_field() {
     }
 }
 
+/// 7.9's cull with groups at its stated reach (`ε = T + 7K/2`, [`Flesh::reach`]; the second
+/// review's finding 3): the parts' values put where the proof's cases meet, the least just under
+/// `ε − 5K/2` or above it, whole groups just over `ε − K`, values just inside and just past `ε`
+/// (each part's capsule taken as its value, the nearest it can be), at points near the five
+/// jointed skeletons and the hubs, where their seams' widths act. Dropping every value past `ε`
+/// gives the whole join bit for bit, and the case is met: values past `ε` that the whole join
+/// of their group takes in, and joins that fall below the held level.
+#[test]
+fn the_grouped_cull_is_exact_at_its_reach() {
+    let mut r = Rng(0xCA20_0041);
+    let (mut asked, mut taken_in, mut under) = (0u32, 0u32, 0u32);
+    let mut bodies: Vec<Flesh> = BODIES.iter().map(|n| jointed(n)).collect();
+    bodies.extend((0..60).map(|_| hub(&mut r).0).filter(|f| !f.seams.is_empty()));
+    for f in &bodies {
+        assert!(!f.seams.is_empty());
+        let (eps, k) = (f64::from(f.reach), f64::from(f.smooth));
+        let n = f.parts.len();
+        for _ in 0..4000 {
+            let x = near(&mut r, f);
+            // A few levels a body, so that values tie (the deepest joins) and groups straddle `ε`.
+            let low = eps - k * if r.unit() < 0.5 { 2.5 + r.range(-0.05, 0.05) } else { r.range(1.0, 4.0) };
+            let levels: Vec<f64> = (0..4).map(|_| eps + k * r.range(-1.0, 1.0)).collect();
+            let mut values = [0.0f32; MAX_PARTS];
+            for v in values.iter_mut().take(n) {
+                *v = (if r.unit() < 0.25 { low } else { levels[r.pick(4)] + k * r.range(-0.02, 0.02) }) as f32;
+            }
+            let mut all = values;
+            let whole = f.joined(&mut all[..n], &f.group, x, None);
+            let (mut kept, mut tags) = (Vec::new(), Vec::new());
+            for i in 0..n {
+                if values[i] <= f.reach {
+                    kept.push(values[i]);
+                    tags.push(f.group[i]);
+                }
+            }
+            let culled = f.joined(&mut kept, &tags, x, None);
+            assert!(culled.to_bits() == whole.to_bits(), "culled {culled}, whole {whole} at {x:?}: {:?}", &values[..n]);
+            asked += 1;
+            under += u32::from(whole < f.keep / f.div);
+            for i in 0..n {
+                let least = (0..n).filter(|&j| f.group[j] == f.group[i] && values[j] <= f.reach).map(|j| values[j]).fold(f32::INFINITY, f32::min);
+                if values[i] > f.reach && f64::from(values[i] - least) < k {
+                    taken_in += 1;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(taken_in > asked / 20 && under > asked / 20, "the case: {taken_in} of {asked} lists with a dropped value within its group's width, {under} joins under the held level");
+}
+
 /// A hub: a root bone ending at one point and six to forty bones starting within a tenth of the
 /// width of it, some near straight on from the root and of its size (seams whose widths differ
 /// with their bends: 7.8), some carried on by a second bone (groups), sections of about the
@@ -1462,23 +1678,39 @@ fn the_capsule_takes_over_beyond_where_joins_act() {
 }
 
 /// 7.6, "Over a ball": over a million balls (five skeletons and random bodies; centres in
-/// their boxes and near their bones; radii from a hair to half a metre), two samples each,
-/// one on the rim: every value lies in the ball's range, every part a sample asks is among
-/// those [`Flesh::meets`] gives, and asking only those gives the same value.
+/// their boxes and near their bones; radii from a hair to half a metre), three samples each,
+/// two on the rim along and against the field's slope at the centre (where the field moves
+/// most, by nearly the radius) and one within: every value lies in the ball's range, every part
+/// a sample asks is among those [`Flesh::meets`] gives, and asking only those gives the same
+/// value. The control: the same range without its slack fails there (the first review's
+/// finding 1: a rim sample in a random direction moves the field by about `r cos θ`, and so
+/// the range held with its slack at zero).
 #[test]
 fn a_range_over_a_ball_holds_every_value_in_it() {
     let mut r = Rng(0xCA20_0007);
     let mut among = Vec::new();
-    let ball = |f: &Flesh, o: V3, rad: f32, r: &mut Rng, among: &mut Vec<u16>| {
+    let mut bare_fails = 0u32;
+    let mut ball = |f: &Flesh, o: V3, rad: f32, r: &mut Rng, among: &mut Vec<u16>| {
         let (lo, hi) = f.range(o, rad);
         assert!(lo <= hi, "{lo} {hi}");
+        // The range as `Flesh::range` takes it, with no slack.
+        let h = f.value(o);
+        let least = f.parts.iter().map(|p| p.capsule(p.local(o))).fold(f32::INFINITY, f32::min);
+        let bare = ((h - rad).max((least - rad - f.fall).min(f.keep) / f.div), (h + rad).min(f.keep / f.div));
         f.meets(o, rad, among);
-        for k in 0..2 {
-            let reach = if k == 0 { f64::from(rad) } else { f64::from(rad) * r.unit() };
-            let y = f3(add(d3(o), dscale(r.dir(), reach)));
+        let g = slope_at(f, d3(o));
+        let along = if g.iter().all(|c| c.is_finite()) && dlen(g) > 0.5 { g } else { r.dir() };
+        for k in 0..3 {
+            let (dir, reach) = match k {
+                0 => (along, f64::from(rad)),
+                1 => (dscale(along, -1.0), f64::from(rad)),
+                _ => (r.dir(), f64::from(rad) * r.unit()),
+            };
+            let y = f3(add(d3(o), dscale(dir, reach)));
             let v = f.value(y);
             assert!(v >= lo && v <= hi, "{v} outside [{lo}, {hi}] for the ball {o:?}, {rad}");
             assert!(f.value_among(y, among) == v, "the ball's parts give the value");
+            bare_fails += u32::from(v < bare.0 || v > bare.1);
         }
     };
     let mut balls = 0u32;
@@ -1501,6 +1733,7 @@ fn a_range_over_a_ball_holds_every_value_in_it() {
             balls += 1;
         }
     }
+    assert!(bare_fails > 1000, "without its slack the range fails at {bare_fails} samples");
 }
 
 /// A far ball's range is above nothing without asking a field: the capsules' bound prunes it.
@@ -1885,10 +2118,11 @@ const NORMAL_ERROR: f64 = 0.5;
 /// there for its normal**, to within [`NORMAL_ERROR`]. With its faces' normals (before,
 /// 2026-11-28, at `f83ea6e6`) the most was, at the full level and at any level: biped 129.5 and
 /// 129.5 degrees, quadruped 53.9 and 126.4, serpent 37.4 and 98.4, forked 107.9 and 109.5,
-/// pelvis_legs 57.8 and 131.2. (Past 90 degrees, a vertex whose faces turn from the field's
-/// slope: where a part is thinner than a cell, or a coarse level's cluster. After, the faces of
-/// 4 of the biped's full-level vertices, and of up to 22 on a coarse level, turn from the
-/// stored normal by more than 90 degrees; measured 2026-11-28.)
+/// pelvis_legs 57.8 and 131.2. (After, the faces of 4 of the biped's full-level vertices, and
+/// of up to 22 on a coarse level, turn from the stored normal by more than 90 degrees, measured
+/// 2026-11-28: at the full level the split corners of two triangles at the armpits that the
+/// mesher hands over turned; on a coarse level mostly vertices 2 to 4 mm inside the surface
+/// whose slope points across a crease. The mesher's, DISTANCE_FIELDS.md 7.10.)
 #[test]
 fn a_bodys_normals_are_its_fields_slope() {
     let mut worst = Vec::new();
