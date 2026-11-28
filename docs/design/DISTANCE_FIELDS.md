@@ -1097,6 +1097,25 @@ degrees at one, a half and a quarter of the cell. The sculpt's grid is at most 1
 side, so a body of 1.8 m gets cells of 11 mm at best; a fillet of a few millimetres is made a
 crease by the mesher at any resolution it allows.
 
+**7.10. A body's normals are its field's slope** (2026-11-28). Each vertex of a body's mesh, at
+every level, takes for its normal the field's slope there made unit (central differences 0.1 mm
+apart, `Flesh::normal_at`; the field is set beside the part and follows its moves, turns, scales
+and mirrors, and a part with any other operation keeps its faces' normals). **Why it is right:**
+the field is smooth where the joins act (7.9 (5)) and along each part but at the few breaks
+listed below, so its slope is the surface's own normal, and a fillet narrower than a cell shades
+as the round it is (at a break, the differences give the mean of its two sides' slopes). Against its
+faces' normals before, the most angle from the field's slope was 129.5 degrees (biped), 126.4
+(quadruped), 98.4 (serpent), 109.5 (forked) and 131.2 (`pelvis_legs`) at some level; after,
+0.44 at one vertex of the biped and under 0.09 everywhere else. **What it costs:** six values a
+vertex; the five builds in release with their levels took 0.83, 0.73, 0.21, 0.28 and 0.33 s
+before and 0.84, 0.68, 0.21, 0.29 and 0.30 s after (one run each: no difference shows).
+**What it does not mend:** the outline keeps the mesh's facets (a crease the mesher makes of a
+fillet still shows in silhouette, and the vertices stay where dual contouring put them); and a
+vertex whose faces turn from the field (a part thinner than a cell, a coarse level's cluster:
+4 of the biped's 11,002 full-level vertices, up to 22 on a coarse level) is shaded by the field
+against its faces. Held by `a_bodys_normals_are_its_fields_slope` and
+`shading_across_a_parting_turns_as_the_field_does`.
+
 **What 7.3 to 7.6 do not say.**
 
 - The field is no distance: it reads short by `L ρ` near a flat bone and by `R − m` far out,

@@ -2112,6 +2112,49 @@ struct BuiltPart {
     blend: Option<f32>,
     /// Box-projected UVs at this many metres per repeat (textured parts).
     uv_scale: Option<f32>,
+    /// A body's field, where this part is one: its mesh's vertex normals are the field's.
+    field: Option<FieldNormals>,
+}
+
+/// A body's field kept with its part (DISTANCE_FIELDS.md 7.10): every level's vertex normals
+/// are the field's slope at the vertex, not its faces'. `to_part` is the transform from the
+/// field's frame to the part's, the part's operations and the recipe's `finish` as they are
+/// followed ([`Ctx::terrain_transform`]); where one cannot be followed (anything but a move,
+/// a turn, a scale or a mirror), the part keeps its faces' normals.
+#[derive(Clone, Debug)]
+struct FieldNormals {
+    flesh: std::sync::Arc<crate::caro::Flesh>,
+    to_part: Affine,
+}
+
+impl FieldNormals {
+    /// The field's normals on `m`'s vertices, and its tangents (where it has any) made square
+    /// to them again.
+    fn shade(&self, m: &mut MeshData) {
+        let a = &self.to_part;
+        let col = a.cols.map(|c| c.map(f64::from));
+        let cross = |u: [f64; 3], v: [f64; 3]| [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        let dot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+        // The inverse's rows are the cofactors over the determinant.
+        let cof = [cross(col[1], col[2]), cross(col[2], col[0]), cross(col[0], col[1])];
+        let det = dot(col[0], cof[0]);
+        if det.is_nan() || det.abs() <= 1e-12 {
+            return;
+        }
+        let mut near = Vec::new();
+        for (i, y) in m.positions.iter().enumerate() {
+            let d = [f64::from(y[0]) - f64::from(a.t[0]), f64::from(y[1]) - f64::from(a.t[1]), f64::from(y[2]) - f64::from(a.t[2])];
+            let x = [dot(cof[0], d) / det, dot(cof[1], d) / det, dot(cof[2], d) / det];
+            if let Some(g) = self.flesh.normal_at(x, &mut near) {
+                m.normals[i] = a.apply_normal(g);
+            }
+        }
+        for (t, n) in m.tangents.iter_mut().zip(&m.normals) {
+            let along = t[0] * n[0] + t[1] * n[1] + t[2] * n[2];
+            let s = math3::normalize([t[0] - along * n[0], t[1] - along * n[1], t[2] - along * n[2]]);
+            (t[0], t[1], t[2]) = (s[0], s[1], s[2]);
+        }
+    }
 }
 
 /// Meshes every part and merges them by material. With a rig, each part's vertices are bound
@@ -2127,6 +2170,9 @@ fn assemble_counted(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Bindin
     let mut counts = Vec::with_capacity(parts.len());
     for (k, (shape, info)) in parts.iter().enumerate() {
         let mut m = shape.finalize_with_uvs(info.smooth_angle, &info.material, info.uv_scale);
+        if let Some(field) = &info.field {
+            field.shade(&mut m);
+        }
         if let Some((rig, binds)) = skin {
             let (j, w) = if binds[k].radii.is_empty() {
                 rig.bind(&m.positions, &binds[k].bones, binds[k].blend)
@@ -2203,7 +2249,9 @@ fn build_parts(
                     Some(x) => smooth_of(x, &format!("{}.smooth_angle", part.path))?,
                     None => default_smooth,
                 };
-                vec![BuiltPart { shape, material, smooth_angle: smooth, lod_detail: 1.0, bones: Vec::new(), blend: None, uv_scale: None }]
+                // A body's field goes with its mesh, for its normals (7.10).
+                let field = if node.op == "body" { Some(FieldNormals { flesh: std::sync::Arc::new(ctx.body_plan(node)?.flesh), to_part: Affine::IDENTITY }) } else { None };
+                vec![BuiltPart { shape, material, smooth_angle: smooth, lod_detail: 1.0, bones: Vec::new(), blend: None, uv_scale: None, field }]
             }
             Source::Include { asset, params: inc_params } => {
                 let path = format!("{}.include", part.path);
@@ -2305,6 +2353,7 @@ fn build_parts(
             for (i, op) in part.ops.iter().enumerate() {
                 ctx.apply(&mut piece.shape, op, stream_seed(pseed, &format!("op{i}")))?;
             }
+            follow_field(&ctx, piece, &part.ops);
         }
         if !had {
             match &part.source {
@@ -2334,10 +2383,21 @@ fn build_parts(
             ctx.apply(&mut piece.shape, op, stream_seed(seed, &format!("finish{i}/{k}")))?;
         }
     }
+    for piece in &mut out {
+        follow_field(&ctx, piece, &recipe.finish);
+    }
     if !had_before && tally.terrain.borrow().is_some() {
         tally.terrain_transform.set(ctx.terrain_transform(&recipe.finish, tally.terrain_transform.get()));
     }
     Ok((out, vars))
+}
+
+/// A body part's field follows the operations `ops` made on its mesh, or is let go where one
+/// cannot be followed (the part then keeps its faces' normals).
+fn follow_field(ctx: &Ctx, piece: &mut BuiltPart, ops: &[Node]) {
+    if let Some(f) = piece.field.take() {
+        piece.field = ctx.terrain_transform(ops, Some(f.to_part)).map(|to_part| FieldNormals { to_part, ..f });
+    }
 }
 
 struct Ctx<'a> {

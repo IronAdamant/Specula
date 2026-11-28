@@ -1847,3 +1847,104 @@ fn every_seam_of_the_five_skeletons_turns_smoothly() {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// 7.10: a body's mesh takes its vertex normals from the field's slope.
+
+/// The model one of the five test skeletons' recipes builds, and its flesh as the recipe makes
+/// it (the recipe's `keep`, 0.05; the field within it is the same at any `keep`).
+fn built_body(name: &str) -> (crate::Model, Flesh) {
+    let text = match name {
+        "biped" => include_str!("../../tests/bodies/biped.json"),
+        "quadruped" => include_str!("../../tests/bodies/quadruped.json"),
+        "serpent" => include_str!("../../tests/bodies/serpent.json"),
+        "pelvis_legs" => include_str!("../../tests/bodies/pelvis_legs.json"),
+        _ => include_str!("../../tests/bodies/forked.json"),
+    };
+    let style = crate::Style::parse(r##"{ "style": "t", "palette": { "dark": "#202020" }, "materials": { "skin": { "color": "#c8a08a", "roughness": 0.7 } } }"##).unwrap();
+    let lib = std::collections::BTreeMap::new();
+    let m = crate::build(text, &crate::BuildParams { library: Some(&lib), ..crate::BuildParams::new(&style) }).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let (bones, parents, smooth) = test_skeleton(name);
+    (m, Flesh::jointed(&bones, &[], smooth, 0.05, &joints_of(&bones, &parents)).unwrap())
+}
+
+/// The angle (degrees) between two directions.
+fn degrees_between(a: D3, b: D3) -> f64 {
+    dmath::acos_f64((ddot(a, b) / (dlen(a) * dlen(b))).clamp(-1.0, 1.0)) * 180.0 / dmath::PI
+}
+
+/// How far a stored normal may be from the field's slope at its vertex, taken here by
+/// differences a quarter as far apart as [`NORMAL_STEP`] (degrees). Where the field is smooth
+/// over the steps the two agree within 0.09 degrees on every level of the five; the most,
+/// 0.44, is at one vertex of the biped's full level (at (0.578, 0.877, 0.020), part 8's field
+/// alone), where the slope by differences 5 µm to 50 µm apart is one direction and by 0.1 mm
+/// another (1.4 degrees more at 0.2 mm): the field turns within a tenth of a millimetre there
+/// (a part's slope has breaks: DISTANCE_FIELDS.md 7, "What 7.3 to 7.6 do not say"), and any step averages it.
+const NORMAL_ERROR: f64 = 0.5;
+
+/// 7.10: **every vertex of every level of the five skeletons' meshes has the field's slope
+/// there for its normal**, to within [`NORMAL_ERROR`]. With its faces' normals (before,
+/// 2026-11-28, at `f83ea6e6`) the most was, at the full level and at any level: biped 129.5 and
+/// 129.5 degrees, quadruped 53.9 and 126.4, serpent 37.4 and 98.4, forked 107.9 and 109.5,
+/// pelvis_legs 57.8 and 131.2. (Past 90 degrees, a vertex whose faces turn from the field's
+/// slope: where a part is thinner than a cell, or a coarse level's cluster. After, the faces of
+/// 4 of the biped's full-level vertices, and of up to 22 on a coarse level, turn from the
+/// stored normal by more than 90 degrees; measured 2026-11-28.)
+#[test]
+fn a_bodys_normals_are_its_fields_slope() {
+    let mut worst = Vec::new();
+    for name in BODIES {
+        let (m, f) = built_body(name);
+        for (k, l) in m.lods.iter().enumerate() {
+            let mut most = 0.0f64;
+            for (p, n) in l.positions.iter().zip(&l.normals) {
+                most = most.max(degrees_between(d3(*n), slope_by(&f, d3(*p), 2.5e-5)));
+            }
+            worst.push((name, k, most));
+        }
+    }
+    for (name, k, most) in worst {
+        assert!(most < NORMAL_ERROR, "{name} level {k}: a normal {most} degrees from the field's slope");
+    }
+}
+
+/// How much more the normals of two neighbouring vertices across a valley may turn than the
+/// field's slope does between the two (degrees): twice [`NORMAL_ERROR`].
+const VALLEY_SLACK: f64 = 2.0 * NORMAL_ERROR;
+
+/// 7.10: **across the valley where two limbs part** (the forked body's prongs, `pelvis_legs`'
+/// thighs: the plane `x = 0`, where the surface is hollow across it), the normals of the two
+/// vertices of every edge of every level that crosses it turn by no more than the field's slope
+/// turns between them, and [`VALLEY_SLACK`]: shading shows no crease the field does not have.
+/// With its faces' normals (before, 2026-11-28, at `f83ea6e6`) the most excess was 2.76
+/// degrees on the forked body and 2.31 on `pelvis_legs`, at the full level.
+#[test]
+fn shading_across_a_parting_turns_as_the_field_does() {
+    let mut worst = Vec::new();
+    for name in ["forked", "pelvis_legs"] {
+        let (m, f) = built_body(name);
+        for (k, l) in m.lods.iter().enumerate() {
+            let (mut most, mut seen) = (f64::NEG_INFINITY, 0usize);
+            for t in l.indices.chunks(3) {
+                for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                    let (a, b) = (a as usize, b as usize);
+                    let (pa, pb) = (d3(l.positions[a]), d3(l.positions[b]));
+                    let (left, right) = if pa[0] < 0.0 && pb[0] > 0.0 { (pa, pb) } else { continue };
+                    let (gl, gr) = (slope_by(&f, left, 2.5e-5), slope_by(&f, right, 2.5e-5));
+                    // Hollow across: the left side faces right, the right side left.
+                    if !(gl[0] > 0.0 && gr[0] < 0.0) {
+                        continue;
+                    }
+                    let (na, nb) = if pa[0] < 0.0 { (a, b) } else { (b, a) };
+                    let turn = degrees_between(d3(l.normals[na]), d3(l.normals[nb]));
+                    most = most.max(turn - degrees_between(gl, gr));
+                    seen += 1;
+                }
+            }
+            worst.push((name, k, most, seen));
+        }
+    }
+    for (name, k, most, seen) in worst {
+        assert!(seen >= 8, "{name} level {k}: only {seen} edges across the valley");
+        assert!(most <= VALLEY_SLACK, "{name} level {k}: the normals turn {most} degrees past the field across the valley");
+    }
+}

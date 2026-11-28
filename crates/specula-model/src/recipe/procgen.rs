@@ -917,7 +917,7 @@ impl Gen<'_, '_> {
         if let Some(c) = colour {
             shape.set_color(c);
         }
-        BuiltPart { shape, material: material.to_string(), smooth_angle: self.smooth, lod_detail: 1.0, bones: Vec::new(), blend: None, uv_scale: None }
+        BuiltPart { shape, material: material.to_string(), smooth_angle: self.smooth, lod_detail: 1.0, bones: Vec::new(), blend: None, uv_scale: None, field: None }
     }
 
     pub(super) fn run(&mut self, n: &Node) -> Result<Vec<BuiltPart>, RecipeError> {
@@ -1368,7 +1368,7 @@ impl Gen<'_, '_> {
                 s.transform(&t);
                 match by_mat.iter_mut().find(|b| b.material == q.material && b.smooth_angle == q.smooth_angle) {
                     Some(b) => b.shape.merge(&s),
-                    None => by_mat.push(BuiltPart { shape: s, ..q.clone() }),
+                    None => by_mat.push(BuiltPart { shape: s, field: None, ..q.clone() }),
                 }
             }
         }
