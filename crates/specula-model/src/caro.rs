@@ -408,6 +408,12 @@ fn frame_of(bone: &Bone) -> ([D3; 3], f64) {
     ([e, s, w], if length >= f64::from(LEAST_LENGTH) { length } else { 0.0 })
 }
 
+/// A bone's frame as its field takes it: its direction (+Y for a point), toward its side, and
+/// across.
+pub fn bone_frame(bone: &Bone) -> [V3; 3] {
+    frame_of(bone).0.map(f3)
+}
+
 /// The greatest of `|dP/df|` on `[0, 1]` for a Hermite piece, in `f64` from its stored numbers
 /// (a quadratic: at an end or where it turns).
 fn slope_most(c: [f32; 4]) -> f64 {
@@ -975,6 +981,121 @@ impl Flesh {
         ((h - r - 2.0 * s).max(far), hi)
     }
 
+    /// [`Flesh::meets`] looking only among `among` (a list [`Flesh::meets`] gave for a ball
+    /// holding this one; `None`: every part and seam).
+    pub fn meets_among(&self, o: V3, r: f32, among: Option<&[u16]>, out: &mut Vec<u16>) {
+        let Some(list) = among else { return self.meets(o, r, out) };
+        out.clear();
+        let sb = self.slack_ball(o, r);
+        let limit = self.reach + r + 2.0 * sb;
+        let parts = self.parts.len();
+        for &i in list {
+            let i = usize::from(i);
+            if let Some(p) = self.parts.get(i) {
+                if p.capsule(p.local(o)) <= limit {
+                    out.push(i as u16);
+                }
+            } else if let Some(s) = self.seams.get(i - parts) {
+                let d = [o[0] - s.centre[0], o[1] - s.centre[1], o[2] - s.centre[2]];
+                let room = (s.ball + r) * (1.0 + 1e-4) + 2.0 * sb;
+                if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= room * room {
+                    out.push(i as u16);
+                }
+            }
+        }
+    }
+
+    /// The same body held at another `keep` (7.6's `T`: the mesher's, from its cells).
+    pub fn with_keep(&self, keep: f32) -> Result<Flesh, CaroError> {
+        if !(keep >= KEEP.0 && keep <= KEEP.1) {
+            return Err(fail("keep", None, None, Some(f64::from(keep)), Some(KEEP)));
+        }
+        let (t, k) = (f64::from(keep), f64::from(self.smooth));
+        let slack = f64::from(SLACK);
+        let size = |v: V3| v[0].abs() + v[1].abs() + v[2].abs();
+        let widest = self.parts.iter().map(|p| f64::from(size(p.origin())) + f64::from(p.reach_of())).fold(0.0f64, f64::max);
+        Ok(Flesh { keep, reach: up((t + 2.0 * k + slack * k) / (1.0 - slack)), scale: up(widest + 9.0 * k + t), ..self.clone() })
+    }
+
+    /// A box holding every point where [`Flesh::value`] is at most `level` (7.5 (2): there some
+    /// part's capsule term is at most `level (1 + Λ) + K`), with the slack of its far corner;
+    /// `None` where `level` is the held level or more (every point is then).
+    pub fn reach_box(&self, level: f32) -> Option<(V3, V3)> {
+        if !(level.is_finite() && level * self.div < self.keep) {
+            return None;
+        }
+        let extra = (f64::from(level) * f64::from(self.div) + f64::from(self.smooth)).max(0.0);
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for p in &self.parts {
+            let (a, b, r) = match p {
+                Part::Bone(s) => {
+                    let at = |t: f32| [0, 1, 2].map(|c| f64::from(s.origin[c]) + f64::from(t) * f64::from(s.frame[0][c]));
+                    (at(s.t0), at(s.t1), f64::from(s.radius))
+                }
+                Part::Egg(e) => (d3(e.origin), d3(e.origin), f64::from(e.most)),
+            };
+            for c in 0..3 {
+                lo[c] = lo[c].min(a[c].min(b[c]) - r - extra);
+                hi[c] = hi[c].max(a[c].max(b[c]) + r + extra);
+            }
+        }
+        let far = (0..3).map(|c| lo[c].abs().max(hi[c].abs())).sum::<f64>();
+        let pad = 2.0 * f64::from(SLACK) * (far + f64::from(self.scale)) + 1e-6 * far;
+        Some((lo.map(|v| down(v - pad)), hi.map(|v| up(v + pad))))
+    }
+
+    /// [`Flesh::range`], where every point of the ball asks only parts in `among` (a list
+    /// [`Flesh::meets`] gave for a ball holding this one): the capsules' bound is taken over
+    /// the list (a part left out of it has its capsule past `ε + r` at `o`, where the bound is
+    /// the held level already).
+    pub fn range_among(&self, o: V3, r: f32, among: Option<&[u16]>) -> (f32, f32) {
+        let Some(list) = among else { return self.range(o, r) };
+        let h = self.value_among(o, list);
+        let s = self.slack_ball(o, r);
+        let top = if self.div == 1.0 { self.keep } else { self.keep / self.div };
+        let hi = (h + r + 2.0 * s).min(top);
+        let least = list.iter().filter_map(|&i| self.parts.get(usize::from(i))).map(|p| p.capsule(p.local(o))).fold(f32::INFINITY, f32::min);
+        let low = (least - r - self.smooth - s).min(self.keep);
+        let far = if self.div == 1.0 { low } else { low / self.div } - s;
+        ((h - r - 2.0 * s).max(far), hi)
+    }
+
+    /// What a part's field weighs to evaluate: 0 a section by roots (squareness 2, 4 or 8), 1
+    /// by powers (any other), 2 a swell.
+    pub fn part_kind(&self, i: usize) -> usize {
+        match &self.parts[i] {
+            Part::Bone(b) if matches!(b.gauge, Gauge::Power(..)) => 1,
+            Part::Bone(_) => 0,
+            Part::Egg(_) => 2,
+        }
+    }
+
+    /// How tightly the flesh turns at its tightest, metres: of each station's section the
+    /// least radius of its ellipse (`min² / max` of its half sizes), of each swell its least
+    /// radius squared over its greatest.
+    pub fn tightest(&self) -> f32 {
+        let mut t = f32::INFINITY;
+        for p in &self.parts {
+            match p {
+                Part::Bone(b) => {
+                    for piece in &b.pieces[..b.count.saturating_sub(1).max(1)] {
+                        for end in 0..2 {
+                            let (a, bb) = (piece.a[end], piece.q[end] * piece.a[end]);
+                            t = t.min(a.min(bb) * a.min(bb) / a.max(bb));
+                        }
+                    }
+                }
+                Part::Egg(e) => t = t.min(e.least * e.least / e.most),
+            }
+        }
+        t
+    }
+
+    /// The reach (7.3's `R`) of bone `bone`'s flesh, or 0 for a bone without.
+    pub fn part_reach_of_bone(&self, bone: usize) -> f32 {
+        self.of.iter().position(|o| *o == PartOf::Bone(bone)).map_or(0.0, |i| self.parts[i].reach_of())
+    }
+
     /// How many seams (joints whose width is under the body's) the body has.
     pub fn seams(&self) -> usize {
         self.seams.len()
@@ -1053,5 +1174,127 @@ impl Flesh {
     }
 }
 
+/// A body as one node of a sculpt ([`crate::sdf::Prim::Body`]): its flesh, shared, and the parts
+/// and seams the ball it was last pruned for can ask (`None`: all), so that a block's samples
+/// ask its list and nothing else. Two are equal when their flesh's numbers and their lists are.
+#[derive(Clone)]
+pub struct Carnis {
+    flesh: std::sync::Arc<Flesh>,
+    among: Option<std::sync::Arc<[u16]>>,
+    key: u64,
+}
+
+impl std::fmt::Debug for Carnis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Carnis {{ parts: {}, seams: {}, asked: {:?}, key: {:#x} }}", self.flesh.parts(), self.flesh.seams(), self.among.as_ref().map(|a| a.len()), self.key)
+    }
+}
+
+impl PartialEq for Carnis {
+    fn eq(&self, other: &Carnis) -> bool {
+        self.key == other.key && self.among == other.among
+    }
+}
+
+impl Carnis {
+    /// The node of `flesh`, asking every part.
+    pub fn new(flesh: Flesh) -> Carnis {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        let mut eat = |v: f32| {
+            h ^= u64::from(v.to_bits());
+            h = h.wrapping_mul(0x0000_0100_0000_01B3);
+        };
+        for p in &flesh.parts {
+            match p {
+                Part::Bone(b) => {
+                    b.origin.iter().chain(b.frame.iter().flatten()).for_each(|&v| eat(v));
+                    [b.t0, b.t1, b.lip, b.radius].into_iter().for_each(&mut eat);
+                    b.stations[..b.count].iter().for_each(|&v| eat(v));
+                    for piece in &b.pieces[..b.count.saturating_sub(1).max(1)] {
+                        piece.a.iter().chain(&piece.q).chain(&[piece.t0, piece.span]).for_each(|&v| eat(v));
+                    }
+                    eat(match b.gauge {
+                        Gauge::Two => 2.0,
+                        Gauge::Four => 4.0,
+                        Gauge::Eight => 8.0,
+                        Gauge::Power(p, _) => p,
+                    });
+                }
+                Part::Egg(e) => e.origin.iter().chain(e.frame.iter().flatten()).chain(&e.inv).chain(&[e.least, e.most]).for_each(|&v| eat(v)),
+            }
+        }
+        for s in &flesh.seams {
+            s.centre.iter().chain(&s.normal).chain(&[s.half, s.radius, s.width, s.ball]).for_each(|&v| eat(v));
+        }
+        [flesh.smooth, flesh.keep].into_iter().for_each(eat);
+        Carnis { flesh: std::sync::Arc::new(flesh), among: None, key: h }
+    }
+
+    pub fn flesh(&self) -> &Flesh {
+        &self.flesh
+    }
+
+    /// The field at `q` (in the node's frame), asking the node's list.
+    #[inline]
+    pub fn value(&self, q: V3) -> f32 {
+        match &self.among {
+            Some(list) => self.flesh.value_among(q, list),
+            None => self.flesh.value(q),
+        }
+    }
+
+    /// The node as it is for every point of the ball of radius `r` about `q`: its list cut to
+    /// what such a point can ask ([`Flesh::meets_among`]); the same value at every such point.
+    pub fn near(&self, q: V3, r: f32) -> Carnis {
+        let mut out = Vec::new();
+        self.flesh.meets_among(q, r, self.among.as_deref(), &mut out);
+        Carnis { flesh: self.flesh.clone(), among: Some(out.into()), key: self.key }
+    }
+
+    /// Bounds of the node's field over the ball of radius `r` about `q` ([`Flesh::range_among`]).
+    pub fn range(&self, q: V3, r: f32) -> (f32, f32) {
+        self.flesh.range_among(q, r, self.among.as_deref())
+    }
+
+    /// The parts a sample asks, by [`Flesh::part_kind`], and the seams: the list's, or all.
+    pub fn kinds_asked(&self) -> ([u64; 3], u64) {
+        let mut k = [0u64; 3];
+        let parts = self.flesh.parts();
+        let mut seams = 0;
+        let mut count = |i: usize| {
+            if i < parts {
+                k[self.flesh.part_kind(i)] += 1;
+            } else {
+                seams += 1;
+            }
+        };
+        match &self.among {
+            Some(list) => list.iter().for_each(|&i| count(usize::from(i))),
+            None => (0..parts + self.flesh.seams()).for_each(count),
+        }
+        (k, seams)
+    }
+
+    /// How many parts and seams a sample asks the capsules of: the list's, or all.
+    pub fn asked(&self) -> (usize, usize) {
+        let parts = self.flesh.parts();
+        match &self.among {
+            Some(list) => {
+                let split = list.partition_point(|&i| usize::from(i) < parts);
+                (split, list.len() - split)
+            }
+            None => (parts, self.flesh.seams()),
+        }
+    }
+
+    /// The same node with its flesh held at `keep` (the mesher's), asking every part.
+    pub fn with_keep(&self, keep: f32) -> Result<Carnis, CaroError> {
+        if keep == self.flesh.keep && self.among.is_none() {
+            return Ok(self.clone());
+        }
+        Ok(Carnis::new(self.flesh.with_keep(keep)?))
+    }
+}
+
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

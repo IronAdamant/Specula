@@ -571,7 +571,7 @@ fn walk(node: &crate::sdf::SdfNode, adds: bool, out: &mut Vec<Option<Vec<Seen>>>
                     view(capped(&rows.iter().map(|r| [r[1], r[0] * len]).collect::<Vec<V2>>(), caps), (bx, k), 1.0 / 3.0);
                     view(capped(&rows.iter().map(|r| [r[2], r[0] * len]).collect::<Vec<V2>>(), caps), (dx, k), 1.0 / 3.0);
                 }
-                Prim::HalfSpace { .. } => {}
+                Prim::HalfSpace { .. } | Prim::Body(_) => {}
             }
             for seen in &mut mine {
                 widen(seen);

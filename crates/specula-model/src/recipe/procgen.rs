@@ -80,6 +80,7 @@ pub(super) const SDF_NODES: &[(&str, &[Field])] = &[
     ("chain", sdf_node!(r("points", Rows), o("smooth", Num))),
     ("column", sdf_node!(r("from", Vec3), r("to", Vec3), o("side", Vec3), r("sections", Rows), o("square", Num))),
     ("halfspace", sdf_node!(o("normal", Vec3), o("offset", Num))),
+    ("body", sdf_node!(r("bones", Objs(super::caro::BONE)), o("smooth", Num), o("blend", Num), o("fine", Objs(super::caro::FINE)))),
     ("union", sdf_node!(r("of", Sdfs), o("smooth", Num))),
     ("difference", sdf_node!(r("of", Sdfs), o("smooth", Num))),
     ("intersection", sdf_node!(r("of", Sdfs), o("smooth", Num))),
@@ -515,6 +516,8 @@ impl Ctx<'_> {
                 sdf::Kind::Prim(sdf::Prim::Torus { radius, tube })
             }
             "ellipsoid" => sdf::Kind::Prim(sdf::Prim::Ellipsoid { radii: size3("radii")? }),
+            // A whole skeleton's flesh as one node ([`crate::caro`]; its fields are the shape `body`'s).
+            "body" => sdf::Kind::Prim(sdf::Prim::Body(crate::caro::Carnis::new(self.body_plan(n)?.flesh))),
             "round_cone" => {
                 let (a, b) = (self.vec3(n, "from", [0.0; 3])?, self.vec3(n, "to", [0.0, 1.0, 0.0])?);
                 for (name, p) in [("from", a), ("to", b)] {
@@ -749,8 +752,13 @@ impl Ctx<'_> {
 
     pub(super) fn sdf_shape(&self, n: &Node) -> Result<Shape, RecipeError> {
         let figure = n.op == "figure";
+        let mut body = None;
         let tree = if figure {
             self.figure_tree(n)?
+        } else if n.op == "body" {
+            let (tree, plan) = self.body_tree(n)?;
+            body = Some(plan);
+            tree
         } else {
             let Some(Val::Obj(root)) = n.get("tree") else { return Err(e(&n.at("tree"), ErrorCode::MissingField, "an sdf needs a \"tree\"")) };
             self.sdf_node(root, 0)?
@@ -758,6 +766,7 @@ impl Ctx<'_> {
         // A figure's part is meshed as finely as it needs: a finger is a third of a trunk's cell.
         let usual = match crate::figure::Part::parse(self.str(n, "part", if figure { "whole" } else { "" })) {
             Some(part) if figure => part.resolution() as i64,
+            _ if body.is_some() => super::caro::RESOLUTION,
             _ => 48,
         };
         let mut res = self.int(n, "resolution", usual, SDF_LEAST_RESOLUTION, sdf::MAX_RESOLUTION as i64)?;
@@ -777,7 +786,8 @@ impl Ctx<'_> {
         let room = MAX_MODEL_TRIANGLES.saturating_sub(self.tally.triangles.get()).min(MAX_PART_TRIANGLES);
         let opts = sdf::MeshOptions { resolution: res, bounds, seed: stream_seed(self.seed, &n.path), max_triangles: room, max_work: self.work_left(&n.path, sdf::MAX_WORK)?, color: self.paint.get() };
         let (mut shape, st) = sdf::mesh(&tree, &opts).map_err(|er| {
-            let mut out = e(&n.path, if er.limit { ErrorCode::Limit } else { ErrorCode::Geometry }, er.message);
+            let message = if body.is_some() { format!("the body: {}", er.message) } else { er.message };
+            let mut out = e(&n.path, if er.limit { ErrorCode::Limit } else { ErrorCode::Geometry }, message);
             out.measured = er.measured;
             out.limit = er.max;
             out
@@ -793,7 +803,7 @@ impl Ctx<'_> {
         // primitive's tightest curve a cell turns the surface by the cell over the radius. Each
         // primitive with something round speaks for its own triangles (a cutter's, and a
         // primitive a difference takes away, for the walls they leave).
-        let what = if figure { "figure" } else { "sdf" };
+        let what = if figure { "figure" } else if body.is_some() { "body" } else { "sdf" };
         // (Its mesh was checked against the room left when it was made: the model's triangles
         // before it are what is counted now less its own.)
         let total_before = (self.tally.triangles.get().saturating_sub(shape.triangle_count())) as u64;
@@ -861,6 +871,14 @@ impl Ctx<'_> {
         if st.tangled_edges > 0 {
             j.push(("tangled_edges", Json::from(st.tangled_edges)));
             self.tally.note(format!("{}: {} edges of the sculpt's mesh are shared by other than two triangles: a fault of the mesher, not of the recipe", n.path, st.tangled_edges));
+        }
+        // A body's named places, kept through its meshing (in the shape's own frame, before
+        // any operation on its part), and how it was joined.
+        if let Some(plan) = &body {
+            j.push(("bones", Json::from(plan.bones.len())));
+            j.push(("parts", Json::from(plan.flesh.parts())));
+            j.push(("seams", Json::from(plan.flesh.seams())));
+            j.push(("anchors", Json::arr(super::caro::body_anchors(plan).iter().map(super::caro::anchor_json))));
         }
         self.stat(&n.path, Json::obj(j));
         check_extent(&shape, &n.path)?;

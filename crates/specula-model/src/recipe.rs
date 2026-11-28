@@ -180,6 +180,7 @@ const SHAPES: &[(&str, &[Field])] = &[
     ("intersection", procgen::CSG_FIELDS),
     ("sdf", procgen::SDF_FIELDS),
     ("figure", procgen::FIGURE_FIELDS),
+    ("body", caro::BODY_FIELDS),
     ("form", form::FORM_FIELDS),
 ];
 
@@ -1472,7 +1473,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let mut coarse = CoarseOnce::default();
     let procedural = recipe.parts.iter().any(|p| match &p.source {
         Source::Generate(_) => true,
-        Source::Shape(n) => matches!(n.op.as_str(), "union" | "difference" | "intersection" | "sdf" | "figure"),
+        Source::Shape(n) => matches!(n.op.as_str(), "union" | "difference" | "intersection" | "sdf" | "figure" | "body"),
         Source::Include { .. } => false,
     });
     for (i, &ratio) in recipe.lod_ratios.iter().enumerate() {
@@ -2848,7 +2849,7 @@ impl Ctx<'_> {
                 )
             }
             "union" | "difference" | "intersection" => return self.csg_shape(n),
-            "sdf" | "figure" => return self.sdf_shape(n),
+            "sdf" | "figure" | "body" => return self.sdf_shape(n),
             "form" => return self.form_shape(n),
             other => return Err(e(&n.path, ErrorCode::UnknownOp, format!("unknown shape '{other}'"))),
         };
@@ -3165,6 +3166,7 @@ fn smooth_path(path: &[V3], scales: &[f32], smooth: u32, closed: bool) -> (Vec<V
     (out, sc)
 }
 
+mod caro;
 mod form;
 mod procgen;
 mod schema;

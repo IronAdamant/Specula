@@ -181,6 +181,24 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
 - Primitives `sphere box cylinder cone capsule torus ellipsoid halfspace`, **centred on `at`** (mesh
   shapes rest on y = 0; sculpts are placed point by point); groups `union difference intersection`
   with `smooth` (Quilez's polynomial smooth minimum, colours blended the same way).
+- **`body`** (2026-11-28, `crate::caro`, DISTANCE_FIELDS.md section 7): a whole skeleton's
+  flesh as one node, `{"op": "body", "bones": [...], "smooth": K}` (and the shape `body`, the
+  same fields with a `resolution`, 96 unless given). Each bone: `name`, `parent`, `head`,
+  `tail`, `sections` (`[t, half breadth, half depth]`), `side`, `square` (2 to 12), `swells`
+  (`at`, `radii`), `mirror` (a `*_l` bone and its `*_r` twin), `smooth` (the width where it
+  meets the bones at its head, at most the body's), `places` (`name`, `at`, `side`, `depth`:
+  kept as anchors). Its parts are joined and culled inside it; its width falls at straight
+  joints (7.8); its field is 1-Lipschitz (factor 1). **Its held level is the mesher's**: set
+  where it is meshed to past what a block's skip asks (`fit_bodies`), so a block clear of it is
+  clear by its middle's value. Its bounds are its capsules widened by the width (where some
+  part's capsule is within it, 7.5 (2)); its reach the same at a level; its range over a ball
+  its own (`Flesh::range_among`, sound in `f32`); a prune keeps the parts and seams a point of
+  the ball can ask, so a block's samples ask its list and nothing more. Charged by the parts
+  and seams in its list (the table below). A shape `body`'s build says its parts, its seams and
+  its anchors: each bone's two ends (`NAME.head`, `NAME.tail`), each joint's middle (`A~B`)
+  and each place (`BONE.PLACE`), with a frame (the bone's direction, toward its side, across),
+  where it lies (`surface`, `inside`, `free`) and its depth, in the shape's own frame. `fine`
+  and `blend` are taken and checked, and make nothing yet.
 - Modifiers on any node: `at rotate scale stretch mirror repeat elongate twist bend round shell
   displace color`. Uncoloured nodes take the part's colour. `stretch` is a scale for each axis
   (`[1, 1, 0.6]`: a section as broad and as deep as it is measured); the surface is exact, and the
@@ -494,6 +512,12 @@ where balls run near 1.4 and flat ellipsoids 1.1.
 | a pair the reach meets | 20 | a pair of a smooth group's children in the reach |
 | a place of a column's table | 6 | a place of a column's table at a level the reach asks |
 | a flat ellipsoid's range from its middle | 13 | a prune's range of an ellipsoid within twice of round the ball does not reach into, from its value at the middle (`ellipsoid_span`; 15 when timed in its own units) |
+| a body | 48 | an evaluation of a `body` node past its list: the frame, the sort and the chain, the division (`body_cost`) |
+| a body's bone by roots | 60 | each bone in a body node's list at squareness 2, 4 or 8, at each evaluation |
+| a body's bone by powers | 300 | each bone in the list at any other squareness |
+| a body's swell | 60 | each swell in the list |
+| a body's seam | 15 | each seam (a joint whose width falls) in the list |
+| a body's capsule in a range | 20 | each part of the list in a body node's range, past its evaluation (`body_range_cost`) |
 
 **A new node** (a primitive or a modifier) joins the sculpt with every one of these, or a test
 cannot see its fault:

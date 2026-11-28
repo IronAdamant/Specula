@@ -1028,3 +1028,26 @@ fn what_a_sample_costs() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// Bodies the sculpt's tests take (`crate::sdf`'s tests: the checklist's).
+
+/// One of the four skeletons, jointed (7.8), held at `keep`.
+pub(crate) fn test_flesh(name: &str) -> Flesh {
+    jointed(name)
+}
+
+/// The biped jointed, with two swells (a belly on the spine, a calf), for the sculpt's tests:
+/// bones by roots and by powers, swells and seams.
+pub(crate) fn swollen_biped() -> Flesh {
+    let (bones, parents, smooth) = test_skeleton("biped");
+    let spine = 2;
+    let shin = bones.iter().position(|b| b.head[0] > 0.0 && b.head[1] < 0.6 && b.head[1] > 0.3).unwrap_or(1);
+    let swells = vec![Swell { bone: spine, at: [0.5, 0.0, 0.09], radii: [0.1, 0.12, 0.05] }, Swell { bone: shin, at: [0.3, 0.0, -0.03], radii: [0.1, 0.04, 0.04] }];
+    Flesh::jointed(&bones, &swells, smooth, 0.04, &joints_of(&bones, &parents)).expect("the swollen biped is valid")
+}
+
+/// A drawn chain (straight and bent joints, swells now and then) from `seed`.
+pub(crate) fn drawn_chain(seed: u64) -> Flesh {
+    random_chain(&mut Rng(seed), 150.0)
+}
