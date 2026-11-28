@@ -1717,6 +1717,29 @@ fn in_the_shipped_game_a_wave_walled_in_past_its_hour_is_still_held() {
     assert_eq!(ev.iter().filter(|x| matches!(x, Event::Spawned { .. })).count(), 2, "the colossus calls past its wave's hour: {ev:?}");
 }
 
+/// A line heave asks about each enemy it reaches, not about its target alone: of two on its
+/// line, one in furor and one whose wave has not begun (never in furor), the one in furor is hurt
+/// and not staggered, and the other hurt and staggered, whichever of the two it aimed at.
+#[test]
+fn a_line_heave_asks_about_each_enemy_it_reaches() {
+    let c = saxum_iii("{ \"cost\": 110, \"range_m\": 2.5, \"cooldown_s\": 1.0, \"damage\": 1, \"line\": 3, \"stagger_s\": 1.2 }");
+    let mut s = quiet(&c);
+    let hour = s.w.hour_of(&c, 1).unwrap();
+    s.w.tick = hour + 1;
+    let fresh = plant(&mut s, "shambler", "top:9,18");
+    let i = idx(&s, fresh);
+    s.w.enemies[i].wave = 2;
+    let raging = plant(&mut s, "shambler", "top:9,18");
+    let stone = c.map.cell_name(nearest_build_cells(&c, "top:9,18", 1)[0]);
+    place(&mut s, "saxum", &stone, 2);
+    let ev = steps(&mut s, 1);
+    assert!(ev.iter().any(|e| matches!(e, Event::Heaved { affected: 2, .. })), "one heave reached both: {ev:?}");
+    let (f, r) = (*s.enemy(fresh).unwrap(), *s.enemy(raging).unwrap());
+    assert!(!s.w.in_furor(&c, &f) && s.w.in_furor(&c, &r));
+    assert!(r.hp < r.max_hp && r.el.stagger_until == 0, "in furor: hurt, not staggered: {r:?}");
+    assert!(f.hp < f.max_hp && f.el.stagger_until > s.tick(), "not in furor: hurt and staggered: {f:?}");
+}
+
 /// No rubble rises while an enemy in furor stands in the lane, though the heave's own target is
 /// of a wave not yet begun (so not in furor); the control, with nobody in furor, raises it.
 #[test]
