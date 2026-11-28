@@ -742,7 +742,9 @@ width `K(x)` at each point: that is `G`, and the body's field is `H = (G ∧ T) 
 3. So `G` changes by at most `1 + Λ` a metre, and `H` by at most one: **`H` is 1-Lipschitz**
    and, as it has `G`'s sign and zeros, a bound for the joined body, both sides.
 4. 7.5 (2) and (4) and 7.6 hold as they stand with `K` the greatest width: the cull's `ε` is
-   still `T + 2K`, and it is still exact.
+   still `T + 2K`, and it is still exact. (This is the form with one width a point; the body's
+   field joins groups first, "Where three or more bones meet" below, whose cull takes
+   `T + 5K`.)
 
 *Proof.* (1) The distance to a solid disc is 1-Lipschitz (2.1; the disc is convex), so each
 `K_j + Λ d(x, Z_j)` changes by at most `Λ`, and so do their least and its least with `K` (3.1).
@@ -787,10 +789,64 @@ bones do. Held by test: the factor over a million pairs (`a_jointed_body_changes
 each value within its slack of a reference in `f64` that works out the width apart, and the
 cull bit for bit on the four skeletons jointed and random chains.
 
-**Where three or more bones meet** (a pelvis, a fork) each pair that meets end to end is a
-joint, and the width is the least of them: two hips in one line through their joint take no
-width there, and a third bone meeting the two inside that seam (a spine) meets them with a
-crease in the seam's thickness. A body that wants otherwise gives that joint its own width.
+**Where three or more bones meet** (a hip, a shoulder, a pelvis, a fork), **the width is
+between each pair of bones, not one number a point.** A single width at `x` (the least of
+every joint's) gives no width to everything inside a straight joint's seam, so a limb meeting
+a spine run straight through its joint met it with a crease in the seam's thickness (the
+first form of this section). So the parts are put in **groups**: the bones joined through
+joints whose own width is under the body's (the seams) are one group, and every other part
+(a bone in no such joint, a swell) is a group of its own. Then
+
+`G = chain over the groups g, at the body's K, of V_g`, `V_g = chain over g's parts at K_g(x)`,
+
+where `K_g(x) = min(K, min over g's seams of (K_j + Λ d(x, Z_j)))`: the run's own pairs join
+at their seams' width, and every other pair (a limb with either bone of the run, two limbs)
+at the whole of `K`. `H = (G ∧ T) / (1 + Λ)` as before. What changes against 1 to 4:
+
+5. `V_g` is 7.8's `G` for the group's parts, so it changes by at most `1 + Λ` a metre (2, 3);
+   the outer chain is 7.5's at a fixed width, which changes by at most the greatest change of
+   its inputs (7.5 (1)). So `G` changes by at most `1 + Λ` and **`H` is 1-Lipschitz: the bound
+   and its factor are 7.8's.**
+6. `F_min − 2K ≤ G ≤ F_min` (each chain falls by at most `K`, 7.5 (2)): the bulge, the range's
+   far bound and the box use `2K` where a body has groups, `K` where it has none.
+7. **The cull stays exact with `ε = T + 5K`** where a body has groups (`T + 2K` where it has
+   none: every group is then one part and `G` is 7.5's chain, bit for bit).
+
+*Proof of 7.* Let `m` be the least kept value (every dropped one is above `ε`). If
+`m ≤ ε − 3K`: a group whose least kept value is at most `ε − K` has the same `V_g` culled and
+whole (7.6's first case within the group, at `K_g ≤ K`); every other group's values all
+exceed `ε − K`, so its `V_g`, culled or whole, is at least `ε − 2K ≥ m + K`, which is at least
+`K` above the outer chain's running value (never above `m`), and its join returns that value
+unchanged wherever it comes in the order. So both outer chains are the chain of the same
+groups' same values. If `m > ε − 3K`: every value exceeds `ε − 3K`, every `V_g` exceeds
+`ε − 4K`, and both `G` exceed `ε − 5K = T`: both `H` are `T` divided. ∎ In `f32` the code takes
+`ε` a little above `T + 5K`, by `2⁻¹³ (ε + K)`; held bit for bit by test on the four
+skeletons jointed and on random chains.
+
+The order of the outer chain is by value, so where three groups are within `K` of one another
+(two legs and a pelvis's run) the outer chain's slope may break by a little where two of them
+change places (7.5's chain is continuous, not smooth, where its second and third values are
+equal); this is measured, not bounded. **Held by test**
+(`a_limb_meets_a_straight_run_with_no_crease_and_no_ring`): a T (a run of two bones of radius
+5 cm straight through, a limb of 3 cm at right angles) and a pelvis (a spine and a tail in one
+line, two legs down from the joint), `K` 15 mm. **The crease measure:** on twelve half planes
+about a limb's axis, the surface along rays from the joint from 20 to 75 degrees off the axis
+(over the join from the limb onto the trunk), halved between two rays until neighbouring
+surface points are under 75 µm apart, and the angle between the field's slopes at each two
+neighbours. A crease turns by the whole angle of its two surfaces in one step however close
+the points; a smooth join by its curvature times the step (0.43 degrees at 75 µm on a radius
+of 1 cm). The plain union of the same bones turns by 38.5 (the T) and 43.6 degrees (the
+pelvis) at its crease. **Measured: the T turns by at most 0.32 degrees** at 75 µm as at
+0.3 mm (its curvature: smooth); **the pelvis by 2.62**, the same at both steps, so a break
+and not curvature: below the run, on each side, where one leg's value and the run's group's
+change places as the second and third values of the outer chain (the other leg's the least,
+all three within `K`), which is the order-swap break just described, not a width's crease
+(the run's width does not act there). Tolerances: under 1 degree for the T, under 3 for the
+pelvis, and under a tenth of the plain union's crease for both. A join of the groups that is
+smooth where three are within `K` of one another (one that does not depend on their order)
+would remove it; none is proved here. Along the run, away from the limbs, the surface lies within a thousandth of the run's
+radius of the plain union: no ring. A body that wants a joint's width otherwise gives that
+joint its own.
 
 **What 7.3 to 7.6 do not say.**
 

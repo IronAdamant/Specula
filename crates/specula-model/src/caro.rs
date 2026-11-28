@@ -715,6 +715,10 @@ struct Seam {
     radius: f32,
     width: f32,
     ball: f32,
+    /// The parts of the joint's two bones, and the group they are in (7.8: the bones of the
+    /// joints that run on are one group, and the seam's width is that group's alone).
+    pair: [u8; 2],
+    group: u8,
 }
 
 impl Seam {
@@ -748,14 +752,17 @@ fn make_seams(bones: &[Bone], parts: &[Part], of: &[PartOf], joints: &[Joint], s
         let mut reach = 0.0f64;
         let mut ends = [[0.0f64; 3]; 2];
         let mut outward = [[0.0f64; 3]; 2];
+        let mut pair = [0u8; 2];
         for s in 0..2 {
             let b = j.bones[s];
             let Some(bone) = bones.get(b) else {
                 return Err(fail("joint_bone", Some(b), None, Some(b as f64), Some((0.0, bones.len() as f32 - 1.0))));
             };
-            let Some(Part::Bone(shaft)) = of.iter().position(|o| *o == PartOf::Bone(b)).map(|p| &parts[p]) else {
+            let at = of.iter().position(|o| *o == PartOf::Bone(b));
+            let Some(Part::Bone(shaft)) = at.map(|p| &parts[p]) else {
                 return Err(fail("joint_flesh", Some(b), None, None, None));
             };
+            pair[s] = at.map_or(0, |p| p as u8);
             let (frame, length) = frame_of(bone);
             if length == 0.0 {
                 return Err(fail("joint_point", Some(b), None, None, None));
@@ -787,9 +794,47 @@ fn make_seams(bones: &[Bone], parts: &[Part], of: &[PartOf], joints: &[Joint], s
         let radius = reach + k + gap;
         let half = f64::from(WIDTH_SLOPE) * reach + gap;
         let ball = ((half * half + radius * radius).sqrt() + (k - own) / f64::from(WIDTH_SLOPE)) * (1.0 + 1e-3) + 1e-6;
-        out.push(Seam { centre: f3(centre), normal: f3(normal), half: up(half), radius: up(radius), width: down(own), ball: up(ball) });
+        out.push(Seam { centre: f3(centre), normal: f3(normal), half: up(half), radius: up(radius), width: down(own), ball: up(ball), pair, group: 0 });
     }
     Ok(out)
+}
+
+/// 7.8's groups: the parts joined through seams; each part in the group of the least part it
+/// is joined to so (a part in no seam, its own), and each seam told its group.
+fn make_groups(parts: usize, seams: &mut [Seam]) -> Vec<u8> {
+    let mut group: Vec<u8> = (0..parts).map(|i| i as u8).collect();
+    loop {
+        let mut moved = false;
+        for s in seams.iter() {
+            let [a, b] = s.pair.map(usize::from);
+            let least = group[a].min(group[b]);
+            if group[a] != least || group[b] != least {
+                let (ga, gb) = (group[a], group[b]);
+                group.iter_mut().filter(|g| **g == ga || **g == gb).for_each(|g| *g = least);
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    for s in seams.iter_mut() {
+        s.group = group[usize::from(s.pair[0])];
+    }
+    group
+}
+
+/// 7.6's `ε` in `f32` for the held level `t` and the width `k`: at least
+/// `(t + 2k + 2⁻¹⁴ k) / (1 − 2⁻¹⁴)` where the parts are joined in one chain, and
+/// `(t + 5k + 2⁻¹³ k) / (1 − 2⁻¹³)` where groups are joined first (7.8, "Where three or more
+/// bones meet").
+fn cull_reach(t: f64, k: f64, grouped: bool) -> f32 {
+    let slack = f64::from(SLACK);
+    if grouped {
+        up((t + 5.0 * k + 2.0 * slack * k) / (1.0 - 2.0 * slack))
+    } else {
+        up((t + 2.0 * k + slack * k) / (1.0 - slack))
+    }
 }
 
 /// A body's flesh: its bones' and swells' fields joined (DISTANCE_FIELDS.md 7.5), culled
@@ -803,9 +848,14 @@ pub struct Flesh {
     reach: f32,
     scale: f32,
     seams: Vec<Seam>,
+    /// Each part's group (7.8): its own index where no seam joins it.
+    group: Vec<u8>,
     /// 7.8's `1 + Λ` where any seam narrows the width, else 1: what the joined value is
     /// divided by.
     div: f32,
+    /// How far the join can fall below the least value: `K` in one chain, `2K` where groups
+    /// are joined first (7.5 (2), 7.8).
+    fall: f32,
 }
 
 impl Flesh {
@@ -846,47 +896,79 @@ impl Flesh {
         if parts.is_empty() {
             return Err(fail("no_flesh", None, None, None, None));
         }
-        // 7.6 in f32: reach at least (keep + 2 smooth + 2⁻¹⁴ smooth) / (1 − 2⁻¹⁴).
         let (t, k) = (f64::from(keep), f64::from(smooth));
-        let slack = f64::from(SLACK);
-        let reach = up((t + 2.0 * k + slack * k) / (1.0 - slack));
         let size = |v: V3| v[0].abs() + v[1].abs() + v[2].abs();
         let widest = parts.iter().map(|p| f64::from(size(p.origin())) + f64::from(p.reach_of())).fold(0.0f64, f64::max);
         let scale = up(widest + 9.0 * k + t);
-        let seams = make_seams(bones, &parts, &of, joints, smooth)?;
-        let div = if seams.is_empty() { 1.0 } else { 1.0 + WIDTH_SLOPE };
-        Ok(Flesh { parts, of, smooth, keep, reach, scale, seams, div })
+        let mut seams = make_seams(bones, &parts, &of, joints, smooth)?;
+        let group = make_groups(parts.len(), &mut seams);
+        let grouped = !seams.is_empty();
+        let reach = cull_reach(t, k, grouped);
+        let div = if grouped { 1.0 + WIDTH_SLOPE } else { 1.0 };
+        let fall = if grouped { 2.0 * smooth } else { smooth };
+        Ok(Flesh { parts, of, smooth, keep, reach, scale, seams, group, div, fall })
     }
 
-    /// 7.8's width at `x`: the body's, or less within a seam's ball. `seams` rising indices
-    /// into the body's seams, or every seam.
+    /// 7.8's width at `x` of each group (indexed by group): the body's, or less within one of
+    /// that group's seams' balls. `seams` rising indices into the body's seams, or every seam.
     #[inline]
-    fn width(&self, x: V3, seams: Option<&[u16]>) -> f32 {
-        let mut k = self.smooth;
-        match seams {
-            None => {
-                for s in &self.seams {
-                    if let Some(w) = s.at(x) {
-                        k = k.min(w);
-                    }
-                }
+    fn widths(&self, x: V3, seams: Option<&[u16]>, out: &mut [f32; MAX_PARTS]) {
+        let mut see = |s: &Seam| {
+            if let Some(w) = s.at(x) {
+                let g = usize::from(s.group);
+                out[g] = out[g].min(w);
             }
-            Some(list) => {
-                for &i in list {
-                    if let Some(w) = self.seams.get(usize::from(i)).and_then(|s| s.at(x)) {
-                        k = k.min(w);
-                    }
-                }
+        };
+        match seams {
+            None => self.seams.iter().for_each(&mut see),
+            Some(list) => list.iter().filter_map(|&i| self.seams.get(usize::from(i))).for_each(&mut see),
+        }
+    }
+
+    /// 7.8's `G` where groups exist: each group's values sorted from the least and joined at
+    /// the group's own width, then the groups' values joined as 7.5 at the body's width
+    /// (`tags[i]` the group of `values[i]`).
+    fn grouped(&self, values: &[f32], tags: &[u8], x: V3, seams: Option<&[u16]>) -> f32 {
+        let mut width = [self.smooth; MAX_PARTS];
+        self.widths(x, seams, &mut width);
+        let n = values.len().min(MAX_PARTS);
+        let mut order = [0u8; MAX_PARTS];
+        for i in 0..n {
+            let v = values[i];
+            let mut j = i;
+            while j > 0 && values[usize::from(order[j - 1])] > v {
+                order[j] = order[j - 1];
+                j -= 1;
+            }
+            order[j] = i as u8;
+        }
+        let mut run = [0.0f32; MAX_PARTS];
+        let mut seen = 0u64;
+        for &i in &order[..n] {
+            let (v, g) = (values[usize::from(i)], usize::from(tags[usize::from(i)]));
+            if seen & (1 << g) == 0 {
+                run[g] = v;
+                seen |= 1 << g;
+            } else {
+                run[g] = join(run[g], v, width[g]);
             }
         }
-        k
+        let mut outer = [0.0f32; MAX_PARTS];
+        let mut m = 0;
+        while seen != 0 {
+            outer[m] = run[seen.trailing_zeros() as usize];
+            m += 1;
+            seen &= seen - 1;
+        }
+        chain(&mut outer[..m], self.smooth)
     }
 
-    /// The joined value of `n` part values at `x`, held at `keep` and divided by 7.8's factor.
+    /// The joined value of `n` part values at `x` (`tags` their groups), held at `keep` and
+    /// divided by 7.8's factor.
     #[inline]
-    fn joined(&self, values: &mut [f32], x: V3, seams: Option<&[u16]>) -> f32 {
-        let k = if values.len() > 1 && !self.seams.is_empty() { self.width(x, seams) } else { self.smooth };
-        let h = chain(values, k).min(self.keep);
+    fn joined(&self, values: &mut [f32], tags: &[u8], x: V3, seams: Option<&[u16]>) -> f32 {
+        let g = if values.len() > 1 && !self.seams.is_empty() { self.grouped(values, tags, x, seams) } else { chain(values, self.smooth) };
+        let h = g.min(self.keep);
         if self.div == 1.0 {
             h
         } else {
@@ -898,16 +980,18 @@ impl Flesh {
     /// `x` are asked, and the value is [`Flesh::whole`]'s (7.6).
     pub fn value(&self, x: V3) -> f32 {
         let mut values = [0.0f32; MAX_PARTS];
+        let mut tags = [0u8; MAX_PARTS];
         let mut n = 0;
-        for p in &self.parts {
+        for (p, &g) in self.parts.iter().zip(&self.group) {
             let l = p.local(x);
             let c = p.capsule(l);
             if c <= self.reach {
                 values[n] = p.field(l, c);
+                tags[n] = g;
                 n += 1;
             }
         }
-        self.joined(&mut values[..n], x, None)
+        self.joined(&mut values[..n], &tags[..n], x, None)
     }
 
     /// [`Flesh::value`] asking only the parts in `among` (rising, as [`Flesh::meets`] gives
@@ -915,6 +999,7 @@ impl Flesh {
     /// part [`Flesh::value`] would ask and every seam whose ball holds `x`.
     pub fn value_among(&self, x: V3, among: &[u16]) -> f32 {
         let mut values = [0.0f32; MAX_PARTS];
+        let mut tags = [0u8; MAX_PARTS];
         let mut n = 0;
         let parts = self.parts.len();
         let split = among.partition_point(|&i| usize::from(i) < parts);
@@ -924,6 +1009,7 @@ impl Flesh {
             let c = p.capsule(l);
             if c <= self.reach {
                 values[n] = p.field(l, c);
+                tags[n] = self.group[usize::from(i)];
                 n += 1;
             }
         }
@@ -933,7 +1019,7 @@ impl Flesh {
             seams[m] = i - parts as u16;
             m += 1;
         }
-        self.joined(&mut values[..n], x, Some(&seams[..m]))
+        self.joined(&mut values[..n], &tags[..n], x, Some(&seams[..m]))
     }
 
     /// The body's field asking every part: 7.5's `H` (7.8's, divided by its factor), what
@@ -944,7 +1030,8 @@ impl Flesh {
             let l = p.local(x);
             *v = p.field(l, p.capsule(l));
         }
-        self.joined(&mut values[..self.parts.len()], x, None)
+        let n = self.parts.len();
+        self.joined(&mut values[..n], &self.group, x, None)
     }
 
     /// The parts any point of the ball of radius `r` about `o` can ask, rising, and after them
@@ -976,7 +1063,7 @@ impl Flesh {
         let top = if self.div == 1.0 { self.keep } else { self.keep / self.div };
         let hi = (h + r + 2.0 * s).min(top);
         let least = self.parts.iter().map(|p| p.capsule(p.local(o))).fold(f32::INFINITY, f32::min);
-        let low = (least - r - self.smooth - s).min(self.keep);
+        let low = (least - r - self.fall - s).min(self.keep);
         let far = if self.div == 1.0 { low } else { low / self.div } - s;
         ((h - r - 2.0 * s).max(far), hi)
     }
@@ -1011,20 +1098,20 @@ impl Flesh {
             return Err(fail("keep", None, None, Some(f64::from(keep)), Some(KEEP)));
         }
         let (t, k) = (f64::from(keep), f64::from(self.smooth));
-        let slack = f64::from(SLACK);
         let size = |v: V3| v[0].abs() + v[1].abs() + v[2].abs();
         let widest = self.parts.iter().map(|p| f64::from(size(p.origin())) + f64::from(p.reach_of())).fold(0.0f64, f64::max);
-        Ok(Flesh { keep, reach: up((t + 2.0 * k + slack * k) / (1.0 - slack)), scale: up(widest + 9.0 * k + t), ..self.clone() })
+        Ok(Flesh { keep, reach: cull_reach(t, k, !self.seams.is_empty()), scale: up(widest + 9.0 * k + t), ..self.clone() })
     }
 
     /// A box holding every point where [`Flesh::value`] is at most `level` (7.5 (2): there some
-    /// part's capsule term is at most `level (1 + Λ) + K`), with the slack of its far corner;
+    /// part's capsule term is at most `level (1 + Λ) + K`, `+ 2K` with groups), with the slack
+    /// of its far corner;
     /// `None` where `level` is the held level or more (every point is then).
     pub fn reach_box(&self, level: f32) -> Option<(V3, V3)> {
         if !(level.is_finite() && level * self.div < self.keep) {
             return None;
         }
-        let extra = (f64::from(level) * f64::from(self.div) + f64::from(self.smooth)).max(0.0);
+        let extra = (f64::from(level) * f64::from(self.div) + f64::from(self.fall)).max(0.0);
         let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
         for p in &self.parts {
             let (a, b, r) = match p {
@@ -1055,7 +1142,7 @@ impl Flesh {
         let top = if self.div == 1.0 { self.keep } else { self.keep / self.div };
         let hi = (h + r + 2.0 * s).min(top);
         let least = list.iter().filter_map(|&i| self.parts.get(usize::from(i))).map(|p| p.capsule(p.local(o))).fold(f32::INFINITY, f32::min);
-        let low = (least - r - self.smooth - s).min(self.keep);
+        let low = (least - r - self.fall - s).min(self.keep);
         let far = if self.div == 1.0 { low } else { low / self.div } - s;
         ((h - r - 2.0 * s).max(far), hi)
     }
@@ -1101,9 +1188,12 @@ impl Flesh {
         self.seams.len()
     }
 
-    /// 7.8's width at `x` (the body's smoothing, or less near a straight joint).
+    /// 7.8's least width at `x` of any group (the body's smoothing, or less near a straight
+    /// joint).
     pub fn width_at(&self, x: V3) -> f32 {
-        self.width(x, None)
+        let mut w = [self.smooth; MAX_PARTS];
+        self.widths(x, None, &mut w);
+        w.into_iter().fold(self.smooth, f32::min)
     }
 
     /// What the joined value is divided by (7.8's `1 + Λ`, or 1 where no width changes).
@@ -1224,7 +1314,7 @@ impl Carnis {
             }
         }
         for s in &flesh.seams {
-            s.centre.iter().chain(&s.normal).chain(&[s.half, s.radius, s.width, s.ball]).for_each(|&v| eat(v));
+            s.centre.iter().chain(&s.normal).chain(&[s.half, s.radius, s.width, s.ball, f32::from(s.group)]).for_each(|&v| eat(v));
         }
         [flesh.smooth, flesh.keep].into_iter().for_each(eat);
         Carnis { flesh: std::sync::Arc::new(flesh), among: None, key: h }

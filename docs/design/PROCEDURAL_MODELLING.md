@@ -188,10 +188,12 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   (`at`, `radii`), `mirror` (a `*_l` bone and its `*_r` twin), `smooth` (the width where it
   meets the bones at its head, at most the body's), `places` (`name`, `at`, `side`, `depth`:
   kept as anchors). Its parts are joined and culled inside it; its width falls at straight
-  joints (7.8); its field is 1-Lipschitz (factor 1). **Its held level is the mesher's**: set
+  joints and is between each pair of bones (7.8: the bones that run on through their joints
+  are one group joined at their seams' width, and a limb meets that group at the whole width,
+  so a hip or a shoulder has no crease); its field is 1-Lipschitz (factor 1). **Its held level is the mesher's**: set
   where it is meshed to past what a block's skip asks (`fit_bodies`), so a block clear of it is
-  clear by its middle's value. Its bounds are its capsules widened by the width (where some
-  part's capsule is within it, 7.5 (2)); its reach the same at a level; its range over a ball
+  clear by its middle's value. Its bounds are its capsules widened by the width, twice it where
+  it has groups (where some part's capsule is within it, 7.5 (2), 7.8); its reach the same at a level; its range over a ball
   its own (`Flesh::range_among`, sound in `f32`); a prune keeps the parts and seams a point of
   the ball can ask, so a block's samples ask its list and nothing more. Charged by the parts
   and seams in its list (the table below). A shape `body`'s build says its parts, its seams and

@@ -621,10 +621,33 @@ fn a_join_of_changing_width_changes_by_a_quarter_of_it() {
 // ---------------------------------------------------------------------------------------
 // 7.8: the width that falls at a straight joint.
 
-/// 7.8's width in `f64`, from the numbers each seam stores.
-fn ref_width(f: &Flesh, x: D3) -> f64 {
+/// 7.8's field in `f64`: each group's values joined at its own width (worked out apart from
+/// the seams of that group), then the groups' at the body's.
+fn ref_jointed(f: &Flesh, x: D3) -> f64 {
+    let k = f64::from(f.smooth);
+    let chain = |mut v: Vec<f64>, k: &dyn Fn() -> f64| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let w = k();
+        v[1..].iter().fold(v[0], |r, &y| ref_join(r, y, w))
+    };
+    let mut groups: Vec<u8> = f.group.clone();
+    groups.sort_unstable();
+    groups.dedup();
+    let outer: Vec<f64> = groups
+        .iter()
+        .map(|&g| {
+            let v: Vec<f64> = f.parts.iter().zip(&f.group).filter(|(_, h)| **h == g).map(|(p, _)| ref_part(p, x).field).collect();
+            chain(v, &|| ref_width_of(f, x, g))
+        })
+        .collect();
+    let g = if f.seams.is_empty() { chain(f.parts.iter().map(|p| ref_part(p, x).field).collect(), &|| k) } else { chain(outer, &|| k) };
+    g.min(f64::from(f.keep)) / f64::from(f.div)
+}
+
+/// 7.8's width in `f64` of group `g`, from the numbers its seams store.
+fn ref_width_of(f: &Flesh, x: D3, g: u8) -> f64 {
     let mut k = f64::from(f.smooth);
-    for s in &f.seams {
+    for s in f.seams.iter().filter(|s| s.group == g) {
         let d = dsub(x, d3(s.centre));
         let z = ddot(d, d3(s.normal));
         let rho = (ddot(d, d) - z * z).max(0.0).sqrt();
@@ -632,15 +655,6 @@ fn ref_width(f: &Flesh, x: D3) -> f64 {
         k = k.min(f64::from(s.width) + f64::from(WIDTH_SLOPE) * (dz * dz + dr * dr).sqrt());
     }
     k
-}
-
-/// 7.8's field in `f64`.
-fn ref_jointed(f: &Flesh, x: D3) -> f64 {
-    let mut v: Vec<f64> = f.parts.iter().map(|p| ref_part(p, x).field).collect();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let k = ref_width(f, x);
-    let g = v[1..].iter().fold(v[0], |r, &y| ref_join(r, y, k));
-    g.min(f64::from(f.keep)) / f64::from(f.div)
 }
 
 /// Where the joined surface is along the ray from `from` toward `dir`, found by stepping out
@@ -768,6 +782,132 @@ fn a_bent_joint_keeps_its_bulge_under_the_bound() {
                 }
             }
         }
+    }
+}
+
+/// A round bone of constant radius from `a` to `b`.
+fn rod(a: D3, b: D3, radius: f32) -> Bone {
+    Bone { head: f3(a), tail: f3(b), side: None, square: 2.0, sections: vec![[0.0, radius, radius], [1.0, radius, radius]] }
+}
+
+/// A trunk run straight through a joint at the origin along x (two bones of radius 5 cm), and
+/// limbs of radius 3 cm from the joint toward `limbs`; jointed at width 15 mm, and the plain
+/// union of the same bones.
+fn limbs_on_a_run(limbs: &[D3]) -> (Flesh, Flesh, Vec<(D3, D3, f64)>) {
+    let mut rods = vec![([-0.4, 0.0, 0.0], [0.0; 3], 0.05), ([0.0; 3], [0.4, 0.0, 0.0], 0.05)];
+    rods.extend(limbs.iter().map(|&l| ([0.0; 3], l, 0.03)));
+    let bones: Vec<Bone> = rods.iter().map(|&(a, b, r)| rod(a, b, r as f32)).collect();
+    let parents: Vec<Option<usize>> = (0..bones.len()).map(|i| (i > 0).then_some(0)).collect();
+    let f = Flesh::jointed(&bones, &[], 0.015, 0.05, &joints_of(&bones, &parents)).unwrap();
+    let plain = Flesh::new(&bones, &[], 0.0, 0.05).unwrap();
+    (f, plain, rods)
+}
+
+/// The field's direction of slope at `x` (central differences, 0.1 mm), unit length.
+fn slope_at(f: &Flesh, x: D3) -> D3 {
+    let h = 1e-4;
+    let g = [0, 1, 2].map(|c| {
+        let (mut a, mut b) = (x, x);
+        a[c] += h;
+        b[c] -= h;
+        f64::from(f.value(f3(a))) - f64::from(f.value(f3(b)))
+    });
+    dscale(g, 1.0 / dlen(g))
+}
+
+/// Neighbouring surface points of [`crease`] are at most this far apart (metres).
+const CREASE_STEP: f64 = 7.5e-5;
+
+/// **The crease measure** at a join of the limb toward `axis` from the origin: on `rings`
+/// half planes about the limb's axis, the surface along rays from the joint, from 20 to 75
+/// degrees off the axis (from the limb's side over the join onto the trunk), 550 rays a plane
+/// and halved between two until their surface points are under [`CREASE_STEP`] apart, and the
+/// angle between the field's slopes at each two neighbouring points. A crease is a jump of
+/// the slope's direction: the whole angle of the two surfaces at one step, however close the
+/// points; a smooth join turns by its curvature times the step (0.43 degrees at 75 µm on a
+/// radius of 1 cm). Gives the greatest turn (degrees) and how many neighbours stayed apart
+/// after ten halvings.
+fn crease(f: &Flesh, axis: D3, rings: usize) -> (f64, usize) {
+    let u = dscale(axis, 1.0 / dlen(axis));
+    let seed = if u[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let e1 = dcross(u, seed);
+    let e1 = dscale(e1, 1.0 / dlen(e1));
+    let e2 = dcross(u, e1);
+    type Seen = (f64, D3, D3);
+    fn refine(f: &Flesh, at: &dyn Fn(f64) -> Seen, a: Seen, b: Seen, depth: u32, most: &mut f64, far: &mut usize) {
+        if dlen(dsub(a.1, b.1)) <= CREASE_STEP {
+            *most = most.max(dmath::acos_f64(ddot(a.2, b.2).clamp(-1.0, 1.0)) * 180.0 / dmath::PI);
+        } else if depth == 0 {
+            *far += 1;
+        } else {
+            let m = at(0.5 * (a.0 + b.0));
+            refine(f, at, a, m, depth - 1, most, far);
+            refine(f, at, m, b, depth - 1, most, far);
+        }
+    }
+    let (mut most, mut far) = (0.0f64, 0usize);
+    let steps = 550;
+    for k in 0..rings {
+        let (s, c) = dmath::sin_cos_f64(2.0 * dmath::PI * k as f64 / rings as f64);
+        let w = add(dscale(e1, c), dscale(e2, s));
+        let at = |deg: f64| -> Seen {
+            let (sa, ca) = dmath::sin_cos_f64(deg * dmath::PI / 180.0);
+            let p = surface_on(f, [0.0; 3], add(dscale(u, ca), dscale(w, sa)), 0.003);
+            (deg, p, slope_at(f, p))
+        };
+        let mut last = at(20.0);
+        for i in 1..=steps {
+            let next = at(20.0 + 55.0 * i as f64 / steps as f64);
+            refine(f, &at, last, next, 10, &mut most, &mut far);
+            last = next;
+        }
+    }
+    (most, far)
+}
+
+/// 7.8, "Where three or more bones meet": **a limb meets a trunk run straight through its
+/// joint with no crease, and the run has no ring.** A T (a trunk straight through, a limb at
+/// right angles) and a pelvis (a spine and a tail in one line, two legs down from the joint):
+/// by the crease measure ([`crease`]) the plain union of the same bones turns by more than 30
+/// degrees at its crease (the measure sees one), and the joined body by at most a tenth of
+/// that: the T's join turns by under 1 degree between surface points under 75 µm apart (it is
+/// smooth: 0.32 at 0.3 mm as at 75 µm, its curvature), and the pelvis's by under 3. **The
+/// pelvis keeps a break of 2.6 degrees** that does not shrink with the step, so it is a break
+/// and not curvature: below the run, where a leg's value and the run's change places as the
+/// second and third of the outer chain (the other leg's the least, all three within the
+/// width), 7.5's sorted chain is continuous and not smooth (DISTANCE_FIELDS.md 7.8, "Where
+/// three or more bones meet"). Not a width's crease: the width there is the run's group's and
+/// does not act. And along the run, away from the limbs, the surface lies within a thousandth
+/// of the trunk's radius of the plain union.
+#[test]
+fn a_limb_meets_a_straight_run_with_no_crease_and_no_ring() {
+    let mut r = Rng(0xCA20_0013);
+    let cases: [(&str, Vec<D3>, f64, f64); 2] = [("T", vec![[0.0, 0.4, 0.0]], -1.0, 1.0), ("pelvis", vec![[0.0, -0.38, 0.12], [0.0, -0.38, -0.12]], 1.0, 3.0)];
+    for (name, limbs, away, most) in cases {
+        let (f, plain, rods) = limbs_on_a_run(&limbs);
+        assert_eq!(f.seams(), 1, "{name}: only the run's joint runs on");
+        assert_eq!(f.group[0], f.group[1], "{name}: the run's two bones are one group");
+        assert!(f.group[2..].iter().all(|&g| g != f.group[0]), "{name}: a limb is its own");
+        for &limb in &limbs {
+            let (joined, far) = crease(&f, limb, 12);
+            let (bare, _) = crease(&plain, limb, 12);
+            println!("{name}: the greatest turn at the join {joined:.3} degrees ({far} neighbours apart), the plain union's {bare:.1}");
+            assert!(bare > 30.0, "{name}: the measure sees the plain union's crease ({bare})");
+            assert!(joined < most && joined < bare / 10.0, "{name}: a crease of {joined} degrees at the limb's join");
+            assert!(far == 0, "{name}: {far} neighbours stayed apart");
+        }
+        let mut ring = 0.0f64;
+        for _ in 0..3000 {
+            let mut d = r.dir();
+            d[1] = away * d[1].abs().max(0.5);
+            let d = dscale(d, 1.0 / dlen(d));
+            let from = [r.range(-0.1, 0.1), 0.0, 0.0];
+            let q = surface_on(&f, from, d, 0.005);
+            let union = rods.iter().map(|&(a, b, rad)| capsule(q, a, b, rad)).fold(f64::INFINITY, f64::min);
+            ring = ring.max(union);
+        }
+        println!("{name}: the ring along the run {ring:.2e} m");
+        assert!(ring <= 1e-3 * 0.05 + 1e-5, "{name}: a ring of {ring} along the straight run");
     }
 }
 
