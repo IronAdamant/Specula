@@ -1515,23 +1515,7 @@ impl Game for SepulcraGame {
         if let Some(scene) = &self.scene {
             let vp = overlay.camera.view_proj(overlay.size.0.max(1), overlay.size.1.max(1));
             let bars = scene.bars(&self.state, &vp, overlay.size);
-            // The stems of bars lifted clear of a neighbour's first, so a bar covers a stem and
-            // never the other way round.
-            for (b, _) in &bars {
-                if b.stem[3] > 0.0 {
-                    overlay.quads.push(specula_gpu::OverlayQuad::solid(b.stem, [0.82, 0.84, 0.86, 0.8]));
-                }
-            }
-            for (b, f) in &bars {
-                // A dark back with a pale rim, so the empty part reads against the dark slab.
-                let [r, g, bl] = palette::FISSURE;
-                let rim = (b.fill[1] - b.back[1]).max(1.0);
-                let back = specula_gpu::OverlayQuad::solid(b.back, [r, g, bl, 0.9]);
-                overlay.quads.push(specula_gpu::OverlayQuad { border: rim, border_color: [[0.82, 0.84, 0.86, 0.95]; 2], ..back });
-                // The fill's colour says its level: green, amber under a half, red under a quarter.
-                let [r, g, bl] = crate::scene::bar_colour(*f);
-                overlay.quads.push(specula_gpu::OverlayQuad::solid(b.fill, [r, g, bl, 1.0]));
-            }
+            overlay.quads.extend(crate::scene::bar_quads(&bars));
         }
         self.hud.overlay(overlay, self.now);
     }
