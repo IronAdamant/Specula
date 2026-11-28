@@ -465,3 +465,33 @@ its lane, every formula is derived again in the repository's own words and held 
   creature's skin; no measured threshold for whole-body proportions; a symmetry tolerance in
   millimetres. By the owner's rule these are filled by the engine's own estimates, labelled as its
   own.
+
+## Round ten: the atlas (2026-11-28)
+
+Asked for in [LIBRARY_RESEARCH_BRIEF_ROUND10.md](../LIBRARY_RESEARCH_BRIEF_ROUND10.md) after the owner
+asked for "measurements on every part of the body… like general angle of the ears. And then
+enforcing the boundaries", and after an audit of this library part by part found that of sixteen
+parts that need an angle ten had none, and that almost nothing said how measurements move together.
+Delivered the same day. **Nothing of it is in the engine yet**; a number is typed in by hand from its
+table and held by a test.
+
+| File | What it holds |
+|---|---|
+| [R10-A](R10-A-angles-at-rest.md) | Angles of the body at rest, with spreads by sex: the ear on the head (its protrusion angle and tilt), the knee's and the elbow's alignment, the foot's angle walking, the spine's curves and the pelvis's tilt by age, the fingers' resting flexion, the face's profile angles |
+| [R10-B](R10-B-small-parts.md) | Small parts: the iris, the eye's position, nail sizes (read from summaries: unverified), breast and chest landmarks, the kneecap, muscle thickness and fat at fourteen sites by ultrasound |
+| [R10-C](R10-C-spreads-and-limits.md) | Spreads where the library had only means: joint ranges with standard deviations by sex and age, the collarbone and shoulder blade at rest, skinfolds by sex and age band (2,507 adults); the least and greatest recorded for the main dimensions |
+| [R10-D](R10-D-correlations.md) | How measurements move together: the face's correlations and principal components, the ear's, the hand's matrices, the knee's angles with one another, the spine with the pelvis |
+| [R10-E](R10-E-children-and-older-adults.md) | Stature and mass for every year from 2 to 17 and past 60; a child's joint ranges and hip centre; the spine past 60 |
+| [R10-F](R10-F-animals.md) | Animals with a spread inside the kind: dogs' height at the withers by breed and sex, cats' long bones, a horse's standing joint angles and segments, cattle's head, ear, horn and tail, roe deer by sex and age, one songbird |
+| [R10-MATH](R10-MATH-procedural-generation.md) | The mathematics of drawing a body from such numbers and holding it inside its bounds: correlated draws, fixing stature and sex and drawing the rest, angles, skewed and truncated measures, a bound on a whole draw against a clamp on each number, mending a correlation matrix that is not valid, and a step-by-step recipe (the researcher's own) |
+| [as delivered](R10-README-as-delivered.md), [substitutes](R10-blocked-downloads-ALTERNATIVES.md) | The delivery's own overview and coverage map, and what could not be had |
+
+- **Each file has a second checker's file beside it** (`.verify.md`). Rows marked UNVERIFIED (the
+  jaw's angle; nail sizes; some carrying-angle values) are not used as numbers.
+- **What no source measures, by the delivery's own account:** how far the ear's top and lobe stand
+  from the head; a standing foot's angle and each toe's length; a man's shoulder slope; the thumb at
+  rest; the knee's breadth and girth; several muscles; a map of fat with spreads; segment masses for
+  more than fifteen women; standing joint angles of dogs and cats; ear and tail carriage in any
+  animal. By the owner's rule these are filled by the engine's own estimates, labelled as its own.
+- **No source ties the body's angles to its shape:** the researcher leaves rest angles independent
+  of body shape, and says that is an assumption.
