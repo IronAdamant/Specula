@@ -232,6 +232,7 @@ fn every_shape_and_op_builds() {
         r#"{"op":"sdf","resolution":24,"tree":{"op":"union","smooth":0.1,"of":[{"op":"sphere","radius":0.4},{"op":"box","size":[0.5,0.5,0.5],"at":[0.3,0,0]}]}}"#,
         r#"{"op":"figure","part":"head","sex":"female","stature":1.7,"build":0.5,"age":40,"traits":{"legs":1.2,"shoulders":-0.8}}"#,
         r#"{"op":"figure","part":"foot_l","sex":"male"}"#,
+        r#"{"op":"body","resolution":40,"bones":[{"name":"a","head":[0,0,0],"tail":[0,0.4,0],"sections":[[0,0.08,0.07],[1,0.06,0.05]]},{"name":"b","parent":"a","head":[0,0.4,0],"tail":[0.3,0.6,0],"sections":[[0,0.05,0.05],[1,0.04,0.04]]}]}"#,
         r#"{"op":"sdf","resolution":32,"tree":{"op":"sphere","radius":0.4,"stretch":[1.5,1,0.6],"at":[0,0.5,0]}}"#,
         r#"{"op":"sdf","resolution":40,"tree":{"op":"column","from":[0,0.1,0],"to":[0.1,0.9,0],"sections":[[0,0.2,0.12],[0.5,0.14,0.1],[1,0.08,0.08]]}}"#,
         r#"{"op":"sdf","resolution":32,"tree":{"op":"round_cone","from":[0,0.1,0],"to":[0.3,0.8,0.1],"radius":0.1,"radius_to":0.04}}"#,
@@ -770,4 +771,44 @@ fn a_thin_rim_is_said_in_the_sculpts_own_frame() {
     let x = |k: usize| at.as_array().unwrap()[k].as_array().unwrap()[0].as_f64().unwrap();
     assert!(x(0) > -0.6 && x(1) < 0.1, "{at:?}: in the sculpt's own frame");
     assert!(m.notes.iter().any(|n| n.contains("thinner than a cell") && n.contains("in the sculpt's own frame")), "{:?}", m.notes);
+}
+
+/// A body's normals (DISTANCE_FIELDS.md 7.10) are charged before they are taken: the parts
+/// near every vertex first, then each vertex's six samples over its list, the build's work
+/// rising by exactly that; with one unit too few left, the normals are refused as any build
+/// past its work is (a limit at the level's path, with what it reached and the limit) and no
+/// vertex's normal is taken.
+#[test]
+fn a_bodys_normals_are_charged_before_they_are_taken() {
+    let ring = |t: f32, r: f32| [t, r, r];
+    let bones = vec![
+        crate::caro::Bone { head: [0.0, 0.0, 0.0], tail: [0.0, 0.5, 0.0], side: None, square: 2.0, sections: vec![ring(0.0, 0.1), ring(1.0, 0.08)] },
+        crate::caro::Bone { head: [0.0, 0.5, 0.0], tail: [0.0, 1.0, 0.0], side: None, square: 3.0, sections: vec![ring(0.0, 0.08), ring(1.0, 0.06)] },
+    ];
+    let flesh = crate::caro::Flesh::jointed(&bones, &[], 0.02, 0.05, &crate::caro::joints_of(&bones, &[None, Some(0)])).unwrap();
+    let field = FieldNormals { flesh: std::sync::Arc::new(flesh), to_part: Affine::IDENTITY };
+    let mut m = MeshData { positions: vec![[0.09, 0.25, 0.0], [0.0, 0.5, 0.08], [0.0, 0.75, -0.07], [0.0, 1.06, 0.0]], ..MeshData::default() };
+    m.normals = vec![[1.0, 0.0, 0.0]; m.positions.len()];
+    let mut near = Vec::new();
+    let mut expected = m.positions.len() as u64 * crate::sdf::body_normal_near_cost(&field.flesh);
+    for y in &m.positions {
+        field.flesh.normal_near(y.map(f64::from), &mut near);
+        expected += crate::sdf::body_normal_cost(&field.flesh, &near);
+    }
+    let tally = Tally::default();
+    let mut shaded = m.clone();
+    field.shade(&mut shaded, &tally, "parts").unwrap();
+    assert_eq!(tally.work.get(), expected, "charged exactly the near lists and six samples a vertex");
+    assert!(expected > 6 * m.positions.len() as u64 * 330, "{expected}");
+    assert_ne!(shaded.normals, m.normals, "the field's normals were taken");
+    let short = Tally::default();
+    short.work.set(procgen::MAX_BUILD_WORK - expected + 1);
+    let mut refused = m.clone();
+    let er = field.shade(&mut refused, &short, "lods[1]").unwrap_err();
+    assert_eq!((er.code, er.path.as_str(), er.limit), (ErrorCode::Limit, "lods[1]", Some(procgen::MAX_BUILD_WORK as f64)), "{}", er.message);
+    assert!(er.measured.is_some_and(|v| v > procgen::MAX_BUILD_WORK as f64), "{er:?}");
+    assert_eq!(refused.normals[m.positions.len() - 1], m.normals[0], "the last vertex's normal is not taken");
+    let just = Tally::default();
+    just.work.set(procgen::MAX_BUILD_WORK - expected);
+    field.shade(&mut m.clone(), &just, "parts").expect("exactly enough work pays for them");
 }

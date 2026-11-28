@@ -39,7 +39,7 @@ pub const MAX_REPEAT: u32 = 64;
 pub const MAX_CHAIN: usize = 48;
 
 /// A primitive's shape, in its own frame (centred on the origin, Y up).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Prim {
     Sphere { radius: f32 },
     /// Half extents; `round` rounds the edges (inside the extents).
@@ -78,6 +78,13 @@ pub enum Prim {
     /// rounded end closes it past each end. A trunk, a limb with its swell, a neck, a vase.
     /// Given by its ends, in the node's frame; its field is a lower bound of the distance.
     Column { a: V3, b: V3, side: V3, sections: [[f32; 3]; MAX_SECTIONS], count: u8, square: f32 },
+    /// A whole skeleton's flesh as one field (`docs/design/DISTANCE_FIELDS.md` section 7,
+    /// [`crate::caro`]): its bones and swells joined in order of value, culled exactly, with a
+    /// width that falls at straight joints. 1-Lipschitz, a bound of its body both sides, held
+    /// at the mesher's level (set where it is meshed, from its cells: [`fit_bodies`]). Pruned
+    /// to the parts a ball can ask, so a block's samples ask its list. Given in the node's
+    /// frame.
+    Body(crate::caro::Carnis),
 }
 
 /// Most sections in one column.
@@ -443,6 +450,8 @@ pub fn round_radii(n: &SdfNode) -> Vec<Option<f32>> {
             Prim::RoundCone { ra, rb, .. } => Some(if ra.min(rb) > 0.0 { ra.min(rb) } else { ra.max(rb) }),
             Prim::Column { sections, count, .. } => sections[..(count as usize).clamp(1, MAX_SECTIONS)].iter().map(|s| s[1].min(s[2])).reduce(f32::min),
             Prim::Box { .. } | Prim::Rounded { .. } | Prim::HalfSpace { .. } => None,
+            // (The tightest turn of its sections and swells.)
+            Prim::Body(ref b) => Some(b.flesh().tightest()),
         }],
         Kind::Group { kids, .. } => kids.iter().flat_map(round_radii).collect(),
     };
@@ -474,7 +483,7 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
     *next += 1;
     let my_seed = seed ^ next.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     let kind = match &n.kind {
-        Kind::Prim(p) => PKind::Prim(held(*p)),
+        Kind::Prim(p) => PKind::Prim(held(p.clone())),
         Kind::Group { op, kids, smooth } => PKind::Group { op: *op, kids: kids.iter().map(|k| prepare(k, seed, next)).collect(), smooth: *smooth },
     };
     let (lip, slack) = lip_slack(n);
@@ -509,6 +518,29 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
         PKind::Group { kids, .. } => kids.iter().any(|k| k.loose),
     };
     Prepared { kind, m: n.m.clone(), inv_rot, rotated: n.m.rotate != [0.0; 3], seed: my_seed, lip, slack, steady, wander, least, loose, outline: None }
+}
+
+/// Holds every body in the tree at `level` (in the tree's frame; in each body's own, `level`
+/// over the scale and least stretch of the nodes above and its own): 7.6's `T`, the mesher's
+/// and not the body's (the lead's decision of 2026-11-28). Above it a body's value is the held
+/// level, so a block is shown clear by its middle's value only if that level passes what the
+/// skip asks; nearer the surface every value is the whole field's. Held to
+/// [`crate::caro::KEEP`].
+fn fit_bodies(n: &mut Prepared, level: f32) {
+    let m = &n.m;
+    let local = level / (m.scale * m.stretch[0].min(m.stretch[1]).min(m.stretch[2]));
+    match &mut n.kind {
+        PKind::Prim(Prim::Body(b)) => {
+            // (Past the division by 7.8's factor too: a held value is `keep / divisor`.)
+            let local = local * b.flesh().divisor();
+            let keep = if local.is_finite() { local.clamp(crate::caro::KEEP.0, crate::caro::KEEP.1) } else { crate::caro::KEEP.1 };
+            if let Ok(fitted) = b.with_keep(keep) {
+                *b = fitted;
+            }
+        }
+        PKind::Prim(_) => {}
+        PKind::Group { kids, .. } => kids.iter_mut().for_each(|k| fit_bodies(k, local)),
+    }
 }
 
 /// The tree as it is for every point within `reach` of `c` (both in the node's parent's
@@ -546,6 +578,20 @@ fn prune_asking(n: &Prepared, c: V3, reach: f32, spent: &mut Spent) -> Prepared 
 /// `seen` holds the ranges the loose children's walks took on the way down ([`Noted`]).
 fn pruned(n: &Prepared, c: V3, reach: f32, at: &Valued, spent: &mut Spent, seen: &mut Noted) -> Prepared {
     let keep_all = |kind: PKind| Prepared { kind, m: n.m.clone(), inv_rot: n.inv_rot, rotated: n.rotated, seed: n.seed, lip: n.lip, slack: n.slack, steady: n.steady, wander: n.wander, least: n.least, loose: n.loose, outline: n.outline };
+    if let PKind::Prim(Prim::Body(b)) = &n.kind {
+        // A body keeps the parts and seams a point of the ball can ask, and asks only those.
+        let m = &n.m;
+        if !plain(m) {
+            return n.clone();
+        }
+        let q = local(n, c);
+        let r = reach / (m.scale * m.stretch[0].min(m.stretch[1]).min(m.stretch[2]));
+        // (Cutting the list asks each listed part's capsule: charged as a range's capsules.)
+        spent.work += body_range_cost(b);
+        #[cfg(test)]
+        DID.with(|d| d.borrow_mut().body_capsules += b.kinds_asked().0.iter().sum::<u64>());
+        return keep_all(PKind::Prim(Prim::Body(b.near(q, r))));
+    }
     let PKind::Group { op, kids, smooth } = &n.kind else { return n.clone() };
     let m = &n.m;
     if !plain(m) || at.kids.len() != kids.len() {
@@ -711,6 +757,7 @@ fn prim_distance(p: &Prim, q: V3) -> f32 {
         Prim::HalfSpace { normal, offset } => math3::dot(q, normal) - offset,
         Prim::RoundCone { a, b, ra, rb } => round_cone(q, a, b, ra, rb),
         Prim::Column { a, b, side, sections, count, square } => column(q, a, b, side, &sections[..(count as usize).clamp(1, MAX_SECTIONS)], square),
+        Prim::Body(ref b) => b.value(q),
     }
 }
 
@@ -2000,8 +2047,49 @@ fn prim_cost(p: &Prim) -> u64 {
         Prim::Rounded { .. } => ROUNDED_COST[1],
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 12,
         Prim::Cylinder { .. } => 35,
+        // What its samples ask: the frame, the chain and the division, and each part and seam
+        // in its list ([`body_cost`]).
+        Prim::Body(ref b) => body_cost(b),
     }
 }
+
+/// What one sample of a body asks, in work units: [`BODY_WEIGHTS`] for its frame and chain, for
+/// each part in its list by [`crate::caro::Flesh::part_kind`], and for each seam.
+fn body_cost(b: &crate::caro::Carnis) -> u64 {
+    let (kinds, seams) = b.kinds_asked();
+    BODY_WEIGHTS[0] + kinds[0] * BODY_WEIGHTS[1] + kinds[1] * BODY_WEIGHTS[2] + kinds[2] * BODY_WEIGHTS[3] + seams * BODY_WEIGHTS[4]
+}
+
+/// What finding the parts and seams near one vertex of a body asks before its normal is taken
+/// (DISTANCE_FIELDS.md 7.10): every part's capsule and every seam's ball, [`BODY_CAPSULE`] each.
+pub(crate) fn body_normal_near_cost(f: &crate::caro::Flesh) -> u64 {
+    BODY_CAPSULE * (f.parts() + f.seams()) as u64
+}
+
+/// What one vertex normal of a body asks past finding its list `near`: the six samples of its
+/// central differences, each a primitive's 48 and [`body_cost`]'s weights over the list.
+pub(crate) fn body_normal_cost(f: &crate::caro::Flesh, near: &[u16]) -> u64 {
+    let parts = f.parts();
+    let one = near.iter().fold(48 + BODY_WEIGHTS[0], |sum, &i| {
+        let i = usize::from(i);
+        sum + if i < parts { BODY_WEIGHTS[1 + f.part_kind(i)] } else { BODY_WEIGHTS[4] }
+    });
+    6 * one
+}
+
+/// A body's range past its evaluation: each part's capsule in its list ([`BODY_CAPSULE`]).
+fn body_range_cost(b: &crate::caro::Carnis) -> u64 {
+    let (kinds, _) = b.kinds_asked();
+    BODY_CAPSULE * (kinds[0] + kinds[1] + kinds[2])
+}
+
+/// A body's weights, past a primitive's 48: the frame, the groups' sorts and chains and the
+/// division; a bone by roots; a bone by powers; a swell; a seam. Timed in the sculpt's one
+/// unit, two runs, each the upper end rounded up to ten (PROCEDURAL_MODELLING.md, the
+/// sculpt's weights: "a body" is 330, so 282 here past the 48).
+const BODY_WEIGHTS: [u64; 5] = [282, 110, 520, 70, 20];
+/// A part's capsule in a body's range (timed as the rest).
+const BODY_CAPSULE: u64 = 150;
 
 fn group_cost(kids: u64, count: usize, smooth: f32) -> u64 {
     8 + kids + count as u64 * if smooth > 0.0 { 20 } else { 3 }
@@ -2180,6 +2268,10 @@ fn own_range_cost(n: &Prepared) -> u64 {
     match &n.kind {
         PKind::Prim(p @ Prim::Column { .. }) => prim_cost(p) + COLUMN_RANGE,
         PKind::Prim(p @ Prim::Rounded { .. }) => prim_cost(p) + ROUNDED_RANGE,
+        // (Its evaluation is `prim_cost`'s, the 48 every primitive costs with it: a range charged
+        // `body_cost` alone fell 48 short at every ask, which a body whose range the box's
+        // search asks showed.)
+        PKind::Prim(p @ Prim::Body(b)) => prim_cost(p) + body_range_cost(b),
         PKind::Prim(p) => prim_cost(p),
         PKind::Group { kids, smooth, .. } => 2 * group_cost(0, kids.len(), *smooth) + RANGE_GROUP,
     }
@@ -2294,11 +2386,16 @@ struct Did {
     tight_asks: u64,
     /// Flat ellipsoids' ranges taken from their value at the middle ([`ellipsoid_span`]).
     quick_spans: u64,
+    /// Bodies' parts asked in their ranges, by [`crate::caro::Flesh::part_kind`]; their seams;
+    /// their parts' capsules (each body's range takes the capsule of every part in its list).
+    body_parts: [u64; 3],
+    body_seams: u64,
+    body_capsules: u64,
 }
 
 /// (Tests only) the kinds of primitive [`prim_cost`] weighs apart.
 #[cfg(test)]
-const PRIM_KINDS: usize = 13;
+const PRIM_KINDS: usize = 14;
 
 /// (Tests only) which of [`PRIM_KINDS`] a primitive is, in the order of `prim_cost`'s arms:
 /// a half space; a ball or a capsule; a round cone; a column at squareness 2 or 4, at 3, at
@@ -2322,15 +2419,16 @@ fn prim_kind(p: &Prim) -> usize {
         Prim::Rounded { .. } => 10,
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 11,
         Prim::Cylinder { .. } => 12,
+        Prim::Body(_) => 13,
     }
 }
 
 #[cfg(test)]
 impl Did {
-    const NONE: Did = Did { range_nodes: 0, mods: [0; 6], octaves: 0, range_prims: [0; PRIM_KINDS], column_ranges: 0, rounded_ranges: 0, groups: 0, kids_smooth: 0, kids_sharp: 0, supports_root: 0, supports_pow: 0, pieces: 0, mid_evals: 0, reach_nodes: 0, reach_kids: 0, reach_pairs: 0, table_places: 0, table_asks: 0, tight_asks: 0, quick_spans: 0 };
+    const NONE: Did = Did { range_nodes: 0, mods: [0; 6], octaves: 0, range_prims: [0; PRIM_KINDS], column_ranges: 0, rounded_ranges: 0, groups: 0, kids_smooth: 0, kids_sharp: 0, supports_root: 0, supports_pow: 0, pieces: 0, mid_evals: 0, reach_nodes: 0, reach_kids: 0, reach_pairs: 0, table_places: 0, table_asks: 0, tight_asks: 0, quick_spans: 0, body_parts: [0; 3], body_seams: 0, body_capsules: 0 };
 
     /// One of every step: what each kind weighs alone ([`did_shares`]).
-    const ONE: Did = Did { range_nodes: 1, mods: [1; 6], octaves: 1, range_prims: [1; PRIM_KINDS], column_ranges: 1, rounded_ranges: 1, groups: 1, kids_smooth: 1, kids_sharp: 1, supports_root: 1, supports_pow: 1, pieces: 1, mid_evals: 1, reach_nodes: 1, reach_kids: 1, reach_pairs: 1, table_places: 1, table_asks: 1, tight_asks: 1, quick_spans: 1 };
+    const ONE: Did = Did { range_nodes: 1, mods: [1; 6], octaves: 1, range_prims: [1; PRIM_KINDS], column_ranges: 1, rounded_ranges: 1, groups: 1, kids_smooth: 1, kids_sharp: 1, supports_root: 1, supports_pow: 1, pieces: 1, mid_evals: 1, reach_nodes: 1, reach_kids: 1, reach_pairs: 1, table_places: 1, table_asks: 1, tight_asks: 1, quick_spans: 1, body_parts: [1; 3], body_seams: 1, body_capsules: 1 };
 
     /// What it did since the last call, and starts again.
     fn taken() -> Did {
@@ -2517,6 +2615,12 @@ fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, spent: &mut Spent,
                 d.column_ranges += u64::from(matches!(p, Prim::Column { .. }));
                 d.rounded_ranges += u64::from(matches!(p, Prim::Rounded { .. }));
                 d.tight_asks += u64::from(tight && matches!(p, Prim::Ellipsoid { .. }));
+                if let Prim::Body(b) = p {
+                    let (kinds, seams) = b.kinds_asked();
+                    (0..3).for_each(|k| d.body_parts[k] += kinds[k]);
+                    d.body_seams += seams;
+                    d.body_capsules += kinds.iter().sum::<u64>();
+                }
             }
             PKind::Group { kids, smooth, .. } => {
                 d.groups += 1;
@@ -2625,6 +2729,11 @@ fn inner_range(n: &Prepared, q: V3, r: f32, copies: &mut u32, spent: &mut Spent,
             }
             (down, up.max(d))
         }
+        // (Its own range, sound in `f32`: [`crate::caro::Flesh::range_among`].)
+        PKind::Prim(Prim::Body(b)) => {
+            *asks += 1;
+            b.range(q, r)
+        }
         PKind::Prim(p) => {
             *asks += 1;
             let d = prim_distance(p, q);
@@ -2679,6 +2788,8 @@ fn bounds(n: &SdfNode) -> Option<(V3, V3, f32, f32)> {
                 Prim::Ellipsoid { radii } => centred(radii),
                 Prim::Rounded { half, .. } => centred(half),
                 Prim::HalfSpace { .. } => return None,
+                // (Where some part's capsule is within the join's width: the solid.)
+                Prim::Body(ref b) => b.flesh().reach_box(0.0)?,
                 // Not centred: the box around its two balls.
                 Prim::RoundCone { a, b, ra, rb } => (math3::vmin(math3::sub(a, [ra; 3]), math3::sub(b, [rb; 3])), math3::vmax(math3::add(a, [ra; 3]), math3::add(b, [rb; 3]))),
                 // The box around its ends, as wide all round as its widest section.
@@ -3455,8 +3566,14 @@ fn prim_reach(p: &Prim, level: f32) -> Option<Reach> {
         // (A rounded cylinder is round about Y with the radius `half[0]`, whatever `half[2]`
         // says: a recipe writes `[r, h, r]`, and a tree written another way is held too.)
         Prim::Rounded { half, disc: true, .. } => Reach::new([-half[0], -half[1], -half[0]], [half[0], half[1], half[0]], level),
+        // (Its own box at the level: where some part's capsule is within the level and the
+        // join's dip: [`crate::caro::Flesh::reach_box`]; past the held level, everywhere.)
+        Prim::Body(ref b) => {
+            let (lo, hi) = b.flesh().reach_box(level)?;
+            Reach::new(lo, hi, 0.0)
+        }
         _ => {
-            let (lo, hi, _, _) = bounds(&SdfNode { kind: Kind::Prim(*p), m: Modifiers::default() })?;
+            let (lo, hi, _, _) = bounds(&SdfNode { kind: Kind::Prim(p.clone()), m: Modifiers::default() })?;
             Reach::new(lo, hi, level)
         }
     })
@@ -4030,6 +4147,9 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
         return Err(SdfError::limit(format!("the sdf grid would have {samples} samples; at most {MAX_SAMPLES} (lower the resolution)"), samples as f64, MAX_SAMPLES as f64));
     }
     let mut prepared = prepare(tree, opt.seed, &mut 0);
+    // A body's held level is the mesher's: past what a block's skip asks of a value
+    // ([`fit_bodies`]), so that a block clear of the surface is clear by its middle's value.
+    fit_bodies(&mut prepared, 1.25 * ((3.0f32).sqrt() * 4.0 * cell * lip + slack + cell));
     // Whether the tree's factor bounds its field across any ball (DISTANCE_FIELDS 2.6): not
     // with an ellipsoid whose radii differ, a column whose breadth and depth change in
     // different proportions, or a repetition (its field jumps at its cells' edges) anywhere in
@@ -4873,7 +4993,7 @@ mod tests {
         };
         let with = |p: Prim, m: Modifiers| SdfNode { kind: Kind::Prim(p), m };
         let sph = Prim::Sphere { radius: 1.0 };
-        time("sphere", &prim(sph));
+        time("sphere", &prim(sph.clone()));
         time("box", &prim(Prim::Box { half: [1.0; 3], round: 0.1 }));
         time("cylinder", &prim(Prim::Cylinder { radius: 1.0, radius_top: 1.0, half_height: 1.0, round: 0.0 }));
         time("cone", &prim(Prim::Cylinder { radius: 1.0, radius_top: 0.5, half_height: 1.0, round: 0.0 }));
@@ -4881,18 +5001,18 @@ mod tests {
         time("torus", &prim(Prim::Torus { radius: 1.0, tube: 0.2 }));
         time("ellipsoid", &prim(Prim::Ellipsoid { radii: [1.0, 0.5, 0.7] }));
         time("halfspace", &prim(Prim::HalfSpace { normal: [0.0, 1.0, 0.0], offset: 0.0 }));
-        time("sphere rotated", &with(sph, Modifiers { rotate: [10.0, 20.0, 30.0], ..Modifiers::default() }));
-        time("sphere repeat", &with(sph, Modifiers { repeat: Some(([3, 3, 3], [2.0; 3])), ..Modifiers::default() }));
-        time("sphere twist", &with(sph, Modifiers { twist: 30.0, ..Modifiers::default() }));
-        time("sphere bend", &with(sph, Modifiers { bend: 30.0, ..Modifiers::default() }));
+        time("sphere rotated", &with(sph.clone(), Modifiers { rotate: [10.0, 20.0, 30.0], ..Modifiers::default() }));
+        time("sphere repeat", &with(sph.clone(), Modifiers { repeat: Some(([3, 3, 3], [2.0; 3])), ..Modifiers::default() }));
+        time("sphere twist", &with(sph.clone(), Modifiers { twist: 30.0, ..Modifiers::default() }));
+        time("sphere bend", &with(sph.clone(), Modifiers { bend: 30.0, ..Modifiers::default() }));
         for o in [1, 3, 6, 8] {
-            time(&format!("sphere displace x{o}"), &with(sph, Modifiers { displace: Some((0.1, 0.5, o)), ..Modifiers::default() }));
+            time(&format!("sphere displace x{o}"), &with(sph.clone(), Modifiers { displace: Some((0.1, 0.5, o)), ..Modifiers::default() }));
         }
-        let kids = |k: usize| (0..k).map(|_| prim(sph)).collect::<Vec<_>>();
+        let kids = |k: usize| (0..k).map(|_| prim(sph.clone())).collect::<Vec<_>>();
         time("union of 8 spheres", &SdfNode { kind: Kind::Group { op: Combine::Union, kids: kids(8), smooth: 0.0 }, m: Modifiers::default() });
         time("smooth union of 8", &SdfNode { kind: Kind::Group { op: Combine::Union, kids: kids(8), smooth: 0.2 }, m: Modifiers::default() });
         let link = Prim::RoundCone { a: [0.1, 0.0, 0.2], b: [0.4, 1.0, -0.1], ra: 0.3, rb: 0.15 };
-        time("round cone", &prim(link));
+        time("round cone", &prim(link.clone()));
         let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
         sections[..4].copy_from_slice(&[[0.0, 0.17, 0.11], [0.4, 0.13, 0.09], [0.75, 0.15, 0.11], [1.0, 0.06, 0.06]]);
         time("column of 4 sections", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 2.0 }));
@@ -4906,8 +5026,8 @@ mod tests {
         }
         time("column, square 4", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 4.0 }));
         time("column, square 2.5", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 2.5 }));
-        time("round cone stretched", &with(link, Modifiers { stretch: [1.0, 1.0, 0.6], ..Modifiers::default() }));
-        let links = |k: usize| (0..k).map(|_| prim(link)).collect::<Vec<_>>();
+        time("round cone stretched", &with(link.clone(), Modifiers { stretch: [1.0, 1.0, 0.6], ..Modifiers::default() }));
+        let links = |k: usize| (0..k).map(|_| prim(link.clone())).collect::<Vec<_>>();
         time("chain of 8 round cones", &SdfNode { kind: Kind::Group { op: Combine::Union, kids: links(8), smooth: 0.02 }, m: Modifiers::default() });
         time("chain of 24 round cones", &SdfNode { kind: Kind::Group { op: Combine::Union, kids: links(24), smooth: 0.02 }, m: Modifiers::default() });
     }
@@ -5204,7 +5324,7 @@ mod tests {
         // Closed past its ends: outside a little below the bottom and above the top.
         assert!(d(0.0, 0.8 - 0.12, 0.0) > 0.0 && d(0.0, 0.8 - 0.05, 0.0) < 0.0 && d(0.0, 1.4 + 0.07, 0.0) > 0.0);
         // Never further than the truth: against the nearest of many points of its own surface.
-        let node = prim(trunk);
+        let node = prim(trunk.clone());
         let (shape, _) = mesh(&node, &opts(64)).unwrap();
         assert_eq!(shape.open_edge_count(), 0);
         for probe in [[0.4f32, 1.0, 0.0], [0.0, 1.1, 0.3], [0.25, 0.7, 0.2], [0.1, 1.6, 0.0]] {
@@ -7323,6 +7443,7 @@ mod tests {
                     Prim::RoundCone { .. } => 8,
                     Prim::Column { .. } => 9,
                     Prim::HalfSpace { .. } => 10,
+                    Prim::Body(_) => unreachable!("the drawn trees hold no body"),
                 })
             }
             Kind::Group { op, kids, smooth } => {
@@ -7613,6 +7734,11 @@ mod tests {
             ("pairs the reach met", d.reach_pairs * w("a pair the reach meets")),
             ("places of columns' tables", d.table_places * w("a place of a column's table")),
             ("flat ellipsoids' ranges from their middle", d.quick_spans * w("a flat ellipsoid's range from its middle")),
+            ("bodies' bones by roots", d.body_parts[0] * w("a body's bone by roots")),
+            ("bodies' bones by powers", d.body_parts[1] * w("a body's bone by powers")),
+            ("bodies' swells", d.body_parts[2] * w("a body's swell")),
+            ("bodies' seams", d.body_seams * w("a body's seam")),
+            ("bodies' capsules", d.body_capsules * w("a body's capsule in a range")),
         ]
     }
 
@@ -7631,6 +7757,7 @@ mod tests {
         "a rounded shape at any other power",
         "a straight cylinder",
         "a tapered cylinder",
+        "a body",
     ];
 
     /// **The document's table of the sculpt's weights is the code's, row by row**
@@ -7663,6 +7790,13 @@ mod tests {
         assert_eq!(prim_cost(&Prim::Capsule { radius: 0.1, half_height: 0.5 }), w("a ball or a capsule"));
         assert_eq!(prim_cost(&column(4.0)), w("a column at squareness 2 or 4"));
         assert_eq!(prim_cost(&column(1.5)), w("a column at squareness 2 or 4"));
+        // (A body: its frame and chain alone where its list is empty, and each part and seam
+        // of its list by its row.)
+        let body = crate::caro::Carnis::new(crate::caro::tests::swollen_biped());
+        assert_eq!(prim_cost(&Prim::Body(body.near([90.0, 0.0, 0.0], 0.0))), w("a body"));
+        let ((kinds, seams), whole) = (body.kinds_asked(), prim_cost(&Prim::Body(body.clone())));
+        assert!(kinds.iter().all(|&k| k > 0) && seams > 0);
+        assert_eq!(whole, w("a body") + kinds[0] * w("a body's bone by roots") + kinds[1] * w("a body's bone by powers") + kinds[2] * w("a body's swell") + seams * w("a body's seam"));
         let one = |f: fn(&mut Modifiers)| {
             let mut m = Modifiers::default();
             f(&mut m);
@@ -7691,11 +7825,16 @@ mod tests {
             (REACH_PAIR, "a pair the reach meets"),
             (REACH_PLACE, "a place of a column's table"),
             (QUICK_SPAN, "a flat ellipsoid's range from its middle"),
+            (BODY_WEIGHTS[1], "a body's bone by roots"),
+            (BODY_WEIGHTS[2], "a body's bone by powers"),
+            (BODY_WEIGHTS[3], "a body's swell"),
+            (BODY_WEIGHTS[4], "a body's seam"),
+            (BODY_CAPSULE, "a body's capsule in a range"),
         ] {
             assert_eq!(constant, w(row), "{row}");
         }
         // (Every row is one of these: the table says nothing the code does not.)
-        assert_eq!(DOCUMENTED.with(|t| t.len()), PRIM_ROWS.len() + 7 + 3 + 12, "{:?}", DOCUMENTED.with(|t| t.keys().cloned().collect::<Vec<_>>()));
+        assert_eq!(DOCUMENTED.with(|t| t.len()), PRIM_ROWS.len() + 7 + 3 + 17, "{:?}", DOCUMENTED.with(|t| t.keys().cloned().collect::<Vec<_>>()));
     }
 
     /// Trees whose box's search and reach do every kind of step: the drawn set's (every
@@ -7730,6 +7869,28 @@ mod tests {
         let mut many = group(Combine::Union, (0..40).map(|i| at_ball(0.1, [0.07 * i as f32, 0.0, 0.0])).collect(), 0.1);
         many.m.stretch = [1.0, 2.0, 1.0];
         trees.push(many);
+        // (Bodies: bones by roots and by powers, swells and seams; one turned and placed.)
+        trees.push(prim(Prim::Body(crate::caro::Carnis::new(crate::caro::tests::swollen_biped()))));
+        let mut chain = prim(Prim::Body(crate::caro::Carnis::new(crate::caro::tests::drawn_chain(0xB0D1_0001))));
+        chain.m.rotate = [20.0, 35.0, 0.0];
+        chain.m.at = [0.3, 0.0, 0.1];
+        trees.push(chain);
+        // (Bodies twisted, one beside a loose child, a flat ellipsoid: the box's search passes
+        // a twist's bounds and asks the body's range there, so a body's rows of charged work
+        // are done and held to their charge. A body's own bounds are its reach, so untwisted
+        // it asks no search.)
+        for (i, f) in [crate::caro::tests::test_flesh("forked"), crate::caro::tests::swollen_biped(), crate::caro::tests::drawn_chain(0xB0D1_0001)].into_iter().enumerate() {
+            let mut flat = prim(Prim::Ellipsoid { radii: [0.25, 0.03, 0.15] });
+            flat.m.at = [0.05, -0.2, 0.0];
+            let body = prim(Prim::Body(crate::caro::Carnis::new(f)));
+            let mut t = if i == 0 { group(Combine::Union, vec![body, flat], 0.02) } else { body };
+            t.m.twist = 25.0;
+            trees.push(t);
+        }
+        // (The four test skeletons, jointed, as the recipe makes them.)
+        for name in ["biped", "quadruped", "serpent", "forked"] {
+            trees.push(prim(Prim::Body(crate::caro::Carnis::new(crate::caro::tests::test_flesh(name)))));
+        }
         trees
     }
 
@@ -9165,8 +9326,8 @@ mod tests {
     fn every_primitives_factor_bounds_it_or_its_range_is_asked() {
         let mut r = Review(0x0bad_cafe_1234_5679);
         let (mut faster, mut pairs, mut balls) = (0, 0, 0);
-        for case in 0..400 {
-            let p = match case % 10 {
+        for case in 0..440 {
+            let p = match case % 11 {
                 0 => {
                     let rho = [1.0, 1.2, 2.0, 5.0, 25.0, 100.0][r.pick(6)];
                     let a = r.range(0.05, 0.5);
@@ -9200,12 +9361,14 @@ mod tests {
                 6 => Prim::Torus { radius: r.range(0.05, 0.5), tube: r.range(0.01, 0.2) },
                 7 => Prim::RoundCone { a: r.v3(-0.3, 0.3), b: r.v3(-0.3, 0.3), ra: r.range(0.01, 0.3), rb: r.range(0.01, 0.3) },
                 8 => Prim::Rounded { half: r.v3(0.02, 0.5), power: 2.0 / r.range(0.05, 1.0), disc: r.chance(0.3) },
+                // A drawn chain of bones (straight and bent joints, swells): its own factor, 1.
+                9 => Prim::Body(crate::caro::Carnis::new(crate::caro::tests::drawn_chain(0xB0D1_0000 + case as u64))),
                 _ => {
                     let half = r.v3(0.01, 0.5);
                     Prim::Box { half, round: 0.0 }
                 }
             };
-            let node = prim(p);
+            let node = prim(p.clone());
             let pp = prepare(&node, 1, &mut 0);
             let (lo, hi, _, _) = bounds(&node).unwrap();
             let size = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max);
@@ -9245,7 +9408,7 @@ mod tests {
         }
         // (The loose ones the test drew did change faster than a factor says: it would see one
         // taken for them.)
-        assert!(faster > 20 && pairs == 120_000 && balls == 120_000, "{faster} loose primitives changed faster than a factor; {pairs} pairs, {balls} balls");
+        assert!(faster > 20 && pairs == 132_000 && balls == 132_000, "{faster} loose primitives changed faster than a factor; {pairs} pairs, {balls} balls");
     }
 
     /// **A block is skipped, and a union pruned, only where nothing of the surface is lost**
@@ -9312,7 +9475,51 @@ mod tests {
             OLD_FACTORS.with(|f| f.set(false));
             old_wrong += usize::from(mesh_hash(&old) != mesh_hash(&all.0));
         }
+        // Bodies: each block's list of parts and seams, and the blocks skipped by its value at
+        // the mesher's held level, lose nothing of the body sampled whole: the four test
+        // skeletons, the biped with swells, two drawn chains (one turned and scaled). Each at a
+        // resolution where some block is clear: a block is eight cells, and where the body is
+        // thinner than a block's reach every way (the serpent, 0.14 m thick and 1.7 m long, at
+        // 64: its grid is 3 by 2 by 9 blocks, none clear by a block's half diagonal) there is
+        // none to skip.
+        let bodies = [
+            (crate::caro::tests::swollen_biped(), 48),
+            (crate::caro::tests::test_flesh("serpent"), 128),
+            (crate::caro::tests::test_flesh("forked"), 80),
+            (crate::caro::tests::drawn_chain(0xB0D1_0002), 64),
+            (crate::caro::tests::drawn_chain(0xB0D1_0003), 48),
+            (crate::caro::tests::test_flesh("biped"), 64),
+            (crate::caro::tests::test_flesh("quadruped"), 80),
+        ];
+        for (i, (f, res)) in bodies.into_iter().enumerate() {
+            let mut tree = prim(Prim::Body(crate::caro::Carnis::new(f)));
+            if i == 3 {
+                tree.m.rotate = [10.0, 0.0, 30.0];
+                tree.m.scale = 1.5;
+            }
+            let o = opts(res);
+            let (now, st) = mesh(&tree, &o).unwrap();
+            let all = whole(&tree, &o);
+            assert!(st.blocks_skipped > 0, "body {i}: no block was skipped at {res}: {st:?}");
+            assert_eq!(mesh_hash(&now), mesh_hash(&all.0), "body {i}: {} triangles, {} sampled whole", now.tris.len(), all.0.tris.len());
+        }
         // (By the factors alone some of these lost surface: the set can see the fault.)
         assert!(old_wrong > 0, "none of the drawn cases differed by the factors alone");
+    }
+
+    /// **A body's mesh is charged for every evaluation it makes**: the four test skeletons
+    /// meshed, each sample weighed at its block's list ([`body_cost`]) and every range's steps
+    /// ([`did_shares`]) together never pass the work charged.
+    #[test]
+    fn a_bodys_mesh_is_charged_for_every_evaluation() {
+        for name in ["biped", "quadruped", "serpent", "forked"] {
+            let tree = prim(Prim::Body(crate::caro::Carnis::new(crate::caro::tests::test_flesh(name))));
+            PRIM_WEIGHED.with(|w| w.set(0));
+            Did::taken();
+            let (_, s) = mesh(&tree, &MeshOptions { max_work: u64::MAX, ..opts(64) }).unwrap();
+            let weighed = PRIM_WEIGHED.with(|w| w.get());
+            let besides: u64 = did_shares(&Did::taken(), 0).iter().filter(|(n, _)| *n != "primitives' ranges").map(|s| s.1).sum();
+            assert!(weighed > 0 && weighed + besides <= s.work, "{name}: evaluations weighing {weighed} and ranges {besides} for {} work", s.work);
+        }
     }
 }

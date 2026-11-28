@@ -1,0 +1,91 @@
+{
+  "name": "pelvis_legs",
+  "description": "the shape body's test pelvis and legs (crates/specula-model/src/caro/tests.rs): a person's legs part below the pelvis, the thighs close together as a standing person's are",
+  "lods": [
+    0.5,
+    0.25
+  ],
+  "parts": [
+    {
+      "name": "flesh",
+      "material": "skin",
+      "shape": {
+        "op": "body",
+        "bones": [
+          {
+            "name": "root",
+            "head": [0, 0, 0],
+            "tail": [0, 0, 0]
+          },
+          {
+            "name": "pelvis",
+            "parent": "root",
+            "head": [0, 0.9, 0],
+            "tail": [0, 1.04, 0],
+            "sections": [
+              [0, 0.16, 0.11],
+              [0.5, 0.165, 0.115],
+              [1, 0.15, 0.1]
+            ]
+          },
+          {
+            "name": "spine",
+            "parent": "pelvis",
+            "head": [0, 1.04, 0],
+            "tail": [0, 1.3, -0.01],
+            "sections": [
+              [0, 0.15, 0.1],
+              [1, 0.16, 0.105]
+            ]
+          },
+          {
+            "name": "thigh_l",
+            "parent": "pelvis",
+            "head": [0.09, 0.9, 0.01],
+            "tail": [0.085, 0.5, 0.015],
+            "sections": [
+              [0, 0.085, 0.08],
+              [0.5, 0.07, 0.068],
+              [1, 0.05, 0.05]
+            ]
+          },
+          {
+            "name": "shin_l",
+            "parent": "thigh_l",
+            "head": [0.085, 0.5, 0.015],
+            "tail": [0.08, 0.08, -0.01],
+            "sections": [
+              [0, 0.05, 0.05],
+              [0.3, 0.052, 0.05],
+              [1, 0.032, 0.03]
+            ]
+          },
+          {
+            "name": "thigh_r",
+            "parent": "pelvis",
+            "head": [-0.09, 0.9, 0.01],
+            "tail": [-0.085, 0.5, 0.015],
+            "sections": [
+              [0, 0.085, 0.08],
+              [0.5, 0.07, 0.068],
+              [1, 0.05, 0.05]
+            ]
+          },
+          {
+            "name": "shin_r",
+            "parent": "thigh_r",
+            "head": [-0.085, 0.5, 0.015],
+            "tail": [-0.08, 0.08, -0.01],
+            "sections": [
+              [0, 0.05, 0.05],
+              [0.3, 0.052, 0.05],
+              [1, 0.032, 0.03]
+            ]
+          }
+        ],
+        "smooth": 0.025,
+        "resolution": 120
+      }
+    }
+  ]
+}

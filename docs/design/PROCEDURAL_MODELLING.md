@@ -181,6 +181,26 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
 - Primitives `sphere box cylinder cone capsule torus ellipsoid halfspace`, **centred on `at`** (mesh
   shapes rest on y = 0; sculpts are placed point by point); groups `union difference intersection`
   with `smooth` (Quilez's polynomial smooth minimum, colours blended the same way).
+- **`body`** (2026-11-28, `crate::caro`, DISTANCE_FIELDS.md section 7): a whole skeleton's
+  flesh as one node, `{"op": "body", "bones": [...], "smooth": K}` (and the shape `body`, the
+  same fields with a `resolution`, 96 unless given). Each bone: `name`, `parent`, `head`,
+  `tail`, `sections` (`[t, half breadth, half depth]`), `side`, `square` (2 to 12), `swells`
+  (`at`, `radii`), `mirror` (a `*_l` bone and its `*_r` twin), `smooth` (the width where it
+  meets the bones at its head, at most the body's), `places` (`name`, `at`, `side`, `depth`:
+  kept as anchors). Its parts are joined and culled inside it; its width falls at straight
+  joints and is between each pair of bones (7.8: the bones that run on through their joints
+  are one group joined at their seams' width, and a limb meets that group at the whole width,
+  so a hip or a shoulder has no crease); its field is 1-Lipschitz (factor 1). **Its held level is the mesher's**: set
+  where it is meshed to past what a block's skip asks (`fit_bodies`), so a block clear of it is
+  clear by its middle's value. Its bounds are its capsules widened by the width, twice it where
+  it has groups (where some part's capsule is within it, 7.5 (2), 7.8); its reach the same at a level; its range over a ball
+  its own (`Flesh::range_among`, sound in `f32`); a prune keeps the parts and seams a point of
+  the ball can ask, so a block's samples ask its list and nothing more. Charged by the parts
+  and seams in its list (the table below). A shape `body`'s build says its parts, its seams and
+  its anchors: each bone's two ends (`NAME.head`, `NAME.tail`), each joint's middle (`A~B`)
+  and each place (`BONE.PLACE`), with a frame (the bone's direction, toward its side, across),
+  where it lies (`surface`, `inside`, `free`) and its depth, in the shape's own frame. `fine`
+  and `blend` are taken and checked, and make nothing yet.
 - Modifiers on any node: `at rotate scale stretch mirror repeat elongate twist bend round shell
   displace color`. Uncoloured nodes take the part's colour. `stretch` is a scale for each axis
   (`[1, 1, 0.6]`: a section as broad and as deep as it is measured); the surface is exact, and the
@@ -494,6 +514,12 @@ where balls run near 1.4 and flat ellipsoids 1.1.
 | a pair the reach meets | 20 | a pair of a smooth group's children in the reach |
 | a place of a column's table | 6 | a place of a column's table at a level the reach asks |
 | a flat ellipsoid's range from its middle | 13 | a prune's range of an ellipsoid within twice of round the ball does not reach into, from its value at the middle (`ellipsoid_span`; 15 when timed in its own units) |
+| a body | 330 | an evaluation of a `body` node past its list: the frame, the sorts and the chains of its groups, the division (`body_cost`, past the 48 of every primitive; timed, below) |
+| a body's bone by roots | 110 | each bone in a body node's list at squareness 2, 4 or 8, at each evaluation (timed) |
+| a body's bone by powers | 520 | each bone in the list at any other squareness (timed) |
+| a body's swell | 70 | each swell in the list (timed) |
+| a body's seam | 20 | each seam (a joint whose width falls) in the list (timed) |
+| a body's capsule in a range | 150 | each part of the list in a body node's range, past its evaluation (`body_range_cost`; timed) |
 
 **A new node** (a primitive or a modifier) joins the sculpt with every one of these, or a test
 cannot see its fault:
@@ -576,6 +602,32 @@ in its scratch folder and mounted into `crate::sdf` for a release build that is 
   Its bounds are up to `short` looser than the distance's, so a tree can keep a child the walk
   lets go: the test holds the two trees that showed it.
 
+- **A body's weights** (2026-11-28, the body lane's probe, mounted into `crate::sdf` for a
+  release build that is not a test's, then removed): in the same one unit (a ball's evaluation
+  at its 4,096 points, before and after each run, the lesser taken so that the weights come
+  out the greater), a body's evaluation at 4,096 points about a bundle of 8 bones by roots, 8
+  by powers, 8 swells (1 part against 8 gives a part's weight and the base), a spine of nine
+  bones in one group with four limbs off it (8 seams; the grouped join's base past its parts
+  and seams), and each one's range past its evaluation (a capsule's). **Each weight is the
+  upper end of the two runs, rounded up to ten**; the machine was never quiet (other lanes
+  building), and the runs disagree by up to twice on the small rows:
+
+  | Run | ns a unit (before, after) | load (processor, build processes) | body | roots | powers | swell | seam | capsule |
+  |---|---|---|---|---|---|---|---|---|
+  | 1 | 1.791, 1.780 | 71% to 91%, 12 to 14 | 184 | 104 | 302 | 51 | 18.7 | 144 |
+  | 2 | 1.169, 1.850 | 96% to 88%, 16 to 24 | 323 | 90 | 514 | 61 | 7.0 | 122 |
+  | set | | | 330 | 110 | 520 | 70 | 20 | 150 |
+
+  ("body" is the whole evaluation past its list, the 48 of a primitive with it.) A body's
+  prune (the list cut to a block's ball) is charged as its range's capsules. **A unit over the
+  four test bodies' builds** (best of three, their levels of detail left out; the times of
+  the two runs over the work charged at the weights set, prunes included: biped 769,783,021
+  units, quadruped 600,580,035, serpent 167,942,445, forked 171,342,457): biped 2.37 and
+  2.15 ns, quadruped 2.51 and 2.57, serpent 2.82 and 2.49, forked 2.55 and 2.38 in runs 1 and
+  2. **Above the 2.0 promised, at a load past the one it was promised at**: the ball's unit
+  itself took 1.17 to 1.85 ns in these runs, against 1.0 to 1.09 in the runs that set the
+  promise, so in the ball's units of the same run a body's unit is 1.2 to 2.2 of them. Not
+  shown at or under 2.0 ns: measure again on a quiet machine.
 - **A part thinner than a cell meshes with edges that four triangles share** (looked into on
   2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
   It is not the join and not the box: **one crescent** (`{"op": "difference", "of": [{"op":
