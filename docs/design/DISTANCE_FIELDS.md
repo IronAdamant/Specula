@@ -785,7 +785,18 @@ to `[0, 1]`; or its own where the body gives one (at most `K`): nothing straight
 bones of one size, all of `K` from 40 degrees or from a step of a tenth. (Without the step's
 share, a straight joint between bones of different sizes was the plain union round the step,
 with its crease: 11 degrees at the forked body's trunk joint and at the biped's chin, 5 at the
-quadruped's tail root, by the crease measure below. The tenth is the engine's own estimate.) Its
+quadruped's tail root, by the crease measure below. The tenth is the engine's own estimate.)
+**Where a tapering run bends** (2026-11-28) the angle in `s(u)` is not the bend but the angle
+`α` at which the two bones' own surfaces cross, `α = √(θ² + 2 (1 + σ²) |A′| θ (R/m)²)`, the
+greater of the two ends' (`σ` an end's cap, 7.3; `|A′| = |σ| / min(q, 1)` its slope; `R` and
+`m` the greater and the lesser half size of its section): `θ` where neither end tapers. A
+tapering bone tilted by `θ` moves its surface at the joint by `|A′| R θ`, and each end's cap
+rounds in at about `(1 + σ²) R / m²`, so two surfaces of one slope at the joint cross where the
+caps have turned, at `α` (to first order in `θ`). The crease goes as `√θ`, the share as `θ²`:
+the serpent's joints between seg15 and seg16 and between seg08 and seg07, bent by 0.043
+degrees, were given 0.03 µm, and their surfaces, 1.0 µm apart round the ring (as `cos φ`),
+crossed 0.2 mm from the joint at 0.47 degrees: a break of 0.3 at 37.5 µm that did not halve.
+Now 4 µm, filleted over half a millimetre. Untapered bones (the ring tests) are as before. Its
 **seam** `Z` is the solid disc about the joint square to `o₂ − o₁`, of radius `R + K` and half
 thickness `Λ R` (`R` the greater reach of the two bones, `Λ = 1/2`). The width at a point is
 

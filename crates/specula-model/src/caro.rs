@@ -107,6 +107,11 @@ fn eased(n: f32) -> f32 {
         CLAMP + 0.5
     }
 }
+/// The step (metres) of the central differences a body's vertex normals are taken by
+/// ([`Flesh::normal_at`]; DISTANCE_FIELDS.md 7.10): a tenth of a millimetre. Their error is
+/// about `h²/(6 r²)` of a radian round a curve of radius `r` (under 0.1 degree from `r` = 1 mm)
+/// and the field's `f32` rounding over `2h` (a few thousandths of a degree).
+pub const NORMAL_STEP: f32 = 1e-4;
 /// `2⁻¹⁴`: the slack's share of `|x|₁ + W` (see the module's doc).
 const SLACK: f32 = 1.0 / 16384.0;
 
@@ -753,8 +758,36 @@ const FULL_BEND_ONE_LESS_COS: f64 = 1.0 - 0.766_044_443_118_978;
 /// itself: a share that grew with `1 − cos θ` left a joint bent by a few degrees nearly no
 /// width, and the union's crease of that angle round it.)
 pub fn bend_share(cos_bend: f64) -> f64 {
-    let u = (dmath::acos_f64(cos_bend.clamp(-1.0, 1.0)) / (FULL_BEND * dmath::PI / 180.0)).clamp(0.0, 1.0);
+    angle_share(dmath::acos_f64(cos_bend.clamp(-1.0, 1.0)))
+}
+
+/// [`bend_share`] of an angle in radians.
+fn angle_share(radians: f64) -> f64 {
+    let u = (radians / (FULL_BEND * dmath::PI / 180.0)).clamp(0.0, 1.0);
     u * u * (3.0 - 2.0 * u)
+}
+
+/// The angle (radians) at which the two bones' own surfaces cross near a joint bent by
+/// `theta` (7.8, "Where a tapering run bends"): `√(θ² + 2 (1 + σ²) |A′| θ (R/m)²)` with the
+/// greater of the two ends' (`tilt[s]` an end's cap `σ` and its section `[A, B]`; `|A′| =
+/// |σ| / min(q, 1)`, `R` and `m` the greater and the lesser half size). A tapering bone tilted
+/// by `θ` moves its surface at the joint by `|A′| R θ`, and each end's cap rounds in at about
+/// `(1 + σ²) R / m²`, so the two surfaces, alike in slope at the joint, cross where the caps
+/// have turned. `θ` itself where neither end tapers.
+fn crossing(theta: f64, tilt: [(f32, [f32; 2]); 2]) -> f64 {
+    let most = tilt
+        .iter()
+        .map(|&(sigma, [a, b])| {
+            let (sigma, a, b) = (f64::from(sigma), f64::from(a), f64::from(b));
+            if !(a > 0.0 && b > 0.0) {
+                return 0.0;
+            }
+            let (big, small) = (a.max(b), a.min(b));
+            let slope = sigma.abs() / (b / a).min(1.0);
+            2.0 * (1.0 + sigma * sigma) * slope * (big / small) * (big / small)
+        })
+        .fold(0.0f64, f64::max);
+    (theta * theta + most * theta).sqrt()
 }
 
 /// How far apart in size two bones' end sections may be (the greater difference of their half
@@ -939,6 +972,7 @@ fn make_seams(bones: &[Bone], parts: &[Part], of: &[PartOf], joints: &[Joint], s
         let mut outward = [[0.0f64; 3]; 2];
         let mut pair = [0u8; 2];
         let mut size = [[0.0f32; 2]; 2];
+        let mut tilt = [(0.0f32, [0.0f32; 2]); 2];
         for s in 0..2 {
             let b = j.bones[s];
             let Some(bone) = bones.get(b) else {
@@ -960,6 +994,7 @@ fn make_seams(bones: &[Bone], parts: &[Part], of: &[PartOf], joints: &[Joint], s
                 End::Tail => bone.sections.last(),
             };
             size[s] = near.map_or([0.0; 2], |n| [n[1], n[2]]);
+            tilt[s] = (shaft.cap[usize::from(j.ends[s] == End::Tail)], size[s]);
             (ends[s], outward[s]) = match j.ends[s] {
                 End::Head => (d3(bone.head), frame[0]),
                 End::Tail => (d3(bone.tail), dscale(frame[0], -1.0)),
@@ -974,8 +1009,12 @@ fn make_seams(bones: &[Bone], parts: &[Part], of: &[PartOf], joints: &[Joint], s
                 f64::from(w)
             }
             // It falls as the two run on from one another (their outward directions opposite),
+            // with the angle at which their surfaces cross (the bend's, more where a run tapers),
             // and rises again with a step in size between them at the joint (7.8).
-            None => k * bend_share(-ddot(outward[0], outward[1])).max(step_share(size[0], size[1])),
+            None => {
+                let theta = dmath::acos_f64((-ddot(outward[0], outward[1])).clamp(-1.0, 1.0));
+                k * angle_share(crossing(theta, tilt)).max(step_share(size[0], size[1]))
+            }
         };
         if own >= k {
             continue;
@@ -1433,6 +1472,28 @@ impl Flesh {
         let mut w = [self.smooth; MAX_PARTS];
         self.widths(x, None, &mut w);
         w.into_iter().fold(self.smooth, f32::min)
+    }
+
+    /// The field's slope at `x` made unit, by central differences [`NORMAL_STEP`] apart along
+    /// each axis (DISTANCE_FIELDS.md 7.10): the surface's normal where `x` is on it, what a
+    /// body's mesh takes for its vertex normals. Each difference is over the two points as
+    /// rounded to `f32`, so the step's rounding is not taken for slope. Asks only the parts and
+    /// seams near `x` (`near` is scratch), which gives [`Flesh::value`]'s bits. `None` where
+    /// the slope is under a millionth (held at `keep`, or a point where it has no direction).
+    pub fn normal_at(&self, x: D3, near: &mut Vec<u16>) -> Option<V3> {
+        let h = f64::from(NORMAL_STEP);
+        self.meets(f3(x), 2.0 * NORMAL_STEP, near);
+        let mut g = [0.0f64; 3];
+        for (c, gc) in g.iter_mut().enumerate() {
+            let (mut a, mut b) = (x, x);
+            a[c] += h;
+            b[c] -= h;
+            let (a, b) = (f3(a), f3(b));
+            let run = f64::from(a[c]) - f64::from(b[c]);
+            *gc = (f64::from(self.value_among(a, near)) - f64::from(self.value_among(b, near))) / run;
+        }
+        let len = dlen(g);
+        (len > 1e-6).then(|| f3(dscale(g, 1.0 / len)))
     }
 
     /// What the joined value is divided by (7.9's `1 + Λ/2`, or 1 where no width changes).

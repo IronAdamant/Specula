@@ -98,8 +98,10 @@ fn each_test_body_meshes_closed_as_one_surface() {
 
 /// What [`the_same_bytes_every_time`] read, in debug and in release (moved on 2026-11-28, on
 /// purpose: DISTANCE_FIELDS.md 7.9's join, 7.1's sloped ends and their caps, 7.8's step and
-/// softened width, the widened reach and its hold at 4K, which moved three of the four again).
-const HASHES: [u64; 5] = [0x666a_e3d3_a9e5_cd64, 0x8b01_fe29_978f_df1c, 0xf006_379d_ac5c_c261, 0xe0c2_de47_da38_8376, 0xf8a8_b30e_c37d_dc16];
+/// softened width, the widened reach and its hold at 4K, which moved three of the four again;
+/// then a tapering run's joint widened to the angle its bones' surfaces cross at, which moved
+/// all but pelvis_legs, whose runs do not taper at their joints).
+const HASHES: [u64; 5] = [0x6857_06a5_07bc_14cf, 0x790f_0996_c6fe_73c8, 0xc211_7686_5302_fa8e, 0x5494_67ce_db2b_8fd6, 0xf8a8_b30e_c37d_dc16];
 
 /// The same recipe makes the same bytes twice, and the same in a debug and a release build.
 #[test]

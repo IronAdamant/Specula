@@ -1411,8 +1411,10 @@ fn many_parts_at_one_point_keep_the_cull_and_the_bound() {
     assert_eq!(hash, HUB_BITS, "the hubs' bits changed: {hash:#x}");
 }
 
-/// What [`many_parts_at_one_point_keep_the_cull_and_the_bound`] read, in debug and in release.
-const HUB_BITS: u64 = 0x4cfc_628e_0848_fb66;
+/// What [`many_parts_at_one_point_keep_the_cull_and_the_bound`] read, in debug and in release
+/// (moved on 2026-11-28, on purpose: a tapering run's joint takes the width of the angle at which
+/// its bones' surfaces cross, 7.8, not of its bend alone).
+const HUB_BITS: u64 = 0xafb9_c838_6ba7_d48e;
 
 /// 7.9, "Where the capsule takes over": outside a random bone or swell, within a value of `2K`
 /// of its surface (`4K / (ρ − 1)` where `ρ = L R / m_min` is over 3, and below the gauge's
@@ -1844,3 +1846,4 @@ fn every_seam_of_the_five_skeletons_turns_smoothly() {
         assert!(seen >= 2 * f.parts.len().min(8), "{name}: only {seen} seam points found");
     }
 }
+
