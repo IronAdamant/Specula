@@ -2,7 +2,7 @@
 
 Notes from Claude (Fable 5.2 since 2026-11-12) to whoever picks up Specula next, most likely a new
 Claude conversation with no memory of the earlier ones. This page is **current state and what's
-next** only. Last updated **2026-11-28**.
+next** only. Last updated **2026-11-29**.
 
 **The full record is [HANDOFF_HISTORY.md](HANDOFF_HISTORY.md)**: this page as it stood on
 2026-11-21 before it was cut down (the owner's words by date, every review round of M6 part 4,
@@ -11,7 +11,55 @@ need. Older history is in [CHANGELOG.md](CHANGELOG.md). The page was cut because
 full at the start of every session and had grown to 228 KB, most of it the history of review
 rounds.
 
-## Right now (2026-11-28)
+## Right now (2026-11-29)
+
+- **Where the lanes stand at the pause of 2026-11-28 (midnight). Read this first; it overtakes
+  the bullet below it.** `origin/main` is `f0a322a6`. Landed on 2026-11-28, each reviewed by a
+  model that did not write it and through the full gate: the fire simulation, the 2D baker,
+  two rounds of test timing, the shape library's stage 4, the sample library's frame, the
+  sculpt branch, the gate's speed step scaled by the machine's load, research rounds eight to
+  ten, **Sepulcra's elemental stones** (furor; rubble that is temporary, with a health bar; the
+  shipped game unchanged) and **the body's foundation** (`caro`: one distance field round a
+  skeleton, a join of any number of parts, normals from the field's gradient; DISTANCE_FIELDS.md
+  section 7).
+  - **The owner's words of that day:** stop at 90% of the weekly usage and talk; slow down from
+    80% (only finishers, picture checks, narrowed reviews, merges); **the outline pass keeps
+    going until it is done** ("I want it in"); trees are open-grown only ("Open grown will
+    do"); the mount's disk work goes to a worker and no guard's allowance is widened ("2 will
+    do"), and the lead may bring the guards' written reasons up to date, wording only; the
+    order of making a person is FABRICA.md's; "maths, not pictures": a form is made right by a
+    rule and a measured number, and a picture is the check that finds what nobody measured.
+  - **A blind test the owner asked for** (one sculpted head, twelve faults, four controls, each
+    as an image, an ASCII grid and numbers; Opus and Sonnet judges): against a reference, text
+    found 9 or 10 of 12 faults and images 5 to 7; only images found a dent; image and numbers
+    together 11 of 12. So a checker is given the form as numbers beside a picture, never a
+    picture alone for proportion. Four times that day a picture misreported a fact (red
+    "inside-out" faces twice: the camera's near plane, and the clay view's own stain, since
+    mended on `m6-formae5`; a goblet's "gap"; the cause of an edge between two limbs).
+  - **On branches, not merged, each with its decisions in
+    `.swarmnotes/m6/part4/lanes-2026-11-24/*-decisions.md` (the last parts) and the lead's queue
+    in `C:/lv/lanes/QUEUE.md` (items 32 to 48):** the body's outline pass (`C:/sl-ora`,
+    `m6-ora`: a mesh follows its field to a stated tolerance; refined inside a build on three of
+    five test bodies, the biped not yet: its work weights are being retimed); **the first
+    person** (`C:/sl-homo`, `m6-homo`: built from the measured body on the old figure's rig;
+    every length within 1% and girth within 2% save the chest's; forty bodies build; **reads
+    "barely" as a person**: a second slice is owed: a section with a front, a back and a place,
+    a skull, a pelvis, sex shown in the outline, a bone's bound local to its pieces); the
+    catalogue (`m6-formae`: review 5 "merge after these fixes", three majors); the shape
+    library's stage 5 (`m6-formae5`: review "do not merge": a suggested value must pass when
+    used; then its look slice); Elementa in the engine (`m6-elementa-engine`: review 3 "do not
+    merge", incomplete); effects (`m6-fx`: the seed played is the seed measured; then the look;
+    then the governor, without which no explosion over 2.25 m is accepted); trees (`m6-arbor`:
+    the oak reads as an oak; needle cards vanish past 30 m; the birch has no character); soft
+    edges (`m6-margo`: the star mended; the gear's teeth, the heart's notch, slivers); machines
+    (`m6-machina`: slice 2).
+  - **Not started:** the atlas in `specula-corpus` (round ten's angles and small parts); levels
+    of detail 1 and 2 fold (`lod.rs`); `asset_streams` takes 36 s at 19,990 recipes before the
+    loop; `sight_frame` saying when the near plane cut a model; a form probe that reports an
+    outline as numbers; plans as data (FABRICA.md), to be raised when a third plan is written.
+  - **Kept from the day:** every builder overran its context (slice smaller; the hand-over
+    order goes at 320k); an agent "waiting on its own work" for forty minutes is stuck (lanes'
+    rule 23); three lanes that looked ready were stopped by their reviews.
 
 - **Where the lanes stand (2026-11-28, early morning). Read this before the table of
   2026-11-24 below, which it overtakes.** The owner, 2026-11-27: "Complete everything as before
