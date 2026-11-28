@@ -77,11 +77,14 @@ fn each_test_body_meshes_closed_as_one_surface() {
         let s = stat(&m);
         let num = |k: &str| s.get(k).and_then(|v| v.as_f64()).unwrap_or(-1.0);
         assert!(num("seams") > 0.0, "{name}: no joint narrows its width");
+        // The mesher's blocks are eight cells a side over the grid's samples.
+        let grid: Vec<f64> = s.get("grid").and_then(|g| g.as_array()).map(|g| g.iter().filter_map(|d| d.as_f64()).collect()).unwrap_or_default();
+        let blocks: f64 = grid.iter().map(|d| ((d - 1.0) / 8.0).ceil()).product();
+        assert!(num("blocks_skipped") > 0.0, "{name}: no block was skipped of {blocks}");
         println!(
-            "{name}: {} triangles, {} work units, grid {:?}, cell {} m, {} samples evaluated, {} blocks skipped, {} parts, {} seams, built in {:.2} s (with its levels)",
+            "{name}: {} triangles, {} work units, grid {grid:?}, cell {} m, {} samples evaluated, {} blocks skipped of {blocks}, {} parts, {} seams, built in {:.2} s (with its levels)",
             l.indices.len() / 3,
             num("work"),
-            s.get("grid"),
             num("cell_m"),
             num("samples_evaluated"),
             num("blocks_skipped"),
@@ -93,7 +96,7 @@ fn each_test_body_meshes_closed_as_one_surface() {
 }
 
 /// What [`the_same_bytes_every_time`] read, in debug and in release.
-const HASHES: [u64; 4] = [0, 0, 0, 0];
+const HASHES: [u64; 4] = [0x7665_6c16_46ae_f07b, 0x5bc7_5fee_c13e_8a41, 0xe383_dbda_de03_ed81, 0xe7b7_b737_8978_5c54];
 
 /// The same recipe makes the same bytes twice, and the same in a debug and a release build.
 #[test]
