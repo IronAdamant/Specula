@@ -5,12 +5,12 @@ use specula_text::*;
 use std::path::PathBuf;
 
 /// A copy of `specula_core::speed_budget` (this crate depends on nothing): a test's speed bound,
-/// tight when it runs alone, 5 s or more in every other run.
+/// tight (times the gate's load factor) when it runs alone, 5 s or more in every other run.
 fn speed_budget(tight: std::time::Duration) -> std::time::Duration {
-    if std::env::var_os("SPECULA_SPEED_TESTS").is_some() {
-        tight
-    } else {
-        tight.max(std::time::Duration::from_secs(5))
+    match std::env::var("SPECULA_SPEED_TESTS") {
+        Ok(factor) => tight.mul_f64(factor.trim().parse::<f64>().ok().filter(|f| (1.0..=1000.0).contains(f)).unwrap_or(1.0)),
+        Err(std::env::VarError::NotPresent) => tight.max(std::time::Duration::from_secs(5)),
+        Err(std::env::VarError::NotUnicode(_)) => tight,
     }
 }
 

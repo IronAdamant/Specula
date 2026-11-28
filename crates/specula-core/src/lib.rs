@@ -25,18 +25,24 @@ pub mod trace;
 pub use json::{Json, JsonError};
 
 /// The bound a test puts on how long something took, when the speed is the point (a budget).
-/// It is `tight` when the test runs alone (`SPECULA_SPEED_TESTS` is set: the `speed` step of
-/// the gate, `tools/examen`, one test at a time), and at least 5 s in every other run: a full test run
-/// has sixteen test threads and several engines on one GPU, where "under 20 ms" holds most of
-/// the time, and a gate must not pass by luck (AGENTS.md, "The gate"). A bare bound shorter
-/// than 5 s on a time fails `crates/specula/tests/clock_guard.rs`, which also keeps the copies
-/// of this function (in crates that don't depend on this one) identical.
+/// It is `tight` times a factor when the test runs alone (`SPECULA_SPEED_TESTS` is set: the
+/// `speed` step of the gate, `tools/examen`, one test at a time), and at least 5 s in every other
+/// run: a full test run has sixteen test threads and several engines on one GPU, where "under
+/// 20 ms" holds most of the time, and a gate must not pass by luck (AGENTS.md, "The gate").
+///
+/// The variable's value is how many times slower the machine is now than at its best, as the
+/// gate measured it with a reference workload just before the run (`tools/examen/src/mensura.rs`):
+/// `1` on a quiet machine, `3.40` on one three and a half times slower. A number from 1 to 1000
+/// scales the budget by it; anything else (below 1, not a number, past 1000) counts as 1, so a
+/// value that is set always gives at least the tight bound. A bare bound shorter than 5 s on a
+/// time fails `crates/specula/tests/clock_guard.rs`, which also keeps the copies of this
+/// function (in crates that don't depend on this one) identical.
 #[doc(hidden)]
 pub fn speed_budget(tight: std::time::Duration) -> std::time::Duration {
-    if std::env::var_os("SPECULA_SPEED_TESTS").is_some() {
-        tight
-    } else {
-        tight.max(std::time::Duration::from_secs(5))
+    match std::env::var("SPECULA_SPEED_TESTS") {
+        Ok(factor) => tight.mul_f64(factor.trim().parse::<f64>().ok().filter(|f| (1.0..=1000.0).contains(f)).unwrap_or(1.0)),
+        Err(std::env::VarError::NotPresent) => tight.max(std::time::Duration::from_secs(5)),
+        Err(std::env::VarError::NotUnicode(_)) => tight,
     }
 }
 

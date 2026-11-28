@@ -755,6 +755,10 @@ These held all through M5 and were written down nowhere in the repository until 
 
 ## Gotchas that cost time
 
+- **The gate's speed step failed for the machine's load** (four gates, 2026-11-23 to 28, none for the code:
+  one test read 220 ms quiet and 1,254 ms beside ten builds). It now scales the budgets by a reference
+  workload's time against this checkout's best (`<target>/gate/speed-reference.txt`). Its line says the
+  factor. Past 8 it fails as too loaded. Deleting that file makes the next run the new best.
 - **`RUSTFLAGS`:** an environment `RUSTFLAGS` *replaces* the config's flags. Use
   `RUSTFLAGS="-Dwarnings -C link-self-contained=yes"`.
 - **One crate per DLL:** on windows-gnu, two crates importing the same DLL via raw-dylib → the second one's imports
