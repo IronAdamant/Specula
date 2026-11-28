@@ -242,7 +242,7 @@ impl Ctx<'_> {
             let head = self.vec3(b, "head", [0.0; 3])?;
             let tail = self.vec3(b, "tail", head)?;
             let length = math3::length(math3::sub(tail, head));
-            if i > 0 && !(length >= LEAST_LENGTH) {
+            if i > 0 && (length.is_nan() || length < LEAST_LENGTH) {
                 return Err(e(&b.at("tail"), ErrorCode::Geometry, format!("'{}' is {length} m long; a bone is at least {LEAST_LENGTH} m (only the root may be a point)", d.name)).with_numbers(f64::from(length), f64::from(LEAST_LENGTH)));
             }
             let side = match b.get("side") {

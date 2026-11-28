@@ -232,6 +232,7 @@ fn every_shape_and_op_builds() {
         r#"{"op":"sdf","resolution":24,"tree":{"op":"union","smooth":0.1,"of":[{"op":"sphere","radius":0.4},{"op":"box","size":[0.5,0.5,0.5],"at":[0.3,0,0]}]}}"#,
         r#"{"op":"figure","part":"head","sex":"female","stature":1.7,"build":0.5,"age":40,"traits":{"legs":1.2,"shoulders":-0.8}}"#,
         r#"{"op":"figure","part":"foot_l","sex":"male"}"#,
+        r#"{"op":"body","resolution":40,"bones":[{"name":"a","head":[0,0,0],"tail":[0,0.4,0],"sections":[[0,0.08,0.07],[1,0.06,0.05]]},{"name":"b","parent":"a","head":[0,0.4,0],"tail":[0.3,0.6,0],"sections":[[0,0.05,0.05],[1,0.04,0.04]]}]}"#,
         r#"{"op":"sdf","resolution":32,"tree":{"op":"sphere","radius":0.4,"stretch":[1.5,1,0.6],"at":[0,0.5,0]}}"#,
         r#"{"op":"sdf","resolution":40,"tree":{"op":"column","from":[0,0.1,0],"to":[0.1,0.9,0],"sections":[[0,0.2,0.12],[0.5,0.14,0.1],[1,0.08,0.08]]}}"#,
         r#"{"op":"sdf","resolution":32,"tree":{"op":"round_cone","from":[0,0.1,0],"to":[0.3,0.8,0.1],"radius":0.1,"radius_to":0.04}}"#,

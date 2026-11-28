@@ -834,15 +834,15 @@ fn crease(f: &Flesh, axis: D3, rings: usize) -> (f64, usize) {
     let e1 = dscale(e1, 1.0 / dlen(e1));
     let e2 = dcross(u, e1);
     type Seen = (f64, D3, D3);
-    fn refine(f: &Flesh, at: &dyn Fn(f64) -> Seen, a: Seen, b: Seen, depth: u32, most: &mut f64, far: &mut usize) {
+    fn refine(at: &dyn Fn(f64) -> Seen, a: Seen, b: Seen, depth: u32, most: &mut f64, far: &mut usize) {
         if dlen(dsub(a.1, b.1)) <= CREASE_STEP {
             *most = most.max(dmath::acos_f64(ddot(a.2, b.2).clamp(-1.0, 1.0)) * 180.0 / dmath::PI);
         } else if depth == 0 {
             *far += 1;
         } else {
             let m = at(0.5 * (a.0 + b.0));
-            refine(f, at, a, m, depth - 1, most, far);
-            refine(f, at, m, b, depth - 1, most, far);
+            refine(at, a, m, depth - 1, most, far);
+            refine(at, m, b, depth - 1, most, far);
         }
     }
     let (mut most, mut far) = (0.0f64, 0usize);
@@ -858,7 +858,7 @@ fn crease(f: &Flesh, axis: D3, rings: usize) -> (f64, usize) {
         let mut last = at(20.0);
         for i in 1..=steps {
             let next = at(20.0 + 55.0 * i as f64 / steps as f64);
-            refine(f, &at, last, next, 10, &mut most, &mut far);
+            refine(&at, last, next, 10, &mut most, &mut far);
             last = next;
         }
     }
@@ -1016,7 +1016,7 @@ fn a_range_over_a_ball_holds_every_value_in_it() {
         }
     }
     while balls < 1_000_000 {
-        let f = if balls % 200 == 0 { random_chain(&mut r, 150.0) } else { random_flesh(&mut r) };
+        let f = if balls.is_multiple_of(200) { random_chain(&mut r, 150.0) } else { random_flesh(&mut r) };
         let room = bounds(&f, 0.3);
         for k in 0..100 {
             let o = if k % 2 == 0 { in_box(&mut r, room) } else { near(&mut r, &f) };

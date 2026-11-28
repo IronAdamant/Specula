@@ -620,12 +620,14 @@ in its scratch folder and mounted into `crate::sdf` for a release build that is 
 
   ("body" is the whole evaluation past its list, the 48 of a primitive with it.) A body's
   prune (the list cut to a block's ball) is charged as its range's capsules. **A unit over the
-  four test bodies' builds** (best of three, their levels of detail left out, at the weights
-  set): biped 2.52 and 2.29 ns, quadruped 2.78 and 2.84, serpent 3.09 and 2.72, forked 2.76
-  and 2.58 in runs 1 and 2. **Above the 2.0 promised, at a load past the one it was promised
-  at**: the ball's unit itself took 1.17 to 1.85 ns in these runs, against 1.0 to 1.09 in the
-  runs that set the promise, so in the ball's units of the same run a body's unit is 1.2 to
-  2.4 of them. Not shown at or under 2.0 ns: measure again on a quiet machine.
+  four test bodies' builds** (best of three, their levels of detail left out; the times of
+  the two runs over the work charged at the weights set, prunes included: biped 769,783,021
+  units, quadruped 600,580,035, serpent 167,942,445, forked 171,342,457): biped 2.37 and
+  2.15 ns, quadruped 2.51 and 2.57, serpent 2.82 and 2.49, forked 2.55 and 2.38 in runs 1 and
+  2. **Above the 2.0 promised, at a load past the one it was promised at**: the ball's unit
+  itself took 1.17 to 1.85 ns in these runs, against 1.0 to 1.09 in the runs that set the
+  promise, so in the ball's units of the same run a body's unit is 1.2 to 2.2 of them. Not
+  shown at or under 2.0 ns: measure again on a quiet machine.
 - **A part thinner than a cell meshes with edges that four triangles share** (looked into on
   2026-11-20, after the bounds investigation saw "two crescents joined smoothly mesh open").
   It is not the join and not the box: **one crescent** (`{"op": "difference", "of": [{"op":
