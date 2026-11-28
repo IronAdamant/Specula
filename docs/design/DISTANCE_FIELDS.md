@@ -613,6 +613,15 @@ is 2.5 applied to the unit ball's exact field `|x| − 1`, the second is 2.1, an
 lies in the ball of radius `r_max`; then 3.1 and the argument of 7.3 (3). ∎ It joins the body
 as a bone does (7.5) and is culled by its ball as a bone is by its capsule (7.6).
 
+**The shapes of a muscle's belly.** The muscle models in the research (round 9, R9-A2,
+section 1, not yet in this repository) use three: a spindle (an ellipsoid), a strap (an
+elliptic cylinder closed by two half ellipsoids) and a fan (a truncated elliptic cone, closed
+the same way). The first is 7.4's swell. The other two are **a bone part of two sections**,
+laid along the muscle's line: 7.3 holds for them as it stands, with caps of the end's least
+half size. So every belly those models use has a proved bound here; a belly that keeps its
+volume as its joint turns (they shorten and fatten) is a change of these numbers with the pose,
+which this page does not treat.
+
 **7.5. A body: the bones joined in order of their values.** Let `F₁ … F_n` be the bones' and
 swells' fields at `x`, and `K > 0` the body's **smoothing width**. Sort the values from the
 least; join the first two by the quadratic join of width `K` (section 5,
@@ -643,6 +652,40 @@ L_i`), and 7.3 (4) gives `s_i ≤ L_i ρ_i F_i`. For equal fields `q(f, f) = f �
 The join is the sculpt's quadratic one, but the order is by value, not by the recipe: the
 pairwise join depends on its order (5.5), and the cull below needs every order to give one
 answer.
+
+**Which join, and what it does at a joint.** The research on skinning at a joint (round 9,
+R9-A3, sections 3 and 4, not yet in this repository) names three ways to compose two bones'
+fields and a fault of each. A plain union leaves a **crease** in the bend of a joint. A smooth
+join that sees only the two values (this one) fills that crease but **bulges even where the
+bones run straight**. Joins that switch by the angle between the two fields' gradients (no
+blend where the bones are aligned, a blend or a contact where they bend) avoid both, and no
+source states a bound on how fast they change (R8-B1). **This field takes the value-only join,
+for its proof**, and the measurement agrees with 7.5 (4): two round bones of one size, at 0 to
+150 degrees, with widths from a twentieth of their radius to twice it, never lie more than
+`K/4` outside their union, and at 0 degrees the ring is `K/4` within a tenth
+(`a_joint_keeps_the_bound_and_bulges_by_a_quarter_of_the_width`). At a bend the same `K/4` is
+reached along the outside, on the plane that halves the bend, where the two fields are equal;
+inside the bend the join fills the crease. `K = 0` gives the plain union: no bulge, the crease
+kept. What a proof can carry toward the third way is 7.7.
+
+**7.7. A width that changes from place to place.** For the quadratic join `q(a, b; K)`,
+`−1/4 ≤ ∂q/∂K ≤ 0`. So if the width is a function `K(x) > 0` that changes by at most `Λ` a
+metre, and `f`, `g` are 1-Lipschitz, then `q(f, g; K(x))` changes by at most `1 + Λ/4` a
+metre; a chain of `n` parts so joined, by at most `1 + (n − 1) Λ/4`.
+
+*Proof.* Where `|a − b| ≥ K`, `q` is the lesser and does not depend on `K`. Elsewhere, with
+`δ = |a − b|` and `h = 1 − δ/K`, `q = a ∧ b − K h²/4` and `∂h/∂K = δ/K² = (1 − h)/K`, so
+`∂q/∂K = −h²/4 − (K h/2)(1 − h)/K = −h (2 − h)/4`, which lies in `[−1/4, 0]` for `h` in
+`[0, 1]`; it is continuous across `δ = K`, where both sides are 0. Along a segment, the change
+of `q(f, g; K)` is at most the greater change of `f` and `g` (5.3) plus a quarter of the change
+of `K`. In a chain each join adds at most a quarter of the change of `K`, and each passes on the
+change of its inputs with shares that add to one. ∎
+
+So a width that falls toward nothing where two bones run on from one another, and rises where
+they bend, can be had with a stated factor (`Λ` from how fast the width is made to change):
+dividing by that factor keeps the field a bound. Held by test
+(`a_join_of_changing_width_changes_by_a_quarter_of_it`). Which width, and how it is made from
+the skeleton, is the next slice's.
 
 **7.6. The body's cull is exact.** Let `c_i` be each part's capsule term (7.3's `c`; a swell's
 `|x − o| − r_max`), so `F_i ≥ c_i`, and let `ε = T + 2K`. **`H(x)` is the same number when only
@@ -687,7 +730,13 @@ by line here):
   because the end slopes are 0. How smooth the joined surface is, beyond what section 5 says of
   one join, is not stated either.
 - The bulge is bounded, not removed. A straight joint bulges as much as a bend (7.5 (4)): a
-  width that falls as two bones run on from one another is not part of this field.
+  width that falls as two bones run on from one another is not part of this field (7.7 says
+  what it would cost).
+- The field is continuous, not smooth. Its slope breaks where the gauge is held at 2, where
+  `m` changes from `A` to `B`, and where the capsule takes over from `ψ / L`; the last can lie
+  within `K` of a surface (just outside the widest station of a bone whose `L > 1`), so a join
+  that acts there can carry a small break of slope into the joined surface. Skinning by
+  projection onto the fields' levels (R9-A3) needs smooth fields: this one is not yet.
 - The cull asks every part's capsule at every sample; it is exact, not cheap. A block that asks
   `c_i(o) ≤ ε + r` once and passes its list to its samples is.
 
