@@ -542,8 +542,12 @@ What each does, in the rules' own terms (`src/sim_elements.rs`, `src/blaze.rs`):
   **Rubble shows its health**: the app draws a bar over its cell from the tick it rises, full, and
   emptying as the dead break it or as its life runs out, showing the lesser of the two
   (`RubbleStand::left_permille`; the app's `a_rubble_bar_shows_the_lesser_of_its_health_and_its_life`).
-  The app drew no bar before, so this one is its own look: a dark back and a pale green fill that
-  shrinks from the right, 1.6 m over the cell. The two other first thoughts were weighed and set
+  The app drew no bar before, so this one is its own look: a dark back and a fill that
+  shrinks from the right, 1.6 m over the cell. The fill's colour says its level, so full, half and
+  low differ at the frame's own size: the game's green, amber (`FIRE_CORE`) under a half, red
+  (`INVALID`) under a quarter (`BAR_AMBER_BELOW`, `BAR_RED_BELOW`). Bars of neighbouring rubble
+  never cover one another: each stays centred over its own rubble and is lifted straight up until
+  it is clear, with a thin stem down to where it stood (`lay_out_bars`). The two other first thoughts were weighed and set
   aside: a *tremor* ring (a slowing ring is the rune pillar's job already) and a *boulder* loosed
   down a lane (a rolling body needs physics bodies in the rules, which the wind's design below
   defers; it is the natural tier-III variant once that seam is handed over).

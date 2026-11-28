@@ -130,12 +130,85 @@ pub fn bar_fraction(r: &sepulcra::RubbleStand, tick: u32) -> f32 {
     r.left_permille(tick) as f32 / 1000.0
 }
 
+/// The bar turns amber below this share (a half) and red below [`BAR_RED_BELOW`] (a quarter),
+/// so full, half and low differ by colour at the frame's own size, where 15 to 20 pixels of fill
+/// alone did not (the independent picture check of 2026-11-28).
+pub const BAR_AMBER_BELOW: f32 = 0.5;
+pub const BAR_RED_BELOW: f32 = 0.25;
+
+/// A rubble bar's fill colour at `fraction` full: the game's own green ([`GRAVE_GLOW`]) from full
+/// down to a half, the palette's amber ([`FIRE_CORE`]) under [`BAR_AMBER_BELOW`], and its red
+/// ([`INVALID`]) under [`BAR_RED_BELOW`].
+pub fn bar_colour(fraction: f32) -> [f32; 3] {
+    if fraction < BAR_RED_BELOW {
+        INVALID
+    } else if fraction < BAR_AMBER_BELOW {
+        FIRE_CORE
+    } else {
+        GRAVE_GLOW
+    }
+}
+
 /// Where a rubble's bar is drawn on screen (pixels: x, y, width, height), in the interface
-/// layer: its dark back, and its fill, which empties from the right end towards the left.
+/// layer: its dark back, and its fill, which empties from the right end towards the left. A bar
+/// lifted clear of a neighbour's ([`lay_out_bars`]) has a stem down to where it stood, over its
+/// own rubble (`stem` has no height when it was not lifted).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BarRects {
     pub back: [f32; 4],
     pub fill: [f32; 4],
+    pub stem: [f32; 4],
+}
+
+impl BarRects {
+    /// The gap kept between two bars' backs: a third of a back's height, at least 2 pixels.
+    fn gap(&self) -> f32 {
+        (self.back[3] / 3.0).max(2.0)
+    }
+
+    /// Do the two backs overlap, or come within a gap of each other (side by side with no gap,
+    /// two bars read as one)?
+    pub fn crowds(&self, o: &BarRects) -> bool {
+        let g = self.gap().max(o.gap());
+        let (a, b) = (self.back, o.back);
+        a[0] < b[0] + b[2] + g && b[0] < a[0] + a[2] + g && a[1] < b[1] + b[3] + g && b[1] < a[1] + a[3] + g
+    }
+
+    fn lift(&mut self, by: f32) {
+        self.back[1] -= by;
+        self.fill[1] -= by;
+    }
+}
+
+/// **Bars of neighbouring rubble never cover one another.** From the game's usual camera
+/// neighbouring cells stand 10 to 20 pixels apart on screen and a bar is about 32 long, so they
+/// stacked and one hid the other's level. Each bar keeps its place across (centred over its own
+/// rubble) and is lifted straight up, a back's height and a gap at a time, until it crowds no
+/// bar placed before it; the nearest rubble's bar (lowest on screen) is placed first, so a
+/// farther rubble's bar stays above a nearer one's, as the rubble do. A lifted bar has a thin
+/// stem down to where it stood, so it stays clear which rubble it belongs to. This was chosen
+/// over one bar for a cluster, which would show one level for several rubble and hide the rest.
+pub fn lay_out_bars(bars: &mut [BarRects]) {
+    let mut order: Vec<usize> = (0..bars.len()).collect();
+    let bottom = |b: &BarRects| b.back[1] + b.back[3];
+    order.sort_by(|&i, &j| bottom(&bars[j]).total_cmp(&bottom(&bars[i])).then(bars[i].back[0].total_cmp(&bars[j].back[0])).then(i.cmp(&j)));
+    for (k, &i) in order.iter().enumerate() {
+        let start = bottom(&bars[i]);
+        let step = bars[i].back[3] + bars[i].gap();
+        // Each bar placed before blocks at most two steps, so this many always finds room.
+        for _ in 0..2 * k + 2 {
+            let b = bars[i];
+            if !order[..k].iter().any(|&j| b.crowds(&bars[j])) {
+                break;
+            }
+            bars[i].lift(step);
+        }
+        let b = &mut bars[i];
+        let lifted = start - bottom(b);
+        let w = (b.back[3] / 4.0).max(2.0);
+        let x = b.back[0] + b.back[2] / 2.0;
+        b.stem = if lifted > 0.0 { [x - w / 2.0, bottom(b), w, lifted] } else { [x, start, 0.0, 0.0] };
+    }
 }
 
 /// The bar of a rubble whose bar point (the cell's anchor, [`BAR_Y`] up) is `at`, seen through
@@ -161,7 +234,19 @@ pub fn bar_rects(view_proj: &specula_core::math::Mat4, size: (u32, u32), at: Vec
     if back[0] > w as f32 || back[1] > h as f32 || back[0] + back[2] < 0.0 || back[1] + back[3] < 0.0 {
         return None;
     }
-    Some(BarRects { back, fill: [left, top, len * fraction.clamp(0.0, 1.0), high] })
+    Some(BarRects { back, fill: [left, top, len * fraction.clamp(0.0, 1.0), high], stem: [x, back[1] + back[3], 0.0, 0.0] })
+}
+
+/// The bars of rubble on `cells` (each with the share it shows), [`BAR_Y`] over each cell's
+/// anchor, laid out clear of one another ([`lay_out_bars`]); those off the image are left out.
+pub fn rubble_bars(geo: &SlabGeo, map: &sepulcra::map::Map, cells: impl Iterator<Item = (CellId, f32)>, view_proj: &specula_core::math::Mat4, size: (u32, u32)) -> Vec<(BarRects, f32)> {
+    let mut out: Vec<(BarRects, f32)> = cells.filter_map(|(cell, f)| bar_rects(view_proj, size, geo.anchor(map, cell).0 + Vec3::new(0.0, BAR_Y, 0.0), f).map(|b| (b, f))).collect();
+    let mut rects: Vec<BarRects> = out.iter().map(|b| b.0).collect();
+    lay_out_bars(&mut rects);
+    for (o, r) in out.iter_mut().zip(rects) {
+        o.0 = r;
+    }
+    out
 }
 
 #[derive(Clone, Copy)]
@@ -444,17 +529,11 @@ impl Scene {
     /// can be read from the game's usual camera ([`bar_rects`]): it shows from the tick the
     /// rubble rises, full, and empties as the dead break it or as its life runs out, whichever
     /// leaves less ([`bar_fraction`]); it goes with the rubble. Each is the bar's rects and the
-    /// fraction it shows, in cell order.
+    /// fraction it shows, in cell order; neighbours' bars are laid out clear of one another
+    /// ([`lay_out_bars`]) and each is coloured by its level ([`bar_colour`]).
     pub fn bars(&self, state: &State, view_proj: &specula_core::math::Mat4, size: (u32, u32)) -> Vec<(BarRects, f32)> {
-        let map = &state.content().map;
-        state
-            .rubble()
-            .filter_map(|r| {
-                let f = bar_fraction(&r, state.tick());
-                let at = self.geo.anchor(map, r.cell).0 + Vec3::new(0.0, BAR_Y, 0.0);
-                bar_rects(view_proj, size, at, f).map(|b| (b, f))
-            })
-            .collect()
+        let tick = state.tick();
+        rubble_bars(&self.geo, &state.content().map, state.rubble().map(|r| (r.cell, bar_fraction(&r, tick))), view_proj, size)
     }
 
     fn sync_roots(&mut self, world: &mut GameWorld<'_>, state: &State) {
@@ -1148,6 +1227,79 @@ mod tests {
         assert!((big.fill[2] - 2.0 * small.fill[2]).abs() < 1e-3 && (big.fill[3] - 2.0 * small.fill[3]).abs() < 1e-3);
         // Behind the camera: nothing.
         assert!(bar_rects(&far.view_proj(1280, 720), (1280, 720), Vec3::new(0.0, 120.0, 90.0), 1.0).is_none());
+    }
+
+    /// The bar's colour says its level: the game's green full and at 60%, amber at 40% (under a
+    /// half), red at 20% (under a quarter); the two thresholds themselves are the colour above.
+    #[test]
+    fn a_rubble_bar_is_green_then_amber_under_a_half_then_red_under_a_quarter() {
+        assert_eq!((BAR_AMBER_BELOW, BAR_RED_BELOW), (0.5, 0.25));
+        assert_eq!(bar_colour(1.0), GRAVE_GLOW);
+        assert_eq!(bar_colour(0.6), GRAVE_GLOW);
+        assert_eq!(bar_colour(0.4), FIRE_CORE);
+        assert_eq!(bar_colour(0.2), INVALID);
+        assert_eq!((bar_colour(0.5), bar_colour(0.25), bar_colour(0.0)), (GRAVE_GLOW, FIRE_CORE, INVALID));
+        assert!(GRAVE_GLOW != FIRE_CORE && FIRE_CORE != INVALID && INVALID != GRAVE_GLOW);
+    }
+
+    /// From the game's usual camera (the orbit it starts with), and that camera zoomed out to
+    /// 90 m and to its farthest (where neighbours' bars would meet), at 720 and 1080 high, no
+    /// two rubble bars cover one another: for rubble on every pair of neighbouring cells of the
+    /// slab (side by side and diagonal), and for every rubble of a five by five block of cells
+    /// together. Each bar keeps its place across, over its own rubble, and is only lifted; one
+    /// lifted has a stem down to where it stood.
+    #[test]
+    fn bars_of_rubble_on_neighbouring_cells_never_cover_one_another() {
+        use crate::controls::{Orbit, MAX_DIST};
+        let content = Content::builtin();
+        let map = &content.map;
+        let geo = SlabGeo::new(map);
+        let cell = |c: i32, r: i32| if c < 0 || r < 0 { None } else { map.cell_ref(&format!("top:{c},{r}")).filter(|&id| map.cell(id).kind.wallable()) };
+        let mut pairs = 0;
+        let mut lifted_any = false;
+        for dist in [Orbit::default().dist, 90.0, MAX_DIST] {
+            let cam = Orbit { dist, ..Orbit::default() }.camera();
+            let check = |cells: &[CellId], size: (u32, u32)| {
+                let vp = cam.view_proj(size.0, size.1);
+                let natural: Vec<BarRects> = cells.iter().filter_map(|&c| bar_rects(&vp, size, geo.anchor(map, c).0 + Vec3::new(0.0, BAR_Y, 0.0), 0.5)).collect();
+                let bars = rubble_bars(&geo, map, cells.iter().map(|&c| (c, 0.5)), &vp, size);
+                assert_eq!(bars.len(), natural.len());
+                for (i, (a, _)) in bars.iter().enumerate() {
+                    let n = natural[i];
+                    assert_eq!((a.back[0], a.back[2], a.back[3]), (n.back[0], n.back[2], n.back[3]), "kept its place across");
+                    assert!(a.back[1] <= n.back[1], "only ever lifted");
+                    assert_eq!(a.stem[3] > 0.0, a.back[1] < n.back[1], "a stem when lifted: {a:?}");
+                    if a.stem[3] > 0.0 {
+                        assert!((a.stem[1] - (a.back[1] + a.back[3])).abs() < 1e-3 && (a.stem[1] + a.stem[3] - (n.back[1] + n.back[3])).abs() < 1e-3, "the stem reaches where it stood");
+                    }
+                    for (b, _) in &bars[i + 1..] {
+                        assert!(!a.crowds(b), "{size:?} {cells:?}: {a:?} and {b:?}");
+                        let (p, q) = (a.back, b.back);
+                        assert!(p[0] + p[2] <= q[0] || q[0] + q[2] <= p[0] || p[1] + p[3] <= q[1] || q[1] + q[3] <= p[1], "the rects do not intersect");
+                    }
+                }
+            };
+            for size in [(1280u32, 720u32), (1920, 1080)] {
+                for c in 0..40 {
+                    for r in 0..40 {
+                        let Some(a) = cell(c, r) else { continue };
+                        for (dc, dr) in [(1, 0), (0, 1), (1, 1), (1, -1)] {
+                            if let Some(b) = cell(c + dc, r + dr) {
+                                check(&[a, b], size);
+                                pairs += 1;
+                            }
+                        }
+                    }
+                }
+                let block: Vec<CellId> = (7..12).flat_map(|c| (13..18).filter_map(move |r| cell(c, r))).collect();
+                assert!(block.len() >= 6, "{block:?}");
+                check(&block, size);
+                let vp = cam.view_proj(size.0, size.1);
+                lifted_any |= rubble_bars(&geo, map, block.iter().map(|&c| (c, 0.5)), &vp, size).iter().any(|b| b.0.stem[3] > 0.0);
+            }
+        }
+        assert!(pairs > 100, "{pairs} pairs");
+        assert!(lifted_any, "zoomed out, neighbours' bars would have met: some are lifted");
     }
 
     /// The cursor and the range dots wear the `looks::highlight` glows (colour and emissive),
