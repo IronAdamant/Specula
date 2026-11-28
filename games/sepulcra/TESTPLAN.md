@@ -303,3 +303,11 @@ cargo run -p sepulcra --example headless --release -- --ground proving --layout 
 
 - [ ] Record the engine's window only (`python scripts/window_recorder.py`), never the screen: one
       clip per stone (12.2 to 12.7), failures kept, and the frames put in the gallery.
+
+### 12.10 Owed before stones are placed in a shipped map
+
+- [ ] **Furor ported to Lex.** The Rust rules have furor only where the content has the elements
+      (DESIGN.md, "Furor"); the Lex rules (`--rules lex`) have none. Before a shipped map has
+      elemental stones, Lex gets furor (the wave's hour, nothing holds the one in furor, no
+      rubble, no summons), with a parity test of a run walled in past a wave's hour, so the app's
+      every-tick comparison never stops the game on it.

@@ -1647,6 +1647,76 @@ fn the_roots_do_not_slow_an_enemy_in_furor() {
     assert_eq!(s.w.speed_permille(&c, &e, false), i64::from(1000 - c.rules.nature.slow), "before its hour the roots slow it");
 }
 
+/// The shipped content with walls of the most HP the format takes, and one wave only, and a
+/// layout that closes every gate with them before the dead come: a run that cannot end.
+fn sealed_shipped() -> (Arc<Content>, crate::script::Script) {
+    use crate::content::{ENEMIES_JSON, STONES_JSON, WAVES_JSON};
+    let stones = STONES_JSON.replace("\r\n", "\n");
+    let from = "\"wall\": { \"cost\": 15, \"hp\": 300,";
+    assert_eq!(stones.matches(from).count(), 1, "fixture");
+    let stones = stones.replacen(from, "\"wall\": { \"cost\": 15, \"hp\": 1000000,", 1);
+    let waves = WAVES_JSON.replace("\r\n", "\n");
+    let cut = waves.find("]},").expect("fixture") + 2;
+    let waves = format!("{}\n  ]\n}}\n", &waves[..cut]);
+    let c = Arc::new(Content::from_texts(SLAB_01_JSON, &stones, ENEMIES_JSON, &waves).expect("content"));
+    assert_eq!(c.waves.len(), 1);
+    let text = "{ \"name\": \"sealed\", \"commands\": [ { \"wave\": 0, \"wall\": \"top:10,7\" }, { \"wave\": 0, \"wall\": \"top:12,10\" }, { \"wave\": 0, \"wall\": \"top:9,12\" }, { \"wave\": 0, \"wall\": \"top:7,9\" } ] }";
+    let script = crate::script::Script::parse(text, &c, "sealed").expect("layout");
+    (c, script)
+}
+
+/// Furor is elemental content's only (DESIGN.md, "Furor"): in the shipped game a wave walled in
+/// past its hour is never in furor, and the rune pillar's slow, nature's roots and the colossus's
+/// summons still act at a tick past that hour, as the Lex rules (which have no furor) play them.
+#[test]
+fn in_the_shipped_game_a_wave_walled_in_past_its_hour_is_still_held() {
+    let (c, script) = sealed_shipped();
+    assert!(!c.elemental());
+    let (mut past, mut furor) = (0u32, 0u32);
+    let r = crate::script::run(Arc::clone(&c), 1, &script, None, |st, ev| {
+        furor += ev.iter().filter(|e| matches!(e, Event::Furor { .. })).count() as u32;
+        if st.w.hour_of(&c, 1).is_some_and(|h| st.tick() > h) {
+            past += 1;
+            assert!(st.w.enemies.iter().all(|e| !e.alive || (!st.w.in_furor(&c, e) && st.w.can_hold(&c, e))), "tick {}", st.tick());
+        }
+    });
+    assert!(past > 0 && r.waves[0].alive > 0, "the dead stand at the walls past their wave's hour: past {past}, {:?}", r.waves);
+    assert_eq!(furor, 0, "no furor in the shipped game");
+    // Each of the three holds acts on the shipped content ten seconds past wave 1's hour.
+    let past_hour = |s: &mut State| {
+        let hour = s.w.hour_of(&c, 1).unwrap();
+        s.w.tick = hour + 10 * TICK_HZ;
+    };
+    // The rune pillar's slow.
+    let mut s = quiet(&c);
+    past_hour(&mut s);
+    let id = plant(&mut s, "shambler", "top:9,15");
+    let cell = c.map.cell_name(nearest_build_cells(&c, "top:9,15", 1)[0]);
+    place(&mut s, "rune_pillar", &cell, 0);
+    let mut slowed = false;
+    for _ in 0..5 * TICK_HZ {
+        steps(&mut s, 1);
+        slowed |= s.enemy(id).is_some_and(|e| e.is_slowed(s.tick()));
+    }
+    assert!(slowed, "the rune pillar slows it past its wave's hour");
+    // Nature's roots.
+    let mut s = quiet(&c);
+    past_hour(&mut s);
+    let id = plant(&mut s, "shambler", "top:9,15");
+    let e = *s.enemy(id).unwrap();
+    s.w.rooted[e.cell().unwrap().index()] = true;
+    assert!(c.rules.nature.slow > 0);
+    assert_eq!(s.w.speed_permille(&c, &e, false), i64::from(1000 - c.rules.nature.slow), "the roots slow it past its wave's hour");
+    // The colossus's summons.
+    let mut s = quiet(&c);
+    past_hour(&mut s);
+    let big = plant(&mut s, "colossus", "top:9,13");
+    let i = idx(&s, big);
+    s.w.enemies[i].next_summon = s.w.tick;
+    let ev = steps(&mut s, 1);
+    assert_eq!(ev.iter().filter(|x| matches!(x, Event::Spawned { .. })).count(), 2, "the colossus calls past its wave's hour: {ev:?}");
+}
+
 /// No rubble rises while an enemy in furor stands in the lane, though the heave's own target is
 /// of a wave not yet begun (so not in furor); the control, with nobody in furor, raises it.
 #[test]
@@ -1729,18 +1799,7 @@ fn a_runs_length_is_the_sum_design_states() {
 /// gate before the dead) stops at exactly the run's stated length, no sooner and no later.
 #[test]
 fn a_run_that_cannot_end_stops_at_its_stated_length() {
-    use crate::content::{ENEMIES_JSON, STONES_JSON, WAVES_JSON};
-    let stones = STONES_JSON.replace("\r\n", "\n");
-    let from = "\"wall\": { \"cost\": 15, \"hp\": 300,";
-    assert_eq!(stones.matches(from).count(), 1, "fixture");
-    let stones = stones.replacen(from, "\"wall\": { \"cost\": 15, \"hp\": 1000000,", 1);
-    let waves = WAVES_JSON.replace("\r\n", "\n");
-    let cut = waves.find("]},").expect("fixture") + 2;
-    let waves = format!("{}\n  ]\n}}\n", &waves[..cut]);
-    let c = Arc::new(Content::from_texts(SLAB_01_JSON, &stones, ENEMIES_JSON, &waves).expect("content"));
-    assert_eq!(c.waves.len(), 1);
-    let text = "{ \"name\": \"sealed\", \"commands\": [ { \"wave\": 0, \"wall\": \"top:10,7\" }, { \"wave\": 0, \"wall\": \"top:12,10\" }, { \"wave\": 0, \"wall\": \"top:9,12\" }, { \"wave\": 0, \"wall\": \"top:7,9\" } ] }";
-    let script = crate::script::Script::parse(text, &c, "sealed").expect("layout");
+    let (c, script) = sealed_shipped();
     let r = crate::script::run(Arc::clone(&c), 1, &script, None, |_, _| {});
     assert_eq!((r.outcome, u64::from(r.ticks)), (Outcome::Running, c.run_bound().ticks), "{:?}", r.waves);
     assert!(r.waves[0].alive > 0, "the dead still at the walls");

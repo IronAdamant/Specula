@@ -556,7 +556,14 @@ checked when content loaded, and each left the next stone and every combination 
 review measured the loader refusing content that was in fact harmless (364 of 364 refused wind
 contents, and 477 of 480 frost, finished inside the run's room). The class is one, **content can
 renew a hold without limit**, so it is closed once, in the rules (the lead and the owner,
-2026-11-28; it applies to every content, the shipped maps included, which never reach it):
+2026-11-28). **It applies only where the content has the elements** (`Content::elemental`: one
+flag decided when the content loads, true if any elemental stone or tier, or any enemy with a
+mass, a sapper's charge or a burst, is defined, placed or not, or the elements' rules are
+switched on). The shipped maps have none, so they have no furor: a player who walls a wave in
+past its hour still has the rune pillar's slow, nature's roots and the colossus's summons acting
+on it, as the Lex rules (`--rules lex`, which have no furor) play them, so the two never part
+there (`in_the_shipped_game_a_wave_walled_in_past_its_hour_is_still_held`). **Before stones are
+placed in a shipped map, furor is ported to Lex** (TESTPLAN, 12.10). Where it applies:
 
 - **A wave's hour** is twenty minutes (`WAVE_HOUR_TICKS`, 36,000 ticks, the room a run has always
   had) after its last entry. Any enemy of that wave still standing at its hour is **in furor** from

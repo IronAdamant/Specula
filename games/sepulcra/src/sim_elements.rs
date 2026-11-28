@@ -83,7 +83,7 @@ fn blaze_event(e: BlazeEvent) -> Event {
 }
 
 impl World {
-    // ---- Furor: one rule for every hold (DESIGN.md, "Furor"), on all content ----
+    // ---- Furor: one rule for every hold (DESIGN.md, "Furor"), in elemental content only ----
 
     /// The tick wave `wave` (1-based) reaches its hour: [`WAVE_HOUR_TICKS`] after its last entry
     /// (`None` before it begins). Its start is in every save and every hash, so furor needs no
@@ -94,8 +94,16 @@ impl World {
         Some(start.saturating_add(content.waves.get(w)?.entry_span()).saturating_add(WAVE_HOUR_TICKS))
     }
 
-    /// Is `e` in furor: has its wave's hour come with it still standing? Decided by ticks alone.
+    /// Is `e` in furor: has its wave's hour come with it still standing? Decided by ticks alone,
+    /// and only in content that has the elements ([`Content::elemental`], one flag decided when
+    /// the content loads: any elemental stone or tier, or any enemy with a mass, a sapper's
+    /// charge or a burst, defined whether placed or not, or the elements' rules switched on).
+    /// The shipped maps have none: there the rune pillar's slow, nature's roots and the
+    /// colossus's summons act at any hour, as the Lex rules, which have no furor, play them.
     pub(super) fn in_furor(&self, content: &Content, e: &Enemy) -> bool {
+        if !content.elemental() {
+            return false;
+        }
         #[cfg(test)]
         if self.no_furor {
             return false;
