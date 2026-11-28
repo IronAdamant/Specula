@@ -26,6 +26,7 @@ mod leverage_trace;
 #[cfg(test)]
 mod leverage_tests;
 mod live;
+mod mensura;
 mod native;
 mod passed;
 mod pin;

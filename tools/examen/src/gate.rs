@@ -32,7 +32,9 @@
 //!   thread starts its job late, so a result that depends on when a worker runs fails every
 //!   time, not now and then (`crates/specula/src/workers.rs`, `test_delay`).
 //! - `speed`: the tests that hold a speed budget (`speed_budget(..)`), one at a time, with
-//!   `SPECULA_SPEED_TESTS` set: alone, their tight bounds apply.
+//!   `SPECULA_SPEED_TESTS` set: alone, their tight bounds apply, scaled by how much slower than
+//!   its best the machine is just before each package's run (`mensura.rs`); past 8 times the
+//!   step fails as too loaded to judge, naming no test.
 //! - `clippy`: Windows and Linux, warnings denied.
 //! - `builds`: debug and release of the engine and the game (the live checks run both).
 //!
@@ -49,6 +51,7 @@ use specula_core::Json;
 
 use crate::changed::{self, Change, Tier};
 use crate::cli::Args;
+use crate::mensura;
 use crate::passed;
 use crate::pin;
 use crate::run::{root, run, target_dir, Ran};
@@ -371,20 +374,39 @@ impl Gate {
         if total == 0 {
             self.fail("speed: found no test that holds a speed budget (has `speed_budget(` been renamed?)".to_owned());
         }
+        // How slow the machine is now against its best (`mensura.rs`): the budgets are scaled by it.
+        let kept = target_dir().join("gate").join("speed-reference.txt");
+        let best = mensura::remember(&kept, mensura::reference_ms());
         let mut packages = Vec::new();
         for (package, names) in &budgets {
+            let now = mensura::reference_ms();
+            let factor = mensura::factor(now, best);
+            let load = format!("speed: the machine is {factor:.2} times slower than its best (reference {best:.0} ms, now {now:.0} ms): budgets scaled by {factor:.2}");
+            println!("  {package}: {load}");
+            let measured = [("best_ms", Json::Num((best * 10.0).round() / 10.0)), ("now_ms", Json::Num((now * 10.0).round() / 10.0)), ("factor", Json::Num(factor)), ("load", Json::Str(load))];
+            if mensura::too_loaded(factor) {
+                let mut fields = measured.to_vec();
+                fields.push(("named", Json::Num(names.len() as f64)));
+                packages.push((package.clone(), Json::obj(fields)));
+                self.fail(format!(
+                    "speed ({package}): the machine is too loaded to judge speed: the reference took {now:.0} ms against its best of {best:.0} ms, {factor:.2} times slower (more than {}); no test was run and none is named a regression",
+                    mensura::CAP
+                ));
+                continue;
+            }
             let mut args = vec!["test", "-p", package.as_str(), "--", "--test-threads", "1"];
             args.extend(names.iter().map(String::as_str));
-            let env = [("SPECULA_SPEED_TESTS", "1".to_owned())];
+            let env = [("SPECULA_SPEED_TESTS", format!("{factor:.2}"))];
             let (parsed, ran, why) = self.tests(&format!("speed ({package})"), &format!("speed-{package}"), &self.cargo(&args), &env, 45);
             let mut fields = parsed_json(&parsed, &ran);
+            fields.extend(measured);
             fields.push(("named", Json::Num(names.len() as f64)));
             packages.push((package.clone(), Json::obj(fields)));
             if why.is_empty() && parsed.passed < names.len() as u64 {
                 self.fail(format!("speed ({package}): {} functions hold a budget and {} tests ran: a budget in a helper isn't run here ({names:?})", names.len(), parsed.passed));
             }
             for w in why {
-                self.fail(format!("speed ({package}): {w}: over budget running alone, with nothing else of the gate's on the machine"));
+                self.fail(format!("speed ({package}): {w}: over budget running alone, with nothing else of the gate's on the machine, the budgets scaled by {factor:.2} for its load"));
             }
         }
         self.record("speed", vec![("tests", Json::Num(total as f64)), ("packages", Json::Obj(packages))]);
